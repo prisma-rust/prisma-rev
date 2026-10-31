@@ -38,6 +38,95 @@ pub struct SnapshotInput<'a> {
     pub leaves: &'a [(String, String, Vec<String>)],
     /// Console 里当前可见的日志行（已按用户过滤），最多用前 50 条。
     pub logs: &'a [String],
+    /// Scene / Game 视口里的物体（世界 → 视口像素投影已完成）。
+    pub viewports: &'a [ViewObjects],
+}
+
+/// 视口里的一个物体：世界坐标 + 投影后的视口像素坐标。
+///
+/// 节点 id 是 `view:<tab>:entity:<id>`（见 [`view_object_node`]），
+/// `ui.click` 接受它，点击落在投影点上——和用户在视口里点同一像素走同一条拾取路径。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ViewObject {
+    /// 节点 id（`view:<tab>:entity:<scene id>` 或 `view:<tab>:ecs:<index>`）。
+    ///
+    /// 工程代码 spawn 出来的实体没有 `.scene.json` 的稳定 id，用 ECS 索引兜底，
+    /// 两类前缀不会撞在一起。
+    pub node: String,
+    /// 场景文档里的稳定 id；`None` = 运行时 spawn 的实体。
+    pub entity: Option<u32>,
+    pub name: String,
+    pub world: [f32; 3],
+    /// 投影后的视口局部像素（左上原点）；`None` = 在相机背后。
+    pub screen: Option<[f32; 2]>,
+    /// 视空间深度（越大越远）；`None` 与 `screen` 一起为 `None`。
+    pub depth: Option<f32>,
+    /// 是否参与渲染（Scene：`Active`；Game：`ActiveInHierarchy`）。
+    pub visible: bool,
+}
+
+/// 一个视口的物体列表。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ViewObjects {
+    /// 面板 tab 名：`sceneView` / `gameView`。
+    pub tab: &'static str,
+    pub objects: Vec<ViewObject>,
+}
+
+/// 视口物体的节点 id（场景实体）。
+pub fn view_object_node(tab: &str, entity: u32) -> String {
+    format!("view:{tab}:entity:{entity}")
+}
+
+/// 视口物体的节点 id（运行时 spawn 的实体，按 ECS 索引）。
+pub fn view_object_node_ecs(tab: &str, index: u32) -> String {
+    format!("view:{tab}:ecs:{index}")
+}
+
+/// `view:<tab>:entity:<id>` / `view:<tab>:ecs:<index>` → `tab`。
+///
+/// 只接受这两种 kind，避免把任意 `view:*` 节点当成物体。
+pub fn parse_view_object_node(node: &str) -> Option<&str> {
+    let rest = node.strip_prefix("view:")?;
+    let mut parts = rest.split(':');
+    let tab = parts.next()?;
+    let kind = parts.next()?;
+    let key = parts.next()?;
+    if parts.next().is_some()
+        || tab.is_empty()
+        || (kind != "entity" && kind != "ecs")
+        || key.parse::<u32>().is_err()
+    {
+        return None;
+    }
+    Some(tab)
+}
+
+/// 把一个视口的物体转成快照里的 `objects` 数组。
+fn view_objects_json(tab: &str, objects: &[ViewObject]) -> Value {
+    Value::Array(
+        objects
+            .iter()
+            .map(|object| {
+                let mut node = json!({
+                    "id": object.node,
+                    "role": "viewObject",
+                    "entity": object.entity,
+                    "name": object.name,
+                    "world": object.world,
+                    "visible": object.visible,
+                    "on_screen": object.screen.is_some(),
+                });
+                if let Some(screen) = object.screen {
+                    node["screen"] = json!(screen);
+                }
+                if let Some(depth) = object.depth {
+                    node["depth"] = json!(depth);
+                }
+                node
+            })
+            .collect(),
+    )
 }
 
 /// 整个编辑器界面的节点树。
@@ -72,6 +161,9 @@ pub fn snapshot(input: &SnapshotInput<'_>) -> Value {
             }
             if tab == active {
                 node["children"] = panel_children(input, tab);
+            }
+            if let Some(objects) = input.viewports.iter().find(|view| view.tab == tab.as_str()) {
+                node["objects"] = view_objects_json(tab, &objects.objects);
             }
             dock.push(node);
         }
@@ -353,10 +445,85 @@ mod tests {
             rects: &rects,
             leaves: &leaves,
             logs: &logs,
+            viewports: &[],
         };
         let value = snapshot(&input);
         assert_eq!(value["gizmo"]["tool"], "Move");
         assert_eq!(value["gizmo"]["space"], "World");
         assert_eq!(value["fps"], 60.0);
+    }
+
+    #[test]
+    fn view_object_nodes_round_trip() {
+        assert_eq!(view_object_node("sceneView", 2), "view:sceneView:entity:2");
+        assert_eq!(view_object_node_ecs("gameView", 9), "view:gameView:ecs:9");
+        assert_eq!(
+            parse_view_object_node("view:gameView:entity:17"),
+            Some("gameView")
+        );
+        assert_eq!(
+            parse_view_object_node("view:gameView:ecs:17"),
+            Some("gameView")
+        );
+        assert_eq!(parse_view_object_node("panel:sceneView"), None);
+        assert_eq!(parse_view_object_node("view:sceneView:entity:x"), None);
+        assert_eq!(parse_view_object_node("view:sceneView"), None);
+        assert_eq!(parse_view_object_node("view::entity:1"), None);
+        assert_eq!(parse_view_object_node("view:sceneView:created:1"), None);
+    }
+
+    #[test]
+    fn snapshot_lists_viewport_objects() {
+        let workspace = Workspace::sample();
+        let mut rects = BTreeMap::new();
+        rects.insert(
+            "sceneView".to_string(),
+            egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0)),
+        );
+        let leaves = vec![(
+            "leaf-1".to_string(),
+            "sceneView".to_string(),
+            vec!["sceneView".to_string()],
+        )];
+        let logs = Vec::new();
+        let viewports = vec![ViewObjects {
+            tab: "sceneView",
+            objects: vec![ViewObject {
+                node: view_object_node("sceneView", 2),
+                entity: Some(2),
+                name: "boat".into(),
+                world: [13.0, 80.0, 0.0],
+                screen: Some([400.0, 300.0]),
+                depth: Some(5.0),
+                visible: true,
+            }],
+        }];
+        let input = SnapshotInput {
+            workspace: &workspace,
+            playing: false,
+            paused: false,
+            status: "ready",
+            frames: 1,
+            fps: 60.0,
+            gizmo_tool: None,
+            gizmo_space: "World",
+            rects: &rects,
+            leaves: &leaves,
+            logs: &logs,
+            viewports: &viewports,
+        };
+        let value = snapshot(&input);
+        let node = value["dock"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["id"] == "panel:sceneView")
+            .expect("scene view node");
+        let objects = node["objects"].as_array().expect("objects array");
+        assert_eq!(objects.len(), 1);
+        assert_eq!(objects[0]["id"], "view:sceneView:entity:2");
+        assert_eq!(objects[0]["name"], "boat");
+        assert_eq!(objects[0]["screen"], serde_json::json!([400.0, 300.0]));
+        assert_eq!(objects[0]["on_screen"], true);
     }
 }

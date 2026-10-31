@@ -16,6 +16,7 @@ use prism_editor_core::{
     Command, DockDirection, DockNode, KeyChord, Locale, Preferences, Workspace, SHORTCUTS,
     SHORTCUT_ALIASES,
 };
+use serde_json::json;
 
 use crate::engine_host::ViewKind;
 use crate::gpu::SharedVulkan;
@@ -885,6 +886,189 @@ impl EditorApp {
         }
     }
 
+    /// Scene / Game 视口里的物体：世界坐标 + 投影后的视口局部像素。
+    ///
+    /// 这是 `ui.snapshot` 的 `objects` 与 `ui.click {"node":"view:<tab>:entity:<id>"}`
+    /// 的数据来源：投影在编辑器侧算好，脚本不用再猜坐标（更没有 DPI 换算问题）。
+    fn viewport_objects(&self) -> Vec<crate::ui_tree::ViewObjects> {
+        use crate::ui_tree::{ViewObject, ViewObjects};
+        use prism_editor_core::viewport_math as vm;
+
+        let mut out = Vec::new();
+
+        if let Some(rect) = self.panel_rects.get("sceneView").copied() {
+            let frame = vm::camera_frame(&self.workspace.camera);
+            let doc = &self.workspace.document().doc;
+            let objects = (0..doc.entities.len())
+                .map(|index| {
+                    let entity = &doc.entities[index];
+                    let world = vm::world_position(doc, index);
+                    let projected = vm::project(world, &frame, rect.width(), rect.height());
+                    ViewObject {
+                        node: crate::ui_tree::view_object_node(
+                            "sceneView",
+                            entity.id.unwrap_or(index as u32),
+                        ),
+                        entity: Some(entity.id.unwrap_or(index as u32)),
+                        name: entity.name.clone().unwrap_or_default(),
+                        world,
+                        screen: projected.map(|(x, y, _)| [x, y]),
+                        depth: projected.map(|(_, _, depth)| depth),
+                        visible: scene_entity_visible(entity),
+                    }
+                })
+                .collect();
+            out.push(ViewObjects {
+                tab: "sceneView",
+                objects,
+            });
+        }
+
+        if let (Some(view), Some(rect)) = (
+            self.game_view.as_ref(),
+            self.panel_rects.get("gameView").copied(),
+        ) {
+            out.push(ViewObjects {
+                tab: "gameView",
+                objects: game_view_objects(view, rect),
+            });
+        }
+
+        out
+    }
+
+    /// 视口物体节点（`view:<tab>:entity:<id>`）点击：点它的投影点，
+    /// 可选 `offset` 相对该点偏移（视口局部像素）。
+    fn ui_click_view_object(
+        &mut self,
+        tab: &str,
+        node: &str,
+        offset: Option<[f32; 2]>,
+    ) -> Result<serde_json::Value, String> {
+        let objects = self.viewport_objects();
+        let view = objects
+            .iter()
+            .find(|view| view.tab == tab)
+            .ok_or_else(|| format!("viewport '{tab}' is not open"))?;
+        let object = view
+            .objects
+            .iter()
+            .find(|object| object.node == node)
+            .ok_or_else(|| format!("'{node}' is not in view '{tab}'"))?;
+        let screen = object
+            .screen
+            .ok_or_else(|| format!("'{node}' is behind the camera"))?;
+        let [dx, dy] = offset.unwrap_or([0.0, 0.0]);
+        self.viewport_click(tab, (screen[0] + dx, screen[1] + dy))
+    }
+
+    /// `panel:sceneView` / `panel:gameView` + `offset`：offset 是**视口局部**像素
+    /// （面板左上角为原点），直接在该点做点击。
+    fn ui_click_panel_offset(
+        &mut self,
+        node: &str,
+        offset: [f32; 2],
+    ) -> Result<serde_json::Value, String> {
+        let tab = node
+            .strip_prefix("panel:")
+            .ok_or_else(|| format!("offset clicks need a viewport panel, got '{node}'"))?;
+        if tab != "sceneView" && tab != "gameView" {
+            return Err(format!(
+                "panel '{tab}' has no viewport to click in (only sceneView / gameView)"
+            ));
+        }
+        self.viewport_click(tab, (offset[0], offset[1]))
+    }
+
+    /// 在视口局部像素处「点一下」：
+    ///
+    /// - Scene view：走编辑器自己的拾取（`viewport::pick`），于是脚本测到的是
+    ///   用户真实点击的同一条路径（点空处清空选择、点物体选中它）；
+    /// - Game view：把坐标换算到引擎绘图区像素后进 Play 的输入队列。
+    fn viewport_click(
+        &mut self,
+        tab: &str,
+        local: (f32, f32),
+    ) -> Result<serde_json::Value, String> {
+        let rect = self
+            .panel_rects
+            .get(tab)
+            .copied()
+            .ok_or_else(|| format!("viewport '{tab}' was not laid out yet"))?;
+        if !local.0.is_finite() || !local.1.is_finite() {
+            return Err("offset must be finite".into());
+        }
+        match tab {
+            "sceneView" => {
+                if local.0 < 0.0
+                    || local.1 < 0.0
+                    || local.0 > rect.width()
+                    || local.1 > rect.height()
+                {
+                    return Err(format!(
+                        "({:.1},{:.1}) is outside the scene view ({}x{})",
+                        local.0,
+                        local.1,
+                        rect.width(),
+                        rect.height()
+                    ));
+                }
+                let frame = prism_editor_core::viewport_math::camera_frame(&self.workspace.camera);
+                let hit = crate::viewport::pick(&self.workspace, local, rect.size(), &frame);
+                let hit_node = hit.map(|index| {
+                    crate::ui_tree::view_object_node(
+                        tab,
+                        self.workspace.document().doc.entities[index]
+                            .id
+                            .unwrap_or(index as u32),
+                    )
+                });
+                match hit {
+                    Some(index) => self.workspace.select(index, false),
+                    None => self.workspace.clear_selection(),
+                }
+                Ok(json!({
+                    "anchor": "top-left",
+                    "at": [local.0, local.1],
+                    "hit": hit_node,
+                    "action": match hit {
+                        Some(_) => "select",
+                        None => "clear-selection",
+                    },
+                }))
+            }
+            "gameView" => {
+                let (width, height) = self
+                    .game_view
+                    .as_ref()
+                    .ok_or_else(|| "game view is not open".to_string())?
+                    .host
+                    .size();
+                // 面板是逻辑像素，引擎绘图区是离屏像素：按比例折算。
+                let scale_x = width as f32 / rect.width().max(1.0);
+                let scale_y = height as f32 / rect.height().max(1.0);
+                let cursor = (local.0 * scale_x, local.1 * scale_y);
+                self.pending_input
+                    .push_back(InjectedInput::Cursor(cursor.0, cursor.1));
+                self.pending_input.push_back(InjectedInput::Mouse(
+                    prism_engine::input::MouseButton::Left,
+                    true,
+                ));
+                self.pending_input.push_back(InjectedInput::Mouse(
+                    prism_engine::input::MouseButton::Left,
+                    false,
+                ));
+                Ok(json!({
+                    "anchor": "top-left",
+                    "at": [local.0, local.1],
+                    "cursor": [cursor.0, cursor.1],
+                    "queued": 3,
+                }))
+            }
+            other => Err(format!("unknown viewport '{other}'")),
+        }
+    }
+
     /// `ui.click` 的节点分派：走和界面完全相同的代码路径。
     fn ui_click(&mut self, node: &str) -> Result<String, String> {
         if let Some(name) = node.strip_prefix("command:") {
@@ -1285,6 +1469,7 @@ impl EditorApp {
                     .iter()
                     .map(|line| format!("[{:?}] {}", line.level, line.text))
                     .collect();
+                let viewports = self.viewport_objects();
                 let input = crate::ui_tree::SnapshotInput {
                     workspace: &self.workspace,
                     playing: self.playing,
@@ -1302,6 +1487,7 @@ impl EditorApp {
                     rects: &self.panel_rects,
                     leaves: &self.dock_leaves,
                     logs: &logs,
+                    viewports: &viewports,
                 };
                 crate::ui_tree::snapshot(&input)
             }
@@ -1310,8 +1496,21 @@ impl EditorApp {
                     .get("node")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or_default();
-                match self.ui_click(node) {
-                    Ok(message) => json!({ "ok": true, "node": node, "action": message }),
+                let offset = args.get("offset").and_then(parse_offset);
+                let clicked = match crate::ui_tree::parse_view_object_node(node) {
+                    Some(tab) => self.ui_click_view_object(tab, node, offset),
+                    None => match offset {
+                        Some(offset) => self.ui_click_panel_offset(node, offset),
+                        None => self
+                            .ui_click(node)
+                            .map(|message| json!({ "node": node, "action": message })),
+                    },
+                };
+                match clicked {
+                    Ok(mut value) => {
+                        value["ok"] = json!(true);
+                        value
+                    }
                     Err(error) => json!({ "ok": false, "node": node, "error": error }),
                 }
             }
@@ -4761,6 +4960,8 @@ fn apply_project_render_defaults(
 enum InjectedInput {
     Key(prism_engine::input::KeyCode, bool),
     Mouse(prism_engine::input::MouseButton, bool),
+    /// 把光标挪到引擎绘图区像素坐标（`ui.click` 的 Game view 分支用）。
+    Cursor(f32, f32),
 }
 
 impl InjectedInput {
@@ -4783,8 +4984,20 @@ impl InjectedInput {
                     ElementState::Released
                 },
             ),
+            Self::Cursor(x, y) => input.set_mouse_position([x as f64, y as f64]),
         }
     }
+}
+
+/// `ui.click` 的 `offset`：`[dx, dy]` 两个有限数。
+fn parse_offset(value: &serde_json::Value) -> Option<[f32; 2]> {
+    let array = value.as_array()?;
+    if array.len() != 2 {
+        return None;
+    }
+    let x = array[0].as_f64()? as f32;
+    let y = array[1].as_f64()? as f32;
+    Some([x, y])
 }
 
 /// 控制通道里的按键名 → `KeyCode`。大小写不敏感，覆盖自动化常用的那些。
@@ -4833,4 +5046,85 @@ fn parse_mouse(name: &str) -> Option<prism_engine::input::MouseButton> {
         "middle" => MouseButton::Middle,
         _ => return None,
     })
+}
+
+/// `Active` 组件（作者字段）在文档里是否为真；缺省 `true`。
+fn scene_entity_visible(entity: &prism_editor_core::EntityJson) -> bool {
+    match entity.components.get("prism_engine::scene::Active") {
+        Some(serde_json::Value::Bool(value)) => *value,
+        // `Active` 是 newtype，反射编码下可能落到 `{"0": true}`。
+        Some(value) => value
+            .get("0")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true),
+        None => true,
+    }
+}
+
+/// Game 视图里那台工程相机的帧（正交/透视都支持）。
+///
+/// 透视沿用编辑器一贯的 60° 垂直 FOV（`CameraFrame` 没有 fov 字段，见 #601）。
+fn game_camera_frame(
+    world: &prism_engine::ecs::World,
+) -> Option<prism_editor_core::viewport_math::CameraFrame> {
+    use prism_engine::scene::components::{Camera, LocalToWorld};
+    use prism_engine::scene::systems::camera;
+
+    let entity = camera::active_camera(world)?;
+    let camera = world.get::<Camera>(entity)?;
+    let matrix = world.get::<LocalToWorld>(entity)?.0;
+    let eye = matrix.w_axis.truncate();
+    let right = matrix.x_axis.truncate().normalize_or_zero();
+    let up = matrix.y_axis.truncate().normalize_or_zero();
+    let forward = -matrix.z_axis.truncate().normalize_or_zero();
+    Some(prism_editor_core::viewport_math::CameraFrame {
+        eye: eye.to_array(),
+        right: right.to_array(),
+        up: up.to_array(),
+        forward: forward.to_array(),
+        ortho_half_height: camera
+            .orthographic
+            .then(|| camera.orthographic_size.max(1e-4)),
+    })
+}
+
+/// Game 视图里的物体：引擎世界里带 `Name` 的实体（换场/生成的道具也算），
+/// 投影到视口局部像素。
+fn game_view_objects(view: &ViewportState, rect: egui::Rect) -> Vec<crate::ui_tree::ViewObject> {
+    use prism_engine::scene::components::{LocalToWorld, Name};
+    use prism_engine::scene::runtime_components::SceneEntityId;
+    use prism_engine::scene::systems::hierarchy::is_active_in_hierarchy;
+
+    let world = view.host.world();
+    let Some(frame) = game_camera_frame(world) else {
+        return Vec::new();
+    };
+    let mut objects: Vec<crate::ui_tree::ViewObject> = world
+        .query::<LocalToWorld>()
+        .filter_map(|(entity, matrix)| {
+            let name = world.get::<Name>(entity)?.0.clone();
+            let world_pos = matrix.0.w_axis.truncate().to_array();
+            let projected = prism_editor_core::viewport_math::project(
+                world_pos,
+                &frame,
+                rect.width(),
+                rect.height(),
+            );
+            let scene_id = world.get::<SceneEntityId>(entity).map(|id| id.0);
+            Some(crate::ui_tree::ViewObject {
+                node: match scene_id {
+                    Some(id) => crate::ui_tree::view_object_node("gameView", id),
+                    None => crate::ui_tree::view_object_node_ecs("gameView", entity.id()),
+                },
+                entity: scene_id,
+                name,
+                world: world_pos,
+                screen: projected.map(|(x, y, _)| [x, y]),
+                depth: projected.map(|(_, _, depth)| depth),
+                visible: is_active_in_hierarchy(world, entity),
+            })
+        })
+        .collect();
+    objects.sort_by(|a, b| a.node.cmp(&b.node));
+    objects
 }
