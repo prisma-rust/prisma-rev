@@ -220,13 +220,17 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   先加载成功再卸载旧场景）。`Persistent` 实体连子树活过换场，用户注册的 system 不会被冲掉；
   旧实体的 GPU 句柄由解析器记账并交回渲染器回收（#495）。`Engine::scene_generation()`
   每次换场 +1。
-- **项目代码换场（#482，ABI 9）**：`HostApi::load_scene` / `unload_scene` 只是**记录请求**
+- **项目代码换场（#482，ABI 10）**：`HostApi::load_scene` / `unload_scene` 只是**记录请求**
   （回调执行时世界正被借用），宿主在 tick 结束后执行；`WorldCommands::with_scene_switch()`
   是宿主声明「我会执行」的开关（能力位 `HOST_CAP_SCENE`，没声明时不暴露回调）。
   项目侧用 `GameWorld::load_scene(path, additive)` / `unload_scene()` /
   `scene_generation()`；编辑器 `ProjectModuleDriver` → `EngineHost::apply_scene_request`
   复用同一个 `Engine`（`Persistent` 子树保留）、推进代数、回收旧资产槽位、刷新 IBL。
-  加 `HostApi` 字段是 ABI 变更：`ABI_VERSION` 8 → 9，旧模块需要重编。
+- **项目代码射线查询（#522，ABI 10）**：`GameWorld::raycast(origin, direction, max_distance,
+  layer_mask)` 在 host 后端直接调 `prism_engine::physics::raycast`；plugin 后端走
+  `HostApi::raycast`（能力位 `HOST_CAP_PHYSICS`）。runtime-host 不依赖引擎，几何实现由
+  宿主经 `WorldCommands::with_raycast` 注入；编辑器传 `project_module::engine_raycast`。
+  加 `HostApi` 字段是 ABI 变更：9 → 10，旧模块需要重编。
 - `prism-app` keeps the neutral `FrameHook` / `prism_render::external_overlay::SwapchainOverlay`
   seams for debug hosts and future tooling; main → render thread UI data crosses as a
   **type-erased** `OverlayMessage` (`Box<dyn FnOnce(&mut dyn SwapchainOverlay) + Send>`) via

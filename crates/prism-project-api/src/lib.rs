@@ -41,7 +41,7 @@ pub mod keys {
     pub const OTHER_BASE: usize = 30;
 }
 
-pub const ABI_VERSION: u32 = 9;
+pub const ABI_VERSION: u32 = 10;
 
 pub const SUCCESS: i32 = 0;
 pub const INVALID_ARGUMENT: i32 = 1;
@@ -84,6 +84,8 @@ pub const HOST_CAP_STATE: u64 = 1 << 5;
 /// 场景切换（`load_scene` / `unload_scene`，#482）。请求是**延迟执行**的：
 /// 宿主在本 tick 结束后才真正换场，因为回调执行时世界正被借用。
 pub const HOST_CAP_SCENE: u64 = 1 << 6;
+/// 物理查询（`raycast`，#522）。宿主注入查询实现后才会声明该能力位。
+pub const HOST_CAP_PHYSICS: u64 = 1 << 7;
 
 // ---------------------------------------------------------------------------
 // POD payloads
@@ -329,6 +331,37 @@ pub type LoadScene = unsafe extern "C" fn(
 /// 请求卸载当前场景（`Persistent` 子树保留）：同样是延迟执行。
 pub type UnloadScene = unsafe extern "C" fn(user_data: *mut core::ffi::c_void) -> i32;
 
+/// 一条射线命中的 POD 结果（#522）。
+///
+/// 与引擎的 `physics::RayHit` 同构，但实体用跨边界句柄表示。查询方向由宿主
+/// 归一化；`distance` 从起点算起，`point` / `normal` 是世界空间。
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RaycastHit {
+    pub entity: EntityHandle,
+    pub distance: f32,
+    pub point: [f32; 3],
+    pub normal: [f32; 3],
+    /// 命中的碰撞体是不是触发器（`1` / `0`）。
+    pub is_trigger: u8,
+    /// 保留字段，必须是 0。
+    pub _reserved: [u8; 3],
+}
+
+/// 射线查询（#522）：返回 `1` = 命中并写入 `out_hit`，`0` = 未命中，
+/// 负数为错误码（指针为空 / 宿主没有查询能力）。
+///
+/// 数组按指针传（`*const [f32; 3]` 指向 3 个 `f32`），所以调用方必须保证指针
+/// 在调用期间有效；`out_hit` 同理。
+pub type Raycast = unsafe extern "C" fn(
+    user_data: *mut core::ffi::c_void,
+    origin: *const [f32; 3],
+    direction: *const [f32; 3],
+    max_distance: f32,
+    layer_mask: u32,
+    out_hit: *mut RaycastHit,
+) -> i32;
+
 pub type LogMessage = unsafe extern "C" fn(
     user_data: *mut core::ffi::c_void,
     level: u32,
@@ -447,6 +480,8 @@ pub struct HostApi {
     /// 场景切换（#482）；能力位 [`HOST_CAP_SCENE`]。
     pub load_scene: Option<LoadScene>,
     pub unload_scene: Option<UnloadScene>,
+    /// 物理射线查询（#522）；能力位 [`HOST_CAP_PHYSICS`]。
+    pub raycast: Option<Raycast>,
 }
 
 impl HostApi {
@@ -475,6 +510,7 @@ impl HostApi {
             load_scene_state: None,
             load_scene: None,
             unload_scene: None,
+            raycast: None,
         }
     }
 }
@@ -552,6 +588,7 @@ mod tests {
         assert_eq!(api.capabilities, HOST_CAP_LOGGING);
         assert!(api.query_entities.is_none());
         assert!(api.set_component.is_none());
+        assert!(api.raycast.is_none());
     }
 }
 

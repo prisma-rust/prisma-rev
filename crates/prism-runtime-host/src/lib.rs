@@ -15,9 +15,9 @@ use std::path::{Path, PathBuf};
 
 use libloading::{Library, Symbol};
 use prism_project_api::{
-    GetProjectApi, HostApi, ProjectApi, ABI_VERSION, BUFFER_TOO_SMALL, HOST_CAP_ASSET,
-    HOST_CAP_COMPONENTS, HOST_CAP_DRAW, HOST_CAP_LOGGING, HOST_CAP_SCENE, HOST_CAP_STATE,
-    HOST_CAP_WORLD_COMMANDS, INVALID_ARGUMENT, SUCCESS, UNKNOWN_TYPE,
+    GetProjectApi, HostApi, ProjectApi, RaycastHit, ABI_VERSION, BUFFER_TOO_SMALL, HOST_CAP_ASSET,
+    HOST_CAP_COMPONENTS, HOST_CAP_DRAW, HOST_CAP_LOGGING, HOST_CAP_PHYSICS, HOST_CAP_SCENE,
+    HOST_CAP_STATE, HOST_CAP_WORLD_COMMANDS, INVALID_ARGUMENT, SUCCESS, UNKNOWN_TYPE,
 };
 use prism_reflect::rtti_bin;
 use thiserror::Error;
@@ -103,6 +103,22 @@ pub enum SceneRequest {
     Unload,
 }
 
+/// 宿主注入的射线查询结果（#522）。
+///
+/// 本 crate 不依赖 `prism-engine`（会带进第二份引擎），所以几何实现由宿主以
+/// 函数指针注入；编辑器传 `prism_engine::physics::raycast` 的适配器。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RaycastResult {
+    pub entity: prism_ecs::Entity,
+    pub distance: f32,
+    pub point: [f32; 3],
+    pub normal: [f32; 3],
+    pub is_trigger: bool,
+}
+
+/// 射线查询实现的签名（`prism_engine::physics::raycast` 的等价物）。
+pub type RaycastFn = fn(&prism_ecs::World, [f32; 3], [f32; 3], f32, u32) -> Option<RaycastResult>;
+
 struct CommandContext<'a> {
     world: &'a mut prism_ecs::World,
     registry: &'a prism_scene::ComponentRegistry,
@@ -123,6 +139,8 @@ struct CommandContext<'a> {
     scene_request: Option<SceneRequest>,
     /// 宿主是否会执行 `scene_request`；只有会执行的宿主才对外声明能力位。
     scene_switch: bool,
+    /// 宿主的射线查询实现（#522）；`None` 时不声明 `HOST_CAP_PHYSICS`。
+    raycast: Option<RaycastFn>,
 }
 
 /// 把宿主世界包装成 [`HostApi`] 函数表。
@@ -150,6 +168,7 @@ impl<'a> WorldCommands<'a> {
                 load_state: None,
                 scene_request: None,
                 scene_switch: false,
+                raycast: None,
             },
         }
     }
@@ -179,6 +198,15 @@ impl<'a> WorldCommands<'a> {
     /// 才能打开这个能力位；否则项目代码会以为请求生效了。
     pub fn with_scene_switch(mut self) -> Self {
         self.context.scene_switch = true;
+        self
+    }
+
+    /// 注入射线查询实现（#522）。
+    ///
+    /// 只有真正提供查询的宿主才打开 `HOST_CAP_PHYSICS`；编辑器传
+    /// `prism_engine::physics::raycast` 的适配器（见 `engine_raycast`）。
+    pub fn with_raycast(mut self, raycast: RaycastFn) -> Self {
+        self.context.raycast = Some(raycast);
         self
     }
 
@@ -216,6 +244,11 @@ impl<'a> WorldCommands<'a> {
                     HOST_CAP_SCENE
                 } else {
                     0
+                }
+                | if self.context.raycast.is_some() {
+                    HOST_CAP_PHYSICS
+                } else {
+                    0
                 },
             scene_generation: self.context.scene_generation,
             user_data: (&mut self.context as *mut CommandContext).cast(),
@@ -234,6 +267,11 @@ impl<'a> WorldCommands<'a> {
             },
             unload_scene: if self.context.scene_switch {
                 Some(host_unload_scene)
+            } else {
+                None
+            },
+            raycast: if self.context.raycast.is_some() {
+                Some(host_raycast)
             } else {
                 None
             },
@@ -518,6 +556,45 @@ unsafe extern "C" fn host_is_alive(user_data: *mut std::ffi::c_void, entity: Ent
         return -1;
     };
     i32::from(context.world.is_alive(handle_to_entity(entity)))
+}
+
+/// 射线查询（#522）：几何实现由宿主注入，本 crate 只做 ABI 适配。
+unsafe extern "C" fn host_raycast(
+    user_data: *mut std::ffi::c_void,
+    origin: *const [f32; 3],
+    direction: *const [f32; 3],
+    max_distance: f32,
+    layer_mask: u32,
+    out_hit: *mut RaycastHit,
+) -> i32 {
+    let Some(context) = (unsafe { context(user_data) }) else {
+        return INVALID_ARGUMENT;
+    };
+    if origin.is_null() || direction.is_null() || out_hit.is_null() {
+        return INVALID_ARGUMENT;
+    }
+    let (origin, direction) = unsafe { (*origin, *direction) };
+    let Some(raycast) = context.raycast else {
+        return prism_project_api::UNSUPPORTED;
+    };
+    let Some(hit) = raycast(&*context.world, origin, direction, max_distance, layer_mask) else {
+        return 0;
+    };
+    let handle = EntityHandle {
+        id: hit.entity.id(),
+        generation: hit.entity.generation(),
+    };
+    unsafe {
+        out_hit.write(RaycastHit {
+            entity: handle,
+            distance: hit.distance,
+            point: hit.point,
+            normal: hit.normal,
+            is_trigger: u8::from(hit.is_trigger),
+            _reserved: [0; 3],
+        });
+    }
+    1
 }
 
 /// 记录项目代码的换场请求（#482）。真正执行由宿主在 tick 结束后完成。
@@ -935,6 +1012,100 @@ mod tests {
             prism_project_api::INVALID_ARGUMENT
         );
         assert!(wired.take_scene_request().is_none());
+    }
+
+    /// #522：射线查询只有宿主注入实现后才声明能力位；结果按 POD 写回。
+    #[test]
+    fn raycast_capability_requires_an_injected_implementation() {
+        fn fake_raycast(
+            _world: &prism_ecs::World,
+            origin: [f32; 3],
+            direction: [f32; 3],
+            _max_distance: f32,
+            layer_mask: u32,
+        ) -> Option<RaycastResult> {
+            if layer_mask == 0 {
+                return None;
+            }
+            Some(RaycastResult {
+                entity: prism_ecs::Entity::from_raw(7, 2),
+                distance: direction[0],
+                point: origin,
+                normal: [0.0, 1.0, 0.0],
+                is_trigger: true,
+            })
+        }
+
+        let mut world = prism_ecs::World::new();
+        let registry = registry();
+
+        let mut plain = WorldCommands::new(&mut world, &registry, 1);
+        let api = plain.api();
+        assert_eq!(api.capabilities & HOST_CAP_PHYSICS, 0);
+        assert!(api.raycast.is_none());
+
+        let mut wired = WorldCommands::new(&mut world, &registry, 1).with_raycast(fake_raycast);
+        let api = wired.api();
+        assert_ne!(api.capabilities & HOST_CAP_PHYSICS, 0);
+        let raycast = api.raycast.expect("raycast callback");
+
+        let mut hit = RaycastHit::default();
+        assert_eq!(
+            unsafe {
+                raycast(
+                    api.user_data,
+                    &[1.0, 2.0, 3.0],
+                    &[4.0, 0.0, 0.0],
+                    10.0,
+                    1,
+                    &mut hit,
+                )
+            },
+            1
+        );
+        assert_eq!(
+            hit.entity,
+            EntityHandle {
+                id: 7,
+                generation: 2
+            }
+        );
+        assert_eq!(hit.distance, 4.0);
+        assert_eq!(hit.point, [1.0, 2.0, 3.0]);
+        assert_eq!(hit.normal, [0.0, 1.0, 0.0]);
+        assert_eq!(hit.is_trigger, 1);
+
+        // 未命中返回 0；空指针是参数错误。
+        assert_eq!(
+            unsafe { raycast(api.user_data, &[0.0; 3], &[0.0; 3], 10.0, 0, &mut hit) },
+            0
+        );
+        assert_eq!(
+            unsafe {
+                raycast(
+                    api.user_data,
+                    &[0.0; 3],
+                    &[0.0; 3],
+                    10.0,
+                    1,
+                    std::ptr::null_mut(),
+                )
+            },
+            prism_project_api::INVALID_ARGUMENT
+        );
+        assert_eq!(
+            unsafe {
+                raycast(
+                    api.user_data,
+                    std::ptr::null(),
+                    &[0.0; 3],
+                    10.0,
+                    1,
+                    &mut hit,
+                )
+            },
+            prism_project_api::INVALID_ARGUMENT
+        );
     }
 
     /// 项目模块拿到的松散资产访问与宿主同一份实现（走 `HOST_CAP_ASSET`）。

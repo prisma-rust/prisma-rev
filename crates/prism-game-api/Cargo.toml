@@ -30,3 +30,5 @@ log.workspace = true
 # 用真实的宿主函数表验证 plugin 后端，而不是在测试里仿造一张表。
 prism-runtime-host = { path = "../prism-runtime-host" }
 prism-scene = { path = "../prism-scene" }
+# 测试里构造世界矩阵（`LocalToWorld`），与 prism-scene 用的是同一个 workspace 依赖。
+glam.workspace = true
