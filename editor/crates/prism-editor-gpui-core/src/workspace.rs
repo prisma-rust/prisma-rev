@@ -106,9 +106,9 @@ pub struct Document {
     pub doc: SceneDoc,
     pub undo: crate::undo::UndoStack,
     pub dirty: bool,
-    /// 上一次读 / 写这份文件时它的 mtime；`None` = 还没落过盘。
-    pub saved_mtime: Option<std::time::SystemTime>,
-    /// 磁盘上的版本已经和 `saved_mtime` 不一致，且用户还没处理（#452）。
+    /// 上一次读 / 写这份文件时的版本戳（mtime + 长度，#495）；`None` = 还没落过盘。
+    pub saved_stamp: Option<project::FileStamp>,
+    /// 磁盘上的版本已经和 `saved_stamp` 不一致，且用户还没处理（#452）。
     pub externally_modified: bool,
 }
 
@@ -120,19 +120,19 @@ impl Document {
             doc,
             undo: crate::undo::UndoStack::new(),
             dirty: false,
-            saved_mtime: None,
+            saved_stamp: None,
             externally_modified: false,
         }
     }
 
-    /// 记下「刚读过 / 刚写过」这个文件的 mtime。
+    /// 记下「刚读过 / 刚写过」这个文件的版本戳。
     pub fn note_disk_state(&mut self, root: Option<&std::path::Path>) {
         let (Some(root), Some(path)) = (root, self.path.as_deref()) else {
-            self.saved_mtime = None;
+            self.saved_stamp = None;
             self.externally_modified = false;
             return;
         };
-        self.saved_mtime = project::file_mtime(root, path);
+        self.saved_stamp = project::file_stamp(root, path);
         self.externally_modified = false;
     }
 
@@ -1597,14 +1597,14 @@ impl Workspace {
         if document.externally_modified {
             return Some(path.to_string());
         }
-        let saved = document.saved_mtime?;
-        match project::file_mtime(root, path) {
+        let saved = document.saved_stamp?;
+        match project::file_stamp(root, path) {
             Some(current) if current == saved => None,
             _ => Some(path.to_string()),
         }
     }
 
-    /// 重新比对每个已落盘文档的 mtime；返回本次新发现「被外部改过」的文档数。
+    /// 重新比对每个已落盘文档的版本戳；返回本次新发现「被外部改过」的文档数。
     ///
     /// 窗口回到前台时调用一次即可，不需要文件监听（#452 的建议 3）。
     pub fn check_external_changes(&mut self) -> usize {
@@ -1619,7 +1619,7 @@ impl Workspace {
             let Some(path) = document.path.clone() else {
                 continue;
             };
-            let differs = match (document.saved_mtime, project::file_mtime(&root, &path)) {
+            let differs = match (document.saved_stamp, project::file_stamp(&root, &path)) {
                 (None, None) => false,
                 (Some(saved), Some(current)) => saved != current,
                 _ => true,

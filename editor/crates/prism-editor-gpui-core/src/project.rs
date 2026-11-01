@@ -203,6 +203,35 @@ pub fn file_mtime(root: &Path, relative: &str) -> Option<std::time::SystemTime> 
     fs::metadata(root.join(relative)).ok()?.modified().ok()
 }
 
+/// 一个文件的「版本戳」：mtime + 长度（#495 ⑤）。
+///
+/// 只看 mtime 在粗粒度文件系统（某些 Android / FUSE / 网络盘）上会漏掉同一秒内的
+/// 覆盖写；加上长度能覆盖绝大多数真实编辑。内容变了但长度和 mtime 都没变属于极端
+/// 情况，等下一次保存即可。
+///
+/// 文档外部改动检测（`Workspace::check_external_changes`）与松散资产轮询
+/// （`loose_assets`）共用这一套记录，不再各写一份。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileStamp {
+    /// 文件系统不提供 mtime 时为 `None`，此时只靠长度比较。
+    pub modified: Option<std::time::SystemTime>,
+    pub len: u64,
+}
+
+/// 相对项目根的文件版本戳；文件不存在返回 `None`。
+pub fn file_stamp(root: &Path, relative: &str) -> Option<FileStamp> {
+    file_stamp_at(&root.join(relative))
+}
+
+/// 绝对路径的文件版本戳；文件不存在 / 无法 stat 返回 `None`。
+pub fn file_stamp_at(path: &Path) -> Option<FileStamp> {
+    let meta = fs::metadata(path).ok()?;
+    Some(FileStamp {
+        modified: meta.modified().ok(),
+        len: meta.len(),
+    })
+}
+
 /// 资产是否是「按 JSON 手改」的类型（材质 `.mat.json` / `.asset.json`）。
 ///
 /// 这两类没有专门的文档模型，编辑器把文件当普通 JSON 值编辑（#488）。
@@ -498,6 +527,30 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static SEQ: AtomicU64 = AtomicU64::new(1);
+
+    #[test]
+    fn file_stamp_tracks_length_even_when_mtime_is_coarse() {
+        // #495 ⑤：版本戳包含长度，同一秒内的覆盖写也能检测到。
+        let dir = std::env::temp_dir().join(format!("prism-stamp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.txt");
+        std::fs::write(&path, b"one").unwrap();
+
+        let first = file_stamp_at(&path).expect("stamp");
+        assert_eq!(first.len, 3);
+        std::fs::write(&path, b"longer").unwrap();
+        let second = file_stamp_at(&path).expect("stamp");
+        assert_eq!(second.len, 6);
+        assert_ne!(first, second, "长度变化必须被检测到");
+
+        assert!(file_stamp_at(&dir.join("missing.txt")).is_none());
+        assert_eq!(
+            file_stamp(&dir, "a.txt").map(|stamp| stamp.len),
+            Some(6),
+            "相对路径版本与绝对路径一致"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     struct TempProject {
         root: PathBuf,

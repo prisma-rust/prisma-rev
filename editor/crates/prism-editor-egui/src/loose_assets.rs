@@ -3,7 +3,7 @@
 //! 运行时只从 `.pak` 读资产，所以改一张贴图 / 换一个 HDR / 新导入的网格，必须重新
 //! cook 打包才会进内存。编辑器在这里做最小闭环：
 //!
-//! 1. 轮询 `assets/` 下**作者资产**的 mtime（排除 `.pak` / `.rscn` / `.spv` 等生成物，
+//! 1. 轮询 `assets/` 下**作者资产**的版本戳（mtime + 长度，排除 `.pak` / `.rscn` / `.spv` 等生成物，
 //!    以及 `.scene.json` / `.prefab.json` —— 它们由文档自动保存写盘，重打包没有意义）；
 //! 2. 变化后静默 `DEBOUNCE`，避免保存大文件时连续触发；
 //! 3. 触发一次现有的 `BuildKind::ScenePack`，打完包后 `EngineHost::poll_asset_changes`
@@ -13,18 +13,9 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
-/// 一个文件的「版本」：mtime + 长度。
-///
-/// 只看 mtime 在粗粒度文件系统（某些 Android/FUSE / 网络盘）上会漏掉同一秒内的
-/// 覆盖写；加上长度能覆盖绝大多数真实编辑。内容变了但长度和 mtime 都没变属于
-/// 极端情况，等下一次保存即可。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct AssetStamp {
-    modified: SystemTime,
-    len: u64,
-}
+use prism_editor_core::project::{file_stamp_at, FileStamp};
 
 /// 变化后等待这么久再打包（覆盖一次多文件保存 / 大文件分块写入）。
 pub const DEBOUNCE: Duration = Duration::from_millis(800);
@@ -65,14 +56,14 @@ fn skip_dir(name: &str) -> bool {
 ///
 /// 路径是**相对项目根**的（与 `.pak` / manifest 里的写法一致），这样换机器 / 换
 /// 绝对路径不会让快照整体失效。
-fn scan(root: &Path) -> BTreeMap<PathBuf, AssetStamp> {
+fn scan(root: &Path) -> BTreeMap<PathBuf, FileStamp> {
     let mut out = BTreeMap::new();
     let assets = root.join("assets");
     collect(&assets, root, &mut out);
     out
 }
 
-fn collect(dir: &Path, root: &Path, out: &mut BTreeMap<PathBuf, AssetStamp>) {
+fn collect(dir: &Path, root: &Path, out: &mut BTreeMap<PathBuf, FileStamp>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -91,27 +82,18 @@ fn collect(dir: &Path, root: &Path, out: &mut BTreeMap<PathBuf, AssetStamp>) {
         if !file_type.is_file() || !is_watched(&path) {
             continue;
         }
-        let Ok(meta) = entry.metadata() else {
-            continue;
-        };
-        let Ok(mtime) = meta.modified() else {
+        let Some(stamp) = file_stamp_at(&path) else {
             continue;
         };
         let relative = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
-        out.insert(
-            relative,
-            AssetStamp {
-                modified: mtime,
-                len: meta.len(),
-            },
-        );
+        out.insert(relative, stamp);
     }
 }
 
 /// 松散资产轮询器：快照 + debounce 状态。
 #[derive(Debug, Default)]
 pub struct LooseAssetWatcher {
-    snapshot: BTreeMap<PathBuf, AssetStamp>,
+    snapshot: BTreeMap<PathBuf, FileStamp>,
     /// 最近一次检测到变化的时间；安静满 [`DEBOUNCE`] 才触发。
     pending: Option<Instant>,
 }

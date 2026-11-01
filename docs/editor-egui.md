@@ -75,6 +75,9 @@ instance / device 并返回 `AshRenderState`，因此可以做到引擎的模型
 再触发一次现有的 `Build Scene Pack`；打完包由 `.pak` 轮询链路重开包并
 `invalidate_assets`，**Play 中也能直接看到新资源**，不用退出再进。构建期间不排队新任务，
 构建结束会重新对齐快照。
+检测用的是 `prism_editor_core::project::FileStamp`（**mtime + 长度**），与文档外部改动
+检测（`Workspace::check_external_changes`，焦点变化触发）共用同一套版本戳，不再各写一份；
+粗粒度文件系统上同一秒内的覆盖写也能被长度变化捕获。
 
 **Play 态的视觉提示（#500）**：播放中整窗四周有一圈绿色描边、暂停时变琥珀色；
 状态栏的 `PLAYING` / `PAUSED` 带同色底纹。检查器顶部在这期间显示横幅
