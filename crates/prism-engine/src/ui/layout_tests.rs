@@ -158,6 +158,36 @@ fn deeper_child_waits_for_the_whole_ancestor_chain() {
 }
 
 #[test]
+fn point_anchor_applies_opposite_margins() {
+    let mut world = world_with_screen();
+    let entity = world.spawn();
+    world.insert(entity, Node {});
+    let mut style = Style::fixed(100.0, 40.0);
+    style.anchors = Anchors {
+        min_x: 1.0,
+        min_y: 1.0,
+        max_x: 1.0,
+        max_y: 1.0,
+    };
+    style.pivot = Pivot { x: 1.0, y: 1.0 };
+    style.margin = Margin {
+        left: 0.0,
+        right: 24.0,
+        top: 0.0,
+        bottom: 20.0,
+    };
+    world.insert(entity, style);
+
+    ui_layout_system(&mut world);
+
+    // 右下角 (800,600) - margin(24,20) - 尺寸(100,40)。
+    assert_eq!(
+        world.get::<ComputedLayout>(entity).unwrap().rect,
+        [676.0, 540.0, 100.0, 40.0]
+    );
+}
+
+#[test]
 fn stretched_child_fills_its_parent() {
     let mut world = world_with_screen();
 

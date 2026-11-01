@@ -219,16 +219,18 @@ fn compute_rect(style: &Style, parent: [f32; 4]) -> [f32; 4] {
     let w = w.max(0.0);
     let h = h.max(0.0);
 
-    // 拉伸轴：锚点+边距决定原点；点锚点轴：pivot 参与定位
+    // 拉伸轴：锚点+边距决定原点；点锚点轴：pivot 参与定位。
+    // 点锚点必须同时应用对面的 margin（right/bottom），否则贴右下角的元素
+    // 会紧贴屏幕边缘（#593）。
     let left = if stretched_x {
         anchor_left + margin.left
     } else {
-        anchor_left + margin.left - style.pivot.x * w
+        anchor_left + margin.left - margin.right - style.pivot.x * w
     };
     let top = if stretched_y {
         anchor_top + margin.top
     } else {
-        anchor_top + margin.top - style.pivot.y * h
+        anchor_top + margin.top - margin.bottom - style.pivot.y * h
     };
 
     [left, top, w, h]
