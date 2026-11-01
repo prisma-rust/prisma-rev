@@ -84,3 +84,36 @@ fn display_and_debug_dont_panic() {
     let _ = format!("{id}");
     let _ = format!("{id:?}");
 }
+
+#[test]
+fn path_ids_are_stable_and_order_independent() {
+    // #530：打包器按路径派生 ID，材质里烘的贴图 ID 才不会因为多一个文件而错位。
+    let a = AssetId::from_path("textures/marble.png");
+    assert_eq!(a, AssetId::from_path("textures/marble.png"));
+    assert_ne!(a, AssetId::from_path("textures/brick.png"));
+    // Windows 风格的输入归一化成同一 ID。
+    assert_eq!(a, AssetId::from_path("textures\\marble.png"));
+    assert_eq!(a.generation(), 1, "构建期 ID 用 generation 1");
+    assert_ne!(a.serial(), 0, "serial 0 保留给「未分配」");
+}
+
+#[test]
+fn path_ids_do_not_collide_for_the_common_extensions() {
+    // 同一张图的不同 cook 形态是不同路径，必须拿到不同 ID。
+    let paths = [
+        "textures/a.png",
+        "textures/a.rtex",
+        "models/a.gltf",
+        "materials/a.mat.json",
+        "scenes/a.rscn",
+        "fonts/a.ttf",
+        "sprites/a.png",
+    ];
+    let mut ids: Vec<u64> = paths
+        .iter()
+        .map(|p| AssetId::from_path(p).into_raw())
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), paths.len(), "不同路径不应撞 ID");
+}

@@ -17,6 +17,7 @@
 //! 解到 `<filesDir>/assets` 并 `set_current_dir`，第一个候选（cwd）即命中，
 //! 行为与之前完全一致。
 
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -112,6 +113,35 @@ fn find_asset_root(roots: &[PathBuf]) -> Option<PathBuf> {
         .iter()
         .find(|dir| dir.join(ASSET_DIR_NAME).is_dir())
         .cloned()
+}
+
+/// `dir` 下所有 `.pak` 文件，按文件名排序（#530 多包挂载）。
+///
+/// 打包器按内容分组写出多个包（场景包、资源包……），运行时不能再写死
+/// `scenes.pak`。排序只为让启动日志与解析顺序稳定。
+pub fn pak_files_in(dir: &Path) -> Vec<PathBuf> {
+    let mut paks: Vec<PathBuf> = fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("pak"))
+        })
+        .collect();
+    paks.sort();
+    paks
+}
+
+/// `assets/` 下的所有 `.pak`（[`pak_files_in`] 的定位版本）。
+pub fn pak_files() -> Vec<PathBuf> {
+    asset_dir()
+        .map(|dir| pak_files_in(&dir))
+        .unwrap_or_default()
 }
 
 /// 松散资产（`.pak` 之外）是否存在。编辑器预览与用户项目的关卡 JSON、

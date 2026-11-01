@@ -111,18 +111,28 @@ pub fn build_scene_package(
         );
     }
 
+    // 场景引用的资源必须全部进包（#530）。任何一处解析不到的引用都会收集到
+    // `missing`，构建结束时统一报错——否则打包产物看起来正常，运行起来却是
+    // 空场景，只在日志里留一行 warn。
+    let mut missing: Vec<String> = Vec::new();
+
     // 场景声明的环境贴图必须在包内，否则运行时 IBL 会退回空环境（黑屏）。
-    stage_environment_assets(asset_root, staging, &manifest)?;
+    stage_environment_assets(asset_root, staging, &manifest, &mut missing)?;
 
     // 2D 精灵贴图同理：`SpriteRenderer.sprite_path` 指向的 PNG 必须按
     // 运行时期望的 RTEX 格式烘进包内，否则精灵永远解析不到贴图。
-    stage_sprite_assets(asset_root, staging, &manifest)?;
+    stage_sprite_assets(asset_root, staging, &manifest, &mut missing)?;
+    // 3D 网格与材质（#530）：之前只打场景，导入的模型在打包后直接消失。
+    stage_mesh_assets(asset_root, staging, &manifest, &mut missing)?;
+    stage_material_assets(asset_root, staging, &manifest, &mut missing)?;
     // UI 组件的贴图 / 字体（#591 / #583）：`Style.image`、`Tilemap.tileset_path`、
     // `Text.font` 同样得进包，否则打包后图标、瓦片和工程字体全部消失。
-    stage_ui_assets(asset_root, staging, &manifest)?;
+    stage_ui_assets(asset_root, staging, &manifest, &mut missing)?;
     // 运行时生成的精灵（背景层、鱼、特效）不在场景 JSON 里，所以整个
     // `sprites/` 目录都要烘进包内——和引擎的「Assets 目录即内容」一致。
     stage_sprite_folder(asset_root, staging)?;
+
+    report_missing_references(missing)?;
 
     // Runtime always looks up the manifest as `scenes.json` inside the package.
     // Rewrite authoring `.scene.json` paths to the cooked `.rscn` names.
@@ -201,6 +211,7 @@ fn stage_environment_assets(
     asset_root: &Path,
     staging: &Path,
     manifest: &prism_engine::scene::SceneManifest,
+    missing: &mut Vec<String>,
 ) -> Result<usize> {
     let mut staged = std::collections::BTreeSet::new();
 
@@ -222,9 +233,9 @@ fn stage_environment_assets(
 
         for value in env_values {
             let Some(pak_path) = normalize_scene_relative(&doc_rel, &value) else {
-                log::warn!(
-                    "environment asset '{value}' in {doc_rel} cannot be packaged (absolute or escapes assets/)"
-                );
+                missing.push(format!(
+                    "{doc_rel}: environment asset '{value}' is absolute or escapes assets/"
+                ));
                 continue;
             };
             if !staged.insert(pak_path.clone()) {
@@ -233,7 +244,9 @@ fn stage_environment_assets(
 
             let source = asset_root.join(&pak_path);
             if !source.is_file() {
-                log::warn!("environment asset {} not found; skipping", source.display());
+                missing.push(format!(
+                    "{doc_rel}: environment asset '{pak_path}' not found"
+                ));
                 continue;
             }
             let bytes = fs::read(&source)
@@ -254,6 +267,7 @@ fn stage_sprite_assets(
     asset_root: &Path,
     staging: &Path,
     manifest: &prism_engine::scene::SceneManifest,
+    missing: &mut Vec<String>,
 ) -> Result<usize> {
     let mut staged = std::collections::BTreeSet::new();
 
@@ -293,9 +307,9 @@ fn stage_sprite_assets(
                 continue;
             }
             let Some(pak_path) = resolve_asset_path(asset_root, &doc_rel, value) else {
-                log::warn!(
-                    "sprite asset '{value}' in {doc_rel} cannot be packaged (absolute or escapes assets/)"
-                );
+                missing.push(format!(
+                    "{doc_rel}: sprite_path '{value}' is absolute or escapes assets/"
+                ));
                 continue;
             };
             if !staged.insert(pak_path.clone()) {
@@ -304,7 +318,7 @@ fn stage_sprite_assets(
 
             let source = asset_root.join(&pak_path);
             if !source.is_file() {
-                log::warn!("sprite asset {} not found; skipping", source.display());
+                missing.push(format!("{doc_rel}: sprite '{pak_path}' not found"));
                 continue;
             }
             let cooked = cook_texture(&source)?;
@@ -323,6 +337,7 @@ fn stage_ui_assets(
     asset_root: &Path,
     staging: &Path,
     manifest: &prism_engine::scene::SceneManifest,
+    missing: &mut Vec<String>,
 ) -> Result<usize> {
     let mut textures: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut fonts: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -370,12 +385,12 @@ fn stage_ui_assets(
                     }
                     Some(pak_path) => {
                         if !asset_root.join(&pak_path).is_file() {
-                            log::warn!("UI texture {pak_path} not found; skipping");
+                            missing.push(format!("{doc_rel}: UI texture '{pak_path}' not found"));
                         }
                     }
-                    None => log::warn!(
-                        "UI texture '{value}' in {doc_rel} cannot be packaged (absolute or escapes assets/)"
-                    ),
+                    None => missing.push(format!(
+                        "{doc_rel}: UI texture '{value}' is absolute or escapes assets/"
+                    )),
                 }
             }
             if let Some(value) = string_field("prism_engine::ui::Text", "font") {
@@ -391,18 +406,321 @@ fn stage_ui_assets(
                     }
                     Some(pak_path) => {
                         if !asset_root.join(&pak_path).is_file() {
-                            log::warn!("UI font {pak_path} not found; skipping");
+                            missing.push(format!("{doc_rel}: UI font '{pak_path}' not found"));
                         }
                     }
-                    None => log::warn!(
-                        "UI font '{value}' in {doc_rel} cannot be packaged (absolute or escapes assets/)"
-                    ),
+                    None => missing.push(format!(
+                        "{doc_rel}: UI font '{value}' is absolute or escapes assets/"
+                    )),
                 }
             }
         }
     }
 
     Ok(textures.len() + fonts.len())
+}
+
+/// 把场景里 `MeshRenderer.mesh_path` 引用的模型烘成 RMES 并放进包内（#530）。
+///
+/// 内置基础网格（`prism_render::primitives`）不需要进包——运行时按名字直接
+/// 生成。其余路径（`.gltf` / `.glb`）走与构建期相同的 importer/cooker，写进
+/// staging 时**保持作者写的相对路径**，因为运行时就是按该路径在 pak 清单里查。
+fn stage_mesh_assets(
+    asset_root: &Path,
+    staging: &Path,
+    manifest: &prism_engine::scene::SceneManifest,
+    missing: &mut Vec<String>,
+) -> Result<usize> {
+    let mut staged = std::collections::BTreeSet::new();
+
+    for (doc_rel, components) in scene_component_maps(asset_root, manifest) {
+        for entity in components {
+            let Some(value) =
+                component_string(&entity, "prism_engine::scene::MeshRenderer", "mesh_path")
+            else {
+                continue;
+            };
+            if prism_render::primitives::is_builtin(value) {
+                continue;
+            }
+            let Some(pak_path) = resolve_asset_path(asset_root, &doc_rel, value) else {
+                missing.push(format!(
+                    "{doc_rel}: mesh_path '{value}' is absolute or escapes assets/"
+                ));
+                continue;
+            };
+            if !staged.insert(pak_path.clone()) {
+                continue;
+            }
+            let source = asset_root.join(&pak_path);
+            if !source.is_file() {
+                missing.push(format!("{doc_rel}: mesh '{pak_path}' not found"));
+                continue;
+            }
+            let cooked = cook_mesh(&source)?;
+            write_staged(staging, Path::new(&pak_path), &cooked)?;
+            log::info!("packaged mesh: {pak_path}");
+        }
+    }
+
+    Ok(staged.len())
+}
+
+/// 把 `MeshRenderer.material_path` 的材质及其 5 张贴图放进包内（#530）。
+///
+/// 材质（`.mat.json` / `.mat`）里存的是贴图的 **`AssetId`**，所以贴图 ID 必须
+/// 与打包器分配的一致：[`AssetId::from_path`] 按包内相对路径派生，材质 cook
+/// 时把同样的 ID 写进 `RMAT`。这也是 [`pack_directory`] 改成路径派生 ID 的
+/// 原因——顺序分配会让烘进去的 ID 在下一个文件出现时全部错位。
+fn stage_material_assets(
+    asset_root: &Path,
+    staging: &Path,
+    manifest: &prism_engine::scene::SceneManifest,
+    missing: &mut Vec<String>,
+) -> Result<usize> {
+    use prism_asset::core::id::AssetId;
+    use prism_asset::core::AssetType;
+    use prism_cooker::cooker::profile::CookSettings;
+    use prism_cooker::cooker::MaterialCooker;
+    use prism_cooker::db::AssetDatabase;
+    use prism_cooker::importer::MaterialImporter;
+    use prism_cooker::importer::{ImportContext, Importer as _};
+    use prism_cooker::Cooker as _;
+
+    let mut staged = std::collections::BTreeSet::new();
+
+    for (doc_rel, components) in scene_component_maps(asset_root, manifest) {
+        for entity in components {
+            let Some(value) = component_string(
+                &entity,
+                "prism_engine::scene::MeshRenderer",
+                "material_path",
+            ) else {
+                continue;
+            };
+            let Some(pak_path) = resolve_asset_path(asset_root, &doc_rel, value) else {
+                missing.push(format!(
+                    "{doc_rel}: material_path '{value}' is absolute or escapes assets/"
+                ));
+                continue;
+            };
+            if !staged.insert(pak_path.clone()) {
+                continue;
+            }
+            let source = asset_root.join(&pak_path);
+            if !source.is_file() {
+                missing.push(format!("{doc_rel}: material '{pak_path}' not found"));
+                continue;
+            }
+
+            // 先把贴图路径与 ID 登记进数据库，importer 才能按槽位顺序解析依赖。
+            let text =
+                fs::read_to_string(&source).with_context(|| format!("read material {pak_path}"))?;
+            let mut db = AssetDatabase::new();
+            let mut texture_targets: Vec<String> = Vec::new();
+            for raw in material_texture_paths(&text) {
+                let Some(texture_pak) = resolve_asset_path(asset_root, &doc_rel, &raw) else {
+                    missing.push(format!(
+                        "{doc_rel}: material texture '{raw}' is absolute or escapes assets/"
+                    ));
+                    continue;
+                };
+                let texture_source = asset_root.join(&texture_pak);
+                if !texture_source.is_file() {
+                    missing.push(format!(
+                        "{doc_rel}: material texture '{texture_pak}' not found"
+                    ));
+                    continue;
+                }
+                // 数据库键必须与 material importer 查询的字符串完全一致。
+                let mut record = prism_cooker::AssetRecord::new(
+                    AssetId::from_path(&texture_pak),
+                    raw.replace('\\', "/"),
+                    AssetType::Texture,
+                    "texture-importer",
+                );
+                record.source_hash = texture_hash(&texture_source)?;
+                let _ = db.insert(record);
+                texture_targets.push(texture_pak);
+            }
+            let db = std::sync::Arc::new(db);
+
+            let imported = MaterialImporter
+                .import(&ImportContext {
+                    source_path: source.clone(),
+                    source_hash: texture_hash(&source)?,
+                    settings: serde_json::json!({}),
+                    db: db.clone(),
+                })
+                .with_context(|| format!("import material {pak_path}"))?;
+
+            let mut record = prism_cooker::AssetRecord::new(
+                AssetId::from_path(&pak_path),
+                pak_path.clone(),
+                AssetType::Material,
+                "material-importer",
+            );
+            record.dependencies = imported.dependencies.clone();
+
+            let cooked = MaterialCooker
+                .cook(&prism_cooker::CookContext {
+                    record: &record,
+                    imported_data: &imported.output_data,
+                    settings: &CookSettings::default(),
+                })
+                .with_context(|| format!("cook material {pak_path}"))?;
+            write_staged(staging, Path::new(&pak_path), &cooked.cooked_data)?;
+            log::info!("packaged material: {pak_path}");
+
+            for texture_pak in texture_targets {
+                let cooked = cook_texture(&asset_root.join(&texture_pak))?;
+                write_staged(staging, Path::new(&texture_pak), &cooked)?;
+                log::info!("packaged material texture: {texture_pak}");
+            }
+        }
+    }
+
+    Ok(staged.len())
+}
+
+/// 遍历清单里所有场景文档的组件表（`*.scene.json` 才有作者数据）。
+fn scene_component_maps(
+    asset_root: &Path,
+    manifest: &prism_engine::scene::SceneManifest,
+) -> Vec<(String, Vec<serde_json::Map<String, serde_json::Value>>)> {
+    let mut out = Vec::new();
+    for entry in &manifest.scenes {
+        if !entry.enabled {
+            continue;
+        }
+        let Some(doc_rel) = scene_doc_rel(&entry.path) else {
+            continue;
+        };
+        let Ok(text) = fs::read_to_string(asset_root.join(&doc_rel)) else {
+            continue;
+        };
+        let Ok(doc) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        let components = doc
+            .get("entities")
+            .and_then(|value| value.as_array())
+            .map(|entities| {
+                entities
+                    .iter()
+                    .filter_map(|entity| {
+                        entity
+                            .get("components")
+                            .and_then(|value| value.as_object())
+                            .cloned()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.push((doc_rel, components));
+    }
+    out
+}
+
+fn component_string<'a>(
+    components: &'a serde_json::Map<String, serde_json::Value>,
+    component: &str,
+    field: &str,
+) -> Option<&'a str> {
+    components
+        .get(component)
+        .and_then(|payload| payload.get(field))
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+}
+
+/// 材质 JSON 里 5 个贴图槽（与 `MATERIAL_TEX_SLOTS` 顺序一致）。
+fn material_texture_paths(text: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return Vec::new();
+    };
+    [
+        "albedo_tex",
+        "normal_tex",
+        "metallic_roughness_tex",
+        "emissive_tex",
+        "occlusion_tex",
+    ]
+    .iter()
+    .filter_map(|key| value.get(*key).and_then(|slot| slot.as_str()))
+    .filter(|path| !path.is_empty())
+    .map(str::to_string)
+    .collect()
+}
+
+fn texture_hash(path: &Path) -> Result<u64> {
+    use std::hash::{Hash, Hasher};
+    let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    Ok(hasher.finish())
+}
+
+/// 用 `GltfImporter` + `MeshCooker` 把 glTF/GLB 烘成 RMES 字节。
+fn cook_mesh(source: &Path) -> Result<Vec<u8>> {
+    use prism_asset::core::{AssetId, AssetType};
+    use prism_cooker::cooker::profile::CookSettings;
+    use prism_cooker::cooker::MeshCooker;
+    use prism_cooker::importer::{GltfImporter, ImportContext, Importer as _};
+    use prism_cooker::Cooker as _;
+
+    let imported = GltfImporter
+        .import(&ImportContext {
+            source_path: source.to_path_buf(),
+            source_hash: texture_hash(source)?,
+            settings: serde_json::json!({}),
+            db: std::sync::Arc::new(prism_cooker::AssetDatabase::new()),
+        })
+        .with_context(|| format!("import mesh {}", source.display()))?;
+
+    let record = prism_cooker::AssetRecord::new(
+        AssetId::generate(),
+        source.to_string_lossy().into_owned(),
+        AssetType::Mesh,
+        "mesh-importer",
+    );
+    let cooked = MeshCooker
+        .cook(&prism_cooker::CookContext {
+            record: &record,
+            imported_data: &imported.output_data,
+            settings: &CookSettings::default(),
+        })
+        .with_context(|| format!("cook mesh {}", source.display()))?;
+    Ok(cooked.cooked_data)
+}
+
+/// 引用了不存在 / 无法进包的资源时让构建失败（#530）。
+///
+/// 打包产物少一张贴图或一个模型时，运行期只会表现为「物体不出现」，没有任何
+/// 报错——必须在构建期拦住。
+fn report_missing_references(mut missing: Vec<String>) -> Result<()> {
+    if missing.is_empty() {
+        return Ok(());
+    }
+    missing.sort();
+    missing.dedup();
+    let shown: Vec<String> = missing
+        .iter()
+        .take(20)
+        .map(|entry| format!("  - {entry}"))
+        .collect();
+    let more = missing.len().saturating_sub(shown.len());
+    let suffix = if more > 0 {
+        format!("\n  … and {more} more")
+    } else {
+        String::new()
+    };
+    bail!(
+        "{} asset reference(s) cannot be packaged; packaged builds would silently \
+         miss them (fix the paths or remove the entities):\n{}{suffix}",
+        missing.len(),
+        shown.join("\n")
+    )
 }
 
 /// 用 cooker 的 `TextureImporter` + `TextureCooker` 把源图烘成 RTEX 字节。
@@ -739,6 +1057,161 @@ mod tests {
         let texture_id = rm.id_by_path("textures/icon.png").expect("texture path");
         let cooked = rm.load_with_deps_raw(texture_id).unwrap();
         assert_ne!(cooked, TINY_PNG, "贴图必须过 cooker");
+    }
+
+    /// 一个只有一个三角形的 glTF（buffer 内嵌为 data URI）：够 importer 解析。
+    const TINY_GLTF: &str = r#"{
+        "asset": {"version": "2.0"},
+        "scene": 0,
+        "scenes": [{"nodes": [0]}],
+        "nodes": [{"mesh": 0}],
+        "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "indices": 1}]}],
+        "accessors": [
+            {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+             "min": [0, 0, 0], "max": [1, 1, 0]},
+            {"bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR"}
+        ],
+        "bufferViews": [
+            {"buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962},
+            {"buffer": 0, "byteOffset": 36, "byteLength": 6, "target": 34963}
+        ],
+        "buffers": [{
+            "byteLength": 42,
+            "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA"
+        }]
+    }"#;
+
+    /// #530：场景引用的模型、材质和材质贴图都要进包，且材质里烘的贴图 ID
+    /// 必须等于打包器给同一路径分配的 ID。
+    #[test]
+    fn meshes_and_materials_are_packaged_with_matching_texture_ids() {
+        let temp = tempfile::tempdir().unwrap();
+        let assets = temp.path().join("assets");
+        fs::create_dir_all(assets.join("scenes")).unwrap();
+        fs::create_dir_all(assets.join("models")).unwrap();
+        fs::create_dir_all(assets.join("materials")).unwrap();
+        fs::create_dir_all(assets.join("textures")).unwrap();
+        fs::write(assets.join("models/tri.gltf"), TINY_GLTF).unwrap();
+        fs::write(assets.join("textures/marble.png"), TINY_PNG).unwrap();
+        fs::write(
+            assets.join("materials/marble.mat.json"),
+            br#"{
+                "base_color": [0.9, 0.85, 0.8, 1.0],
+                "metallic": 0.0,
+                "roughness": 0.4,
+                "albedo_tex": "textures/marble.png"
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            assets.join("scenes/room.scene.json"),
+            br#"{
+                "version": 1,
+                "entities": [{
+                    "name": "Tri",
+                    "parent": null,
+                    "transform": { "position": [0, 0, 0] },
+                    "components": {
+                        "prism_engine::scene::MeshRenderer": {
+                            "mesh_path": "models/tri.gltf",
+                            "material_path": "materials/marble.mat.json"
+                        }
+                    }
+                }]
+            }"#,
+        )
+        .unwrap();
+        write_manifest(
+            &assets,
+            r#"{"scenes":[{"name":"room","path":"scenes/room.scene.json","enabled":true}]}"#,
+        );
+
+        let output = temp.path().join("scenes.pak");
+        let staging = temp.path().join("cooked");
+        let summary =
+            build_scene_package(assets.join("scenes.json"), &staging, &output, 0).unwrap();
+
+        let meta_text = fs::read_to_string(summary.pack.manifest_path.clone()).unwrap();
+        let meta: serde_json::Value = serde_json::from_str(&meta_text).unwrap();
+        let paths: Vec<String> = meta["assets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|asset| asset["path"].as_str().unwrap().to_string())
+            .collect();
+        for expected in [
+            "models/tri.gltf",
+            "materials/marble.mat.json",
+            "textures/marble.png",
+            "scenes/room.rscn",
+        ] {
+            assert!(
+                paths.iter().any(|path| path == expected),
+                "{expected} missing from pak paths: {paths:?}"
+            );
+        }
+
+        let mut rm = ResourceManager::new();
+        rm.load_package_bytes(&fs::read(&output).unwrap()).unwrap();
+        rm.load_path_manifest_from_str(&meta_text).unwrap();
+
+        let mesh_id = rm.id_by_path("models/tri.gltf").expect("mesh path");
+        let mesh = rm.load_with_deps_raw(mesh_id).unwrap();
+        assert_eq!(&mesh[..4], b"RMES", "网格必须被 cook 成 RMES");
+
+        let material_id = rm
+            .id_by_path("materials/marble.mat.json")
+            .expect("material path");
+        let material = rm.load_with_deps_raw(material_id).unwrap();
+        let decoded = prism_cooker::cooker::decode_rmat(&material).expect("RMAT blob");
+        let expected_texture = prism_asset::core::id::AssetId::from_path("textures/marble.png");
+        assert_eq!(
+            decoded.texture_ids[0],
+            Some(expected_texture),
+            "材质里烘的 albedo 贴图 ID 必须与包内分配一致"
+        );
+    }
+
+    /// #530：引用不到的资源必须让构建失败，而不是打出一个缺资源的包。
+    #[test]
+    fn a_missing_mesh_reference_fails_the_build() {
+        let temp = tempfile::tempdir().unwrap();
+        let assets = temp.path().join("assets");
+        fs::create_dir_all(assets.join("scenes")).unwrap();
+        fs::write(
+            assets.join("scenes/room.scene.json"),
+            br#"{
+                "version": 1,
+                "entities": [{
+                    "name": "Tri",
+                    "parent": null,
+                    "transform": {},
+                    "components": {
+                        "prism_engine::scene::MeshRenderer": {
+                            "mesh_path": "models/gone.gltf"
+                        }
+                    }
+                }]
+            }"#,
+        )
+        .unwrap();
+        write_manifest(
+            &assets,
+            r#"{"scenes":[{"name":"room","path":"scenes/room.scene.json","enabled":true}]}"#,
+        );
+
+        let err = build_scene_package(
+            assets.join("scenes.json"),
+            temp.path().join("cooked"),
+            temp.path().join("scenes.pak"),
+            0,
+        )
+        .unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("cannot be packaged") && message.contains("models/gone.gltf"),
+            "unexpected error: {message}"
+        );
     }
 
     #[test]

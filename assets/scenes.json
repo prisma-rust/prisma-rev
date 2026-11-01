@@ -12,8 +12,8 @@
     },
     {
       "name": "sponza",
-      "path": "D:/Download/main_sponza/main_sponza/NewSponza_Main_glTF_003.gltf",
-      "enabled": true
+      "path": "scenes/sponza.scene.json",
+      "enabled": false
     }
   ]
 }
