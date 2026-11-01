@@ -65,4 +65,6 @@ pub use textinput::TextInput;
 pub use theme::{Rgba, ThemeColors, ThemePreset, ThemeState, ThemeToken, THEME_PRESETS};
 pub use undo::UndoStack;
 pub use viewport_math::GizmoSpace;
-pub use workspace::{DocKind, Document, OrbitCamera, PanelInfo, SelectMode, Workspace};
+pub use workspace::{
+    DocKind, Document, OrbitCamera, PanelInfo, PrefabOrigin, SelectMode, Workspace,
+};
