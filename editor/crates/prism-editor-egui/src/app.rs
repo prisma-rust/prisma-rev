@@ -4187,14 +4187,33 @@ impl EditorApp {
             "renderGraph" => {
                 // 报告是 Scene view 出帧时写盘的：启动那一份可能还不存在。
                 refresh_render_report(self);
+                let was_paused = self.state.render_graph_paused;
+                if was_paused && self.state.render_graph_frozen.is_none() {
+                    self.state.render_graph_frozen = self.render_report.clone();
+                }
+                let report = if was_paused {
+                    self.state.render_graph_frozen.as_deref()
+                } else {
+                    self.render_report.as_deref()
+                };
+                let mut paused = was_paused;
                 let mut settings = self.render_settings.clone();
                 if panels::render_graph(
                     ui,
-                    self.render_report.as_deref(),
+                    report,
                     &mut settings,
                     &mut self.state.viewport_scale,
+                    &mut paused,
                 ) {
                     self.apply_render_settings(settings);
+                }
+                if paused != was_paused {
+                    self.state.render_graph_paused = paused;
+                    self.state.render_graph_frozen = if paused {
+                        self.render_report.clone()
+                    } else {
+                        None
+                    };
                 }
             }
             "projectSettings" => {

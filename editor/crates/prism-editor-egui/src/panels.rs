@@ -363,6 +363,10 @@ pub struct UiState {
     pub pending_close: Option<CloseTarget>,
     /// 上次非正常退出留下的未保存快照数量（#619）；0 = 没有待恢复内容。
     pub pending_recovery: usize,
+    /// Render Graph / Frame Debugger 是否冻结在某一帧（#518）。
+    pub render_graph_paused: bool,
+    /// 暂停时冻结的报告 JSON；`None` = 还没收到第一份报告。
+    pub render_graph_frozen: Option<String>,
 }
 
 /// 关闭前确认的目标：某个文档标签，或整个编辑器窗口。
@@ -4986,6 +4990,7 @@ pub fn render_graph(
     report: Option<&str>,
     settings: &mut prism_engine::render_settings::RenderSettings,
     viewport_scale: &mut f32,
+    paused: &mut bool,
 ) -> bool {
     let mut changed = false;
     ui.heading("Render Settings");
@@ -5110,6 +5115,23 @@ pub fn render_graph(
 
     ui.separator();
     ui.heading("Render Graph");
+    ui.horizontal(|ui| {
+        let label = if *paused {
+            "Resume live capture"
+        } else {
+            "Pause capture"
+        };
+        if ui.button(label).clicked() {
+            *paused = !*paused;
+        }
+        if *paused {
+            ui.label(
+                RichText::new("showing the frame captured when paused")
+                    .weak()
+                    .size(10.0),
+            );
+        }
+    });
     ui.label(
         RichText::new(
             "Shadow → Scene → GTAO → PathTrace → Sprite → Sky → Post run on one queue; \
@@ -6563,7 +6585,7 @@ mod window_smoke_tests {
         run_frame(|ui, _workspace, _state| {
             let mut settings = prism_engine::render_settings::RenderSettings::default();
             let mut viewport_scale = 1.0;
-            let _ = render_graph(ui, None, &mut settings, &mut viewport_scale);
+            let _ = render_graph(ui, None, &mut settings, &mut viewport_scale, &mut false);
         });
         let report = r#"{"generatedAtMs":1,"frame":2,"passes":[],"resources":[],
             "stats":{"textures":3,"textureBytes":1024,"meshes":2,"meshBytes":2048,
@@ -6578,7 +6600,13 @@ mod window_smoke_tests {
         run_frame(|ui, _workspace, _state| {
             let mut settings = prism_engine::render_settings::RenderSettings::default();
             let mut viewport_scale = 1.0;
-            let _ = render_graph(ui, Some(report), &mut settings, &mut viewport_scale);
+            let _ = render_graph(
+                ui,
+                Some(report),
+                &mut settings,
+                &mut viewport_scale,
+                &mut true,
+            );
         });
         run_frame(|ui, _workspace, state| project_settings(ui, None, state));
         run_frame(|ui, workspace, state| {
