@@ -1909,6 +1909,20 @@ fn inspector_single(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState,
     });
     ui.separator();
 
+    // ---- UI 布局组（#527）----
+    // `Style.layout` 是嵌套 struct，通用字段控件会把它渲染成只读 JSON（#418），
+    // 所以这里给布局组一个专门的编辑块。写入仍走 `set_field` 的点路径，
+    // 撤销 / 标脏 / 重载语义与其它字段一致。
+    if let Some(style) = workspace.document().doc.entities[index]
+        .component(STYLE_COMPONENT)
+        .cloned()
+    {
+        if let Some(layout) = style.get("layout") {
+            layout_editor(ui, workspace, entity_id, layout);
+            ui.separator();
+        }
+    }
+
     // ---- 瓦片地图网格（#529）----
     if let Some(tilemap) = workspace.document().doc.entities[index]
         .component(TILEMAP_COMPONENT)
@@ -5145,6 +5159,65 @@ mod window_smoke_tests {
     }
 
     #[test]
+    fn the_layout_group_editor_renders_without_a_panic() {
+        // #527：`Style.layout` 是嵌套 struct，通用控件只读；这个编辑块必须
+        // 对 Row / Column / None 三种状态都能画出来。
+        for direction in ["None", "Row", "Column"] {
+            let layout = serde_json::json!({
+                "direction": direction,
+                "spacing": 8,
+                "padding": {"left": 4, "right": 4, "top": 2, "bottom": 2},
+                "child_align": "Stretch",
+                "fit_content": true
+            });
+            let ctx = egui::Context::default();
+            let mut workspace = Workspace::sample();
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    layout_editor(ui, &mut workspace, 1, &layout);
+                });
+            });
+        }
+    }
+
+    #[test]
+    fn the_layout_editor_writes_the_same_json_paths_the_system_reads() {
+        let mut workspace = Workspace::sample();
+        let index = workspace.document_mut().doc.add_named_child(None, "Panel");
+        let id = workspace.document().doc.id_of_index(index).unwrap();
+        workspace.document_mut().doc.entities[index]
+            .components
+            .insert(
+                STYLE_COMPONENT.to_string(),
+                serde_json::json!({
+                    "layout": {
+                        "direction": "None",
+                        "spacing": 0,
+                        "padding": {"left": 0, "right": 0, "top": 0, "bottom": 0},
+                        "child_align": "Start",
+                        "fit_content": false
+                    }
+                }),
+            );
+        workspace.set_field(
+            id,
+            STYLE_COMPONENT,
+            "layout.direction",
+            serde_json::json!("Column"),
+        );
+        workspace.set_field(
+            id,
+            STYLE_COMPONENT,
+            "layout.padding.left",
+            serde_json::json!(12),
+        );
+        let layout =
+            &workspace.document().doc.entities[index].components[STYLE_COMPONENT]["layout"];
+        assert_eq!(layout["direction"], serde_json::json!("Column"));
+        assert_eq!(layout["padding"]["left"].as_f64(), Some(12.0));
+    }
+
+    #[test]
     fn panel_row_metrics_follow_compact_preference() {
         assert_eq!(tree_row_height(true), 15.0);
         assert_eq!(tree_row_height(false), 18.0);
@@ -5447,4 +5520,131 @@ fn preview_value(value: &serde_json::Value) -> String {
     } else {
         format!("{}…", text.chars().take(79).collect::<String>())
     }
+}
+
+/// `Style` 组件的名字（布局组编辑块用）。
+const STYLE_COMPONENT: &str = "prism_engine::ui::Style";
+
+/// UI 布局组的编辑块（#527）。
+///
+/// 只写 `layout.*` 这几个字段：`direction` / `spacing` / `padding` /
+/// `child_align` / `fit_content`。`direction = None` 时其余控件隐藏，
+/// 元素继续按锚点定位（历史行为）。
+fn layout_editor(ui: &mut Ui, workspace: &mut Workspace, entity_id: u32, layout: &Value) {
+    let direction = layout
+        .get("direction")
+        .and_then(Value::as_str)
+        .unwrap_or("None")
+        .to_string();
+    ui.label(RichText::new("Layout Group").strong().size(12.0));
+    egui::Grid::new(format!("layout-group-{entity_id}"))
+        .num_columns(2)
+        .spacing([8.0, 4.0])
+        .show(ui, |ui| {
+            ui.label(RichText::new("Direction").size(11.0));
+            egui::ComboBox::from_id_salt(format!("layout-direction-{entity_id}"))
+                .selected_text(direction.as_str())
+                .show_ui(ui, |ui| {
+                    for option in ["None", "Row", "Column"] {
+                        if ui.selectable_label(direction == option, option).clicked() {
+                            workspace.set_field(
+                                entity_id,
+                                STYLE_COMPONENT,
+                                "layout.direction",
+                                json!(option),
+                            );
+                        }
+                    }
+                });
+            ui.end_row();
+
+            if direction != "None" {
+                ui.label(RichText::new("Spacing").size(11.0));
+                let mut spacing =
+                    layout.get("spacing").and_then(Value::as_f64).unwrap_or(0.0) as f32;
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut spacing)
+                            .speed(0.5)
+                            .range(0.0..=512.0),
+                    )
+                    .changed()
+                {
+                    workspace.set_field(
+                        entity_id,
+                        STYLE_COMPONENT,
+                        "layout.spacing",
+                        json!(spacing),
+                    );
+                }
+                ui.end_row();
+
+                ui.label(RichText::new("Padding").size(11.0));
+                ui.horizontal(|ui| {
+                    for (key, label) in
+                        [("left", "L"), ("right", "R"), ("top", "T"), ("bottom", "B")]
+                    {
+                        let mut value = layout
+                            .get("padding")
+                            .and_then(|padding| padding.get(key))
+                            .and_then(Value::as_f64)
+                            .unwrap_or(0.0) as f32;
+                        ui.label(RichText::new(label).size(10.0).weak());
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut value)
+                                    .speed(0.5)
+                                    .range(0.0..=1024.0),
+                            )
+                            .changed()
+                        {
+                            workspace.set_field(
+                                entity_id,
+                                STYLE_COMPONENT,
+                                &format!("layout.padding.{key}"),
+                                json!(value),
+                            );
+                        }
+                    }
+                });
+                ui.end_row();
+
+                ui.label(RichText::new("Child align").size(11.0));
+                let align = layout
+                    .get("child_align")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Start")
+                    .to_string();
+                egui::ComboBox::from_id_salt(format!("layout-align-{entity_id}"))
+                    .selected_text(align.as_str())
+                    .show_ui(ui, |ui| {
+                        for option in ["Start", "Center", "End", "Stretch"] {
+                            if ui.selectable_label(align == option, option).clicked() {
+                                workspace.set_field(
+                                    entity_id,
+                                    STYLE_COMPONENT,
+                                    "layout.child_align",
+                                    json!(option),
+                                );
+                            }
+                        }
+                    });
+                ui.end_row();
+
+                ui.label(RichText::new("Fit content").size(11.0));
+                let mut fit = layout
+                    .get("fit_content")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if ui.checkbox(&mut fit, "").changed() {
+                    workspace.set_field(
+                        entity_id,
+                        STYLE_COMPONENT,
+                        "layout.fit_content",
+                        json!(fit),
+                    );
+                }
+                ui.end_row();
+            }
+        });
 }

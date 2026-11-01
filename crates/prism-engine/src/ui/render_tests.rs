@@ -197,6 +197,26 @@ fn text_font_path_reaches_the_overlay_input() {
 }
 
 #[test]
+fn text_wrap_flag_reaches_the_overlay_input() {
+    // #527：换行是作者开关，默认单行。
+    let mut world = world_with_screen();
+    spawn_text(&mut world, [0.0, 0.0, 120.0, 40.0], "hello world");
+    ui_render_system(&mut world);
+    let overlay = convert_ui_draw_list_to_overlay(&world);
+    assert!(!overlay.texts[0].wrap, "默认不换行");
+
+    let entity = spawn_text(&mut world, [0.0, 0.0, 120.0, 40.0], "hello world");
+    world.get_mut::<Text>(entity).unwrap().wrap = true;
+    ui_render_system(&mut world);
+    let overlay = convert_ui_draw_list_to_overlay(&world);
+    let wrapped = overlay
+        .texts
+        .iter()
+        .find(|text| text.content == "hello world" && text.wrap);
+    assert!(wrapped.is_some(), "开启 wrap 后应带到 overlay 输入");
+}
+
+#[test]
 fn inactive_entities_are_skipped_by_drawing() {
     let mut world = world_with_screen();
     let visible_quad = spawn_quad(&mut world, [0.0, 0.0, 10.0, 10.0]);

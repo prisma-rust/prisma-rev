@@ -239,6 +239,18 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
   显示图片原色。图片走场景共享的 bindless 纹理表，不需要新管线；`Button` 的交互色
   同样会 tint 图标，所以同一个图标能跟着按钮变亮/变暗。贴图路径和精灵一样由
   `GpuAssetResolver` 解析进 `.pak`（`UiImageRef`），资产重命名会改写引用。
+- **UI 布局组与文本换行（#527）**：`Style.layout` 让容器按方向排列子元素
+  （`direction = None` 仍是原来的锚点定位）：
+  - `spacing` 相邻间距、`padding` 内容区内边距（左/右/上/下）；
+  - `child_align` 控制子元素在**交叉轴**上的对齐（`Start` / `Center` / `End` /
+    `Stretch`），主轴按排列顺序推进；
+  - `fit_content` 让容器在没写 `width` / `height` 的轴上收缩到内容尺寸；
+  - 布局组的子元素由游标定位，自己写的锚点/pivot 被忽略；非布局组的节点行为不变。
+  检查器里 `Style` 上方有专门的 **Layout Group** 编辑块（方向下拉、间距、四边
+  padding、交叉轴对齐、fit content），写入走 `set_field` 的点路径，所以撤销 /
+  标脏 / 重载语义与其它字段一致。
+  `Text.wrap = true` 时文本按矩形宽度**按空格断词**换行（单个词过长按字符断），
+  `\n` 始终换行并保留空行；超出行底边的行不再绘制。
 - **UI Canvas 缩放（#463）**：给 UI 根节点加 `prism_engine::ui::Canvas`
   （`reference_resolution` / `scale_mode` / `match_width_or_height`）后，整棵子树
   按「设计分辨率 → 实际屏幕」等比缩放：布局在虚拟分辨率里算，写回

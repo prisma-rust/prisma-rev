@@ -5,7 +5,7 @@
 
 use super::{ui_layout_system, ScreenSize};
 use crate::ui::components::*;
-use prism_ecs::World;
+use prism_ecs::{Entity, World};
 use prism_scene::HierarchyHelper;
 
 fn world_with_screen() -> World {
@@ -304,5 +304,244 @@ fn stretched_child_fills_its_parent() {
     assert_eq!(
         world.get::<ComputedLayout>(child).unwrap().rect,
         [200.0, 150.0, 400.0, 300.0]
+    );
+}
+
+/// 布局组用的 Style：固定尺寸 + 指定 layout。
+fn layout_style(
+    width: f32,
+    height: f32,
+    direction: LayoutDirection,
+    spacing: f32,
+    padding: Margin,
+    child_align: ChildAlign,
+    fit_content: bool,
+) -> Style {
+    let mut style = Style::fixed(width, height);
+    style.layout = Layout {
+        direction,
+        spacing,
+        padding,
+        child_align,
+        fit_content,
+    };
+    style
+}
+
+fn spawn_child(world: &mut World, parent: Entity, style: Style) -> Entity {
+    let entity = world.spawn();
+    world.insert(entity, Node {});
+    world.insert(entity, style);
+    HierarchyHelper::reparent(world, entity, Some(parent));
+    entity
+}
+
+fn rect_of(world: &World, entity: Entity) -> [f32; 4] {
+    world.get::<ComputedLayout>(entity).unwrap().rect
+}
+
+#[test]
+fn a_row_layout_group_stacks_children_with_spacing_and_padding() {
+    let mut world = world_with_screen();
+    let root = world.spawn();
+    world.insert(root, Node {});
+    world.insert(
+        root,
+        layout_style(
+            400.0,
+            200.0,
+            LayoutDirection::Row,
+            10.0,
+            Margin {
+                left: 5.0,
+                right: 5.0,
+                top: 7.0,
+                bottom: 7.0,
+            },
+            ChildAlign::Start,
+            false,
+        ),
+    );
+    let first = spawn_child(&mut world, root, Style::fixed(60.0, 20.0));
+    let second = spawn_child(&mut world, root, Style::fixed(40.0, 30.0));
+
+    ui_layout_system(&mut world);
+
+    // 居中 + 400x200 → 根 [200,200,...]；内容区从 +padding 开始。
+    assert_eq!(rect_of(&world, root), [200.0, 200.0, 400.0, 200.0]);
+    assert_eq!(rect_of(&world, first), [205.0, 207.0, 60.0, 20.0]);
+    assert_eq!(rect_of(&world, second), [275.0, 207.0, 40.0, 30.0]);
+}
+
+#[test]
+fn a_column_layout_group_places_children_top_to_bottom() {
+    let mut world = world_with_screen();
+    let root = world.spawn();
+    world.insert(root, Node {});
+    world.insert(
+        root,
+        layout_style(
+            200.0,
+            300.0,
+            LayoutDirection::Column,
+            12.0,
+            Margin::default(),
+            ChildAlign::Start,
+            false,
+        ),
+    );
+    let first = spawn_child(&mut world, root, Style::fixed(50.0, 40.0));
+    let second = spawn_child(&mut world, root, Style::fixed(70.0, 25.0));
+
+    ui_layout_system(&mut world);
+
+    // 200x300 居中 → [300,150,...]。
+    assert_eq!(rect_of(&world, root), [300.0, 150.0, 200.0, 300.0]);
+    assert_eq!(rect_of(&world, first), [300.0, 150.0, 50.0, 40.0]);
+    assert_eq!(rect_of(&world, second), [300.0, 202.0, 70.0, 25.0]);
+}
+
+#[test]
+fn child_align_places_children_on_the_cross_axis() {
+    let mut world = world_with_screen();
+    let root = world.spawn();
+    world.insert(root, Node {});
+    world.insert(
+        root,
+        layout_style(
+            200.0,
+            300.0,
+            LayoutDirection::Row,
+            0.0,
+            Margin::default(),
+            ChildAlign::Center,
+            false,
+        ),
+    );
+    let child = spawn_child(&mut world, root, Style::fixed(40.0, 20.0));
+    let stretched = spawn_child(&mut world, root, Style::fixed(40.0, 20.0));
+
+    ui_layout_system(&mut world);
+
+    let root_rect = rect_of(&world, root);
+    assert_eq!(rect_of(&world, child), [300.0, 290.0, 40.0, 20.0]);
+    // Stretch 需要另一组布局：先确认 Center 的交叉轴偏移是 (300-20)/2。
+    assert_eq!(root_rect, [300.0, 150.0, 200.0, 300.0]);
+    assert_eq!(rect_of(&world, stretched)[0], 340.0);
+}
+
+#[test]
+fn child_align_stretch_fills_the_cross_axis() {
+    let mut world = world_with_screen();
+    let root = world.spawn();
+    world.insert(root, Node {});
+    world.insert(
+        root,
+        layout_style(
+            200.0,
+            300.0,
+            LayoutDirection::Row,
+            0.0,
+            Margin::default(),
+            ChildAlign::Stretch,
+            false,
+        ),
+    );
+    let child = spawn_child(&mut world, root, Style::fixed(40.0, 20.0));
+
+    ui_layout_system(&mut world);
+
+    // 高度被拉满内容区（300），宽度仍取自己的 40。
+    assert_eq!(rect_of(&world, child), [300.0, 150.0, 40.0, 300.0]);
+}
+
+#[test]
+fn fit_content_shrinks_a_layout_group_to_its_children() {
+    let mut world = world_with_screen();
+    let root = world.spawn();
+    world.insert(root, Node {});
+    let mut style = layout_style(
+        0.0,
+        0.0,
+        LayoutDirection::Row,
+        10.0,
+        Margin {
+            left: 4.0,
+            right: 4.0,
+            top: 6.0,
+            bottom: 6.0,
+        },
+        ChildAlign::Start,
+        true,
+    );
+    // 不写死宽高：fit_content 才有东西可收缩。
+    style.width = None;
+    style.height = None;
+    style.anchors = Anchors::CENTER;
+    style.pivot = Pivot::CENTER;
+    world.insert(root, style);
+
+    let first = spawn_child(&mut world, root, Style::fixed(60.0, 20.0));
+    let second = spawn_child(&mut world, root, Style::fixed(40.0, 30.0));
+
+    ui_layout_system(&mut world);
+
+    // 内容宽 = 60 + 10 + 40 = 110，加左右 padding 8 → 118；
+    // 内容高 = max(20,30) = 30，加上下 padding 12 → 42。
+    let root_rect = rect_of(&world, root);
+    assert_eq!(root_rect[2..], [118.0, 42.0]);
+    // 居中锚点 + pivot 0.5 → 原点 = 屏幕中心 - 尺寸一半。
+    assert_eq!(root_rect[0..2], [400.0 - 59.0, 300.0 - 21.0]);
+    assert_eq!(rect_of(&world, first)[0], 400.0 - 59.0 + 4.0);
+    assert_eq!(rect_of(&world, second)[0], 400.0 - 59.0 + 4.0 + 60.0 + 10.0);
+}
+
+#[test]
+fn a_layout_group_overrides_child_anchors_but_not_its_own() {
+    let mut world = world_with_screen();
+    let root = world.spawn();
+    world.insert(root, Node {});
+    world.insert(
+        root,
+        layout_style(
+            200.0,
+            100.0,
+            LayoutDirection::Row,
+            0.0,
+            Margin::default(),
+            ChildAlign::Start,
+            false,
+        ),
+    );
+    // 子元素自己写「居中锚点」，但在布局组里必须由游标定位。
+    let mut child_style = Style::fixed(40.0, 20.0);
+    child_style.anchors = Anchors::CENTER;
+    child_style.pivot = Pivot::CENTER;
+    let child = spawn_child(&mut world, root, child_style);
+
+    ui_layout_system(&mut world);
+
+    let root_rect = rect_of(&world, root);
+    assert_eq!(
+        rect_of(&world, child),
+        [root_rect[0], root_rect[1], 40.0, 20.0]
+    );
+}
+
+#[test]
+fn children_without_a_layout_group_keep_their_anchors() {
+    let mut world = world_with_screen();
+    let root = world.spawn();
+    world.insert(root, Node {});
+    world.insert(root, Style::fixed(200.0, 100.0));
+    let child = spawn_child(&mut world, root, Style::fixed(40.0, 20.0));
+
+    ui_layout_system(&mut world);
+
+    // 默认 STRETCH 锚点 + 固定尺寸 → 居中（旧行为）。
+    let root_rect = rect_of(&world, root);
+    assert_eq!(
+        rect_of(&world, child),
+        [root_rect[0] + 80.0, root_rect[1] + 40.0, 40.0, 20.0]
     );
 }
