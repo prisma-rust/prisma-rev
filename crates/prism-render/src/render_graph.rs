@@ -380,6 +380,11 @@ pub struct DrawItem {
     /// 管线状态（剔除 / 队列 / 深度写 / 混合），来自 `MeshRenderer`。
     /// 阴影贴图管线忽略剔除与混合（固定双面、无混合写深度）。
     pub state: DrawState,
+    /// 世界空间 AABB（网格生命周期内算一次）；没有包围盒时保守地不剔除。
+    ///
+    /// 主相机视锥剔除在提取阶段使用；光源视锥剔除（#526）在帧打包后用它
+    /// 判断是否还需要写阴影贴图。
+    pub world_bounds: Option<crate::culling::Aabb>,
 }
 
 impl DrawItem {

@@ -214,6 +214,10 @@ pub fn extract_frame_packet_into_with_shadow(
     // 排序必须在提交给渲染器之前完成（`ForwardPass` 只按列表顺序绘制）。
     scene_view.draw_items_with_frustum_into(frustum.as_ref(), &mut packet.draw_items);
     prism_render::sort_draw_items(&mut packet.draw_items, packet.scene.eye.to_array());
+    // 光源视锥剔除（#526）：阴影盒子外的投射者不必进 shadow pass。必须放在
+    // 主相机剔除之后——相机外的对象既不画主通道，也不再浪费阴影贴图。
+    let light_view_proj = packet.scene.light_view_proj.to_cols_array_2d();
+    scene::systems::render::cull_shadow_casters(&mut packet.draw_items, &light_view_proj);
     scene_view.gizmo_instances_into(&mut packet.gizmos);
     // 只有 `clearFlags == Skybox` 时才绘制天空盒：其余清屏方式（纯色 /
     // 只清深度 / 不清）即使场景里有启用的 `Skybox` 实体也不画。`ForwardPass`
@@ -781,17 +785,21 @@ fn light_view_proj_snapped(light_dir: &Vec4, half: f32, center: &Vec3, texels: u
     };
     let eye = center + l * dist;
 
-    Mat4::from_cols(
+    let view = Mat4::from_cols(
         glam::vec4(right.x, true_up.x, -fwd.x, 0.0),
         glam::vec4(right.y, true_up.y, -fwd.y, 0.0),
         glam::vec4(right.z, true_up.z, -fwd.z, 0.0),
         glam::vec4(-right.dot(eye), -true_up.dot(eye), fwd.dot(eye), 1.0),
-    ) * Mat4::from_cols(
+    );
+    let projection = Mat4::from_cols(
         glam::vec4(half.recip(), 0.0, 0.0, 0.0),
         glam::vec4(0.0, half.recip(), 0.0, 0.0),
         glam::vec4(0.0, 0.0, -1.0 / (2.5 * dist), 0.0),
         glam::vec4(0.0, 0.0, -0.5 * dist / (2.5 * dist), 1.0),
-    )
+    );
+    // clip = projection * view * world（列向量约定）。之前误写成 view * projection，
+    // 阴影深度会变成 -60 左右、永远落在 [0,1] 之外；culling 也就无从谈起（#526）。
+    projection * view
 }
 
 #[allow(dead_code)]
@@ -846,6 +854,30 @@ mod tests {
         );
     }
 
+    /// 阴影投影必须是 `projection * view`：盒子内的点要落在 Vulkan 的 [0,1]
+    /// 深度范围里，否则 shadow pass 什么都写不进去，视锥剔除也无从谈起（#526）。
+    #[test]
+    fn the_shadow_projection_stays_inside_vulkan_depth_range() {
+        let dir = Vec4::new(-0.4, -1.0, -0.3, 0.0);
+        let light = light_view_proj_snapped(&dir, 30.0, &Vec3::ZERO, 2048);
+        for point in [
+            Vec3::ZERO,
+            Vec3::new(10.0, 10.0, 10.0),
+            Vec3::new(-10.0, -10.0, -10.0),
+        ] {
+            let clip = light * point.extend(1.0);
+            assert!(
+                clip.z >= 0.0 && clip.z <= clip.w,
+                "{point:?} maps to depth {} outside [0,1]",
+                clip.z / clip.w
+            );
+            assert!(clip.x.abs() <= clip.w, "{point:?} maps outside x");
+            assert!(clip.y.abs() <= clip.w, "{point:?} maps outside y");
+        }
+        let far = light * Vec3::new(500.0, 0.0, 0.0).extend(1.0);
+        assert!(far.x.abs() > far.w, "500 units away must leave the box");
+    }
+
     /// 阴影距离越大，正交盒子覆盖的世界范围越大。
     #[test]
     fn a_longer_shadow_distance_covers_more_world() {
@@ -864,6 +896,56 @@ mod tests {
             in_far.x.abs() <= 1.0,
             "half=60 covers 120 units: {in_far:?}"
         );
+    }
+
+    fn shadow_caster(bounds: Option<prism_render::culling::Aabb>) -> DrawItem {
+        DrawItem {
+            mesh: Default::default(),
+            model: Mat4::IDENTITY.to_cols_array_2d(),
+            material: None,
+            cast_shadow: true,
+            visible_in_main_pass: true,
+            cast_shadow_two_sided: false,
+            state: Default::default(),
+            world_bounds: bounds,
+        }
+    }
+
+    /// 光源视锥外的投射者不再写阴影贴图；没有 AABB 的实体保守提交（#526）。
+    #[test]
+    fn shadow_casters_outside_the_light_box_are_skipped() {
+        use prism_render::culling::Aabb;
+
+        let dir = Vec4::new(0.0, -1.0, 0.0, 0.0);
+        let light = light_view_proj_snapped(&dir, 30.0, &Vec3::ZERO, 2048);
+        let mut items = vec![
+            shadow_caster(Some(Aabb::new([-1.0; 3], [1.0; 3]))),
+            shadow_caster(Some(Aabb::new([499.0, -1.0, -1.0], [501.0, 1.0, 1.0]))),
+            shadow_caster(None),
+        ];
+        scene::systems::render::cull_shadow_casters(&mut items, &light.to_cols_array_2d());
+        assert!(
+            items[0].cast_shadow,
+            "inside the shadow box must still cast"
+        );
+        assert!(!items[1].cast_shadow, "far outside the box must be skipped");
+        assert!(
+            items[2].cast_shadow,
+            "unknown bounds must stay conservative"
+        );
+    }
+
+    /// 退化矩阵（没有可用视锥）时一个都不裁，避免把整场阴影删掉。
+    #[test]
+    fn an_invalid_light_frustum_disables_shadow_culling() {
+        use prism_render::culling::Aabb;
+
+        let mut items = vec![shadow_caster(Some(Aabb::new(
+            [499.0, -1.0, -1.0],
+            [501.0, 1.0, 1.0],
+        )))];
+        scene::systems::render::cull_shadow_casters(&mut items, &Mat4::ZERO.to_cols_array_2d());
+        assert!(items[0].cast_shadow);
     }
 
     /// `LightSample.direction` 是光传播方向，UBO 的 `lightDirection` 要「指向光源」。
