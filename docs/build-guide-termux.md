@@ -105,7 +105,8 @@ cargo test --workspace                 # ~400 测试（含 CRT 状态机单测�
 
 两条路，按需选：
 
-- **game-only（无 launcher）**：`projects/prisma/android/` + `scripts/build-android-game.sh`。
+- **game-only（无 launcher）**：`projects/<p>/android/` + `scripts/build-android-game.sh <project>`
+  （宿主用 `scripts/new-android-game.sh <project>` 从 `templates/android-game/` 生成，#598）。
   打出的 APK 里只有 `GameActivity` + `libprisma.so` + `assets/game/`，不含 Tauri / WebView。
   流程见 [`docs/android-apk.md`](android-apk.md)。
 - **launcher + 游戏（双 Activity）**：Tauri 的 `launcher/src-tauri/gen/android/`，

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 模板（#598）：`Cozy Fishing` / `fishing` 由 scripts/new-android-game.sh 替换。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 渲染后端只有 Vulkan，Vulkan 1.0 是硬性要求。 -->
+    <uses-feature
+        android:name="android.hardware.vulkan.level"
+        android:required="true"
+        android:version="1" />
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:allowBackup="false"
+        android:hasCode="true"
+        android:label="Cozy Fishing"
+        android:theme="@style/Theme.PrismaGame">
+
+        <!-- 游戏本体：GameActivity 加载 libfishing.so，再调用 android_main。
+             run_on_android 会把 APK 里的 assets/game/ 解到 <filesDir>/assets。 -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout|uiMode"
+            android:screenOrientation="sensorLandscape"
+            android:resizeableActivity="false">
+            <meta-data
+                android:name="android.app.lib_name"
+                android:value="fishing" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

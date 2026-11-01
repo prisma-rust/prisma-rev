@@ -70,7 +70,7 @@ Termux 上对应的静态 aarch64 版本见 `Lzhiyong/sdk-tools`、`hamza72x/and
 
 ## 5. 让 AGP 用这个 aapt2
 
-AGP 8.x 会从 Maven 拉 `aapt2-*-linux`（x86_64）。`scripts/build-android-game.sh`
+AGP 8.x 会从 Maven 拉 `aapt2-*-linux`（x86_64）。`scripts/build-android-game.sh [project]`
 已自动传 `-Pandroid.aapt2FromMavenOverride=<SDK>/build-tools/<ver>/aapt2`；手跑 `gradlew` 时二选一：
 
 ```bash

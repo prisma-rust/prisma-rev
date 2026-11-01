@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
 # 打 game-only Android APK（无 launcher / 无 Tauri / 无 WebView）。
 #
-#   bash scripts/build-android-game.sh            # debug
-#   bash scripts/build-android-game.sh release    # release（未签名，需自行 apksigner）
-#   bash scripts/build-android-game.sh debug --skip-cargo   # 只重打包（.so 已就绪）
+#   bash scripts/build-android-game.sh                      # projects/prisma，debug
+#   bash scripts/build-android-game.sh fishing              # projects/fishing，debug
+#   bash scripts/build-android-game.sh fishing release       # release（未签名，需自行 apksigner）
+#   bash scripts/build-android-game.sh debug --skip-cargo    # 只重打包（.so 已就绪）
+#   bash scripts/build-android-game.sh --project fishing --skip-cargo
 #
-# 产物：projects/prisma/android/app/build/outputs/apk/<变体>/*.apk
+# 产物：<project>/android/app/build/outputs/apk/<变体>/*.apk
+#
+# 工程名是 `projects/` 下的目录名（也可以给相对/绝对路径）。库名从
+# `<project>/assets/settings.ini [build] lib_name` 或 `Cargo.toml` 读出来，脚本不再
+# 按目录名猜 `.so` 名字；工程缺 `android/` 时先跑
+# `bash scripts/new-android-game.sh <project>` 生成宿主（#598）。
 #
 # 环境变量（至少要有 SDK 和 NDK）：
 #   ANDROID_HOME       Android SDK 根目录（ANDROID_SDK_ROOT 亦可）
@@ -20,27 +27,64 @@
 # 详见 docs/android-apk.md；aarch64 主机另见 docs/android-arm64.md。
 set -euo pipefail
 
-MODE="${1:-debug}"
-shift || true
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=lib/project-info.sh
+. "$ROOT/scripts/lib/project-info.sh"
+
+MODE=""
+PROJECT=""
 SKIP_CARGO=0
-for arg in "$@"; do
-    case "$arg" in
-        --skip-cargo) SKIP_CARGO=1 ;;
-        *) echo "未知参数：$arg" >&2; exit 1 ;;
+while [ $# -gt 0 ]; do
+    case "$1" in
+        debug|release)
+            [ -z "$MODE" ] || { echo "模式只能给一次（$MODE / $1）" >&2; exit 1; }
+            MODE="$1"; shift ;;
+        --project)
+            [ $# -ge 2 ] || { echo "--project 需要工程名" >&2; exit 1; }
+            PROJECT="$2"; shift 2 ;;
+        --skip-cargo) SKIP_CARGO=1; shift ;;
+        -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+        -*) echo "未知参数：$1" >&2; exit 1 ;;
+        *)
+            [ -z "$PROJECT" ] || { echo "只需要一个工程名" >&2; exit 1; }
+            PROJECT="$1"; shift ;;
     esac
 done
+MODE="${MODE:-debug}"
 
-ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-ANDROID_DIR="$ROOT/projects/prisma/android"
-GAME_MANIFEST="$ROOT/projects/prisma/Cargo.toml"
+PROJECT_DIR=$(prism_project_dir "$ROOT" "${PROJECT:-prisma}")
+PROJECT_NAME=$(prism_project_name "$PROJECT_DIR")
+LIB_NAME=$(prism_lib_name "$PROJECT_DIR")
+ANDROID_DIR="$PROJECT_DIR/android"
+GAME_MANIFEST="$PROJECT_DIR/Cargo.toml"
+ASSETS_DIR="$PROJECT_DIR/assets"
 JNI_DIR="$ANDROID_DIR/app/src/main/jniLibs/arm64-v8a"
 ASSET_DIR="$ANDROID_DIR/app/src/main/assets/game"
 TARGET=aarch64-linux-android
 
+[ -d "$ANDROID_DIR" ] || {
+    echo "工程 $PROJECT_NAME 还没有 Android 宿主：$ANDROID_DIR" >&2
+    echo "先生成：bash scripts/new-android-game.sh $PROJECT_NAME" >&2
+    exit 1
+}
+
+# 宿主 manifest 里固定了 `android.app.lib_name`；它与库名不一致时游戏会在
+# `System.loadLibrary` 处崩溃，所以构建期就拦住（#598）。
+MANIFEST="$ANDROID_DIR/app/src/main/AndroidManifest.xml"
+DECLARED_LIB=$(sed -nE 's/.*android:name="android.app.lib_name".*//; s/.*android:value="([^"]+)".*/\1/p' "$MANIFEST" | head -n1)
+if [ -z "$DECLARED_LIB" ]; then
+    DECLARED_LIB=$(tr -d '\n' < "$MANIFEST" | grep -o 'android.app.lib_name"[[:space:]]*android:value="[^"]*"' | sed -E 's/.*android:value="([^"]+)"/\1/' || true)
+fi
+if [ -n "$DECLARED_LIB" ] && [ "$DECLARED_LIB" != "$LIB_NAME" ]; then
+    echo "库名不一致：$MANIFEST 声明 lib_name=$DECLARED_LIB，而工程库名是 $LIB_NAME" >&2
+    echo "改 manifest 的 android.app.lib_name，或在 assets/settings.ini [build] 里写 lib_name = $DECLARED_LIB" >&2
+    exit 1
+fi
+
 case "$MODE" in
     debug)   GRADLE_TASK=assembleDebug;   CARGO_PROFILE_DIR=debug ;;
     release) GRADLE_TASK=assembleRelease; CARGO_PROFILE_DIR=release ;;
-    *) echo "用法: $0 [debug|release] [--skip-cargo]" >&2; exit 1 ;;
+    *) echo "用法: $0 [project] [debug|release] [--skip-cargo]" >&2; exit 1 ;;
 esac
 
 # ---- SDK / NDK -------------------------------------------------------------
@@ -73,7 +117,7 @@ LINKER="$HOST_PRE/bin/aarch64-linux-android$API-clang"
     echo "找不到 $LINKER —— aarch64 主机请先跑：bash scripts/make-ndk-host-native.sh \"$NDK\"" >&2
     exit 1
 }
-echo "target=$TARGET api=$API (minSdk=$MIN_SDK)"
+echo "project=$PROJECT_NAME lib=$LIB_NAME target=$TARGET api=$API (minSdk=$MIN_SDK)"
 
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$LINKER"
 export CC_aarch64_linux_android="$LINKER"
@@ -96,29 +140,39 @@ if [ "$SKIP_CARGO" -eq 0 ]; then
     cargo build --manifest-path "$GAME_MANIFEST" --lib --target "$TARGET" \
         $( [ "$MODE" = release ] && echo --release )
 fi
-SO="$ROOT/projects/prisma/target/$TARGET/$CARGO_PROFILE_DIR/libprisma.so"
+SO="$PROJECT_DIR/target/$TARGET/$CARGO_PROFILE_DIR/lib$LIB_NAME.so"
 [ -f "$SO" ] || { echo "找不到 $SO" >&2; exit 1; }
 mkdir -p "$JNI_DIR"
-cp -f "$SO" "$JNI_DIR/libprisma.so"
-echo "==> libprisma.so $(du -h "$JNI_DIR/libprisma.so" | cut -f1)"
+cp -f "$SO" "$JNI_DIR/lib$LIB_NAME.so"
+echo "==> lib$LIB_NAME.so $(du -h "$JNI_DIR/lib$LIB_NAME.so" | cut -f1)"
 
 # ---- 2. 场景包 + 资产 -----------------------------------------------------
-echo "==> build-scenes"
-cargo run -q -p prism-build-pipeline -- build-scenes
+# 每个工程有自己的 assets/ 与 scenes.json；`build-scenes` 读工程的清单、写工程的
+# pak（#598），不再固定跑仓库根的 `assets/`。
+echo "==> build-scenes（$ASSETS_DIR/scenes.json）"
+[ -f "$ASSETS_DIR/scenes.json" ] || { echo "找不到 $ASSETS_DIR/scenes.json" >&2; exit 1; }
+(
+    cd "$ROOT"
+    cargo run -q -p prism-build-pipeline -- build-scenes \
+        --manifest "$ASSETS_DIR/scenes.json" \
+        --staging "$PROJECT_DIR/target/scene_pack" \
+        --output "$ASSETS_DIR/scenes.pak"
+)
 mkdir -p "$ASSET_DIR"
 # 运行时挂载 `assets/` 下的全部 `.pak`（#530），所以按扩展名复制。
 shopt -s nullglob
-PAKS=("$ROOT"/assets/*.pak)
-METAS=("$ROOT"/assets/*.pak.meta.json)
+PAKS=("$ASSETS_DIR"/*.pak)
+METAS=("$ASSETS_DIR"/*.pak.meta.json)
+HDRS=("$ASSETS_DIR"/*.hdr "$ASSETS_DIR"/*.exr)
 shopt -u nullglob
-[ ${#PAKS[@]} -gt 0 ] || { echo "assets/ 下没有 .pak，APK 里将没有任何资源" >&2; exit 1; }
+[ ${#PAKS[@]} -gt 0 ] || { echo "$ASSETS_DIR 下没有 .pak，APK 里将没有任何资源" >&2; exit 1; }
 cp -f "${PAKS[@]}" "${METAS[@]}" "$ASSET_DIR/"
 # 新格式 `settings.ini`；旧项目还只有 `settings.toml` 时照样带上（引擎会回退读）。
 for name in settings.ini settings.toml; do
-    [ -f "$ROOT/assets/$name" ] && cp -f "$ROOT/assets/$name" "$ASSET_DIR/"
+    [ -f "$ASSETS_DIR/$name" ] && cp -f "$ASSETS_DIR/$name" "$ASSET_DIR/"
 done
-if [ -f "$ROOT/assets/valley_of_desolation_1k.hdr" ]; then
-    cp -f "$ROOT/assets/valley_of_desolation_1k.hdr" "$ASSET_DIR/"
+if [ ${#HDRS[@]} -gt 0 ]; then
+    cp -f "${HDRS[@]}" "$ASSET_DIR/"
 fi
 
 # ---- 3. APK ---------------------------------------------------------------

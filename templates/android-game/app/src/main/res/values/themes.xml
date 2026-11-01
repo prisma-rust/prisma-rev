@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- GameActivity 继承 AppCompatActivity，所以必须用 AppCompat 系主题。
+         全屏 / 刘海延伸到黑边由这里加，而不是 Theme.*.Fullscreen（没有这个主题）。 -->
+    <style name="Theme.PrismaGame" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+        <item name="android:windowBackground">@android:color/black</item>
+    </style>
+</resources>

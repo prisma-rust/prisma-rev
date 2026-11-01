@@ -1,16 +1,47 @@
 ﻿#!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-    Build PrismaRev for Android arm64-v8a: compile the game Rust cdylib
-    (`projects/prisma/` → `libprisma.so`) via cargo-ndk, then assemble the APK
-    via Gradle (Tauri hub + GameActivity in `launcher/src-tauri/gen/android`).
+    Build PrismaRev for Android arm64-v8a.
+
+.DESCRIPTION
+    `-Project prisma`（默认）：launcher + 游戏的完整 APK——编译 `projects/prisma`
+    的 cdylib（`libprisma.so`）via cargo-ndk，再用 Tauri CLI 组装
+    `launcher/src-tauri/gen/android`（启动器 + GameActivity）。
+
+    其他工程：委托给 `scripts/build-android-game.sh <project> [debug|release]`
+    打 **game-only** APK（不含 launcher / WebView），宿主由
+    `scripts/new-android-game.sh <project>` 生成（#598）。launcher APK 的 manifest
+    固定 `android.app.lib_name = prisma`，所以不能直接换个工程名就打进去。
+
+.PARAMETER Project
+    `projects/` 下的工程目录名，默认 `prisma`。
+
+.PARAMETER Mode
+    只对委托路径生效：`debug`（默认）或 `release`。
 #>
+param(
+    [string]$Project = "prisma",
+    [ValidateSet("debug", "release")]
+    [string]$Mode = "debug"
+)
 $ErrorActionPreference = "Stop"
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
+
+if ($Project -ne "prisma") {
+    $delegate = Join-Path $PSScriptRoot "build-android-game.sh"
+    if (-not (Test-Path $delegate)) {
+        Write-Error "找不到 $delegate（game-only APK 由它负责）"
+        exit 1
+    }
+    Write-Host "Project '$Project' → game-only APK via scripts/build-android-game.sh $Project $Mode"
+    bash $delegate $Project $Mode
+    exit $LASTEXITCODE
+}
+
 $AndroidDir  = Join-Path $ProjectRoot "launcher\src-tauri\gen\android"
 $JniLibsDir  = Join-Path $AndroidDir "app\src\main\jniLibs"
-$GameManifest = Join-Path $ProjectRoot "projects\prisma\Cargo.toml"
+$GameManifest = Join-Path $ProjectRoot "projects\$Project\Cargo.toml"
 
 # ---- Prerequisites ---------------------------------------------------------
 
@@ -152,13 +183,13 @@ if (Test-Path $Environment) {
 
 # ---- Build Rust .so --------------------------------------------------------
 
-Write-Host "Building game (prisma crate) for $target..."
+Write-Host "Building game ($Project crate) for $target..."
 
 cargo ndk `
     -P $apiLevel `
     -t arm64-v8a `
     -o $JniLibsDir `
-    build --profile dist --manifest-path $GameManifest -p prisma
+    build --profile dist --manifest-path $GameManifest -p $Project
 
 if ($LASTEXITCODE -ne 0) {
     Write-Error "cargo ndk failed"

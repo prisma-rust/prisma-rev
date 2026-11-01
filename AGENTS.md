@@ -115,9 +115,13 @@ deviating from those conventions is a bug. (`README.md` is the human-facing over
 - `projects/prisma/` — 用户游戏项目（package/crate `prisma`；`prisma` 桌面二进制 + Android
   cdylib `libprisma.so`；keyframe 开场 intro、`register_scene("intro", ...)` 注册场景、
   `lib.rs` 的 `android_main`）；**own standalone workspace**, NOT a root member。
-  - `projects/prisma/android/` — **game-only Android 宿主**（独立 Gradle 工程）：只有一个
+  - `projects/<p>/android/` — **game-only Android 宿主**（独立 Gradle 工程）：只有一个
     `GameActivity` 子类 + `AndroidManifest.xml`，打出的 APK 不含 Tauri / WebView / 启动器 UI。
-    入口是 `scripts/build-android-game.sh`，流程见 [`docs/android-apk.md`](docs/android-apk.md)；
+    宿主由 `scripts/new-android-game.sh <project>` 从 `templates/android-game/` 生成，不要手工
+    fork、也不要用 `tauri android init` 覆盖；`scripts/build-android-game.sh [project]` 打
+    任意工程（默认 `prisma`），库名从 `settings.ini [build] lib_name` / Cargo.toml 解析
+    （`scripts/lib/project-info.sh` 是唯一实现）。流程见
+    [`docs/android-apk.md`](docs/android-apk.md)；
     **只有宿主机是 aarch64**（Asahi / 树莓派 / ARM 服务器 / Termux）时还需要
     [`docs/android-arm64.md`](docs/android-arm64.md) 的 NDK / build-tools 替换步骤。
     与 `launcher/` 那条「启动器 + 游戏」双 Activity 的路互不影响，不要把它们合并。
@@ -540,7 +544,10 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   (`com.example.tauriandroidapp.MainActivity`) and the game
   (`com.prisma.MainActivity` = `GameActivity`, `android:process=":game"`,
   `android.app.lib_name = prisma` → loads `libprisma.so`).
-- `scripts/build-android.ps1`: probes the NDK (validating `toolchains\llvm`; tolerates a stale
+- `scripts/build-android.ps1 -Project <name>`: `prisma`（默认）走下面的 launcher APK 路径；
+  其它工程委托给 `scripts/build-android-game.sh <project> [debug|release]`（launcher 的
+  manifest 固定 `lib_name = prisma`，不能换工程名直接用）。
+- `scripts/build-android.ps1`（`-Project prisma`）: probes the NDK (validating `toolchains\llvm`; tolerates a stale
   `ANDROID_NDK_HOME` by **overwriting** it with the validated path, since cargo-ndk reads that env
   var itself), derives the cargo-ndk API level from the manifest's `minSdk`, compiles shaders if
   `slangc` exists (else requires prebuilt `.spv`), runs `prism-build-pipeline build-scenes`,
