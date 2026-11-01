@@ -443,6 +443,7 @@ fn render_one_frame(
         sprite_items: &packet.sprite_items,
         sprite_lights: &packet.sprite_lights,
         particle_items: &packet.particle_items,
+        bone_matrices: &[],
         skybox: packet.skybox,
         frame_data: &frame_data,
         light_view_proj: scene.light_view_proj.to_cols_array_2d(),

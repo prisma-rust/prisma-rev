@@ -155,6 +155,8 @@ pub fn scene_render_system_into_with_frustum(
                     world_bounds,
                     index_start: submesh.index_start,
                     index_count: Some(submesh.index_count),
+                    // 蒙皮绘制项由专用的 `SkinnedMeshRenderer` 分支生成（P0-3b）。
+                    bone_offset: None,
                 });
             }
         } else {
@@ -174,6 +176,8 @@ pub fn scene_render_system_into_with_frustum(
                 world_bounds,
                 index_start: 0,
                 index_count: None,
+                // 蒙皮绘制项由专用的 `SkinnedMeshRenderer` 分支生成（P0-3b）。
+                bone_offset: None,
             });
         }
     }

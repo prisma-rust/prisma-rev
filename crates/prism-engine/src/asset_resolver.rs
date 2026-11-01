@@ -822,6 +822,7 @@ impl GpuAssetResolver {
             reqs.push((
                 item.entity,
                 AssetResolveRequest {
+                    skin: None,
                     mesh,
                     materials,
                     texture,

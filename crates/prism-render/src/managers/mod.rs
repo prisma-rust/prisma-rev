@@ -16,7 +16,9 @@ pub mod texture_manager;
 pub use material_manager::{
     GpuMaterial, MaterialHandle, MaterialUploadInput, RenderMaterialManager, MATERIAL_SSBO_MAX,
 };
-pub use mesh_manager::{MeshHandle, MeshUploadInput, RenderMeshManager, UploadedMesh};
+pub use mesh_manager::{
+    MeshHandle, MeshUploadInput, RenderMeshManager, SkinAttributes, UploadedMesh,
+};
 pub use texture_manager::{
     AssetTextureHandle, RenderTextureManager, TextureFormat, TextureUploadInput, UploadedTexture,
 };
