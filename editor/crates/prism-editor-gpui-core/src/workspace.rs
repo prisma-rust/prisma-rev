@@ -99,6 +99,19 @@ impl DocKind {
     }
 }
 
+/// 从场景实例打开预制体时记录的来源（#420）。
+///
+/// 只存在内存里，不进文档格式；面包屑用它切回场景并选中原来的实例。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrefabOrigin {
+    /// 来源场景在 `Workspace::docs` 里的下标。
+    pub scene_index: usize,
+    /// 场景里被打开的实例根实体 id（不是下标 —— 换场 / 重排后仍然有效）。
+    pub entity_id: u32,
+    /// 面包屑显示的场景名（下标失效时至少还有提示）。
+    pub scene_title: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Document {
     pub kind: DocKind,
@@ -110,6 +123,8 @@ pub struct Document {
     pub saved_stamp: Option<project::FileStamp>,
     /// 磁盘上的版本已经和 `saved_stamp` 不一致，且用户还没处理（#452）。
     pub externally_modified: bool,
+    /// 从场景实例打开预制体时的来源（#420）；普通打开 / 场景文档为 `None`。
+    pub prefab_origin: Option<PrefabOrigin>,
 }
 
 impl Document {
@@ -122,6 +137,7 @@ impl Document {
             dirty: false,
             saved_stamp: None,
             externally_modified: false,
+            prefab_origin: None,
         }
     }
 
@@ -1544,6 +1560,100 @@ impl Workspace {
     }
 
     /// 打开（或切到）磁盘上的文档。
+    /// 从场景里的预制体实例打开它的源预制体，并记录返回路径（#420）。
+    ///
+    /// 打开后预制体文档的 `prefab_origin` 就是面包屑的数据来源；
+    /// 实例必须真的带 `prism_engine::scene::PrefabInstance` 链接。
+    pub fn open_prefab_from_instance(
+        &mut self,
+        scene_index: usize,
+        entity_id: u32,
+    ) -> io::Result<()> {
+        let Some(scene) = self.docs.get(scene_index) else {
+            return Err(io::Error::new(io::ErrorKind::NotFound, "文档不存在"));
+        };
+        if matches!(scene.kind, DocKind::Prefab) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "只能从场景实例打开预制体",
+            ));
+        }
+        let Some(link) = scene
+            .doc
+            .entities
+            .iter()
+            .find(|entity| entity.id == Some(entity_id))
+            .and_then(|entity| entity.prefab_link())
+        else {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "这个实体不是预制体实例",
+            ));
+        };
+        let link = link.to_string();
+        let scene_title = scene.title();
+
+        self.open_project_file(&link)?;
+        let Some(prefab_index) = self
+            .docs
+            .iter()
+            .position(|doc| doc.path.as_deref() == Some(link.as_str()))
+        else {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "预制体文档没有打开",
+            ));
+        };
+        self.docs[prefab_index].prefab_origin = Some(PrefabOrigin {
+            scene_index,
+            entity_id,
+            scene_title,
+        });
+        Ok(())
+    }
+
+    /// 从预制体返回来源场景（#420）：切文档、选中实例，必要时把预制体的改动同步回来。
+    ///
+    /// 只有预制体文档**没有未保存改动**时才自动 `revert_prefab_instance`：
+    /// 否则磁盘上还是旧文件，还原会把刚编辑的内容看起来「丢掉」。
+    /// 返回 `false` 表示这份文档不是从场景实例打开的（没有面包屑可回）。
+    pub fn return_from_prefab(&mut self, prefab_index: usize) -> bool {
+        let Some(origin) = self
+            .docs
+            .get(prefab_index)
+            .and_then(|doc| doc.prefab_origin.clone())
+        else {
+            return false;
+        };
+        if origin.scene_index >= self.docs.len() {
+            return false;
+        }
+        let clean = self
+            .docs
+            .get(prefab_index)
+            .map(|doc| !doc.dirty)
+            .unwrap_or(false);
+
+        self.set_active(origin.scene_index);
+        let mut target = origin.entity_id;
+        if clean {
+            // 失败只记日志：可能预制体文件已被删除 / 实例已不是预制体。
+            // 还原会重新实例化，实体 id 会变 —— 用返回的新 id 选中。
+            match self.revert_prefab_instance(origin.entity_id) {
+                Ok(id) => target = id,
+                Err(error) => self.log(
+                    LogSource::Editor,
+                    LogLevel::Warn,
+                    format!("返回场景时同步实例失败: {error}"),
+                ),
+            }
+        }
+        if let Some(index) = self.document().doc.index_of_id(target) {
+            self.select(index, false);
+        }
+        true
+    }
+
     pub fn open_project_file(&mut self, relative: &str) -> io::Result<()> {
         if let Some(index) = self
             .docs
@@ -2504,7 +2614,8 @@ impl Workspace {
     ///
     /// 用预制体当前内容覆盖实例子树：保留实例根的名字与父级，重新生成根上的链接组件。
     /// 数据来源优先磁盘（项目根 + 链接路径），纯 fixture 模式下回退到同名模板。
-    pub fn revert_prefab_instance(&mut self, entity_id: u32) -> io::Result<()> {
+    /// 返回**新的**实例根实体 id（旧的实体被移除后重新实例化，id 会变）。
+    pub fn revert_prefab_instance(&mut self, entity_id: u32) -> io::Result<u32> {
         let prefab = self.prefab_document_for(entity_id)?;
         let Some(index) = self.document().doc.index_of_id(entity_id) else {
             return Err(io::Error::new(io::ErrorKind::NotFound, "实例不存在"));
@@ -2518,23 +2629,34 @@ impl Workspace {
             )
         };
 
-        self.edit("还原预制体实例", |document| {
+        let root = self.edit("还原预制体实例", |document| {
             document.doc.remove_entities(&[index]);
             let parent = parent_id.and_then(|id| document.doc.index_of_id(id));
             let inserted = document.doc.instantiate_prefab(&prefab, parent, &link);
-            if let Some(root) = inserted.first() {
-                let root = *root;
+            let root = inserted.first().copied();
+            if let Some(root) = root {
                 if let Some(entity) = document.doc.entities.get_mut(root) {
                     entity.name = Some(name.clone());
                 }
             }
+            root
         });
+        let Some(root) = root else {
+            return Err(io::Error::other("预制体没有生成任何实体"));
+        };
+        let root_id = self
+            .document()
+            .doc
+            .entities
+            .get(root)
+            .and_then(|entity| entity.id)
+            .ok_or_else(|| io::Error::other("新实例没有实体 id"))?;
         self.log(
             LogSource::Editor,
             LogLevel::Info,
             format!("已还原预制体实例 {name}"),
         );
-        Ok(())
+        Ok(root_id)
     }
 
     /// 同步所有同源实例（按实体 id 从后往前处理，避免下标漂移）。
@@ -7965,6 +8087,129 @@ mod tests {
             workspace.document().doc.entities[root].prefab_link(),
             Some("assets/prefabs/box.prefab.json")
         );
+    }
+
+    /// 写一个最小工程：crate 预制体 + 引用它的 level 场景（实例 id = 7）。
+    fn breadcrumb_project(tag: &str) -> (TempProject, Workspace) {
+        let project = TempProject::new(tag);
+        std::fs::write(
+            project.root.join("assets/prefabs/crate.prefab.json"),
+            r#"{"version":3,"entities":[
+                {"id":0,"name":"Crate","parent":null,
+                 "transform":{"position":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
+                 "components":{}}
+            ]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            project.root.join("assets/scenes/level.scene.json"),
+            r#"{"version":3,"entities":[
+                {"id":7,"name":"Crate Instance","parent":null,
+                 "transform":{"position":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
+                 "components":{"prism_engine::scene::PrefabInstance":{"prefab":"assets/prefabs/crate.prefab.json"}}}
+            ]}"#,
+        )
+        .unwrap();
+        let mut workspace = Workspace::load_fixture(&fixture());
+        workspace.load_project(project.root.clone()).unwrap();
+        (project, workspace)
+    }
+
+    fn breadcrumb_scene_index(workspace: &Workspace) -> usize {
+        workspace
+            .docs
+            .iter()
+            .position(|doc| doc.path.as_deref() == Some("assets/scenes/level.scene.json"))
+            .expect("level scene")
+    }
+
+    #[test]
+    fn opening_a_prefab_from_an_instance_remembers_the_origin() {
+        let (_project, mut workspace) = breadcrumb_project("prefab-origin");
+        let scene = breadcrumb_scene_index(&workspace);
+        workspace.set_active(scene);
+
+        workspace.open_prefab_from_instance(scene, 7).unwrap();
+        assert_eq!(
+            workspace.document().path.as_deref(),
+            Some("assets/prefabs/crate.prefab.json")
+        );
+        assert_eq!(
+            workspace.document().prefab_origin,
+            Some(PrefabOrigin {
+                scene_index: scene,
+                entity_id: 7,
+                scene_title: "level.scene.json".to_string(),
+            })
+        );
+
+        // 普通场景文档没有面包屑；从预制体打开预制体会被拒绝。
+        workspace.set_active(scene);
+        assert!(workspace.document().prefab_origin.is_none());
+        assert!(workspace.open_prefab_from_instance(scene, 999).is_err());
+    }
+
+    #[test]
+    fn returning_from_a_clean_prefab_reinstantiates_and_selects_the_instance() {
+        let (_project, mut workspace) = breadcrumb_project("prefab-return-clean");
+        let scene = breadcrumb_scene_index(&workspace);
+        workspace.set_active(scene);
+        workspace.open_prefab_from_instance(scene, 7).unwrap();
+
+        // 改预制体并保存：返回时干净文档要重新实例化，把新位置同步进场景。
+        workspace.document_mut().doc.entities[0].transform.position = [5.0, 1.0, 0.0];
+        workspace.save_active().unwrap();
+        let prefab = workspace.active_index();
+        assert!(workspace.return_from_prefab(prefab));
+
+        assert_eq!(
+            workspace.document().path.as_deref(),
+            Some("assets/scenes/level.scene.json")
+        );
+        let selected = workspace.primary_selection().expect("返回后选中原来的实例");
+        let entity = &workspace.document().doc.entities[selected];
+        assert_eq!(
+            entity.prefab_link(),
+            Some("assets/prefabs/crate.prefab.json")
+        );
+        assert_eq!(
+            entity.transform.position,
+            [5.0, 1.0, 0.0],
+            "干净预制体返回时应把内容同步回实例"
+        );
+        // 重新实例化会换 id，但选中的仍是场景里的那个实例。
+        assert_ne!(entity.id, Some(7));
+    }
+
+    #[test]
+    fn returning_from_a_dirty_prefab_keeps_the_instance_untouched() {
+        let (_project, mut workspace) = breadcrumb_project("prefab-return-dirty");
+        let scene = breadcrumb_scene_index(&workspace);
+        workspace.set_active(scene);
+        workspace.open_prefab_from_instance(scene, 7).unwrap();
+
+        workspace.document_mut().doc.entities[0].transform.position = [9.0, 0.0, 0.0];
+        workspace.document_mut().dirty = true;
+        let prefab = workspace.active_index();
+        assert!(workspace.return_from_prefab(prefab));
+
+        assert_eq!(
+            workspace.document().path.as_deref(),
+            Some("assets/scenes/level.scene.json")
+        );
+        let selected = workspace.primary_selection().expect("仍然选中实例");
+        let entity = &workspace.document().doc.entities[selected];
+        assert_eq!(entity.id, Some(7), "脏预制体不重新实例化，实体 id 不变");
+        assert_ne!(entity.transform.position, [9.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn returning_without_an_origin_is_a_noop() {
+        let (_project, mut workspace) = breadcrumb_project("prefab-return-none");
+        let scene = breadcrumb_scene_index(&workspace);
+        workspace.set_active(scene);
+        assert!(!workspace.return_from_prefab(scene));
+        assert_eq!(workspace.active_index(), scene);
     }
 
     #[test]

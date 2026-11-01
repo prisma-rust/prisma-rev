@@ -2067,9 +2067,20 @@ fn inspector_single(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState,
                 ui.label(RichText::new(link).monospace().size(10.0));
             });
             ui.horizontal(|ui| {
+                if ui
+                    .small_button("Open Prefab")
+                    .on_hover_text("Edit the source prefab; the breadcrumb will lead back here")
+                    .clicked()
+                {
+                    let scene_index = workspace.active_index();
+                    match workspace.open_prefab_from_instance(scene_index, entity_id) {
+                        Ok(()) => state.status = format!("opened {link}"),
+                        Err(error) => state.status = format!("open prefab failed: {error}"),
+                    }
+                }
                 if ui.small_button("Revert").clicked() {
                     match workspace.revert_prefab_instance(entity_id) {
-                        Ok(()) => state.status = "reverted prefab instance".to_string(),
+                        Ok(_) => state.status = "reverted prefab instance".to_string(),
                         Err(error) => state.status = format!("revert failed: {error}"),
                     }
                 }

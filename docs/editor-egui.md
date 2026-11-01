@@ -287,8 +287,12 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
   点一行打开源码；工具栏的模块状态与第一段同源，`Ctrl+R` / `Compile` 重新编译。
 - **Docking**：拖动标签页（行为）：拖到另一个 leaf 的左/右/上/下 25% = 分屏，
   中间 = 合并成标签，拖出面板区 = 浮动窗口，拖到本 leaf 边缘 = 原地分屏。
-- **预制体**：实例区块有 Revert / Sync All / **Apply to Prefab**（当前子树覆盖预制体
-  文件，再同步同源实例）/ Save as Prefab…（无链接时）。
+- **预制体**：实例区块有 **Open Prefab** / Revert / Sync All / **Apply to Prefab**
+  （当前子树覆盖预制体文件，再同步同源实例）/ Save as Prefab…（无链接时）。
+  **Open Prefab** 在工具栏留下面包屑 `← level.scene.json / crate.prefab.json`；
+  点 `←` 回到打开它的场景并选中原实例。预制体文档**干净**时会重新实例化该实例
+  （同步预制体里的改动，实体 id 会变，选中仍落在实例上），**脏**时只切回场景并选中、
+  不把未保存的内容同步出去。
 - **视口拖放**：预制体拖进 Scene / Game 视口 → 实例化并放到光标下的地面点
   （射线 ∩ `y = 0`）；`.scene.json` 拖进视口 = 打开该场景文档。
 - **磁盘改动保护**：窗口重新获得焦点时比对每个已打开文档的 mtime（`git checkout`

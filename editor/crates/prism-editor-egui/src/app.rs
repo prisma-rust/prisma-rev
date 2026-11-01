@@ -3382,6 +3382,29 @@ impl EditorApp {
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
+            // 预制体面包屑（#420）：从场景实例打开的预制体，一键回到来源场景。
+            if let Some(origin) = self.workspace.document().prefab_origin.clone() {
+                let prefab_title = self.workspace.document().title();
+                if ui
+                    .small_button(format!("{} {}", icons::ARROW_LEFT, origin.scene_title))
+                    .on_hover_text("Back to the scene this prefab instance came from")
+                    .clicked()
+                {
+                    let prefab_index = self.workspace.active_index();
+                    if self.workspace.return_from_prefab(prefab_index) {
+                        self.state.status = format!(
+                            "returned to {} · selected {}",
+                            origin.scene_title, prefab_title
+                        );
+                    }
+                }
+                ui.label(
+                    RichText::new(format!("{} / {}", origin.scene_title, prefab_title))
+                        .weak()
+                        .size(11.0),
+                );
+                ui.separator();
+            }
             let playing = self.playing;
             let paused = self.paused;
             // 引擎的运输控件是纯图标（tooltip 补文字）。
