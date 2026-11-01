@@ -250,6 +250,10 @@ pub struct UiState {
     pub viewport_scale: f32,
     /// 瓦片地图格子编辑器的调色板大小（左键循环 `0..=palette`，#529）。
     pub tilemap_palette: u32,
+    /// Project 面板的列表 / 网格视图（#419）。
+    pub asset_view: AssetView,
+    /// Project 面板的一列 / 两列（左目录树 + 右内容，#419）。
+    pub asset_columns: AssetColumns,
     pub log_levels: Vec<LogLevel>,
     pub log_sources: Vec<LogSource>,
     pub log_search: String,
@@ -490,6 +494,8 @@ impl UiState {
             asset_history: vec!["assets".to_string()],
             asset_history_pos: 0,
             tilemap_palette: 8,
+            asset_view: AssetView::List,
+            asset_columns: AssetColumns::One,
             ..Default::default()
         }
     }
@@ -1255,6 +1261,15 @@ fn asset_inspector(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) 
     }
     row("GUID", details.guid.clone());
     row("References", details.references.len().to_string());
+    ui.horizontal(|ui| {
+        if ui
+            .button("Ping In Scene")
+            .on_hover_text("Select the first object that references this asset")
+            .clicked()
+        {
+            ping_asset(workspace, state, &path);
+        }
+    });
 
     ui.separator();
     ui.label(RichText::new("Preview").strong().size(11.0));
@@ -2614,6 +2629,391 @@ fn apply_to_prefab(
 // 资产
 // ---------------------------------------------------------------------------
 
+/// 两列模式下的左侧目录树（#419）。
+///
+/// 复用 `Workspace::tree`（数据层已经建好的目录树），只显示目录；点击跳转到该目录，
+/// 当前目录高亮，父链自动展开（egui 的 `selectable_label` 不需要折叠状态）。
+fn asset_folder_column(ui: &mut Ui, workspace: &Workspace, state: &mut UiState) {
+    ui.label(RichText::new("Folders").strong().size(11.0));
+    egui::ScrollArea::vertical()
+        .id_salt("asset-folder-tree")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            let selected = state.asset_folder == "assets";
+            if ui
+                .selectable_label(selected, format!("{} assets", icons::FOLDER))
+                .clicked()
+            {
+                navigate_assets(state, "assets");
+            }
+            let roots = workspace.tree.roots.clone();
+            for node in &roots {
+                folder_tree_row(ui, node, state, 1);
+            }
+        });
+}
+
+/// 目录树的一行（递归；只画目录，文件由右侧内容区负责）。
+fn folder_tree_row(
+    ui: &mut Ui,
+    node: &prism_editor_core::assets::AssetNode,
+    state: &mut UiState,
+    depth: usize,
+) {
+    if !node.is_dir {
+        return;
+    }
+    let selected = state.asset_folder == node.path;
+    let label = format!(
+        "{}{} {}",
+        "  ".repeat(depth.saturating_sub(1)),
+        icons::FOLDER,
+        node.name
+    );
+    if ui.selectable_label(selected, label).clicked() {
+        navigate_assets(state, &node.path);
+    }
+    for child in &node.children {
+        folder_tree_row(ui, child, state, depth + 1);
+    }
+}
+
+/// 网格视图：文件夹在前、文件在后（#419）。
+fn asset_grid(
+    ui: &mut Ui,
+    workspace: &mut Workspace,
+    state: &mut UiState,
+    folders: &[String],
+    files: &[(String, AssetKind, u64)],
+    visible: &[String],
+    actions: &mut AssetActions,
+) {
+    let per_row = grid_columns(ui.available_width(), 92.0);
+    egui::ScrollArea::vertical()
+        .id_salt("asset-grid-scroll")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            for chunk in folders.chunks(per_row) {
+                ui.horizontal(|ui| {
+                    for path in chunk {
+                        let name = path.rsplit('/').next().unwrap_or(path);
+                        let response =
+                            asset_grid_cell(ui, icons::FOLDER, name, state.asset_selected(path));
+                        if response.double_clicked() {
+                            navigate_assets(state, path);
+                        } else if response.clicked() {
+                            state.select_asset_only(path.clone());
+                        }
+                        response.context_menu(|ui| {
+                            if ui.button("Open").clicked() {
+                                navigate_assets(state, path);
+                                ui.close();
+                            }
+                            if ui.button("Rename…").clicked() {
+                                actions.rename = Some(path.clone());
+                                ui.close();
+                            }
+                            if ui.button("Copy Path").clicked() {
+                                ui.ctx().copy_text(path.clone());
+                                state.status = format!("copied {path}");
+                                ui.close();
+                            }
+                            if ui.button("Show in Explorer").clicked() {
+                                state.status = match reveal_asset(workspace, path) {
+                                    Ok(()) => format!("revealed {path}"),
+                                    Err(error) => error,
+                                };
+                                ui.close();
+                            }
+                        });
+                    }
+                });
+            }
+            for chunk in files.chunks(per_row) {
+                ui.horizontal(|ui| {
+                    for (path, kind, _size) in chunk {
+                        let name = path.rsplit('/').next().unwrap_or(path);
+                        let selected = state.asset_selected(path);
+                        let drag_id = egui::Id::new(("asset-grid-drag", path.as_str()));
+                        let payload = widgets::AssetDrag { path: path.clone() };
+                        let response = ui
+                            .dnd_drag_source(drag_id, payload, |ui| {
+                                asset_grid_cell(ui, asset_kind_icon(*kind), name, selected)
+                            })
+                            .inner;
+                        if response.clicked() {
+                            let modifiers = ui.input(|input| input.modifiers);
+                            if modifiers.shift {
+                                state.select_asset_range(visible, path);
+                            } else if modifiers.ctrl || modifiers.command {
+                                state.toggle_asset(path);
+                            } else {
+                                state.select_asset_only(path.clone());
+                            }
+                            workspace.selection.clear();
+                        }
+                        if response.double_clicked() {
+                            actions.open = Some(path.clone());
+                        }
+                        let targets: Vec<String> = if selected && state.asset_selection.len() > 1 {
+                            state.asset_selection.clone()
+                        } else {
+                            vec![path.clone()]
+                        };
+                        response.context_menu(|ui| {
+                            if ui.button("Open").clicked() {
+                                actions.open = Some(path.clone());
+                                ui.close();
+                            }
+                            if path.ends_with(".prefab.json")
+                                && ui.button("Instantiate In Scene").clicked()
+                            {
+                                actions.instantiate = Some(path.clone());
+                                ui.close();
+                            }
+                            if ui.button("Rename…").clicked() {
+                                actions.rename = Some(path.clone());
+                                ui.close();
+                            }
+                            if ui.button("Ping In Scene").clicked() {
+                                actions.ping = Some(path.clone());
+                                ui.close();
+                            }
+                            if ui
+                                .button(if targets.len() > 1 {
+                                    format!("Duplicate {} items", targets.len())
+                                } else {
+                                    "Duplicate".to_string()
+                                })
+                                .clicked()
+                            {
+                                actions.duplicate = Some(targets.clone());
+                                ui.close();
+                            }
+                            if ui.button("Copy Path").clicked() {
+                                ui.ctx().copy_text(targets.join("\n"));
+                                state.status = format!("copied {path}");
+                                ui.close();
+                            }
+                            if ui.button("Show in Explorer").clicked() {
+                                state.status = match reveal_asset(workspace, path) {
+                                    Ok(()) => format!("revealed {path}"),
+                                    Err(error) => error,
+                                };
+                                ui.close();
+                            }
+                            if ui
+                                .button(if targets.len() > 1 {
+                                    format!("Delete {} items", targets.len())
+                                } else {
+                                    "Delete".to_string()
+                                })
+                                .clicked()
+                            {
+                                actions.delete = Some(targets.clone());
+                                ui.close();
+                            }
+                        });
+                    }
+                });
+            }
+            if files.is_empty() && folders.is_empty() {
+                ui.label(RichText::new("empty folder").weak().size(11.0));
+            }
+        });
+}
+
+/// Project 面板的内容布局（#419）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AssetView {
+    /// 一行一个资产的列表（历史行为）。
+    #[default]
+    List,
+    /// 图标网格（文件夹在前、文件在后）。
+    Grid,
+}
+
+/// Project 面板的列数（#419）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AssetColumns {
+    /// 单列：面包屑 + 列表。
+    #[default]
+    One,
+    /// 两列：左侧目录树、右侧当前目录内容（Unity 的 `ViewMode.TwoColumns`）。
+    Two,
+}
+
+/// 解析后的资产搜索词（#419）。
+///
+/// 语法：`t:<类型>` 只留某一类（英文 slug `t:texture` 与中文标签 `t:纹理` 都认），
+/// `dir:<子串>` 与普通词一样做路径匹配；多个词之间是 **与**，多个 `t:` 之间是
+/// **或**（与 Unity 的 `SearchFilter` 一致）。未知前缀按普通文本处理。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AssetSearch {
+    /// `t:` 指定的类型；空 = 不限。
+    pub kinds: Vec<AssetKind>,
+    /// 其余关键词（小写）。
+    pub needles: Vec<String>,
+}
+
+impl AssetSearch {
+    pub fn parse(text: &str) -> Self {
+        let mut search = AssetSearch::default();
+        for term in text.split_whitespace() {
+            let lower = term.to_lowercase();
+            if let Some(kind_text) = lower.strip_prefix("t:") {
+                if let Some(kind) = asset_kind_by_token(kind_text) {
+                    if !search.kinds.contains(&kind) {
+                        search.kinds.push(kind);
+                    }
+                }
+                continue;
+            }
+            let needle = lower.strip_prefix("dir:").unwrap_or(&lower);
+            if !needle.is_empty() && !search.needles.iter().any(|known| known == needle) {
+                search.needles.push(needle.to_string());
+            }
+        }
+        search
+    }
+
+    /// 是否有任何条件（没有时就是「列当前目录」）。
+    pub fn is_active(&self) -> bool {
+        !self.kinds.is_empty() || !self.needles.is_empty()
+    }
+
+    pub fn matches(&self, path: &str, kind: AssetKind) -> bool {
+        if !self.kinds.is_empty() && !self.kinds.contains(&kind) {
+            return false;
+        }
+        let lower = path.to_lowercase();
+        self.needles.iter().all(|needle| lower.contains(needle))
+    }
+}
+
+/// `t:` 的类型词：英文 slug（`texture`）、`Debug` 名（`Texture`）与中文标签（`纹理`）都认。
+fn asset_kind_by_token(token: &str) -> Option<AssetKind> {
+    let token = token.trim();
+    if token.is_empty() {
+        return None;
+    }
+    AssetKind::all().into_iter().find(|kind| {
+        kind.label().eq_ignore_ascii_case(token) || format!("{kind:?}").eq_ignore_ascii_case(token)
+    })
+}
+
+/// 网格视图每行放几个格子（面板宽度 / 格子宽度，至少 1）。
+fn grid_columns(available_width: f32, cell_width: f32) -> usize {
+    if !available_width.is_finite() || !cell_width.is_finite() || cell_width <= 0.0 {
+        return 1;
+    }
+    ((available_width / cell_width).floor() as usize).max(1)
+}
+
+/// 面板里待处理的资产动作（`assets()` 主体与内容区之间传递）。
+#[derive(Default)]
+struct AssetActions {
+    open: Option<String>,
+    delete: Option<Vec<String>>,
+    duplicate: Option<Vec<String>>,
+    rename: Option<String>,
+    instantiate: Option<String>,
+    commit_rename: Option<(String, String)>,
+    move_to_folder: Option<(String, String)>,
+    create_subfolder: Option<String>,
+    /// 从资产跳到场景里引用它的实体（#419 的 Ping）。
+    ping: Option<String>,
+}
+
+/// 在资产与场景之间定位（#419 的 Ping）：
+///
+/// 找到**第一个**引用该路径的实体（优先当前文档，其次其它打开/磁盘文档），
+/// 选中它并在 Scene / Hierarchy 里一起高亮。找不到时只写状态栏，不改选择。
+fn ping_asset(workspace: &mut Workspace, state: &mut UiState, path: &str) {
+    let active = workspace.active_index();
+    let mut found: Option<(usize, usize)> = None;
+    for offset in 0..workspace.docs.len() {
+        let index = (active + offset) % workspace.docs.len().max(1);
+        let Some(doc) = workspace.docs.get(index) else {
+            continue;
+        };
+        if let Some((entity, _, _)) = doc.doc.field_references(path).into_iter().next() {
+            found = Some((index, entity));
+            break;
+        }
+    }
+    let Some((doc, entity)) = found else {
+        state.status = format!("no object references {path}");
+        return;
+    };
+    if doc != active {
+        workspace.set_active(doc);
+    }
+    // 选中实体 = 退出资产检查器（两者不并存）。
+    state.clear_asset_selection();
+    workspace.select(entity, false);
+    workspace.frame_selection();
+    let name = workspace
+        .document()
+        .doc
+        .entities
+        .get(entity)
+        .map(|entity| entity.display_name())
+        .unwrap_or_else(|| format!("#{entity}"));
+    state.status = format!("pinged {path} → {name}");
+}
+
+/// 网格里一个格子（图标 + 文件名），返回点击响应。
+fn asset_grid_cell(ui: &mut Ui, icon: &str, name: &str, selected: bool) -> egui::Response {
+    let visuals = ui.visuals().clone();
+    let cell = egui::vec2(84.0, 84.0);
+    let (rect, response) = ui.allocate_exact_size(cell, egui::Sense::click());
+    if selected {
+        ui.painter().rect_filled(
+            rect.shrink(2.0),
+            egui::CornerRadius::same(4),
+            visuals.selection.bg_fill,
+        );
+    } else if response.hovered() {
+        ui.painter().rect_filled(
+            rect.shrink(2.0),
+            egui::CornerRadius::same(4),
+            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12),
+        );
+    }
+    ui.painter().text(
+        rect.center_top() + egui::vec2(0.0, 12.0),
+        egui::Align2::CENTER_TOP,
+        icon,
+        egui::FontId::proportional(26.0),
+        visuals.text_color(),
+    );
+    let mut job = egui::text::LayoutJob::simple_singleline(
+        truncate_label(name, 14),
+        egui::FontId::proportional(10.5),
+        visuals.text_color(),
+    );
+    job.wrap.max_width = rect.width() - 6.0;
+    let galley = ui.ctx().fonts_mut(|fonts| fonts.layout_job(job));
+    let size = galley.size();
+    ui.painter().galley(
+        rect.center_bottom() - egui::vec2(size.x * 0.5, size.y + 8.0),
+        galley,
+        visuals.text_color(),
+    );
+    response
+}
+
+/// 文件名截断（网格格子很窄，长名字只留前 `max` 个字符）。
+fn truncate_label(name: &str, max: usize) -> String {
+    let count = name.chars().count();
+    if count <= max {
+        return name.to_string();
+    }
+    let head: String = name.chars().take(max.saturating_sub(1)).collect();
+    format!("{head}…")
+}
+
 pub fn assets(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
     // ---- 导航：后退 / 前进 / 面包屑（Project 窗口的路径栏） ----
     ui.horizontal(|ui| {
@@ -2663,9 +3063,42 @@ pub fn assets(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
     ui.horizontal(|ui| {
         ui.add(
             egui::TextEdit::singleline(&mut state.asset_search)
-                .hint_text("Search assets")
-                .desired_width(130.0),
+                .hint_text("Search (t:texture, dir:sprites)")
+                .desired_width(170.0),
         );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let two_columns = state.asset_columns == AssetColumns::Two;
+            if ui
+                .selectable_label(two_columns, icons::COLUMNS)
+                .on_hover_text("Two columns (folder tree + contents)")
+                .clicked()
+            {
+                state.asset_columns = if two_columns {
+                    AssetColumns::One
+                } else {
+                    AssetColumns::Two
+                };
+            }
+            let grid = state.asset_view == AssetView::Grid;
+            if ui
+                .selectable_label(grid, icons::SQUARES_FOUR)
+                .on_hover_text("Grid view")
+                .clicked()
+            {
+                state.asset_view = if grid {
+                    AssetView::List
+                } else {
+                    AssetView::Grid
+                };
+            }
+            if ui
+                .selectable_label(!grid, icons::LIST_BULLETS)
+                .on_hover_text("List view")
+                .clicked()
+            {
+                state.asset_view = AssetView::List;
+            }
+        });
     });
     // 类型开关由 `AssetKind::all()` 生成：枚举里加一种，这里自动多一个开关，
     // 不用再记得改这里的清单。
@@ -2711,342 +3144,380 @@ pub fn assets(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
     });
     ui.separator();
 
-    let query = state.asset_search.to_lowercase();
+    let query = AssetSearch::parse(&state.asset_search);
     let folder = state.asset_folder.clone();
-    let all: Vec<(String, AssetKind, u64)> = workspace
-        .filtered_assets()
-        .into_iter()
-        .map(|asset| (asset.path.clone(), asset.kind, asset.size_bytes))
-        .collect();
+    let mut actions = AssetActions::default();
+    let content = |ui: &mut Ui,
+                   workspace: &mut Workspace,
+                   state: &mut UiState,
+                   actions: &mut AssetActions| {
+        let all: Vec<(String, AssetKind, u64)> = workspace
+            .filtered_assets()
+            .into_iter()
+            .map(|asset| (asset.path.clone(), asset.kind, asset.size_bytes))
+            .collect();
 
-    // 直接子目录 + 直接子资产（有搜索词时退化成全局扁平搜索）。
-    let mut folders: Vec<String> = Vec::new();
-    let mut files: Vec<(String, AssetKind, u64)> = Vec::new();
-    for (path, kind, size) in all {
-        if !query.is_empty() {
-            if path.to_lowercase().contains(&query) {
-                files.push((path, kind, size));
+        // 直接子目录 + 直接子资产（有搜索词时退化成全局扁平搜索）。
+        let mut folders: Vec<String> = Vec::new();
+        let mut files: Vec<(String, AssetKind, u64)> = Vec::new();
+        for (path, kind, size) in all {
+            if query.is_active() {
+                if query.matches(&path, kind) {
+                    files.push((path, kind, size));
+                }
+                continue;
             }
-            continue;
+            let Some(rest) = path.strip_prefix(&format!("{folder}/")) else {
+                continue;
+            };
+            match rest.split_once('/') {
+                Some((child, _)) => {
+                    let child_path = format!("{folder}/{child}");
+                    if !folders.contains(&child_path) {
+                        folders.push(child_path);
+                    }
+                }
+                None => files.push((path, kind, size)),
+            }
         }
-        let Some(rest) = path.strip_prefix(&format!("{folder}/")) else {
-            continue;
-        };
-        match rest.split_once('/') {
-            Some((child, _)) => {
-                let child_path = format!("{folder}/{child}");
-                if !folders.contains(&child_path) {
-                    folders.push(child_path);
-                }
-            }
-            None => files.push((path, kind, size)),
-        }
-    }
-    folders.sort();
-    sort_assets(&mut files, state.asset_sort, state.asset_sort_desc);
+        folders.sort();
+        sort_assets(&mut files, state.asset_sort, state.asset_sort_desc);
 
-    // 多选（#486）：区间选择按「面板里看到的顺序」算。
-    let visible_paths: Vec<String> = files.iter().map(|(path, _, _)| path.clone()).collect();
+        // 多选（#486）：区间选择按「面板里看到的顺序」算。
+        let visible_paths: Vec<String> = files.iter().map(|(path, _, _)| path.clone()).collect();
 
-    let mut open: Option<String> = None;
-    let mut delete: Option<Vec<String>> = None;
-    let mut duplicate: Option<Vec<String>> = None;
-    let mut rename: Option<String> = None;
-    let mut instantiate: Option<String> = None;
-    let mut commit_rename: Option<(String, String)> = None;
-    // 资产拖到目录行 = 移入该目录（#471）。
-    let mut move_to_folder: Option<(String, String)> = None;
-    // 目录右键 → New Subfolder（#478）。
-    let mut create_subfolder: Option<String> = None;
-
-    // Ctrl/Cmd+A 选中当前目录里的所有资产；Esc 清空（#486）。
-    //
-    // `handle_shortcuts` 里 `SelectAll` 会按焦点面板分派，这里再做一次是为了
-    // 「面板刚打开、焦点还没落在它上面」时也能用。
-    // 有文本框在编辑时（重命名 / 搜索框）不能抢这两个键。
-    let typing = ui.ctx().memory(|memory| memory.focused()).is_some();
-    let (select_all, escape) = ui.input(|input| {
-        (
-            !typing
-                && (input.modifiers.ctrl || input.modifiers.command)
-                && input.key_pressed(egui::Key::A),
-            !typing && input.key_pressed(egui::Key::Escape),
-        )
-    });
-    if select_all {
-        state.asset_selection = visible_paths.clone();
-        state.asset_anchor = visible_paths.first().cloned();
-    }
-    if escape && !state.asset_selection.is_empty() {
-        state.clear_asset_selection();
-    }
-
-    egui::ScrollArea::vertical()
-        .id_salt("asset-scroll")
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            if folder != "assets" {
-                if ui
-                    .selectable_label(false, format!("{} ..", icons::FOLDER))
-                    .clicked()
-                {
-                    let parent = folder.rsplit_once('/').map(|(p, _)| p.to_string());
-                    if let Some(parent) = parent {
-                        navigate_assets(state, &parent);
-                    }
-                }
-            }
-            let colors = workspace.colors();
-            for path in &folders {
-                let selected = state.asset_selected(path);
-                let renaming = matches!(&state.asset_rename, Some((target, _)) if target == path);
-                if renaming {
-                    // 目录也走同一个就地重命名输入框（#478）。
-                    ui.horizontal(|ui| {
-                        if let Some((_, buffer)) = state.asset_rename.as_mut() {
-                            let response = ui.add(
-                                egui::TextEdit::singleline(buffer)
-                                    .desired_width(ui.available_width().max(80.0)),
-                            );
-                            if state.asset_rename_focus {
-                                response.request_focus();
-                                state.asset_rename_focus = false;
-                            }
-                            let (enter, escape) = ui.input(|input| {
-                                (
-                                    input.key_pressed(egui::Key::Enter),
-                                    input.key_pressed(egui::Key::Escape),
-                                )
-                            });
-                            let clicked_outside = response.lost_focus()
-                                && ui.input(|input| input.pointer.any_click());
-                            if escape {
-                                state.asset_rename = None;
-                                state.asset_rename_focus = false;
-                            } else if enter || clicked_outside {
-                                commit_rename = state.asset_rename.take();
-                                state.asset_rename_focus = false;
-                            }
-                        }
-                    });
-                    continue;
-                }
-                let label = format!(
-                    "{} {}",
-                    icons::FOLDER,
-                    path.rsplit('/').next().unwrap_or(path)
-                );
-                let row = list_row(ui, &colors, selected, state.compact, &label);
-                // 拖资产经过目录行：高亮；松手 = 移入该目录（#471）。
-                if row.dnd_hover_payload::<widgets::AssetDrag>().is_some() {
-                    ui.painter().rect_filled(
-                        row.rect,
-                        egui::CornerRadius::ZERO,
-                        egui::Color32::from_rgba_unmultiplied(90, 170, 120, 40),
-                    );
-                }
-                if let Some(payload) = row.dnd_release_payload::<widgets::AssetDrag>() {
-                    move_to_folder = Some((payload.path.clone(), path.clone()));
-                } else if row.double_clicked() {
-                    // 单击 = 选中，双击 = 进入（#478）。
-                    navigate_assets(state, path);
-                } else if row.clicked() {
-                    // 目录不参与区间选择（它们不在文件列表里），修饰键同语义。
-                    let modifiers = ui.input(|input| input.modifiers);
-                    if modifiers.ctrl || modifiers.command {
-                        state.toggle_asset(path);
-                    } else {
-                        state.select_asset_only(path.clone());
-                    }
-                }
-                row.context_menu(|ui| {
-                    if ui.button("Open").clicked() {
-                        navigate_assets(state, path);
-                        ui.close();
-                    }
-                    if ui.button("Rename…").clicked() {
-                        rename = Some(path.clone());
-                        ui.close();
-                    }
-                    if ui.button("New Subfolder…").clicked() {
-                        create_subfolder = Some(path.clone());
-                        ui.close();
-                    }
-                    if ui.button("Copy Path").clicked() {
-                        ui.ctx().copy_text(path.clone());
-                        state.status = format!("copied {path}");
-                        ui.close();
-                    }
-                    if ui.button("Show in Explorer").clicked() {
-                        state.status = match reveal_asset(workspace, path) {
-                            Ok(()) => format!("revealed {path}"),
-                            Err(error) => error,
-                        };
-                        ui.close();
-                    }
-                    ui.separator();
-                    if ui.button("Delete").clicked() {
-                        delete = Some(vec![path.clone()]);
-                        ui.close();
-                    }
-                });
-            }
-            for (path, kind, _size) in &files {
-                let selected = state.asset_selected(path);
-                let renaming = matches!(&state.asset_rename, Some((target, _)) if target == path);
-                if renaming {
-                    ui.horizontal(|ui| {
-                        if let Some((_, buffer)) = state.asset_rename.as_mut() {
-                            let response = ui.add(
-                                egui::TextEdit::singleline(buffer)
-                                    .desired_width(ui.available_width().max(80.0)),
-                            );
-                            if state.asset_rename_focus {
-                                response.request_focus();
-                                state.asset_rename_focus = false;
-                            }
-                            let (enter, escape) = ui.input(|input| {
-                                (
-                                    input.key_pressed(egui::Key::Enter),
-                                    input.key_pressed(egui::Key::Escape),
-                                )
-                            });
-                            // 点别处 = 提交（与层级树 / 引擎一致），Esc = 放弃。
-                            let clicked_outside = response.lost_focus()
-                                && ui.input(|input| input.pointer.any_click());
-                            if escape {
-                                state.asset_rename = None;
-                                state.asset_rename_focus = false;
-                            } else if enter || clicked_outside {
-                                commit_rename = state.asset_rename.take();
-                                state.asset_rename_focus = false;
-                            }
-                        }
-                    });
-                    continue;
-                }
-                let label = format!(
-                    "{} {}",
-                    asset_kind_icon(*kind),
-                    path.rsplit('/').next().unwrap_or(path)
-                );
-                // 右键菜单作用于整个选中集合（点在已选中项上时）。
-                let targets: Vec<String> =
-                    if state.asset_selected(path) && state.asset_selection.len() > 1 {
-                        state.asset_selection.clone()
-                    } else {
-                        vec![path.clone()]
-                    };
-                let drag_id = egui::Id::new(("asset-drag", path.as_str()));
-                let payload = widgets::AssetDrag { path: path.clone() };
-                let response = ui
-                    .dnd_drag_source(drag_id, payload, |ui| {
-                        list_row(ui, &workspace.colors(), selected, state.compact, &label)
-                    })
-                    .inner;
-                if response.clicked() {
-                    // Ctrl/Cmd = 切换，Shift = 从锚点区间选择，普通单击 = 替换（#486）。
-                    let modifiers = ui.input(|input| input.modifiers);
-                    if modifiers.shift {
-                        state.select_asset_range(&visible_paths, path);
-                    } else if modifiers.ctrl || modifiers.command {
-                        state.toggle_asset(path);
-                    } else {
-                        state.select_asset_only(path.clone());
-                    }
-                    // 选中资产就切到资产检查器（#514）：清掉实体选择，两者不并存。
-                    workspace.selection.clear();
-                }
-                if response.double_clicked() {
-                    open = Some(path.clone());
-                }
-                response.context_menu(|ui| {
-                    if ui.button("Open").clicked() {
-                        open = Some(path.clone());
-                        ui.close();
-                    }
-                    if path.ends_with(".prefab.json") && ui.button("Instantiate In Scene").clicked()
-                    {
-                        instantiate = Some(path.clone());
-                        ui.close();
-                    }
-                    if ui.button("Rename…").clicked() {
-                        rename = Some(path.clone());
-                        ui.close();
-                    }
-                    if ui
-                        .button(if targets.len() > 1 {
-                            format!("Duplicate {} items", targets.len())
-                        } else {
-                            "Duplicate".to_string()
-                        })
-                        .clicked()
-                    {
-                        duplicate = Some(targets.clone());
-                        ui.close();
-                    }
-                    if ui.button("Copy Path").clicked() {
-                        let text = targets.join("\n");
-                        ui.ctx().copy_text(text);
-                        state.status = if targets.len() > 1 {
-                            format!("copied {} path(s)", targets.len())
-                        } else {
-                            format!("copied {path}")
-                        };
-                        ui.close();
-                    }
-                    ui.separator();
-                    if ui.button("Find References In Scene").clicked() {
-                        state.pending_find_references = Some((path.clone(), false));
-                        ui.close();
-                    }
-                    if ui.button("Find References In Project").clicked() {
-                        state.pending_find_references = Some((path.clone(), true));
-                        ui.close();
-                    }
-                    ui.separator();
-                    if ui.button("Show in Explorer").clicked() {
-                        state.status = match reveal_asset(workspace, path) {
-                            Ok(()) => format!("revealed {path}"),
-                            Err(error) => error,
-                        };
-                        ui.close();
-                    }
-                    if ui
-                        .button(if targets.len() > 1 {
-                            format!("Delete {} items", targets.len())
-                        } else {
-                            "Delete".to_string()
-                        })
-                        .clicked()
-                    {
-                        delete = Some(targets.clone());
-                        ui.close();
-                    }
-                });
-                // 右键点到未选中的行时，先把它变成唯一选中项（与 Unity 一致）。
-                if response.secondary_clicked() && !state.asset_selected(path) {
-                    state.select_asset_only(path.clone());
-                }
-            }
-            if files.is_empty() && folders.is_empty() {
-                ui.label(RichText::new("empty folder").weak().size(11.0));
-            }
-            // 点列表空白处 = 清空选择（Unity 的 Project 窗口同样行为）。
-            let rest = ui.available_rect_before_wrap();
-            if rest.height() > 0.0 || rest.width() > 0.0 {
-                let blank = ui.interact(
-                    rest,
-                    egui::Id::new(("asset-blank", folder.as_str())),
-                    egui::Sense::click(),
-                );
-                if blank.clicked() {
-                    state.clear_asset_selection();
-                }
-            }
+        // Ctrl/Cmd+A 选中当前目录里的所有资产；Esc 清空（#486）。
+        //
+        // `handle_shortcuts` 里 `SelectAll` 会按焦点面板分派，这里再做一次是为了
+        // 「面板刚打开、焦点还没落在它上面」时也能用。
+        // 有文本框在编辑时（重命名 / 搜索框）不能抢这两个键。
+        let typing = ui.ctx().memory(|memory| memory.focused()).is_some();
+        let (select_all, escape) = ui.input(|input| {
+            (
+                !typing
+                    && (input.modifiers.ctrl || input.modifiers.command)
+                    && input.key_pressed(egui::Key::A),
+                !typing && input.key_pressed(egui::Key::Escape),
+            )
         });
+        if select_all {
+            state.asset_selection = visible_paths.clone();
+            state.asset_anchor = visible_paths.first().cloned();
+        }
+        if escape && !state.asset_selection.is_empty() {
+            state.clear_asset_selection();
+        }
 
-    if let Some((from, folder)) = move_to_folder {
+        if state.asset_view == AssetView::Grid {
+            asset_grid(
+                ui,
+                workspace,
+                state,
+                &folders,
+                &files,
+                &visible_paths,
+                actions,
+            );
+        } else {
+            egui::ScrollArea::vertical()
+                .id_salt("asset-scroll")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    if folder != "assets"
+                        && ui
+                            .selectable_label(false, format!("{} ..", icons::FOLDER))
+                            .clicked()
+                    {
+                        {
+                            let parent = folder.rsplit_once('/').map(|(p, _)| p.to_string());
+                            if let Some(parent) = parent {
+                                navigate_assets(state, &parent);
+                            }
+                        }
+                    }
+                    let colors = workspace.colors();
+                    for path in &folders {
+                        let selected = state.asset_selected(path);
+                        let renaming =
+                            matches!(&state.asset_rename, Some((target, _)) if target == path);
+                        if renaming {
+                            // 目录也走同一个就地重命名输入框（#478）。
+                            ui.horizontal(|ui| {
+                                if let Some((_, buffer)) = state.asset_rename.as_mut() {
+                                    let response = ui.add(
+                                        egui::TextEdit::singleline(buffer)
+                                            .desired_width(ui.available_width().max(80.0)),
+                                    );
+                                    if state.asset_rename_focus {
+                                        response.request_focus();
+                                        state.asset_rename_focus = false;
+                                    }
+                                    let (enter, escape) = ui.input(|input| {
+                                        (
+                                            input.key_pressed(egui::Key::Enter),
+                                            input.key_pressed(egui::Key::Escape),
+                                        )
+                                    });
+                                    let clicked_outside = response.lost_focus()
+                                        && ui.input(|input| input.pointer.any_click());
+                                    if escape {
+                                        state.asset_rename = None;
+                                        state.asset_rename_focus = false;
+                                    } else if enter || clicked_outside {
+                                        actions.commit_rename = state.asset_rename.take();
+                                        state.asset_rename_focus = false;
+                                    }
+                                }
+                            });
+                            continue;
+                        }
+                        let label = format!(
+                            "{} {}",
+                            icons::FOLDER,
+                            path.rsplit('/').next().unwrap_or(path)
+                        );
+                        let row = list_row(ui, &colors, selected, state.compact, &label);
+                        // 拖资产经过目录行：高亮；松手 = 移入该目录（#471）。
+                        if row.dnd_hover_payload::<widgets::AssetDrag>().is_some() {
+                            ui.painter().rect_filled(
+                                row.rect,
+                                egui::CornerRadius::ZERO,
+                                egui::Color32::from_rgba_unmultiplied(90, 170, 120, 40),
+                            );
+                        }
+                        if let Some(payload) = row.dnd_release_payload::<widgets::AssetDrag>() {
+                            actions.move_to_folder = Some((payload.path.clone(), path.clone()));
+                        } else if row.double_clicked() {
+                            // 单击 = 选中，双击 = 进入（#478）。
+                            navigate_assets(state, path);
+                        } else if row.clicked() {
+                            // 目录不参与区间选择（它们不在文件列表里），修饰键同语义。
+                            let modifiers = ui.input(|input| input.modifiers);
+                            if modifiers.ctrl || modifiers.command {
+                                state.toggle_asset(path);
+                            } else {
+                                state.select_asset_only(path.clone());
+                            }
+                        }
+                        row.context_menu(|ui| {
+                            if ui.button("Open").clicked() {
+                                navigate_assets(state, path);
+                                ui.close();
+                            }
+                            if ui.button("Rename…").clicked() {
+                                actions.rename = Some(path.clone());
+                                ui.close();
+                            }
+                            if ui.button("New Subfolder…").clicked() {
+                                actions.create_subfolder = Some(path.clone());
+                                ui.close();
+                            }
+                            if ui.button("Copy Path").clicked() {
+                                ui.ctx().copy_text(path.clone());
+                                state.status = format!("copied {path}");
+                                ui.close();
+                            }
+                            if ui.button("Show in Explorer").clicked() {
+                                state.status = match reveal_asset(workspace, path) {
+                                    Ok(()) => format!("revealed {path}"),
+                                    Err(error) => error,
+                                };
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui.button("Delete").clicked() {
+                                actions.delete = Some(vec![path.clone()]);
+                                ui.close();
+                            }
+                        });
+                    }
+                    for (path, kind, _size) in &files {
+                        let selected = state.asset_selected(path);
+                        let renaming =
+                            matches!(&state.asset_rename, Some((target, _)) if target == path);
+                        if renaming {
+                            ui.horizontal(|ui| {
+                                if let Some((_, buffer)) = state.asset_rename.as_mut() {
+                                    let response = ui.add(
+                                        egui::TextEdit::singleline(buffer)
+                                            .desired_width(ui.available_width().max(80.0)),
+                                    );
+                                    if state.asset_rename_focus {
+                                        response.request_focus();
+                                        state.asset_rename_focus = false;
+                                    }
+                                    let (enter, escape) = ui.input(|input| {
+                                        (
+                                            input.key_pressed(egui::Key::Enter),
+                                            input.key_pressed(egui::Key::Escape),
+                                        )
+                                    });
+                                    // 点别处 = 提交（与层级树 / 引擎一致），Esc = 放弃。
+                                    let clicked_outside = response.lost_focus()
+                                        && ui.input(|input| input.pointer.any_click());
+                                    if escape {
+                                        state.asset_rename = None;
+                                        state.asset_rename_focus = false;
+                                    } else if enter || clicked_outside {
+                                        actions.commit_rename = state.asset_rename.take();
+                                        state.asset_rename_focus = false;
+                                    }
+                                }
+                            });
+                            continue;
+                        }
+                        let label = format!(
+                            "{} {}",
+                            asset_kind_icon(*kind),
+                            path.rsplit('/').next().unwrap_or(path)
+                        );
+                        // 右键菜单作用于整个选中集合（点在已选中项上时）。
+                        let targets: Vec<String> =
+                            if state.asset_selected(path) && state.asset_selection.len() > 1 {
+                                state.asset_selection.clone()
+                            } else {
+                                vec![path.clone()]
+                            };
+                        let drag_id = egui::Id::new(("asset-drag", path.as_str()));
+                        let payload = widgets::AssetDrag { path: path.clone() };
+                        let response = ui
+                            .dnd_drag_source(drag_id, payload, |ui| {
+                                list_row(ui, &workspace.colors(), selected, state.compact, &label)
+                            })
+                            .inner;
+                        if response.clicked() {
+                            // Ctrl/Cmd = 切换，Shift = 从锚点区间选择，普通单击 = 替换（#486）。
+                            let modifiers = ui.input(|input| input.modifiers);
+                            if modifiers.shift {
+                                state.select_asset_range(&visible_paths, path);
+                            } else if modifiers.ctrl || modifiers.command {
+                                state.toggle_asset(path);
+                            } else {
+                                state.select_asset_only(path.clone());
+                            }
+                            // 选中资产就切到资产检查器（#514）：清掉实体选择，两者不并存。
+                            workspace.selection.clear();
+                        }
+                        if response.double_clicked() {
+                            actions.open = Some(path.clone());
+                        }
+                        response.context_menu(|ui| {
+                            if ui.button("Open").clicked() {
+                                actions.open = Some(path.clone());
+                                ui.close();
+                            }
+                            if path.ends_with(".prefab.json")
+                                && ui.button("Instantiate In Scene").clicked()
+                            {
+                                actions.instantiate = Some(path.clone());
+                                ui.close();
+                            }
+                            if ui.button("Rename…").clicked() {
+                                actions.rename = Some(path.clone());
+                                ui.close();
+                            }
+                            if ui
+                                .button(if targets.len() > 1 {
+                                    format!("Duplicate {} items", targets.len())
+                                } else {
+                                    "Duplicate".to_string()
+                                })
+                                .clicked()
+                            {
+                                actions.duplicate = Some(targets.clone());
+                                ui.close();
+                            }
+                            if ui.button("Copy Path").clicked() {
+                                let text = targets.join("\n");
+                                ui.ctx().copy_text(text);
+                                state.status = if targets.len() > 1 {
+                                    format!("copied {} path(s)", targets.len())
+                                } else {
+                                    format!("copied {path}")
+                                };
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui.button("Ping In Scene").clicked() {
+                                actions.ping = Some(path.clone());
+                                ui.close();
+                            }
+                            if ui.button("Find References In Scene").clicked() {
+                                state.pending_find_references = Some((path.clone(), false));
+                                ui.close();
+                            }
+                            if ui.button("Find References In Project").clicked() {
+                                state.pending_find_references = Some((path.clone(), true));
+                                ui.close();
+                            }
+                            ui.separator();
+                            if ui.button("Show in Explorer").clicked() {
+                                state.status = match reveal_asset(workspace, path) {
+                                    Ok(()) => format!("revealed {path}"),
+                                    Err(error) => error,
+                                };
+                                ui.close();
+                            }
+                            if ui
+                                .button(if targets.len() > 1 {
+                                    format!("Delete {} items", targets.len())
+                                } else {
+                                    "Delete".to_string()
+                                })
+                                .clicked()
+                            {
+                                actions.delete = Some(targets.clone());
+                                ui.close();
+                            }
+                        });
+                        // 右键点到未选中的行时，先把它变成唯一选中项（与 Unity 一致）。
+                        if response.secondary_clicked() && !state.asset_selected(path) {
+                            state.select_asset_only(path.clone());
+                        }
+                    }
+                    if files.is_empty() && folders.is_empty() {
+                        ui.label(RichText::new("empty folder").weak().size(11.0));
+                    }
+                    // 点列表空白处 = 清空选择（Unity 的 Project 窗口同样行为）。
+                    let rest = ui.available_rect_before_wrap();
+                    if rest.height() > 0.0 || rest.width() > 0.0 {
+                        let blank = ui.interact(
+                            rest,
+                            egui::Id::new(("asset-blank", folder.as_str())),
+                            egui::Sense::click(),
+                        );
+                        if blank.clicked() {
+                            state.clear_asset_selection();
+                        }
+                    }
+                });
+        }
+    };
+
+    // 两列模式（#419）：左目录树 + 右内容；单列直接铺满。
+    if state.asset_columns == AssetColumns::Two {
+        let height = ui.available_height().max(120.0);
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(150.0, height),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| asset_folder_column(ui, workspace, state),
+            );
+            ui.separator();
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), height),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| content(ui, workspace, state, &mut actions),
+            );
+        });
+    } else {
+        content(ui, workspace, state, &mut actions);
+    }
+
+    if let Some(path) = actions.ping.take() {
+        ping_asset(workspace, state, &path);
+    }
+    if let Some((from, folder)) = actions.move_to_folder {
         match workspace.move_asset_to_folder(&from, Some(&folder)) {
             // 已经在同一个目录里：不写状态栏，避免「拖了一下什么都没变」的噪音。
             Ok(to) if to == from => {}
@@ -3057,7 +3528,7 @@ pub fn assets(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
             Err(error) => state.status = format!("move failed: {error}"),
         }
     }
-    if let Some(path) = open {
+    if let Some(path) = actions.open {
         if path.ends_with(".scene.json") || path.ends_with(".prefab.json") {
             if let Err(error) = workspace.open_project_file(&path) {
                 state.status = format!("open {path} failed: {error}");
@@ -3069,19 +3540,19 @@ pub fn assets(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
             state.status = format!("opened {path}");
         }
     }
-    if let Some(path) = instantiate {
+    if let Some(path) = actions.instantiate {
         match workspace.instantiate_prefab_asset(&path, None) {
             Ok(count) => state.status = format!("instantiated {count} entities"),
             Err(error) => state.status = format!("instantiate failed: {error}"),
         }
     }
-    if let Some(path) = rename {
+    if let Some(path) = actions.rename {
         state.select_asset_only(path.clone());
         let name = path.rsplit('/').next().unwrap_or(&path).to_string();
         state.asset_rename = Some((path, name));
         state.asset_rename_focus = true;
     }
-    if let Some((from, file_name)) = commit_rename {
+    if let Some((from, file_name)) = actions.commit_rename {
         let target = rename_target(&from, &file_name);
         let is_folder = workspace
             .project_root
@@ -3107,7 +3578,7 @@ pub fn assets(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
             None => state.status = "invalid file name".to_string(),
         }
     }
-    if let Some(folder) = create_subfolder {
+    if let Some(folder) = actions.create_subfolder {
         state.prompt = Some(Prompt::new(
             PromptKind::NewFolder,
             "New Folder",
@@ -3115,7 +3586,7 @@ pub fn assets(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
             format!("{folder}/"),
         ));
     }
-    if let Some(paths) = delete {
+    if let Some(paths) = actions.delete {
         // 场景 / 预制体走各自的文档确认框（`Workspace::delete_asset` 会拒绝它们），
         // 其余资产合并成一个确认框（#486）。
         let mut assets = Vec::new();
@@ -3132,7 +3603,7 @@ pub fn assets(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
             request_delete_assets(workspace, state, assets);
         }
     }
-    if let Some(paths) = duplicate {
+    if let Some(paths) = actions.duplicate {
         let mut created = Vec::new();
         let mut failures = Vec::new();
         for path in &paths {
@@ -5108,6 +5579,84 @@ mod window_smoke_tests {
         run_frame_with(workspace, UiState::new(), |ui, workspace, state| {
             inspector(ui, workspace, state)
         });
+    }
+
+    #[test]
+    fn asset_search_supports_type_and_path_filters() {
+        // #419：`t:` 认英文 slug / Debug 名 / 中文标签，其余词按 AND 匹配路径。
+        let query = AssetSearch::parse("t:texture sprites");
+        assert_eq!(query.kinds, vec![AssetKind::Texture]);
+        assert_eq!(query.needles, vec!["sprites".to_string()]);
+        assert!(query.matches("assets/sprites/boat.png", AssetKind::Texture));
+        assert!(!query.matches("assets/sprites/boat.png", AssetKind::Scene));
+        assert!(!query.matches("assets/models/boat.gltf", AssetKind::Texture));
+
+        assert_eq!(
+            AssetSearch::parse("t:材质").kinds,
+            vec![AssetKind::Material],
+            "中文标签也认"
+        );
+        assert_eq!(
+            AssetSearch::parse("t:Material").kinds,
+            vec![AssetKind::Material]
+        );
+        // 普通词之间是 AND；未知前缀按文本处理。
+        let both = AssetSearch::parse("sprites boat");
+        assert!(both.matches("assets/sprites/boat.png", AssetKind::Texture));
+        assert!(!both.matches("assets/sprites/water.png", AssetKind::Texture));
+        assert!(AssetSearch::parse("zz:foo").matches("assets/zz:foo/x.png", AssetKind::Other));
+        // 空查询 = 不过滤（列当前目录）。
+        assert!(!AssetSearch::parse("   ").is_active());
+    }
+
+    #[test]
+    fn the_grid_wraps_cells_by_the_available_width() {
+        assert_eq!(grid_columns(400.0, 92.0), 4);
+        assert_eq!(grid_columns(90.0, 92.0), 1, "窄面板至少一列");
+        assert_eq!(grid_columns(0.0, 92.0), 1);
+        assert_eq!(grid_columns(f32::NAN, 92.0), 1);
+        assert_eq!(truncate_label("short.png", 14), "short.png");
+        assert_eq!(truncate_label("a-very-long-asset-name.png", 6), "a-ver…");
+    }
+
+    #[test]
+    fn grid_and_two_column_modes_render() {
+        for (view, columns) in [
+            (AssetView::Grid, AssetColumns::One),
+            (AssetView::Grid, AssetColumns::Two),
+            (AssetView::List, AssetColumns::Two),
+        ] {
+            let mut workspace = Workspace::sample();
+            let mut state = UiState::new();
+            state.asset_view = view;
+            state.asset_columns = columns;
+            run_frame_with(workspace, state, |ui, workspace, state| {
+                assets(ui, workspace, state);
+            });
+        }
+    }
+
+    #[test]
+    fn ping_selects_the_object_that_references_the_asset() {
+        let mut workspace = Workspace::sample();
+        let mut state = UiState::new();
+        workspace.document_mut().doc.entities[0].components.insert(
+            "prism_engine::scene::MeshRenderer".to_string(),
+            serde_json::json!({ "mesh_path": "assets/models/probe.gltf" }),
+        );
+        state.asset_selection = vec!["assets/models/probe.gltf".to_string()];
+
+        ping_asset(&mut workspace, &mut state, "assets/models/probe.gltf");
+
+        assert_eq!(workspace.selection, vec![0], "ping 要选中引用它的实体");
+        assert!(state.asset_selection.is_empty(), "选中实体后退出资产检查器");
+        assert!(state.status.contains("pinged"), "status: {}", state.status);
+
+        // 没有引用时只写状态栏，不动选择。
+        workspace.clear_selection();
+        ping_asset(&mut workspace, &mut state, "assets/models/missing.gltf");
+        assert!(workspace.selection.is_empty());
+        assert!(state.status.contains("no object references"));
     }
 
     #[test]
