@@ -19,6 +19,8 @@ pub struct AssetDrag {
 /// 组件卡片上的按钮动作（先收集，渲染结束后由调用方应用）。
 pub enum CardAction {
     Copy(String),
+    /// 把剪贴板里的同类型组件值粘贴到选中实体（#418 的组件菜单）。
+    Paste(String),
     Remove(String),
     /// 在检查器顺序里上移 / 下移一个组件（#512）。
     MoveUp(String),
@@ -78,6 +80,44 @@ pub fn component_card_with_assets(
                     {
                         actions.push(CardAction::Copy(component.name.clone()));
                     }
+                    // `…` 菜单（#418）：Copy / Paste Values / 顺序 / Reset / Remove。
+                    // Paste 的启用状态由调用方在应用时判断（剪贴板可能不是这个类型）。
+                    ui.menu_button(icons::DOTS_THREE, |ui| {
+                        if ui.button("Copy Component").clicked() {
+                            actions.push(CardAction::Copy(component.name.clone()));
+                            ui.close();
+                        }
+                        if ui.button("Paste Values").clicked() {
+                            actions.push(CardAction::Paste(component.name.clone()));
+                            ui.close();
+                        }
+                        ui.separator();
+                        if ui.button("Move Up").clicked() {
+                            actions.push(CardAction::MoveUp(component.name.clone()));
+                            ui.close();
+                        }
+                        if ui.button("Move Down").clicked() {
+                            actions.push(CardAction::MoveDown(component.name.clone()));
+                            ui.close();
+                        }
+                        ui.separator();
+                        // Reset 写回 schema 的 defaultJson（整份组件 = 一个撤销步）。
+                        let default = component.default_json.clone();
+                        if ui
+                            .add_enabled(default.is_some(), egui::Button::new("Reset"))
+                            .on_hover_text("Restore every field to the schema default")
+                            .clicked()
+                        {
+                            if let Some(default) = default {
+                                set("", default);
+                            }
+                            ui.close();
+                        }
+                        if ui.button("Remove Component").clicked() {
+                            actions.push(CardAction::Remove(component.name.clone()));
+                            ui.close();
+                        }
+                    });
                 });
             });
             ui.separator();
@@ -244,6 +284,39 @@ mod tests {
             ]
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn field_paste_requires_the_same_json_shape() {
+        // #418：粘贴值不做类型强转，形状不一致时按钮保持禁用。
+        assert!(values_compatible(
+            &serde_json::json!([0.0, 0.0, 0.0]),
+            &serde_json::json!([1.0, 2.0, 3.0])
+        ));
+        assert!(values_compatible(
+            &serde_json::json!(1.0),
+            &serde_json::json!(2.0)
+        ));
+        assert!(values_compatible(
+            &serde_json::json!("a"),
+            &serde_json::json!("b")
+        ));
+        assert!(values_compatible(
+            &serde_json::json!(true),
+            &serde_json::json!(false)
+        ));
+        assert!(values_compatible(
+            &serde_json::json!({"x": 0}),
+            &serde_json::json!({"x": 1})
+        ));
+        assert!(!values_compatible(
+            &serde_json::json!([0.0]),
+            &serde_json::json!("nope")
+        ));
+        assert!(!values_compatible(
+            &serde_json::json!(1.0),
+            &serde_json::json!(null)
+        ));
     }
 
     #[test]
@@ -501,7 +574,8 @@ fn field_row_at(
     match widget {
         FieldWidget::ReadOnly => {
             ui.horizontal(|ui| {
-                ui.label(label);
+                let response = ui.add(egui::Label::new(label).sense(egui::Sense::click()));
+                field_context_menu(&response, &name, value, set);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
                         egui::RichText::new(format_json(value))
@@ -514,7 +588,9 @@ fn field_row_at(
         }
         FieldWidget::Bool => {
             let mut checked = value.as_bool().unwrap_or(false);
-            if ui.checkbox(&mut checked, label).changed() {
+            let response = ui.checkbox(&mut checked, label);
+            field_context_menu(&response, &name, value, set);
+            if response.changed() {
                 set(&name, Value::Bool(checked));
             }
         }
@@ -533,6 +609,7 @@ fn field_row_at(
                             .custom_parser(number_parser),
                     )
                     .on_hover_text("Type an expression: 90/2, 2*(3+4)");
+                field_context_menu(&drag, &name, value, set);
                 if dragged || drag.changed() {
                     set(&name, Value::from(current));
                 }
@@ -557,6 +634,7 @@ fn field_row_at(
                 let response = ui
                     .add(drag.custom_parser(number_parser))
                     .on_hover_text("Type an expression: 90/2, 2*(3+4), sin(30)");
+                field_context_menu(&response, &name, value, set);
                 if dragged || response.changed() {
                     set(&name, Value::from(current as f64));
                 }
@@ -569,6 +647,7 @@ fn field_row_at(
                 ui.label(label);
                 let (response, buffer, committed) =
                     delayed_text_edit(ui, edit_id, &current, false);
+                field_context_menu(&response, &name, value, set);
                 current = buffer;
                 if let Some(text) = committed {
                     set(&name, Value::String(text));
@@ -626,7 +705,8 @@ fn field_row_at(
             let current = value.as_str().unwrap_or_default().to_string();
             let edit_id = ui.make_persistent_id(("field-multiline", name.as_str()));
             ui.label(label);
-            let (_response, _buffer, committed) = delayed_text_edit(ui, edit_id, &current, true);
+            let (response, _buffer, committed) = delayed_text_edit(ui, edit_id, &current, true);
+            field_context_menu(&response, &name, value, set);
             if let Some(text) = committed {
                 set(&name, Value::String(text));
             }
@@ -661,14 +741,13 @@ fn field_row_at(
                 }
                 let _ = scratch;
                 for (axis, item) in values.iter_mut().enumerate() {
-                    if ui
-                        .add(
-                            egui::DragValue::new(item)
-                                .speed(0.01)
-                                .custom_parser(number_parser),
-                        )
-                        .changed()
-                    {
+                    let response = ui.add(
+                        egui::DragValue::new(item)
+                            .speed(0.01)
+                            .custom_parser(number_parser),
+                    );
+                    field_context_menu(&response, &name, value, set);
+                    if response.changed() {
                         let mut next = value.clone();
                         if let Some(array) = next.as_array_mut() {
                             if let Some(slot) = array.get_mut(axis) {
@@ -703,6 +782,7 @@ fn field_row_at(
                                 .custom_parser(number_parser),
                         )
                         .on_hover_text("Type an expression: 90/2, 45+15");
+                    field_context_menu(&response, &name, value, set);
                     if response.changed() {
                         let quat = vm::euler_degrees_to_quat(degrees);
                         set(
@@ -722,7 +802,9 @@ fn field_row_at(
             let mut rgba = read_color(value, alpha);
             ui.horizontal(|ui| {
                 ui.label(label);
-                if ui.color_edit_button_rgba_unmultiplied(&mut rgba).changed() {
+                let response = ui.color_edit_button_rgba_unmultiplied(&mut rgba);
+                field_context_menu(&response, &name, value, set);
+                if response.changed() {
                     set(&name, color_value(rgba, alpha));
                 }
             });
@@ -731,7 +813,7 @@ fn field_row_at(
             let current = value.as_str().unwrap_or_default().to_string();
             ui.horizontal(|ui| {
                 ui.label(label);
-                egui::ComboBox::from_id_salt((name.clone(), field.name.clone()))
+                let combo = egui::ComboBox::from_id_salt((name.clone(), field.name.clone()))
                     .selected_text(current.clone())
                     .show_ui(ui, |ui| {
                         for variant in &variants {
@@ -740,6 +822,7 @@ fn field_row_at(
                             }
                         }
                     });
+                field_context_menu(&combo.response, &name, value, set);
             });
         }
         FieldWidget::List => {
@@ -751,7 +834,9 @@ fn field_row_at(
         FieldWidget::Option => {
             let inner = field.inner.as_deref();
             let mut enabled = !value.is_null();
-            if ui.checkbox(&mut enabled, label).changed() {
+            let response = ui.checkbox(&mut enabled, label);
+            field_context_menu(&response, &name, value, set);
+            if response.changed() {
                 set(
                     &name,
                     if enabled {
@@ -784,7 +869,7 @@ fn field_row_at(
             if fields.is_empty() {
                 json_row(ui, label, value);
             } else {
-                egui::CollapsingHeader::new(label)
+                let section = egui::CollapsingHeader::new(label)
                     .id_salt(("struct", name.clone()))
                     .default_open(true)
                     .show(ui, |ui| {
@@ -804,9 +889,65 @@ fn field_row_at(
                             );
                         }
                     });
+                field_context_menu(&section.header_response, &name, value, set);
             }
         }
     }
+}
+
+/// 字段右键菜单（#418）：复制 / 粘贴值、复制属性路径。
+///
+/// 剪贴板放在 `egui` 的临时数据里（`serde_json::Value` 可存），所以
+/// [`field_row_at`] 的签名不用再涨一个 `UiState` 参数，组件面板也能复用。
+/// 粘贴前用 [`values_compatible`] 校验形状，避免把字符串写进 `Vec3`。
+fn field_context_menu(
+    response: &Response,
+    name: &str,
+    value: &Value,
+    set: &mut dyn FnMut(&str, Value),
+) {
+    const CLIPBOARD: &str = "prism-inspector-field-clipboard";
+    let id = egui::Id::new(CLIPBOARD);
+    response.context_menu(|ui| {
+        if ui.button("Copy Value").clicked() {
+            ui.ctx().copy_text(format_json(value));
+            ui.data_mut(|data| data.insert_temp(id, value.clone()));
+            ui.close();
+        }
+        let clipboard = ui.data(|data| data.get_temp::<Value>(id));
+        let compatible = clipboard
+            .as_ref()
+            .map(|clipboard| values_compatible(value, clipboard))
+            .unwrap_or(false);
+        if ui
+            .add_enabled(compatible, egui::Button::new("Paste Value"))
+            .on_hover_text("Paste the last copied value of the same shape")
+            .clicked()
+        {
+            if let Some(clipboard) = clipboard {
+                set(name, clipboard);
+            }
+            ui.close();
+        }
+        ui.separator();
+        if ui.button("Copy Property Path").clicked() {
+            ui.ctx().copy_text(name.to_string());
+            ui.close();
+        }
+    });
+}
+
+/// 两个 JSON 值是否同形状（粘贴值前的校验；不做类型强转）。
+fn values_compatible(current: &Value, candidate: &Value) -> bool {
+    matches!(
+        (current, candidate),
+        (Value::Array(_), Value::Array(_))
+            | (Value::Object(_), Value::Object(_))
+            | (Value::String(_), Value::String(_))
+            | (Value::Bool(_), Value::Bool(_))
+            | (Value::Number(_), Value::Number(_))
+            | (Value::Null, Value::Null)
+    )
 }
 
 /// 嵌套字段的灰色 JSON 兜底（列表、无法解析的 struct）。
@@ -907,7 +1048,7 @@ fn list_row(
     let inner = field.inner.clone().map(|inner| *inner);
     let mut pending: Option<Value> = None;
 
-    egui::CollapsingHeader::new(format!("{}  ({})", field.label(), items.len()))
+    let section = egui::CollapsingHeader::new(format!("{}  ({})", field.label(), items.len()))
         .id_salt(("list", name.as_str()))
         .default_open(true)
         .show(ui, |ui| {
@@ -971,6 +1112,7 @@ fn list_row(
                 ui.label(egui::RichText::new("empty list").weak().size(10.0));
             }
         });
+    field_context_menu(&section.header_response, &name, value, set);
 
     if let Some(value) = pending {
         set(&name, value);

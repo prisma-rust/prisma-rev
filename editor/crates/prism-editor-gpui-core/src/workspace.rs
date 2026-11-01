@@ -2729,6 +2729,38 @@ impl Workspace {
         });
     }
 
+    /// 把剪贴板里的组件值覆盖到这些实体（仅当类型一致且实体本来就有该组件）。
+    ///
+    /// 与 [`Self::paste_component`] 的区别：后者按主选中项**插入**组件，这里只覆盖
+    /// 已有组件的值，并且一次撤销步覆盖整个选中集合（#418 的组件 `…` 菜单）。
+    /// 返回实际应用到的实体数。
+    pub fn paste_component_values(&mut self, indices: &[usize], component_name: &str) -> usize {
+        let Some(clipboard) = self.clipboard.clone() else {
+            return 0;
+        };
+        if clipboard.component != component_name {
+            return 0;
+        }
+        let indices = indices.to_vec();
+        let component_name = component_name.to_string();
+        self.edit("粘贴组件值", |document| {
+            let mut applied = 0;
+            for index in indices {
+                let Some(component) = document
+                    .doc
+                    .entities
+                    .get_mut(index)
+                    .and_then(|entity| entity.components.get_mut(&component_name))
+                else {
+                    continue;
+                };
+                *component = clipboard.value.clone();
+                applied += 1;
+            }
+            applied
+        })
+    }
+
     /// 多选时都能添加的组件（交集）：检查器「多对象编辑」只显示公共组件。
     pub fn common_components(&self, indices: &[usize]) -> Vec<TypeSchema> {
         let doc = &self.document().doc;
@@ -4641,6 +4673,58 @@ fn normalize_quat(quat: [f32; 4]) -> Option<[f32; 4]> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn an_empty_path_replaces_the_whole_component_in_one_step() {
+        // 组件菜单的 Reset 走 `set_field(.., "", defaultJson)`：整份组件替换、一步撤销。
+        let mut workspace = Workspace::sample();
+        let id = workspace.document().doc.id_of_index(0).unwrap();
+        workspace.document_mut().doc.entities[0]
+            .components
+            .insert("test::Rig".to_string(), serde_json::json!({"speed": 9.0}));
+        let undo_before = workspace.undo_history().len();
+
+        workspace.set_field(id, "test::Rig", "", serde_json::json!({"speed": 1.0}));
+
+        assert_eq!(
+            workspace.document().doc.entities[0].components["test::Rig"],
+            serde_json::json!({"speed": 1.0})
+        );
+        assert_eq!(workspace.undo_history().len(), undo_before + 1);
+        workspace.undo();
+        assert_eq!(
+            workspace.document().doc.entities[0].components["test::Rig"]["speed"],
+            serde_json::json!(9.0)
+        );
+    }
+
+    #[test]
+    fn pasting_component_values_overwrites_matching_components_in_one_step() {
+        let mut workspace = Workspace::sample();
+        workspace.document_mut().doc.entities[0]
+            .components
+            .insert("test::Rig".to_string(), serde_json::json!({"speed": 1.0}));
+        workspace.document_mut().doc.entities[1]
+            .components
+            .insert("test::Rig".to_string(), serde_json::json!({"speed": 2.0}));
+
+        workspace.copy_component_at(0, "test::Rig");
+        let undo_before = workspace.undo_history().len();
+        assert_eq!(
+            workspace.paste_component_values(&[1], "test::Rig"),
+            1,
+            "同类型组件才覆盖"
+        );
+        assert_eq!(
+            workspace.document().doc.entities[1].components["test::Rig"]["speed"],
+            serde_json::json!(1.0)
+        );
+        assert_eq!(workspace.undo_history().len(), undo_before + 1);
+
+        // 剪贴板类型与目标不一致 / 目标没有该组件时不写。
+        assert_eq!(workspace.paste_component_values(&[0], "test::Other"), 0);
+        assert_eq!(workspace.paste_component_values(&[2], "test::Rig"), 0);
+    }
 
     #[test]
     fn maximize_on_play_restores_the_previous_layout() {

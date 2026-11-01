@@ -242,6 +242,11 @@ impl Default for OfflineToolsState {
 #[derive(Default)]
 pub struct UiState {
     pub inspector_search: String,
+    /// 检查器锁定：按**实体 id** 钉住内容（Unity 的 Inspector Lock，#418）。
+    ///
+    /// 存 id 而不是下标：删除 / 重排实体后仍然指向同一个对象；对象全被删掉时
+    /// 下一帧自动解锁、回落到文档选择。
+    pub inspector_lock: Option<Vec<u32>>,
     pub hierarchy_search: String,
     pub asset_search: String,
     /// 历史面板的排序：`true` = 最新在上（引擎的 `m_ShowLatestFirst`）。
@@ -1117,6 +1122,39 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
 // 检查器
 // ---------------------------------------------------------------------------
 
+/// 检查器实际显示的实体下标（#418）。
+///
+/// 锁定时用锁住的实体 id 解析下标（失效的自动丢弃）；锁住的对象全没了就清锁、
+/// 回落到文档选择。未锁定时就是 `workspace.selection`。
+fn inspector_indices(workspace: &Workspace, state: &mut UiState) -> Vec<usize> {
+    let Some(ids) = state.inspector_lock.clone() else {
+        return workspace.selection.clone();
+    };
+    let resolved: Vec<usize> = ids
+        .iter()
+        .filter_map(|id| workspace.document().doc.index_of_id(*id))
+        .collect();
+    if resolved.is_empty() {
+        state.inspector_lock = None;
+        return workspace.selection.clone();
+    }
+    resolved
+}
+
+/// 锁定 / 解锁检查器：锁的是当前选择里的实体 id（#418）。
+fn toggle_inspector_lock(workspace: &Workspace, state: &mut UiState) {
+    if state.inspector_lock.is_some() {
+        state.inspector_lock = None;
+        return;
+    }
+    let ids = workspace
+        .selection
+        .iter()
+        .filter_map(|index| workspace.document().doc.id_of_index(*index))
+        .collect();
+    state.inspector_lock = Some(ids);
+}
+
 /// Play 态提示色（#500）：播放中为绿色，暂停为琥珀色，与状态栏的 PLAYING / PAUSED 一致。
 ///
 /// 整窗描边和 Inspector 顶部横幅共用这一个来源，避免两处颜色漂移。
@@ -1153,7 +1191,33 @@ pub fn inspector(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
         ui.add_space(4.0);
     }
 
-    let indices = workspace.selection.clone();
+    // Inspector 锁定（#418）：钉住当前对象，去别处点选时不换内容。
+    ui.horizontal(|ui| {
+        let locked = state.inspector_lock.is_some();
+        let icon = if locked {
+            icons::LOCK_SIMPLE
+        } else {
+            icons::LOCK_SIMPLE_OPEN
+        };
+        let hint = if locked {
+            "Unlock the inspector"
+        } else {
+            "Lock the inspector to the current selection"
+        };
+        let can_lock = locked || !workspace.selection.is_empty();
+        if ui
+            .add_enabled(can_lock, egui::Button::new(icon).small())
+            .on_hover_text(hint)
+            .clicked()
+        {
+            toggle_inspector_lock(workspace, state);
+        }
+        if locked {
+            ui.label(RichText::new("Locked").size(10.5).weak());
+        }
+    });
+
+    let indices = inspector_indices(workspace, state);
     if indices.is_empty() {
         // 没有选中实体时，Project 面板选中的资产接管检查器（#514）。
         if !state.asset_selection.is_empty() {
@@ -2054,6 +2118,14 @@ fn inspector_single(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState,
     for action in actions {
         match action {
             widgets::CardAction::Copy(name) => workspace.copy_component_at(index, &name),
+            widgets::CardAction::Paste(name) => {
+                let applied = workspace.paste_component_values(&[index], &name);
+                state.status = if applied == 0 {
+                    format!("nothing to paste into {name}")
+                } else {
+                    format!("pasted values into {name}")
+                };
+            }
             widgets::CardAction::Remove(name) => workspace.remove_component(&name),
             widgets::CardAction::MoveUp(name) => {
                 workspace.move_component_at(index, &name, -1);
@@ -2634,6 +2706,14 @@ fn inspector_multi(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState, 
                 if let Some(index) = workspace.primary_selection() {
                     workspace.copy_component_at(index, &name);
                 }
+            }
+            widgets::CardAction::Paste(name) => {
+                let applied = workspace.paste_component_values(indices, &name);
+                state.status = if applied == 0 {
+                    format!("nothing to paste into {name}")
+                } else {
+                    format!("pasted values into {name} ({applied} objects)")
+                };
             }
             widgets::CardAction::Remove(name) => {
                 workspace.remove_component_multi(indices, &name);
@@ -5824,6 +5904,46 @@ mod window_smoke_tests {
         ping_asset(&mut workspace, &mut state, "assets/models/missing.gltf");
         assert!(workspace.selection.is_empty());
         assert!(state.status.contains("no object references"));
+    }
+
+    #[test]
+    fn locking_the_inspector_pins_entity_ids() {
+        // #418：锁定存实体 id，去别处点选时检查器内容不换。
+        let mut workspace = Workspace::sample();
+        let mut state = UiState::new();
+        workspace.select(1, false);
+        toggle_inspector_lock(&workspace, &mut state);
+        assert!(state.inspector_lock.is_some());
+        assert_eq!(inspector_indices(&workspace, &mut state), vec![1]);
+
+        workspace.select(0, false);
+        assert_eq!(
+            inspector_indices(&workspace, &mut state),
+            vec![1],
+            "锁定时忽略新的选择"
+        );
+
+        toggle_inspector_lock(&workspace, &mut state);
+        assert!(state.inspector_lock.is_none());
+        assert_eq!(inspector_indices(&workspace, &mut state), vec![0]);
+    }
+
+    #[test]
+    fn deleting_the_locked_entity_releases_the_lock() {
+        let mut workspace = Workspace::sample();
+        let mut state = UiState::new();
+        workspace.select(1, false);
+        toggle_inspector_lock(&workspace, &mut state);
+        let locked_id = workspace.document().doc.id_of_index(1).expect("entity id");
+
+        workspace.document_mut().doc.entities.remove(1);
+        assert!(workspace.document().doc.index_of_id(locked_id).is_none());
+        let indices = inspector_indices(&workspace, &mut state);
+        assert!(
+            state.inspector_lock.is_none(),
+            "锁住的对象被删掉后要自动解锁"
+        );
+        assert_eq!(indices, workspace.selection.clone(), "回落到文档选择");
     }
 
     #[test]

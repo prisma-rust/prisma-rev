@@ -221,6 +221,10 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
   `+ Add` 按元素 schema 生成默认值（`Vec3` → `[0,0,0]`，嵌套 struct → 各字段默认值）；
   定长数组不提供增删；元素内部仍然用它们真正的控件，路径是 `字段[i]`（`LineRenderer.points`
   这类字段因此不必再手改 JSON）。`Option<T>` 用勾选框控制存在与否，嵌套 struct 可折叠展开。
+  **组件卡头的 `…` 菜单**：Copy Component / Paste Values / Move Up·Down / Reset（写回
+  schema 的 `defaultJson`，一次撤销步）/ Remove；**字段右键**：Copy Value / Paste Value
+  （只有同形状的值可粘贴，不做类型强转）/ Copy Property Path。面板顶部的锁图标是
+  **Inspector Lock**：按实体 id 钉住当前对象，去别处点选不换内容，对象被删后自动解锁。
 - **Project（资产）**：后退 / 前进 / 面包屑、目录浏览、类型过滤、搜索、重命名 /
   复制 / 删除 / 复制路径 / 实例化预制体；**目录行**和文件一样可以选中（单击选中、
   双击进入），右键有 Open / Rename / New Subfolder / Copy Path / Show in Explorer /
