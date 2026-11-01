@@ -309,14 +309,18 @@ fn sprite_uv_rect(sprite: &SpriteRenderer, texture_size: [u32; 2]) -> [f32; 4] {
     let frame_w = frame[0].max(1) as f32;
     let frame_h = frame[1].max(1) as f32;
 
-    // Sheets are laid out horizontally; `frame_index` counts from the top-left.
-    let columns = ((texture_size[0].max(1) as f32 / frame_w).floor() as u32).max(1);
+    // Sheets are laid out row-major. `frame_index` counts within the selected
+    // row first; only an index past the last column continues to the next row.
+    let columns = sprite.sheet_columns_or(texture_size);
+    let rows = sprite.sheet_rows(texture_size);
+    let row = sprite.sheet_row.min(rows - 1);
     let column = sprite.frame_index % columns;
+    let row = (row + sprite.frame_index / columns).min(rows - 1);
 
     let mut u0 = column as f32 * frame_w / tex_w;
     let mut u1 = ((column as f32 + 1.0) * frame_w / tex_w).min(1.0);
-    let mut v0 = 0.0;
-    let mut v1 = (frame_h / tex_h).min(1.0);
+    let mut v0 = row as f32 * frame_h / tex_h;
+    let mut v1 = ((row as f32 + 1.0) * frame_h / tex_h).min(1.0);
 
     if sprite.flip_x {
         std::mem::swap(&mut u0, &mut u1);

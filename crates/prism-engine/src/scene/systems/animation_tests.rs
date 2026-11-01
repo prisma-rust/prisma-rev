@@ -160,6 +160,52 @@ fn one_shot_restarts_when_playing_is_re_enabled() {
 }
 
 #[test]
+fn frame_start_offsets_the_written_frame_within_the_row() {
+    // #584：同一行第 2..3 列作为独立动作，只播 2 帧并循环。
+    let mut world = World::new();
+    let entity = spawn(
+        &mut world,
+        SpriteAnimation {
+            frames: 2,
+            frame_start: 2,
+            fps: 10.0,
+            ..SpriteAnimation::default()
+        },
+        [64, 16],
+    );
+
+    sprite_animation_system(&mut world, 0.0);
+    assert_eq!(frame_of(&world, entity), 2);
+    sprite_animation_system(&mut world, 0.15); // t = 0.15 -> 第 2 帧
+    assert_eq!(frame_of(&world, entity), 3);
+    sprite_animation_system(&mut world, 0.1); // t = 0.25 -> 循环回 frame_start
+    assert_eq!(frame_of(&world, entity), 2);
+}
+
+#[test]
+fn derived_frames_stop_at_the_selected_rows_end() {
+    let mut world = World::new();
+    let entity = spawn(
+        &mut world,
+        SpriteAnimation {
+            frames: 0,
+            frame_start: 2,
+            fps: 10.0,
+            ..SpriteAnimation::default()
+        },
+        [64, 16],
+    );
+
+    // 4 列，从第 2 列开始 -> 只剩 2 帧。
+    sprite_animation_system(&mut world, 0.05);
+    assert_eq!(frame_of(&world, entity), 2);
+    sprite_animation_system(&mut world, 0.1);
+    assert_eq!(frame_of(&world, entity), 3);
+    sprite_animation_system(&mut world, 0.1);
+    assert_eq!(frame_of(&world, entity), 2);
+}
+
+#[test]
 fn phase_offsets_the_start_frame() {
     let mut world = World::new();
     let entity = spawn(
