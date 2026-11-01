@@ -223,6 +223,8 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
   还可以选固定分辨率（1920×1080 等）或「只锁比例」的 `16:9 (fit)` /
   `4:3 (fit)` 等；`Match Window` 保留旧的跟面板缩放行为。控制通道用
   `resolution:1600x900` / `resolution:fit:16x9` / `resolution:match`。
+- **2D 网格**：Scene 视图切到 2D / 正交相机时，参考网格画在 `z = 0` 的 XY 平面
+  （X 红、Y 绿），而不是 3D 的 XZ 地面；位置和线宽沿用原来的 1m / 10m 分级（#602）。
 - **多选拖拽**：拖多选中的任一行且落在行的中间区 = `reparent_selection` 整组改父级。
 - **资产选择器**：检查器的路径字段右侧有 `⋯` 按钮，按字段名过滤扩展名
   （`mesh_path` → 模型、`sprite_path` → 贴图、`hdr_path`/`env_map` → HDR…），
