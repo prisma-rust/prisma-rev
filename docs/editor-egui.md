@@ -94,7 +94,7 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
   `compile failed`）和 `Compile (Ctrl+R)` 按钮。源码时间戳晚于上一次编译尝试时是
   `pending`，Auto Refresh 关掉也看得出来。
 - **Problems 面板**（Window → General → Problems）列出
-  `cargo --message-format=json-render-diagnostics` 的 error / warning，带
+  `cargo --message-format=json` 的 error / warning，带
   `file:line:col`，点一行用默认编辑器打开（先试 `code -g`，没有 `code` 就交给
   系统默认处理程序）。编译成功时 warning 也保留；失败时第一条 error 同时进 Console。
   面板有两段：**Project module**（Game View 的 `preview-module`）和

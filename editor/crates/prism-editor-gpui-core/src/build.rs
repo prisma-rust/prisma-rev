@@ -108,7 +108,7 @@ pub fn plan_build(root: &Path, settings: &ProjectSettings) -> BuildPlan {
         manifest.to_string_lossy().into_owned(),
         // 编辑器把这两路输出解析成 Problems 面板条目；`cargo run` 不加（会污染游戏 stdout）。
         "--message-format".to_string(),
-        "json-render-diagnostics".to_string(),
+        "json".to_string(),
     ];
     if release {
         build_args.push("--release".to_string());
