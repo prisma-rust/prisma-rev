@@ -475,3 +475,67 @@ fn line_json_defaults_to_miter_join_and_butt_caps() {
     assert!(text.contains("\"Bevel\""), "{text}");
     assert!(text.contains("\"Round\""), "{text}");
 }
+
+#[test]
+fn particle_emitter_2d_json_round_trips_and_defaults() {
+    let emitter = ParticleEmitter2D {
+        emission_rate: 120.0,
+        burst: 3,
+        shape: ParticleShape2D::Box,
+        shape_size: [4.0, 0.5],
+        direction: [1.0, -1.0],
+        spread_degrees: 25.0,
+        sorting_layer: 7,
+        start_color: [0.2, 0.4, 1.0, 0.9],
+        end_color: [0.2, 0.4, 1.0, 0.0],
+        ..ParticleEmitter2D::default()
+    };
+    let json = serde_json::to_string(&emitter).unwrap();
+    let back: ParticleEmitter2D = serde_json::from_str(&json).unwrap();
+    assert!(approx(back.emission_rate, 120.0));
+    assert_eq!(back.burst, 3);
+    assert_eq!(back.shape, ParticleShape2D::Box);
+    assert_eq!(back.shape_size, [4.0, 0.5]);
+    assert_eq!(back.sorting_layer, 7);
+
+    // 老文档 / 只写一个字段：其余走 serde 默认。
+    let legacy: ParticleEmitter2D = serde_json::from_str(r#"{"emission_rate": 5.0}"#).unwrap();
+    assert!(approx(legacy.emission_rate, 5.0));
+    assert_eq!(legacy.shape, ParticleShape2D::Point);
+    assert!(legacy.playing);
+    assert!(approx(legacy.direction[1], -1.0), "默认向下发射");
+    assert_eq!(legacy.particle_cap(), 256, "0 = 内置上限");
+
+    // 方向退化 / 非有限值时回落到向下，而不是 NaN 速度。
+    let broken = ParticleEmitter2D {
+        direction: [0.0, 0.0],
+        ..ParticleEmitter2D::default()
+    };
+    assert_eq!(broken.direction_or_down(), [0.0, -1.0]);
+    assert!(!broken.rate().is_nan());
+}
+
+#[test]
+fn particle_shape_2d_exposes_enum_variants_for_the_editor() {
+    use prism_reflect::ReflectType;
+    assert_eq!(
+        ParticleShape2D::enum_variants(),
+        Some(&["Point", "Line", "Box", "Circle"][..])
+    );
+    for (index, shape) in [
+        ParticleShape2D::Point,
+        ParticleShape2D::Line,
+        ParticleShape2D::Box,
+        ParticleShape2D::Circle,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(shape.to_value(), prism_reflect::Value::U64(index as u64));
+        assert_eq!(
+            ParticleShape2D::from_value(shape.to_value()).unwrap(),
+            shape
+        );
+    }
+    assert!(ParticleShape2D::from_value(prism_reflect::Value::U64(9)).is_err());
+}

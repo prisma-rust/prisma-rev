@@ -181,6 +181,8 @@ pub fn scene_2d_system(world: &World) -> Vec<prism_render::SpriteDrawItem> {
 pub fn scene_2d_system_into(world: &World, out: &mut Vec<prism_render::SpriteDrawItem>) {
     let mut entries = sprite_entries(world);
     entries.extend(line_entries(world));
+    // 2D 粒子是纯色四边形，和精灵共用同一条通道与排序（#594）。
+    entries.extend(super::particles2d::particle_entries_2d(world));
     sort_draw_items_into(entries, out);
 }
 

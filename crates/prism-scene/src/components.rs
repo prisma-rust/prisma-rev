@@ -6,7 +6,7 @@
 //! | 变换     | `LocalTransform`, `LocalToWorld`, `TransformDirty` |
 //! | 渲染     | `MeshRenderer`, `SpriteRenderer`, `Active` |
 //! | 动画     | `SpriteAnimation`（2D 帧）, `KeyframeAnimation`（曲线） |
-//! | 粒子     | `ParticleSystem`（世界空间 CPU 粒子） |
+//! | 粒子     | `ParticleSystem`（世界空间 3D CPU 粒子）、`ParticleEmitter2D`（世界 XY 平面 2D 粒子） |
 //! | 光源 | `Light`（形状）, `DirectionalLight`, `PointLight`, `SpotLight`（旧） |
 //! | 相机     | `Camera`, `FlyCameraController` |
 //! | 天空盒   | `Skybox` |
@@ -796,6 +796,192 @@ impl ParticleSystem {
             (fallback, fallback)
         };
         lo + (hi - lo) * t
+    }
+}
+
+/// 2D 发射器形状（`ParticleEmitter2D`）。
+///
+/// 只影响粒子出生点在发射器本地 XY 平面里的偏移；初速度方向由
+/// `direction` + `spread_degrees` 决定。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ParticleShape2D {
+    /// 全部从发射器原点出发。
+    #[default]
+    Point,
+    /// 沿本地 X 轴的一条线段（`shape_size[0]` 是半长）。
+    Line,
+    /// 本地矩形（`shape_size` 是半宽 / 半高）。
+    Box,
+    /// 本地圆盘（`shape_radius`）。
+    Circle,
+}
+
+impl ReflectType for ParticleShape2D {
+    fn field_type() -> FieldType {
+        FieldType::U8
+    }
+
+    fn enum_variants() -> Option<&'static [&'static str]> {
+        Some(&["Point", "Line", "Box", "Circle"])
+    }
+
+    fn to_value(&self) -> Value {
+        Value::U64(match self {
+            Self::Point => 0,
+            Self::Line => 1,
+            Self::Box => 2,
+            Self::Circle => 3,
+        })
+    }
+
+    fn from_value(value: Value) -> Result<Self, ReflectError> {
+        match value.as_u64()? {
+            0 => Ok(Self::Point),
+            1 => Ok(Self::Line),
+            2 => Ok(Self::Box),
+            3 => Ok(Self::Circle),
+            other => Err(ReflectError::BadData(format!(
+                "invalid ParticleShape2D discriminant {other}"
+            ))),
+        }
+    }
+}
+
+/// 2D 世界空间粒子发射器（#594）。
+///
+/// 和 3D 的 [`ParticleSystem`] 是同一套思路：这里只描述**作者参数**，活着的
+/// 粒子存在运行时组件
+/// `prism_engine::scene::systems::particles2d::ParticleEmitter2DState` 里，
+/// 不进 `.scene.json` / RSCN。粒子在**世界 XY 平面**积分（发射器移动不会
+/// 拖走已飞出的粒子），初速度方向按发射器当前的 Z 轴旋转换算。
+///
+/// 绘制走 2D 精灵通道（`SpriteDrawItem`）：每个粒子是一个纯色四边形，
+/// 和精灵一起按 `sorting_layer → order_in_layer → z` 排序，因此水花可以夹在
+/// 船和水面之间，而不需要单独的渲染 pass。
+///
+/// 常见的雨 / 雪 / 水花不需要新的着色器，只是参数不同：
+///
+/// ```json
+/// "prism_engine::scene::ParticleEmitter2D": {
+///   "emission_rate": 240, "lifetime": [1.2, 1.8],
+///   "start_speed": [9.0, 12.0], "start_size": [0.04, 0.06],
+///   "direction": [0, -1], "spread_degrees": 6,
+///   "shape": "Box", "shape_size": [12, 0.5],
+///   "gravity": [0, -2.0], "drag": 0.0,
+///   "start_color": [0.75, 0.85, 1.0, 0.65],
+///   "end_color": [0.75, 0.85, 1.0, 0.25]
+/// }
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
+#[reflect(name = "prism_engine::scene::ParticleEmitter2D")]
+#[serde(default)]
+pub struct ParticleEmitter2D {
+    /// 是否发射/推进；`false` 时已有粒子停在原地（不是清除）。
+    pub playing: bool,
+    /// 每秒发射数量。
+    pub emission_rate: f32,
+    /// 每个发射循环开始时额外一次性发射的数量。
+    pub burst: u32,
+    /// 发射持续时长（秒）；`0` = 一直发射（忽略 `looping`）。
+    pub duration: f32,
+    /// `duration > 0` 时是否循环发射。
+    pub looping: bool,
+    /// 同时存活的粒子上限；`0` = 内置默认（256）。
+    pub max_particles: u32,
+    /// 生命周期随机区间 `[min, max]`（秒）。
+    pub lifetime: [f32; 2],
+    /// 初始速度随机区间（世界单位 / 秒）。
+    pub start_speed: [f32; 2],
+    /// 初始边长随机区间（世界单位；四边形是正方形）。
+    pub start_size: [f32; 2],
+    /// 出生时的 RGBA 颜色（含 alpha）。
+    pub start_color: [f32; 4],
+    /// 死亡时的 RGBA 颜色；alpha 通常写 0 做淡出。
+    pub end_color: [f32; 4],
+    /// 恒定加速度（世界单位 / 秒²），`[0, -9.8]` 是重力。
+    pub gravity: [f32; 2],
+    /// 速度阻尼（每秒衰减比例，`0` = 无阻尼，`1` = 一秒内速度归零）。
+    pub drag: f32,
+    /// 出生点形状。
+    pub shape: ParticleShape2D,
+    /// `Line` / `Box` 的半尺寸（世界单位）；`Line` 只用 `[0]`。
+    pub shape_size: [f32; 2],
+    /// `Circle` 的半径（世界单位）。
+    pub shape_radius: f32,
+    /// 初速度基准方向（本地空间，不必归一化）；零向量时用 `[0, -1]`。
+    pub direction: [f32; 2],
+    /// 相对 `direction` 的随机半角（度，0 = 全部沿同一方向）。
+    pub spread_degrees: f32,
+    /// 与其它 2D 绘制项一起排序的层。
+    pub sorting_layer: i32,
+    /// 同层内的顺序。
+    pub order_in_layer: i32,
+}
+
+impl Default for ParticleEmitter2D {
+    fn default() -> Self {
+        Self {
+            playing: true,
+            emission_rate: 20.0,
+            burst: 0,
+            duration: 0.0,
+            looping: true,
+            max_particles: 0,
+            lifetime: [0.6, 1.2],
+            start_speed: [1.0, 2.5],
+            start_size: [0.05, 0.12],
+            start_color: [1.0, 0.92, 0.7, 1.0],
+            end_color: [1.0, 0.55, 0.2, 0.0],
+            gravity: [0.0, -3.0],
+            drag: 0.4,
+            shape: ParticleShape2D::Point,
+            shape_size: [0.5, 0.5],
+            shape_radius: 0.25,
+            direction: [0.0, -1.0],
+            spread_degrees: 15.0,
+            sorting_layer: 0,
+            order_in_layer: 0,
+        }
+    }
+}
+
+impl ParticleEmitter2D {
+    /// 同时存活粒子上限（`max_particles == 0` 时回落到 256）。
+    pub fn particle_cap(&self) -> usize {
+        if self.max_particles == 0 {
+            256
+        } else {
+            self.max_particles as usize
+        }
+    }
+
+    /// 发射时长（秒）；`0` / 非有限值表示无限。
+    pub fn emission_duration(&self) -> Option<f32> {
+        if self.duration.is_finite() && self.duration > 0.0 {
+            Some(self.duration)
+        } else {
+            None
+        }
+    }
+
+    /// 每秒发射数量（非法值按 0，负值不发射）。
+    pub fn rate(&self) -> f32 {
+        if self.emission_rate.is_finite() && self.emission_rate > 0.0 {
+            self.emission_rate
+        } else {
+            0.0
+        }
+    }
+
+    /// 归一化的基准方向；零向量 / 非有限值时回落到「向下」。
+    pub fn direction_or_down(&self) -> [f32; 2] {
+        let length =
+            (self.direction[0] * self.direction[0] + self.direction[1] * self.direction[1]).sqrt();
+        if length.is_finite() && length > 1e-6 {
+            [self.direction[0] / length, self.direction[1] / length]
+        } else {
+            [0.0, -1.0]
+        }
     }
 }
 
