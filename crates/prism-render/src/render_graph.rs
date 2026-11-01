@@ -449,6 +449,34 @@ pub struct SpriteDrawItem {
     pub src_blend: prism_gfx::BlendMode,
     pub dst_blend: prism_gfx::BlendMode,
     pub blend_op: prism_gfx::BlendOp,
+    /// World-space clipping rect `[min_x, min_y, max_x, max_y]` (#582).
+    ///
+    /// [`NO_CLIP`] means "draw everywhere"; anything with `max_x >= min_x`
+    /// clips per-fragment in the shader.
+    pub clip: [f32; 4],
+}
+
+/// Disabled clip rect: `max < min`, which the sprite shader treats as "no clip".
+pub const NO_CLIP: [f32; 4] = [0.0, 0.0, -1.0, -1.0];
+
+/// 把作者的裁剪矩形规范成 `[min_x, min_y, max_x, max_y]`。
+///
+/// 关闭、非有限值、或任一轴退化成零面积时返回 [`NO_CLIP`]——作者刚勾上
+/// `clip_enabled` 但还没填矩形时精灵不会凭空消失。
+pub fn clip_bounds(enabled: bool, rect: [f32; 4]) -> [f32; 4] {
+    if !enabled || rect.iter().any(|value| !value.is_finite()) {
+        return NO_CLIP;
+    }
+    let bounds = [
+        rect[0].min(rect[2]),
+        rect[1].min(rect[3]),
+        rect[0].max(rect[2]),
+        rect[1].max(rect[3]),
+    ];
+    if bounds[0] == bounds[2] || bounds[1] == bounds[3] {
+        return NO_CLIP;
+    }
+    bounds
 }
 
 /// Display-referred color grading applied by `PostPass` **after** tonemapping

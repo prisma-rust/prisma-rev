@@ -53,6 +53,9 @@ struct SpriteInstance {
     /// bindless 纹理索引。
     texture: u32,
     _pad: [u32; 3],
+    /// 世界空间裁剪矩形 `[min_x, min_y, max_x, max_y]`（#582）。
+    /// `max < min` = 不裁剪。
+    clip: [f32; 4],
 }
 
 impl SpriteInstance {
@@ -63,7 +66,7 @@ impl SpriteInstance {
             .input_rate(vk::VertexInputRate::INSTANCE)
     }
 
-    fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 7] {
+    fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 8] {
         let vec4 = |location: u32, offset: u32| {
             vk::VertexInputAttributeDescription::default()
                 .location(location)
@@ -90,6 +93,7 @@ impl SpriteInstance {
                 .location(6)
                 .format(vk::Format::R32_UINT)
                 .offset(80),
+            vec4(7, 96),
         ]
     }
 }
@@ -364,6 +368,7 @@ impl SpritePass {
                 uv_rect: item.uv_rect,
                 color: item.color,
                 texture: item.texture,
+                clip: item.clip,
                 _pad: [0; 3],
             })
             .collect();
@@ -442,11 +447,11 @@ mod tests {
     /// 顶点布局是 Rust 与 `sprites.slang` 之间的手工契约，改一边就必须改另一边。
     #[test]
     fn the_instance_layout_matches_the_shader_locations() {
-        assert_eq!(std::mem::size_of::<SpriteInstance>(), 96);
+        assert_eq!(std::mem::size_of::<SpriteInstance>(), 112);
         let attrs = SpriteInstance::attribute_descriptions();
         let locations: Vec<u32> = attrs.iter().map(|attr| attr.location).collect();
-        assert_eq!(locations, vec![0, 1, 2, 3, 4, 5, 6]);
+        assert_eq!(locations, vec![0, 1, 2, 3, 4, 5, 6, 7]);
         let offsets: Vec<u32> = attrs.iter().map(|attr| attr.offset).collect();
-        assert_eq!(offsets, vec![0, 12, 24, 36, 48, 64, 80]);
+        assert_eq!(offsets, vec![0, 12, 24, 36, 48, 64, 80, 96]);
     }
 }

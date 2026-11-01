@@ -467,6 +467,49 @@ fn sprite_blend_state_reaches_the_draw_item() {
 }
 
 #[test]
+fn sprite_clip_rect_reaches_the_draw_item() {
+    // #582：倒影只需要「水面以下」这一个半平面，裁剪矩形原样进实例数据。
+    let mut world = World::new();
+    spawn_sprite(
+        &mut world,
+        glam::Vec3::ZERO,
+        SpriteRenderer {
+            sprite_path: "reflection.png".into(),
+            clip_enabled: true,
+            clip_rect: [40.0, -1.0e4, -40.0, 12.0],
+            ..SpriteRenderer::default()
+        },
+        [64, 64],
+        0,
+    );
+    let items = scene_sprite_system(&world);
+    assert_eq!(
+        items[0].clip,
+        [-40.0, -1.0e4, 40.0, 12.0],
+        "角点顺序被规范化"
+    );
+}
+
+#[test]
+fn sprites_without_clipping_pass_the_disabled_rect() {
+    let mut world = World::new();
+    spawn_sprite(
+        &mut world,
+        glam::Vec3::ZERO,
+        SpriteRenderer {
+            sprite_path: "boat.png".into(),
+            ..SpriteRenderer::default()
+        },
+        [64, 16],
+        0,
+    );
+    let items = scene_sprite_system(&world);
+    assert_eq!(items[0].clip, prism_render::NO_CLIP);
+    // 折线 / 粒子 / 瓦片不参与作者态裁剪，同样用 NO_CLIP。
+    assert!(items.iter().all(|item| item.clip == prism_render::NO_CLIP));
+}
+
+#[test]
 fn sprite_flip_swaps_uv_edges() {
     let mut world = World::new();
     spawn_sprite(

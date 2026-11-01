@@ -319,6 +319,17 @@ pub struct SpriteRenderer {
     pub dst_blend: BlendMode,
     /// 混合运算（默认 `Add`）；加色辉光用 `SrcAlpha` / `One`。
     pub blend_op: BlendOp,
+    /// 是否用 [`SpriteRenderer::clip_rect`] 裁剪这个精灵（#582）。
+    ///
+    /// 裁剪在片元着色器里按**世界坐标**逐像素判断，所以不影响一次 draw call，
+    /// 同一张水线矩形可以被任意多个精灵共享（倒影、水面以下的整组装饰）。
+    /// 多个精灵用同一个矩形 = Unity `SpriteMask` 的矩形模式。
+    pub clip_enabled: bool,
+    /// 世界空间裁剪矩形 `[x0, y0, x1, y1]`（`x0 <= x1`、`y0 <= y1` 不是必须的，
+    /// 引擎会自己排序）；只有 `clip_enabled` 为真时生效。
+    ///
+    /// 启用一个零面积矩形会把整个精灵裁掉——先填好矩形再打开开关。
+    pub clip_rect: [f32; 4],
 }
 
 impl Default for SpriteRenderer {
@@ -339,6 +350,8 @@ impl Default for SpriteRenderer {
             src_blend: BlendMode::SrcAlpha,
             dst_blend: BlendMode::OneMinusSrcAlpha,
             blend_op: BlendOp::Add,
+            clip_enabled: false,
+            clip_rect: [0.0; 4],
         }
     }
 }

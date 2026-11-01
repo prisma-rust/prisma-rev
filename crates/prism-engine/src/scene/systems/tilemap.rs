@@ -75,6 +75,7 @@ pub(crate) fn tilemap_draw_items(
                     src_blend: prism_scene::render_enums::BlendMode::SrcAlpha,
                     dst_blend: prism_scene::render_enums::BlendMode::OneMinusSrcAlpha,
                     blend_op: prism_scene::render_enums::BlendOp::Add,
+                    clip: prism_render::NO_CLIP,
                 },
             ));
         }
