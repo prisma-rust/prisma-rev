@@ -1061,6 +1061,28 @@ pub fn pick_entity(
     best.map(|(index, _)| index)
 }
 
+/// 同一个屏幕点下的**全部**命中，按距离从近到远（#416 点选循环穿透）。
+///
+/// 返回的是实体下标，重复点击同一位置可以依次选中被挡住的下一层。
+pub fn pick_entities_with_bounds(
+    point: (f32, f32),
+    frame: &CameraFrame,
+    width: f32,
+    height: f32,
+    entities: &[(usize, TransformJson, Option<PickBounds>)],
+) -> Vec<usize> {
+    let (origin, direction) = ray_from_screen(point.0, point.1, frame, width, height);
+    let mut hits: Vec<(usize, f32)> = entities
+        .iter()
+        .filter_map(|(index, transform, bounds)| {
+            ray_obb_with_bounds(origin, direction, transform, *bounds)
+                .map(|distance| (*index, distance))
+        })
+        .collect();
+    hits.sort_by(|a, b| a.1.total_cmp(&b.1));
+    hits.into_iter().map(|(index, _)| index).collect()
+}
+
 /// 带真实局部包围盒的拾取（#600）。
 pub fn pick_entity_with_bounds(
     point: (f32, f32),
@@ -1069,16 +1091,9 @@ pub fn pick_entity_with_bounds(
     height: f32,
     entities: &[(usize, TransformJson, Option<PickBounds>)],
 ) -> Option<usize> {
-    let (origin, direction) = ray_from_screen(point.0, point.1, frame, width, height);
-    let mut best: Option<(usize, f32)> = None;
-    for (index, transform, bounds) in entities {
-        if let Some(distance) = ray_obb_with_bounds(origin, direction, transform, *bounds) {
-            if best.map(|(_, best)| distance < best).unwrap_or(true) {
-                best = Some((*index, distance));
-            }
-        }
-    }
-    best.map(|(index, _)| index)
+    pick_entities_with_bounds(point, frame, width, height, entities)
+        .first()
+        .copied()
 }
 
 #[cfg(test)]
@@ -1294,6 +1309,37 @@ mod tests {
         let (x, _, _) = project([3.0, 0.0, 0.0], &frame, 800.0, 600.0).unwrap();
         let picked = pick_entity((x, 300.0), &frame, 800.0, 600.0, &entities);
         assert_eq!(picked, Some(1));
+    }
+
+    #[test]
+    fn overlapping_hits_are_returned_near_to_far() {
+        // #416：候选集按距离排序，第一次点击选最近的。
+        let camera = camera();
+        let frame = camera_frame(&camera);
+        let entities = vec![
+            (
+                0,
+                TransformJson {
+                    position: [0.0, 0.0, -5.0],
+                    ..TransformJson::default()
+                },
+                None,
+            ),
+            (
+                1,
+                TransformJson {
+                    position: [0.0, 0.0, 2.0],
+                    ..TransformJson::default()
+                },
+                None,
+            ),
+        ];
+        let hits = pick_entities_with_bounds((400.0, 300.0), &frame, 800.0, 600.0, &entities);
+        assert_eq!(hits, vec![1, 0], "近的 z = 2 在前，远的 z = -5 在后");
+        assert_eq!(
+            pick_entity_with_bounds((400.0, 300.0), &frame, 800.0, 600.0, &entities),
+            Some(1)
+        );
     }
 
     #[test]

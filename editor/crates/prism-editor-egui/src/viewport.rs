@@ -70,6 +70,119 @@ fn drag_translate_step(
     desired - applied
 }
 
+/// 方向 gizmo 的中心（视口右上角，屏幕坐标）与半径（#416）。
+fn orientation_gizmo_center(rect: Rect) -> (f32, f32) {
+    (rect.max.x - 46.0, rect.min.y + 46.0)
+}
+
+const ORIENTATION_GIZMO_RADIUS: f32 = 30.0;
+
+fn orientation_axis_color(axis: usize) -> (u8, u8, u8) {
+    match axis {
+        0 => (214, 104, 104),
+        1 => (120, 196, 120),
+        _ => (104, 150, 232),
+    }
+}
+
+/// 右上角的世界轴方向 gizmo（#416）。
+///
+/// 复用 `viewport_math` 里早已写好、但一直没人调用的 `orientation_axis_end`：
+/// 背向相机的轴先画且更淡，正对相机的轴后画，点一下就把相机对齐到那根轴。
+fn draw_orientation_gizmo(painter: &egui::Painter, rect: Rect, frame: &vm::CameraFrame) {
+    use egui::Color32;
+    let center = orientation_gizmo_center(rect);
+    painter.circle_filled(
+        egui::pos2(center.0, center.1),
+        24.0,
+        Color32::from_rgba_unmultiplied(16, 18, 22, 130),
+    );
+    let mut axes: Vec<(usize, f32, f32)> = Vec::new();
+    for axis in 0..3 {
+        for sign in [1.0_f32, -1.0] {
+            let end = vm::orientation_axis_end(frame, axis, sign, center, ORIENTATION_GIZMO_RADIUS);
+            // 正对相机的轴投影长度为 0，画出来只是一个点。
+            if (end.0 - center.0).abs() + (end.1 - center.1).abs() < 1e-3 {
+                continue;
+            }
+            let world = match axis {
+                0 => [sign, 0.0, 0.0],
+                1 => [0.0, sign, 0.0],
+                _ => [0.0, 0.0, sign],
+            };
+            axes.push((axis, sign, vm::dot(world, frame.forward)));
+        }
+    }
+    axes.sort_by(|a, b| a.2.total_cmp(&b.2));
+    for (axis, sign, depth) in axes {
+        let end = vm::orientation_axis_end(frame, axis, sign, center, ORIENTATION_GIZMO_RADIUS);
+        let (r, g, b) = orientation_axis_color(axis);
+        let alpha = if depth > 0.15 {
+            110
+        } else if depth < -0.15 {
+            235
+        } else {
+            170
+        };
+        let position = egui::pos2(end.0, end.1);
+        painter.circle_filled(
+            position,
+            7.0,
+            Color32::from_rgba_unmultiplied(r, g, b, alpha),
+        );
+        painter.text(
+            position + egui::vec2(9.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            format!(
+                "{}{}",
+                if sign < 0.0 { "-" } else { "+" },
+                ["X", "Y", "Z"][axis]
+            ),
+            egui::FontId::proportional(9.5),
+            Color32::from_rgba_unmultiplied(r, g, b, alpha),
+        );
+    }
+}
+
+/// 同一位置连续点击的点选循环（#416）。
+#[derive(Clone, Debug, PartialEq)]
+struct PickCycle {
+    point: (f32, f32),
+    candidates: Vec<usize>,
+    index: usize,
+}
+
+/// 下一次点击该选谁：同一位置 + 同一候选集 → 下一层；否则回到第一层。
+fn next_pick(
+    cycle: Option<&PickCycle>,
+    point: (f32, f32),
+    candidates: Vec<usize>,
+) -> Option<(usize, PickCycle)> {
+    if candidates.is_empty() {
+        return None;
+    }
+    let repeated = cycle
+        .map(|cycle| {
+            (cycle.point.0 - point.0).abs() <= 4.0
+                && (cycle.point.1 - point.1).abs() <= 4.0
+                && cycle.candidates == candidates
+        })
+        .unwrap_or(false);
+    let index = if repeated {
+        (cycle.map(|cycle| cycle.index).unwrap_or(0) + 1) % candidates.len()
+    } else {
+        0
+    };
+    Some((
+        candidates[index],
+        PickCycle {
+            point,
+            candidates,
+            index,
+        },
+    ))
+}
+
 /// 共享给视口的 GPU 句柄（设备 + egui 纹理表 + 采样器）。
 pub struct ImageBridge {
     pub registry: ImageRegistry,
@@ -322,6 +435,8 @@ pub struct ViewportState {
     /// 框选起点 / 当前点（视口局部坐标）。
     box_start: Option<egui::Pos2>,
     box_current: Option<egui::Pos2>,
+    /// 同一位置连续点击时的候选栈（#416 点选循环穿透）。
+    pick_cycle: Option<PickCycle>,
     /// Game view 转发给引擎 `InputManager` 的按住键（用于合成 release）。
     forwarded_keys: HashSet<KeyCode>,
     /// Game view 是否已经把左键当成按住转发（离开视口也能收到 release）。
@@ -365,6 +480,7 @@ impl ViewportState {
             orbit_last_pos: None,
             box_start: None,
             box_current: None,
+            pick_cycle: None,
             forwarded_keys: HashSet::new(),
             forwarded_left_down: false,
             report_path: None,
@@ -1037,6 +1153,8 @@ impl ViewportState {
             // 引擎的 SceneView Gizmos：相机画视锥、光源画图标（点选图标 = 选中对象）。
             icon_hits = self.draw_component_icons(&painter, rect, workspace, &frame);
             self.draw_gizmo(&painter, rect, workspace, &frame);
+            // 方向 gizmo 画在最上层：它只占右上角一小块，不遮住场景操作。
+            draw_orientation_gizmo(&painter, rect, &frame);
         }
 
         // 4) 交互（常用习惯）：
@@ -1046,6 +1164,11 @@ impl ViewportState {
         //    · 滚轮 → 缩放；双击 → 聚焦选中项
         let alt = ui.input(|input| input.modifiers.alt);
         let local_of = |pos: egui::Pos2| (pos.x - rect.min.x, pos.y - rect.min.y);
+
+        if response.dragged() {
+            // 相机 / gizmo 一旦被动过，上一次点击的候选集就过期了。
+            self.pick_cycle = None;
+        }
 
         if response.drag_started_by(egui::PointerButton::Primary)
             && self.kind() == ViewKind::Scene
@@ -1210,33 +1333,69 @@ impl ViewportState {
             if let Some(pos) = response.interact_pointer_pos() {
                 let local = local_of(pos);
                 if self.kind() == ViewKind::Scene {
-                    // 图标（相机 / 光源）比网格体优先命中，和 一致。
-                    let icon = icon_hits
-                        .iter()
-                        .map(|(index, center)| {
-                            let dx = local.0 - (center.x - rect.min.x);
-                            let dy = local.1 - (center.y - rect.min.y);
-                            (*index, (dx * dx + dy * dy).sqrt())
-                        })
-                        .filter(|(_, distance)| *distance <= 11.0)
-                        .min_by(|a, b| a.1.total_cmp(&b.1))
-                        .map(|(index, _)| index);
-                    // 修饰键决定这次点击是替换 / 并入 / 移除（Shift 加、Ctrl-Cmd 减）。
-                    let modifiers = ui.input(|input| input.modifiers);
-                    let mode = SelectMode::from_modifiers(
-                        modifiers.shift,
-                        modifiers.ctrl || modifiers.command,
+                    // 方向 gizmo 优先：点中右上角的轴 = 把相机对齐到该轴（#416），
+                    // 这一下不参与实体拾取。
+                    let aligned = vm::pick_orientation_axis(
+                        (pos.x, pos.y),
+                        orientation_gizmo_center(rect),
+                        ORIENTATION_GIZMO_RADIUS,
+                        &frame,
                     );
-                    if let Some(index) = icon {
-                        workspace.select_with(index, mode);
+                    if let Some((axis, sign)) = aligned {
+                        workspace.camera.align_to_axis(axis, sign);
+                        self.pick_cycle = None;
+                        self.dirty = true;
                     } else {
-                        match pick(workspace, Some(&self.host), local, rect.size(), &frame) {
-                            Some(index) => workspace.select_with(index, mode),
-                            // Shift / Ctrl + 点空白保留当前选择。
-                            None => workspace.clear_selection_in(mode),
+                        // 图标（相机 / 光源）比网格体优先命中，和 一致。
+                        let icon = icon_hits
+                            .iter()
+                            .map(|(index, center)| {
+                                let dx = local.0 - (center.x - rect.min.x);
+                                let dy = local.1 - (center.y - rect.min.y);
+                                (*index, (dx * dx + dy * dy).sqrt())
+                            })
+                            .filter(|(_, distance)| *distance <= 11.0)
+                            .min_by(|a, b| a.1.total_cmp(&b.1))
+                            .map(|(index, _)| index);
+                        // 修饰键决定这次点击是替换 / 并入 / 移除（Shift 加、Ctrl-Cmd 减）。
+                        let modifiers = ui.input(|input| input.modifiers);
+                        let mode = SelectMode::from_modifiers(
+                            modifiers.shift,
+                            modifiers.ctrl || modifiers.command,
+                        );
+                        let candidates = pick_candidates(
+                            workspace,
+                            Some(&self.host),
+                            local,
+                            rect.size(),
+                            &frame,
+                        );
+                        if let Some(index) = icon {
+                            workspace.select_with(index, mode);
+                            self.pick_cycle = None;
+                        } else if matches!(mode, SelectMode::Replace) {
+                            // 点选循环穿透（#416）：同一位置连点依次选下一层，
+                            // 点空白回到清空。
+                            match next_pick(self.pick_cycle.as_ref(), local, candidates) {
+                                Some((index, cycle)) => {
+                                    self.pick_cycle = Some(cycle);
+                                    workspace.select_with(index, mode);
+                                }
+                                None => {
+                                    workspace.clear_selection_in(mode);
+                                    self.pick_cycle = None;
+                                }
+                            }
+                        } else {
+                            // Shift / Ctrl 的加选 / 减选不循环，永远取最近的一个。
+                            match candidates.first() {
+                                Some(index) => workspace.select_with(*index, mode),
+                                None => workspace.clear_selection_in(mode),
+                            }
+                            self.pick_cycle = None;
                         }
+                        self.dirty = true;
                     }
-                    self.dirty = true;
                 }
             }
         }
@@ -1895,6 +2054,7 @@ pub(crate) fn proxy_transforms(workspace: &Workspace) -> Vec<(usize, TransformJs
         .collect()
 }
 
+/// 最近的一个命中（控制通道的 `ui.click` / `ui.pick` 用；视口交互本身用候选集）。
 pub(crate) fn pick(
     workspace: &Workspace,
     host: Option<&EngineHost>,
@@ -1902,7 +2062,19 @@ pub(crate) fn pick(
     size: egui::Vec2,
     frame: &vm::CameraFrame,
 ) -> Option<usize> {
-    vm::pick_entity_with_bounds(point, frame, size.x, size.y, &proxies(workspace, host))
+    pick_candidates(workspace, host, point, size, frame)
+        .into_iter()
+        .next()
+}
+
+pub(crate) fn pick_candidates(
+    workspace: &Workspace,
+    host: Option<&EngineHost>,
+    point: (f32, f32),
+    size: egui::Vec2,
+    frame: &vm::CameraFrame,
+) -> Vec<usize> {
+    vm::pick_entities_with_bounds(point, frame, size.x, size.y, &proxies(workspace, host))
 }
 
 /// egui 键 → 引擎键（ABI 位编号由 `KeyCode::bit_index` 决定）。
@@ -1962,6 +2134,30 @@ mod drop_hint_tests {
 mod tests {
     use super::*;
     use egui::{Pos2, Vec2};
+
+    #[test]
+    fn repeated_clicks_cycle_through_overlapping_entities() {
+        // #416：同一位置连点依次选下一层，候选集或位置变了就回到第一层。
+        let candidates = vec![3, 7, 9];
+        let (first, cycle) = next_pick(None, (100.0, 50.0), candidates.clone()).unwrap();
+        assert_eq!(first, 3);
+        let (second, cycle) = next_pick(Some(&cycle), (101.0, 51.0), candidates.clone()).unwrap();
+        assert_eq!(second, 7, "4px 内视为同一次点选");
+        let (third, cycle) = next_pick(Some(&cycle), (100.0, 50.0), candidates.clone()).unwrap();
+        assert_eq!(third, 9);
+        // 回到第一层。
+        let (again, _) = next_pick(Some(&cycle), (100.0, 50.0), candidates.clone()).unwrap();
+        assert_eq!(again, 3);
+
+        // 换位置 / 换候选集 → 重新从最近的一个开始。
+        let (moved, _) = next_pick(Some(&cycle), (140.0, 50.0), candidates).unwrap();
+        assert_eq!(moved, 3);
+        let (changed, _) = next_pick(Some(&cycle), (100.0, 50.0), vec![7, 9]).unwrap();
+        assert_eq!(changed, 7);
+
+        // 点空白 = 没有候选。
+        assert_eq!(next_pick(Some(&cycle), (0.0, 0.0), Vec::new()), None);
+    }
 
     /// #468：超预算的局部光要在角标里明确报出来，而不是静默丢弃。
     #[test]
