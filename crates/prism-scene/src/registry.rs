@@ -410,7 +410,8 @@ pub fn register_builtin_components(registry: &mut ComponentRegistry) {
     use crate::components::*;
     #[cfg(feature = "group-ui")]
     use crate::ui::{
-        Anchors, Button, Canvas, ComputedLayout, Interaction, Margin, Node, Pivot, Style, Text,
+        Anchors, Button, Canvas, ComputedLayout, Interaction, Layout, Margin, Node, Pivot, Style,
+        Text,
     };
 
     // ── 场景基础组件 ──
@@ -534,6 +535,9 @@ pub fn register_builtin_components(registry: &mut ComponentRegistry) {
         registry.register_reflect_type::<Anchors>();
         registry.register_reflect_type::<Pivot>();
         registry.register_reflect_type::<Margin>();
+        // `Style.layout` 的嵌套类型（#527 / #709）：漏登记会让所有带 `Style`
+        // 的场景在 RSCN 编码时以 `type ... is not registered` 失败。
+        registry.register_reflect_type::<Layout>();
     }
 }
 
@@ -637,6 +641,23 @@ mod tests {
             registry.default_json("prism_engine::scene::Name"),
             Some(serde_json::json!("entity"))
         );
+
+        // 嵌套在作者组件里的类型也必须登记，否则 RSCN 编码会以
+        // `type ... is not registered` 失败（#709 的 `Style.layout`）。
+        for nested in [
+            "prism_engine::ui::Anchors",
+            "prism_engine::ui::Pivot",
+            "prism_engine::ui::Margin",
+            "prism_engine::ui::Layout",
+        ] {
+            assert!(
+                registry
+                    .type_registry()
+                    .descriptor(TypeId::from_name(nested))
+                    .is_some(),
+                "nested type {nested} is not registered"
+            );
+        }
 
         // 每个组件都能「作者 JSON -> 反射对象 -> 作者 JSON」往返。
         for name in &names {
