@@ -13,6 +13,9 @@
 //! - 出生时按 `start_speed` / `start_size` / `lifetime` 的区间各取一个随机值；
 //!   颜色 / 尺寸 / 速度偏移都按年龄在作者曲线上求值（提取或积分时算，不在模拟里
 //!   存曲线状态，这样改作者数据立刻生效）；
+//! - 可选碰撞（#501）：`collision = true` 时，粒子按自身半径被推出带
+//!   [`Collider`] 的实体表面（盒 / 球 / 胶囊），法向按 `collision_bounce`
+//!   反弹、切向按 `collision_friction` 衰减；地形高度场还不是碰撞体；
 //! - 随机源是每个发射器独立的 `xorshift32`（种子 = 实体 id），所以同一场景
 //!   每次加载的粒子分布一致——比 `rand` 依赖更轻，也让单测可复现；
 //! - `dt` 上限 0.1s：编辑器卡一下不会让粒子瞬移穿过整个场景。
@@ -22,7 +25,8 @@
 
 use prism_ecs::{Entity, World};
 
-use crate::scene::components::{LocalToWorld, ParticleShape, ParticleSystem};
+use crate::physics::WorldShape;
+use crate::scene::components::{Collider, LocalToWorld, ParticleShape, ParticleSystem};
 use crate::scene::systems::hierarchy::is_active_in_hierarchy;
 
 /// 单帧最大模拟步长（秒）。更大的 `dt` 被截断，避免卡顿后粒子瞬移。
@@ -198,6 +202,17 @@ pub fn particle_system(world: &mut World, dt: f32) -> usize {
         .map(|(entity, _)| entity)
         .collect();
 
+    // #501：碰撞形状每帧快照一次；没有发射器开碰撞时也能接受这点开销
+    // （通常场景只有个位数 collider）。
+    let colliders: Vec<WorldShape> = world
+        .query::<Collider>()
+        .filter_map(|(entity, collider)| {
+            world
+                .get::<LocalToWorld>(entity)
+                .map(|transform| WorldShape::new(collider, &transform.0))
+        })
+        .collect();
+
     let mut alive = 0usize;
     for entity in entities {
         // 作者组件可能刚被删除；先拷一份，避免借用冲突。
@@ -229,11 +244,40 @@ pub fn particle_system(world: &mut World, dt: f32) -> usize {
             continue;
         };
 
-        step(&system, &mut emitter, origin, rotation, dt);
+        step(&system, &mut emitter, origin, rotation, dt, &colliders);
         alive += emitter.particles.len();
         world.insert(entity, emitter);
     }
     alive
+}
+
+/// 把一个粒子推出所有相交的碰撞体，并按法向 / 切向分别处理弹跳与摩擦。
+///
+/// 多次推出是必要的：角落 / 凹槽里可能同时碰到两个形状；每次推出都会用新的
+/// 位置继续测试，直到所有形状都满足（形状数很少，不做空间索引）。
+fn collide_particle(system: &ParticleSystem, particle: &mut Particle, colliders: &[WorldShape]) {
+    let bounce = if system.collision_bounce.is_finite() {
+        system.collision_bounce.clamp(0.0, 1.0)
+    } else {
+        0.3
+    };
+    let friction = if system.collision_friction.is_finite() {
+        system.collision_friction.clamp(0.0, 1.0)
+    } else {
+        0.2
+    };
+    for shape in colliders {
+        let Some((position, normal)) = shape.push_out(particle.position, particle.size.max(0.0))
+        else {
+            continue;
+        };
+        particle.position = position;
+        let normal_speed = particle.velocity.dot(normal);
+        if normal_speed < 0.0 {
+            let tangential = particle.velocity - normal * normal_speed;
+            particle.velocity = tangential * (1.0 - friction) - normal * normal_speed * bounce;
+        }
+    }
 }
 
 fn step(
@@ -242,6 +286,7 @@ fn step(
     origin: glam::Vec3,
     rotation: glam::Quat,
     dt: f32,
+    colliders: &[WorldShape],
 ) {
     if !system.playing {
         // 暂停：粒子停在原地，也不再积累发射计数。
@@ -265,6 +310,9 @@ fn step(
         // 让“风速”变成永久加速度。
         let drift = particle_velocity_offset(system, particle);
         particle.position += (particle.velocity + drift) * dt;
+        if system.collision && !colliders.is_empty() {
+            collide_particle(system, particle, colliders);
+        }
     }
     emitter.particles.retain(|p| p.age < p.lifetime);
 

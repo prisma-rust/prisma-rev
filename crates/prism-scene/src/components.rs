@@ -939,6 +939,12 @@ pub struct ParticleSystem {
     pub gravity: [f32; 3],
     /// 速度阻尼（每秒衰减比例，`0` = 无阻尼，`1` = 一秒内速度归零）。
     pub drag: f32,
+    /// 是否把粒子推出带 `Collider` 的实体表面（#501）。默认关，保持旧行为。
+    pub collision: bool,
+    /// 碰撞恢复系数：`0` = 贴住表面，`1` = 完全反弹。越界值会被钳到 `[0, 1]`。
+    pub collision_bounce: f32,
+    /// 碰撞切向摩擦：`0` = 保留全部切向速度，`1` = 切向速度归零。
+    pub collision_friction: f32,
     /// 发射器形状。
     pub shape: ParticleShape,
     /// `Sphere` / `Box` 的半径（世界单位）。
@@ -966,6 +972,9 @@ impl Default for ParticleSystem {
             velocity_over_lifetime: [[0.0; 3]; 2],
             gravity: [0.0, 1.2, 0.0],
             drag: 0.6,
+            collision: false,
+            collision_bounce: 0.3,
+            collision_friction: 0.2,
             shape: ParticleShape::Cone,
             shape_radius: 0.15,
             cone_angle_degrees: 20.0,

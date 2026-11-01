@@ -130,6 +130,90 @@ impl WorldShape {
         }
     }
 
+    /// 把一个半径为 `radius` 的点推出形状表面（#501 粒子碰撞用）。
+    ///
+    /// 返回 `(修正后的位置, 表面世界法线)`；点在形状外（且离表面超过半径）时
+    /// 返回 `None`。盒内部用「穿透最浅的面」推出，球用径向法线。
+    pub fn push_out(&self, point: glam::Vec3, radius: f32) -> Option<(glam::Vec3, glam::Vec3)> {
+        if !point.is_finite() || !radius.is_finite() || radius < 0.0 {
+            return None;
+        }
+        match *self {
+            Self::Sphere {
+                center,
+                radius: shape,
+            } => {
+                let delta = point - center;
+                let distance = delta.length();
+                let minimum = (shape + radius).max(0.0);
+                if distance >= minimum {
+                    return None;
+                }
+                let normal = if distance > 1e-6 {
+                    delta / distance
+                } else {
+                    glam::Vec3::Y
+                };
+                Some((center + normal * minimum, normal))
+            }
+            Self::Box { center, axes } => {
+                let lengths = [axes[0].length(), axes[1].length(), axes[2].length()];
+                if lengths
+                    .iter()
+                    .any(|length| !length.is_finite() || *length <= 1e-6)
+                {
+                    return None;
+                }
+                let basis = [
+                    axes[0] / lengths[0],
+                    axes[1] / lengths[1],
+                    axes[2] / lengths[2],
+                ];
+                let local = point - center;
+                let mut coordinates = [0.0f32; 3];
+                let mut closest = center;
+                for i in 0..3 {
+                    let coordinate = local.dot(basis[i]);
+                    coordinates[i] = coordinate;
+                    let clamped = coordinate.clamp(-lengths[i], lengths[i]);
+                    closest += basis[i] * clamped;
+                }
+                let delta = point - closest;
+                let distance = delta.length();
+                if distance > 1e-6 {
+                    if distance > radius {
+                        return None;
+                    }
+                    let normal = delta / distance;
+                    return Some((closest + normal * radius, normal));
+                }
+
+                // 在盒内部：沿穿透最浅的轴推出去。
+                let mut best_penetration = f32::INFINITY;
+                let mut normal = glam::Vec3::Y;
+                let mut face = center;
+                for i in 0..3 {
+                    let penetration = lengths[i] - coordinates[i].abs();
+                    if penetration < best_penetration {
+                        best_penetration = penetration;
+                        let sign = if coordinates[i] >= 0.0 { 1.0 } else { -1.0 };
+                        normal = basis[i] * sign;
+                        face = center;
+                        for j in 0..3 {
+                            let coordinate = if i == j {
+                                lengths[j] * sign
+                            } else {
+                                coordinates[j].clamp(-lengths[j], lengths[j])
+                            };
+                            face += basis[j] * coordinate;
+                        }
+                    }
+                }
+                Some((face + normal * radius, normal))
+            }
+        }
+    }
+
     /// 射线求交：返回 `(距离, 世界法线)`。
     pub fn intersect(
         &self,
