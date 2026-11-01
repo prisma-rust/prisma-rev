@@ -1311,11 +1311,8 @@ impl App {
                 log::info!("debug RT = {} ({})", self.render_settings.debug_rt, name);
             }
             Key::KeyT => {
-                self.render_settings.tonemap_mode = if self.render_settings.tonemap_mode == 0 {
-                    1
-                } else {
-                    0
-                };
+                // 0 = Reinhard, 1 = ACES, 2 = passthrough（2D / 像素画）。
+                self.render_settings.tonemap_mode = (self.render_settings.tonemap_mode + 1) % 3;
                 log::info!("tonemap mode = {}", self.render_settings.tonemap_mode);
             }
             _ => return false,

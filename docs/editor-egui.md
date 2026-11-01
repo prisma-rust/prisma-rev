@@ -131,11 +131,16 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
   `assets/settings.ini [render]` 覆盖（`apply_project_render_defaults`，与玩家启动
   同一条 `AppConfig.render → RenderSettings`），渲染设置面板只作用于 Scene view ——
   否则「编辑器里看到的」和「打包出来的」不是一张图。
+- **2D 像素画用 `tonemap_mode = 2`**：Reinhard / ACES 会改写美术调色板；passthrough
+  只做 `saturate`，配合 sRGB 交换链能 1:1 还原源图。`projects/fishing` 已默认开启。
+  UI 颜色按 sRGB 作者值写入，在顶点展开时解码到线性，最终只由交换链编码一次（#592）。
 
 ## 4. 交互
 
 - 轨道：左键/右键拖拽 → `OrbitCamera::orbit`；滚轮 → `zoom`；
-- 点选：屏幕坐标 → 射线 → 与文档实体的单位立方体代理求交（与引擎同一套 `viewport_math`，索引即 `.scene.json` 的 `entities[i]`）；
+- 点选：屏幕坐标 → 射线 → 与实体真实局部包围盒求交（网格用 cooked AABB，精灵用
+  `frame_size / pixels_per_unit` + pivot；无数据才退回单位立方体），索引即
+  `.scene.json` 的 `entities[i]`（#600）；
 - 平移 gizmo：`pick_gizmo_axis` 命中轴后，按「屏幕位移 · 轴屏幕方向 / 每世界
   单位像素」换算世界位移，交给 `Workspace::translate_entity_world`；
 - 选中高亮复用引擎的 `Gizmo` 组件（世界三色轴箭头），不引入新的渲染概念。

@@ -23,7 +23,7 @@ pub struct RenderSettingsData {
     pub render_mode: String,
     /// PBR isolate 位掩码（0 = 正常渲染）。
     pub debug_flags: u32,
-    /// 0 = Reinhard, 1 = ACES。
+    /// 0 = Reinhard, 1 = ACES, 2 = passthrough（2D / 像素画，保留源色）。
     pub tonemap_mode: u32,
     /// 0 = HDR tonemap, 1 = depth, 2 = view-space normal。
     pub debug_rt: u32,
@@ -57,8 +57,8 @@ impl RenderSettingsData {
                 ))
             }
         }
-        if self.tonemap_mode > 1 {
-            return Err("tonemap_mode 只能是 0（Reinhard）或 1（ACES）".into());
+        if self.tonemap_mode > 2 {
+            return Err("tonemap_mode 只能是 0（Reinhard）、1（ACES）或 2（Passthrough）".into());
         }
         if self.debug_rt > 2 {
             return Err("debug_rt 只能是 0 / 1 / 2".into());
@@ -491,6 +491,17 @@ mod tests {
         write_render_settings(&dir, &data).unwrap();
         assert!(settings_path(&dir).is_file());
         assert!(legacy_settings_path(&dir).is_file());
+    }
+
+    #[test]
+    fn passthrough_tonemap_is_a_valid_project_setting() {
+        let dir = temp_dir("prism-editor-api-settings-passthrough");
+        let data = RenderSettingsData {
+            tonemap_mode: 2,
+            ..Default::default()
+        };
+        write_render_settings(&dir, &data).unwrap();
+        assert_eq!(read_render_settings(&dir).unwrap().tonemap_mode, 2);
     }
 
     #[test]
