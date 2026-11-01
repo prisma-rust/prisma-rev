@@ -227,6 +227,8 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
   **Inspector Lock**：按实体 id 钉住当前对象，去别处点选不换内容，对象被删后自动解锁。
   没有 schema 的组件（用户项目模块里的自有类型等）显示**可编辑的原始 JSON**：
   Apply JSON / Reload，解析失败时按钮禁用并就地显示错误 —— 不用去手改场景文件。
+  Transform 行的数值框右键有 **Copy / Paste / Reset**（整行；Position 与 Scale 的剪贴板
+  互不串用，Reset 回到 0 / 单位四元数 / 1）。
 - **Project（资产）**：后退 / 前进 / 面包屑、目录浏览、类型过滤、搜索、重命名 /
   复制 / 删除 / 复制路径 / 实例化预制体；**目录行**和文件一样可以选中（单击选中、
   双击进入），右键有 Open / Rename / New Subfolder / Copy Path / Show in Explorer /
