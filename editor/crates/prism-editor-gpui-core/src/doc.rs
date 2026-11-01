@@ -54,6 +54,10 @@ pub struct EntityJson {
     /// 组件表，顺序 = 检查器里的显示顺序 = 作者添加 / 排布的顺序（#512）。
     #[serde(default)]
     pub components: ComponentMap,
+    /// 编辑器不认识的实体级键（`_note`、工具元数据等）。保存时原样写回，
+    /// 不能因为一次 Save 就静默丢数据（#615）。
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Default for EntityJson {
@@ -64,6 +68,7 @@ impl Default for EntityJson {
             parent: None,
             transform: TransformJson::default(),
             components: ComponentMap::new(),
+            extra: serde_json::Map::new(),
         }
     }
 }
@@ -108,6 +113,9 @@ pub struct SceneDoc {
     pub version: u32,
     #[serde(default)]
     pub entities: Vec<EntityJson>,
+    /// 文档级未知键（`_comment`、`x_meta` 等）。原样保留并在 Save 时写回（#615）。
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 pub const DOC_VERSION: u32 = 3;
@@ -117,6 +125,7 @@ impl Default for SceneDoc {
         Self {
             version: DOC_VERSION,
             entities: Vec::new(),
+            extra: serde_json::Map::new(),
         }
     }
 }
@@ -1062,6 +1071,38 @@ mod tests {
         assert_eq!(doc.entities[0].id, Some(1));
         assert_eq!(doc.entities[1].id, Some(2));
         assert_eq!(doc.entities[1].parent, Some(1), "下标 0 迁移为 id 1");
+    }
+
+    #[test]
+    fn unknown_scene_and_entity_keys_survive_roundtrip() {
+        let text = r#"{
+            "version": 3,
+            "_comment": "hand note",
+            "x_meta": { "note": "keep me", "v": 3 },
+            "entities": [{
+                "id": 1,
+                "name": "A",
+                "parent": null,
+                "transform": {"position":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
+                "components": {},
+                "_note": "entity note"
+            }]
+        }"#;
+        let doc = SceneDoc::from_json_str(text).unwrap();
+        assert_eq!(doc.extra["_comment"], serde_json::json!("hand note"));
+        assert_eq!(doc.extra["x_meta"]["v"], serde_json::json!(3));
+        assert_eq!(
+            doc.entities[0].extra["_note"],
+            serde_json::json!("entity note")
+        );
+
+        let saved = doc.to_json_string();
+        assert!(saved.contains("\"_comment\""), "{saved}");
+        assert!(saved.contains("\"x_meta\""), "{saved}");
+        assert!(saved.contains("\"_note\""), "{saved}");
+        let round = SceneDoc::from_json_str(&saved).unwrap();
+        assert_eq!(round.extra, doc.extra);
+        assert_eq!(round.entities[0].extra, doc.entities[0].extra);
     }
 
     #[test]
