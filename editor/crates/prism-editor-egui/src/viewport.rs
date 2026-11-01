@@ -1092,7 +1092,7 @@ impl ViewportState {
                     if let Some(index) = icon {
                         workspace.select_with(index, mode);
                     } else {
-                        match pick(workspace, local, rect.size(), &frame) {
+                        match pick(workspace, Some(&self.host), local, rect.size(), &frame) {
                             Some(index) => workspace.select_with(index, mode),
                             // Shift / Ctrl + 点空白保留当前选择。
                             None => workspace.clear_selection_in(mode),
@@ -1670,10 +1670,72 @@ fn drop_hint(path: &str) -> String {
     }
 }
 
-fn proxies(workspace: &Workspace) -> Vec<(usize, TransformJson)> {
+/// 精灵的局部 AABB：`frame_size / pixels_per_unit`，按 pivot 偏移（#600）。
+///
+/// 没有 `frame_size` 时无法知道纹理尺寸，返回 `None` 让调用方退回单位立方体。
+fn sprite_bounds(
+    doc: &prism_editor_core::SceneDoc,
+    index: usize,
+    host: Option<&EngineHost>,
+) -> Option<vm::PickBounds> {
+    const SPRITE: &str = "prism_engine::scene::SpriteRenderer";
+    let sprite = doc.entities.get(index)?.component(SPRITE)?;
+    let path = sprite.get("sprite_path")?.as_str()?;
+    if path.is_empty() {
+        return None;
+    }
+    let frame = sprite.get("frame_size");
+    let mut frame_w = frame
+        .and_then(|value| value.get(0))
+        .and_then(|value| value.as_f64())
+        .unwrap_or(0.0) as f32;
+    let mut frame_h = frame
+        .and_then(|value| value.get(1))
+        .and_then(|value| value.as_f64())
+        .unwrap_or(0.0) as f32;
+    if frame_w <= 0.0 || frame_h <= 0.0 {
+        // `frame_size` 是可选作者字段；资产上传后引擎知道纹理尺寸。
+        let size = host.and_then(|host| host.sprite_texture_size(index))?;
+        frame_w = size[0];
+        frame_h = size[1];
+    }
+    if frame_w <= 0.0 || frame_h <= 0.0 {
+        return None;
+    }
+    let ppu = sprite
+        .get("pixels_per_unit")
+        .and_then(|value| value.as_f64())
+        .map(|value| value as f32)
+        .filter(|value| *value > 0.0)
+        .unwrap_or(100.0);
+    let pivot = sprite.get("pivot");
+    let pivot_x = pivot
+        .and_then(|value| value.get(0))
+        .and_then(|value| value.as_f64())
+        .unwrap_or(0.5) as f32;
+    let pivot_y = pivot
+        .and_then(|value| value.get(1))
+        .and_then(|value| value.as_f64())
+        .unwrap_or(0.5) as f32;
+    let width = frame_w / ppu;
+    let height = frame_h / ppu;
+    Some(vm::PickBounds {
+        min: [-pivot_x * width, -pivot_y * height, -0.05],
+        max: [(1.0 - pivot_x) * width, (1.0 - pivot_y) * height, 0.05],
+    })
+}
+
+fn proxies(
+    workspace: &Workspace,
+    host: Option<&EngineHost>,
+) -> Vec<(usize, TransformJson, Option<vm::PickBounds>)> {
     let doc = &workspace.document().doc;
     (0..doc.entities.len())
         .map(|index| {
+            let bounds = sprite_bounds(doc, index, host).or_else(|| {
+                host.and_then(|host| host.mesh_bounds(index))
+                    .map(|(min, max)| vm::PickBounds { min, max })
+            });
             (
                 index,
                 TransformJson {
@@ -1681,6 +1743,7 @@ fn proxies(workspace: &Workspace) -> Vec<(usize, TransformJson)> {
                     rotation: vm::world_rotation(doc, index),
                     scale: vm::world_scale(doc, index),
                 },
+                bounds,
             )
         })
         .collect()
@@ -1688,11 +1751,12 @@ fn proxies(workspace: &Workspace) -> Vec<(usize, TransformJson)> {
 
 pub(crate) fn pick(
     workspace: &Workspace,
+    host: Option<&EngineHost>,
     point: (f32, f32),
     size: egui::Vec2,
     frame: &vm::CameraFrame,
 ) -> Option<usize> {
-    vm::pick_entity(point, frame, size.x, size.y, &proxies(workspace))
+    vm::pick_entity_with_bounds(point, frame, size.x, size.y, &proxies(workspace, host))
 }
 
 /// egui 键 → 引擎键（ABI 位编号由 `KeyCode::bit_index` 决定）。

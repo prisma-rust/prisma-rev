@@ -1,8 +1,8 @@
 //! 视口数学：世界 ↔ 屏幕投影、射线、AABB 拾取、gizmo 轴命中。
 //!
-//! 与引擎共享同一套坐标约定（右手系、相机看 −Z、Vulkan 深度 [0,1]），但这里只做
-//! 编辑器侧的**近似**拾取：实体用轴对齐单位立方体（`[-0.5,0.5]³` × scale），
-//! 与 Web 编辑器 `pick.rs` 的折中一致。
+//! 与引擎共享同一套坐标约定（右手系、相机看 −Z、Vulkan 深度 [0,1]）。
+//! 拾取优先用实体真实局部包围盒（网格 AABB / 精灵尺寸），没有数据时退回
+//! 单位立方体（`[-0.5,0.5]³` × scale）。
 
 use crate::doc::{SceneDoc, TransformJson};
 use crate::workspace::OrbitCamera;
@@ -14,6 +14,34 @@ pub const GIZMO_RING_TOLERANCE: f32 = 10.0;
 
 pub const IDENTITY_BASIS: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 pub const IDENTITY_ROTATION: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+
+/// 实体在自身局部空间的包围盒，用于精确拾取（#600）。
+///
+/// 网格来自 cooked mesh 的 local AABB；精灵由 `frame_size / pixels_per_unit`
+/// 和 pivot 推出。没有数据时退回原有的单位立方体代理。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PickBounds {
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+}
+
+impl PickBounds {
+    pub fn center(&self) -> [f32; 3] {
+        [
+            (self.min[0] + self.max[0]) * 0.5,
+            (self.min[1] + self.max[1]) * 0.5,
+            (self.min[2] + self.max[2]) * 0.5,
+        ]
+    }
+
+    pub fn half(&self) -> [f32; 3] {
+        [
+            (self.max[0] - self.min[0]).abs() * 0.5,
+            (self.max[1] - self.min[1]).abs() * 0.5,
+            (self.max[2] - self.min[2]).abs() * 0.5,
+        ]
+    }
+}
 
 /// gizmo 的坐标空间：世界轴或实体自身轴。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -972,7 +1000,48 @@ fn ray_obb(origin: [f32; 3], direction: [f32; 3], transform: &TransformJson) -> 
     )
 }
 
+/// 用实体的真实局部 AABB 做 OBB 命中；`None` 时退回单位立方体。
+fn ray_obb_with_bounds(
+    origin: [f32; 3],
+    direction: [f32; 3],
+    transform: &TransformJson,
+    bounds: Option<PickBounds>,
+) -> Option<f32> {
+    let Some(bounds) = bounds else {
+        return ray_obb(origin, direction, transform);
+    };
+    let inverse = quat_conjugate(quat_normalize(transform.rotation));
+    let scale = [
+        transform.scale[0].abs().max(0.05),
+        transform.scale[1].abs().max(0.05),
+        transform.scale[2].abs().max(0.05),
+    ];
+    let offset = [
+        origin[0] - transform.position[0],
+        origin[1] - transform.position[1],
+        origin[2] - transform.position[2],
+    ];
+    let local_offset = quat_rotate(inverse, offset);
+    let local_direction = quat_rotate(inverse, direction);
+    ray_box(
+        [
+            local_offset[0] / scale[0],
+            local_offset[1] / scale[1],
+            local_offset[2] / scale[2],
+        ],
+        [
+            local_direction[0] / scale[0],
+            local_direction[1] / scale[1],
+            local_direction[2] / scale[2],
+        ],
+        bounds.center(),
+        bounds.half(),
+    )
+}
+
 /// 拾取离相机最近的实体（索引, 命中距离）。
+///
+/// 兼容旧调用：没有 bounds 数据时用单位立方体。
 pub fn pick_entity(
     point: (f32, f32),
     frame: &CameraFrame,
@@ -984,6 +1053,26 @@ pub fn pick_entity(
     let mut best: Option<(usize, f32)> = None;
     for (index, transform) in entities {
         if let Some(distance) = ray_obb(origin, direction, transform) {
+            if best.map(|(_, best)| distance < best).unwrap_or(true) {
+                best = Some((*index, distance));
+            }
+        }
+    }
+    best.map(|(index, _)| index)
+}
+
+/// 带真实局部包围盒的拾取（#600）。
+pub fn pick_entity_with_bounds(
+    point: (f32, f32),
+    frame: &CameraFrame,
+    width: f32,
+    height: f32,
+    entities: &[(usize, TransformJson, Option<PickBounds>)],
+) -> Option<usize> {
+    let (origin, direction) = ray_from_screen(point.0, point.1, frame, width, height);
+    let mut best: Option<(usize, f32)> = None;
+    for (index, transform, bounds) in entities {
+        if let Some(distance) = ray_obb_with_bounds(origin, direction, transform, *bounds) {
             if best.map(|(_, best)| distance < best).unwrap_or(true) {
                 best = Some((*index, distance));
             }
@@ -1205,6 +1294,31 @@ mod tests {
         let (x, _, _) = project([3.0, 0.0, 0.0], &frame, 800.0, 600.0).unwrap();
         let picked = pick_entity((x, 300.0), &frame, 800.0, 600.0, &entities);
         assert_eq!(picked, Some(1));
+    }
+
+    #[test]
+    fn picking_uses_the_local_bounds_when_provided() {
+        let camera = camera_2d();
+        let frame = camera_frame(&camera);
+        let entities = vec![(
+            0,
+            TransformJson::default(),
+            Some(PickBounds {
+                min: [2.0, -1.0, -0.1],
+                max: [8.0, 1.0, 0.1],
+            }),
+        )];
+        let (x, y, _) = project([5.0, 0.0, 0.0], &frame, 800.0, 600.0).unwrap();
+        assert_eq!(
+            pick_entity_with_bounds((x, y), &frame, 800.0, 600.0, &entities),
+            Some(0),
+            "真实 AABB 内应命中"
+        );
+        assert_eq!(
+            pick_entity_with_bounds((400.0, 300.0), &frame, 800.0, 600.0, &entities),
+            None,
+            "原点处的单位立方体不应再冒充整个精灵"
+        );
     }
 
     #[test]

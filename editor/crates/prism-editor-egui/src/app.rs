@@ -1014,7 +1014,10 @@ impl EditorApp {
                     ));
                 }
                 let frame = prism_editor_core::viewport_math::camera_frame(&self.workspace.camera);
-                let hit = crate::viewport::pick(&self.workspace, local, rect.size(), &frame);
+                let hit = {
+                    let host = self.scene_view.as_ref().map(|view| &view.host);
+                    crate::viewport::pick(&self.workspace, host, local, rect.size(), &frame)
+                };
                 let hit_node = hit.map(|index| {
                     crate::ui_tree::view_object_node(
                         tab,

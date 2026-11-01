@@ -218,6 +218,30 @@ impl EngineHost {
         &mut self.input
     }
 
+    /// 文档下标对应的 cooked mesh 局部 AABB（Scene 视图精确拾取用，#600）。
+    ///
+    /// 场景尚未完成资产上传时返回 `None`，调用方退回单位立方体。
+    pub fn mesh_bounds(&self, index: usize) -> Option<([f32; 3], [f32; 3])> {
+        let entity = *self.entities.get(index)?;
+        let world = self.engine.world();
+        let mesh = world.get::<prism_engine::scene::runtime_components::MeshRef>(entity)?;
+        let bounds = world
+            .get_resource::<prism_engine::scene::systems::render::MeshBounds>()?
+            .get(mesh.render_handle)?;
+        Some((bounds.min, bounds.max))
+    }
+
+    /// 精灵实际纹理尺寸（好让 Scene 拾取在 `frame_size = [0,0]` 时也能知道
+    /// 可见范围，而不是退回单位立方体，#600）。
+    pub fn sprite_texture_size(&self, index: usize) -> Option<[f32; 2]> {
+        let entity = *self.entities.get(index)?;
+        let sprite = self
+            .engine
+            .world()
+            .get::<prism_engine::scene::runtime_components::SpriteRef>(entity)?;
+        Some([sprite.size[0] as f32, sprite.size[1] as f32])
+    }
+
     pub fn world_mut(&mut self) -> &mut World {
         self.engine.world_mut()
     }
