@@ -782,7 +782,11 @@ prism-scene::rscn::encode_scene
   它同时**递归收集场景引用的资源**：环境 HDR、`SpriteRenderer.sprite_path`、
   `MeshRenderer.mesh_path`（glTF/GLB → RMES）与
   `material_path` / `material_paths`（`.mat.json` → RMAT，连同 5 张贴图）、
-  `Style.image` / `Tilemap.tileset_path` / `Text.font`。任何引用解析
+  `Style.image` / `Tilemap.tileset_path` / `Text.font`。glTF/GLB 自带的
+  `materials` / `images` 也会在打网格时 cook 成
+  `{mesh}.materials/*.mat.json`（RMAT）与 `{mesh}.textures/*.png`（RTEX）；
+  实体没有作者材质时，cook 场景会按 submesh 自动补上这些生成路径（#520）。
+  任何引用解析
   不到（文件不存在、绝对路径、逃出 `assets/`）都会让 `build-scenes` **非零退出**并列
   出路径——否则打包产物会在运行期静默缺资源（#530）；
 - `prism-build-pipeline cook <input.scene.json>` 单场景 cook，直接调用 `SceneCooker`；

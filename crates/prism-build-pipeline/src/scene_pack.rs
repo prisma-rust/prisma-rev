@@ -170,7 +170,7 @@ fn stage_entry(
             let source = asset_root.join(&relative);
             let source_json = source.with_extension("scene.json");
             let cooked = if source_json.is_file() {
-                cook_file(cooker, &source_json)?
+                cook_scene_file(cooker, asset_root, &source_json, entry_path)?
             } else {
                 if !source.is_file() {
                     bail!(
@@ -192,7 +192,7 @@ fn stage_entry(
 
     safe_relative(entry_path)?;
     let source = asset_root.join(format!("{stem}.scene.json"));
-    let cooked = cook_file(cooker, &source)?;
+    let cooked = cook_scene_file(cooker, asset_root, &source, entry_path)?;
     let target = PathBuf::from(format!("{stem}.rscn"));
     validate_rscn(entry_path, &cooked)?;
     write_staged(staging, &target, &cooked)?;
@@ -460,6 +460,17 @@ fn stage_mesh_assets(
             let cooked = cook_mesh(&source)?;
             write_staged(staging, Path::new(&pak_path), &cooked)?;
             log::info!("packaged mesh: {pak_path}");
+
+            // glTF/GLB 自带 PBR 材质和贴图（#520）：一起 cook 成 RMAT/RTEX，
+            // 路径与场景里自动补的 `material_paths` 完全一致。
+            if is_gltf_path(&pak_path) {
+                let side = prism_cooker::importer::GltfImporter::side_assets(&source, &pak_path)
+                    .with_context(|| format!("import glTF side assets for {pak_path}"))?;
+                for asset in side.assets {
+                    write_staged(staging, Path::new(&asset.path), &asset.cooked_data)?;
+                    log::info!("packaged glTF side asset: {}", asset.path);
+                }
+            }
         }
     }
 
@@ -940,11 +951,118 @@ fn resolve_asset_path(asset_root: &Path, scene_rel: &str, value: &str) -> Option
     Some(scene_relative)
 }
 
-fn cook_file(cooker: &SceneCooker, path: &Path) -> Result<Vec<u8>> {
+/// Cook an authoring scene, first auto-filling `MeshRenderer.material_paths`
+/// for glTF/GLB meshes from their generated side assets (#520).
+fn cook_scene_file(
+    cooker: &SceneCooker,
+    asset_root: &Path,
+    path: &Path,
+    scene_rel: &str,
+) -> Result<Vec<u8>> {
     let data = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let rewritten = rewrite_gltf_material_paths(&data, asset_root, scene_rel)?;
     cooker
-        .cook_json_bytes(&data)
+        .cook_json_bytes(&rewritten)
         .with_context(|| format!("cook {}", path.display()))
+}
+
+/// Fill empty `MeshRenderer.material_paths` on entities that render a
+/// glTF/GLB mesh. The paths mirror what
+/// [`prism_cooker::importer::GltfImporter::side_assets`] stages, so the cooked
+/// RSCN references the generated RMAT assets by their final pak paths.
+///
+/// Explicit author values win: only entities with neither `material_path` nor
+/// `material_paths` are touched. A missing mesh file is left for
+/// [`stage_mesh_assets`] to report with the usual `missing` diagnostics.
+fn rewrite_gltf_material_paths(data: &[u8], asset_root: &Path, scene_rel: &str) -> Result<Vec<u8>> {
+    let Ok(mut document) = serde_json::from_slice::<serde_json::Value>(data) else {
+        // Let `SceneCooker` produce the canonical parse error.
+        return Ok(data.to_vec());
+    };
+    let Some(entities) = document
+        .get_mut("entities")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return Ok(data.to_vec());
+    };
+
+    let mut changed = false;
+    for entity in entities {
+        let Some(components) = entity
+            .get_mut("components")
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            continue;
+        };
+        let Some(renderer) = components
+            .get_mut("prism_engine::scene::MeshRenderer")
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            continue;
+        };
+        if renderer
+            .get("material_path")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|path| !path.is_empty())
+        {
+            continue;
+        }
+        if renderer
+            .get("material_paths")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|paths| !paths.is_empty())
+        {
+            continue;
+        }
+        let Some(mesh_path) = renderer
+            .get("mesh_path")
+            .and_then(serde_json::Value::as_str)
+            .filter(|path| !path.is_empty())
+        else {
+            continue;
+        };
+        if !is_gltf_path(mesh_path) {
+            continue;
+        }
+        let Some(pak_path) = resolve_asset_path(asset_root, scene_rel, mesh_path) else {
+            continue;
+        };
+        let mesh_source = asset_root.join(&pak_path);
+        if !mesh_source.is_file() {
+            continue;
+        }
+        let material_paths =
+            prism_cooker::importer::GltfImporter::submesh_material_paths(&mesh_source, &pak_path)
+                .with_context(|| format!("collect glTF materials for {pak_path}"))?;
+        if material_paths.is_empty() {
+            continue;
+        }
+        renderer.insert(
+            "material_paths".to_string(),
+            serde_json::Value::Array(
+                material_paths
+                    .into_iter()
+                    .map(serde_json::Value::String)
+                    .collect(),
+            ),
+        );
+        changed = true;
+    }
+
+    if changed {
+        serde_json::to_vec(&document).context("serialize scene with generated glTF material paths")
+    } else {
+        Ok(data.to_vec())
+    }
+}
+
+fn is_gltf_path(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("gltf") || extension.eq_ignore_ascii_case("glb")
+        })
 }
 
 fn validate_rscn(entry_path: &str, data: &[u8]) -> Result<()> {
@@ -1114,6 +1232,151 @@ mod tests {
             "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA"
         }]
     }"#;
+
+    /// 一个带两个材质、一张外部贴图的 glTF。两个 primitive 共用几何，但材质不同。
+    const GLTF_WITH_MATERIALS: &str = r#"{
+        "asset": {"version": "2.0"},
+        "scene": 0,
+        "scenes": [{"nodes": [0]}],
+        "nodes": [{"mesh": 0}],
+        "meshes": [{"primitives": [
+            {"attributes": {"POSITION": 0}, "indices": 1, "material": 0},
+            {"attributes": {"POSITION": 0}, "indices": 1, "material": 1}
+        ]}],
+        "materials": [
+            {
+                "name": "Red",
+                "pbrMetallicRoughness": {
+                    "baseColorFactor": [1.0, 0.0, 0.0, 1.0],
+                    "metallicFactor": 0.2,
+                    "roughnessFactor": 0.6,
+                    "baseColorTexture": {"index": 0}
+                }
+            },
+            {
+                "name": "Blue",
+                "pbrMetallicRoughness": {
+                    "baseColorFactor": [0.0, 0.0, 1.0, 1.0],
+                    "metallicFactor": 0.0,
+                    "roughnessFactor": 0.9
+                }
+            }
+        ],
+        "images": [{"uri": "../textures/gltf-red.png", "name": "red"}],
+        "textures": [{"source": 0}],
+        "accessors": [
+            {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+             "min": [0, 0, 0], "max": [1, 1, 0]},
+            {"bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR"}
+        ],
+        "bufferViews": [
+            {"buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962},
+            {"buffer": 0, "byteOffset": 36, "byteLength": 6, "target": 34963}
+        ],
+        "buffers": [{
+            "byteLength": 42,
+            "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA"
+        }]
+    }"#;
+
+    /// #520：glTF 的材质/贴图要自动落成 RMAT/RTEX，场景里的空
+    /// `material_paths` 在 cook 时补成按 submesh 排列的生成路径。
+    #[test]
+    fn gltf_materials_and_images_are_packaged_and_linked() {
+        let temp = tempfile::tempdir().unwrap();
+        let assets = temp.path().join("assets");
+        fs::create_dir_all(assets.join("scenes")).unwrap();
+        fs::create_dir_all(assets.join("models")).unwrap();
+        fs::create_dir_all(assets.join("textures")).unwrap();
+        fs::write(assets.join("models/multi.gltf"), GLTF_WITH_MATERIALS).unwrap();
+        fs::write(assets.join("textures/gltf-red.png"), TINY_PNG).unwrap();
+        fs::write(
+            assets.join("scenes/room.scene.json"),
+            br#"{
+                "version": 1,
+                "entities": [{
+                    "name": "Multi",
+                    "parent": null,
+                    "transform": {},
+                    "components": {
+                        "prism_engine::scene::MeshRenderer": {
+                            "mesh_path": "models/multi.gltf"
+                        }
+                    }
+                }]
+            }"#,
+        )
+        .unwrap();
+        write_manifest(
+            &assets,
+            r#"{"scenes":[{"name":"room","path":"scenes/room.scene.json","enabled":true}]}"#,
+        );
+
+        let output = temp.path().join("scenes.pak");
+        let staging = temp.path().join("cooked");
+        let summary =
+            build_scene_package(assets.join("scenes.json"), &staging, &output, 0).unwrap();
+
+        let meta_text = fs::read_to_string(summary.pack.manifest_path.clone()).unwrap();
+        let meta: serde_json::Value = serde_json::from_str(&meta_text).unwrap();
+        let paths: Vec<_> = meta["assets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|asset| asset["path"].as_str().unwrap().to_string())
+            .collect();
+        for expected in [
+            "models/multi.gltf",
+            "models/multi.gltf.materials/0_Red.mat.json",
+            "models/multi.gltf.materials/1_Blue.mat.json",
+            "models/multi.gltf.textures/0_red.png",
+            "scenes/room.rscn",
+        ] {
+            assert!(
+                paths.iter().any(|path| path == expected),
+                "{expected} missing from pak paths: {paths:?}"
+            );
+        }
+
+        // RSCN 是字符串表 + 二进制，生成的材质路径必须出现在场景里。
+        let rscn = fs::read(staging.join("scenes/room.rscn")).unwrap();
+        for expected in [
+            "models/multi.gltf.materials/0_Red.mat.json",
+            "models/multi.gltf.materials/1_Blue.mat.json",
+        ] {
+            assert!(
+                rscn.windows(expected.len())
+                    .any(|window| window == expected.as_bytes()),
+                "{expected} missing from cooked scene"
+            );
+        }
+
+        let mut rm = ResourceManager::new();
+        rm.load_package_bytes(&fs::read(&output).unwrap()).unwrap();
+        rm.load_path_manifest_from_str(&meta_text).unwrap();
+
+        let material_id = rm
+            .id_by_path("models/multi.gltf.materials/0_Red.mat.json")
+            .expect("generated material path");
+        let material = rm.load_with_deps_raw(material_id).unwrap();
+        let decoded = prism_cooker::cooker::decode_rmat(&material).expect("RMAT blob");
+        assert_eq!(decoded.scalars[0], 1.0, "base color red");
+        assert_eq!(decoded.scalars[4], 0.2, "metallic");
+        assert_eq!(decoded.scalars[5], 0.6, "roughness");
+        assert_eq!(
+            decoded.texture_ids[0],
+            Some(prism_asset::core::id::AssetId::from_path(
+                "models/multi.gltf.textures/0_red.png"
+            )),
+            "generated material must reference the generated texture id"
+        );
+
+        let texture_id = rm
+            .id_by_path("models/multi.gltf.textures/0_red.png")
+            .expect("generated texture path");
+        let texture = rm.load_with_deps_raw(texture_id).unwrap();
+        assert_eq!(&texture[..4], b"RTEX");
+    }
 
     /// #530：场景引用的模型、材质和材质贴图都要进包，且材质里烘的贴图 ID
     /// 必须等于打包器给同一路径分配的 ID。

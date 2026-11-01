@@ -502,7 +502,8 @@ const MESH_INTERMEDIATE_MAGIC: &[u8; 4] = b"RMXI";
 /// 一个 primitive 缺法线 / UV 时整份网格就不带该属性（不拿零值冒充）；
 /// 非索引 primitive 会补一条顺序索引。每个 primitive 的索引区间与源材质索引写进
 /// RMXI v2 的 submesh 表；运行时按 `MeshRenderer.material_paths` 逐 submesh 绘制。
-/// 材质/图片本身暂时不落成资产（见 #520 的后续步骤）。
+/// 源文件里的材质 / 图片可通过 [`GltfImporter::side_assets`] 落成 RMAT / RTEX
+/// 旁路资产；材质参数与图片像素只保存在内存中间结果里，不写进 JSON metadata。
 ///
 /// Intermediate 格式
 /// ```text
@@ -512,6 +513,30 @@ const MESH_INTERMEDIATE_MAGIC: &[u8; 4] = b"RMXI";
 /// v2 only: [submesh_count:4][index_start:4][index_count:4][material_index:4]...
 /// ```
 pub struct GltfImporter;
+
+/// 一个由模型导入器附带生成、已经 cook 好的旁路资产（#520）。
+///
+/// `path` 是项目相对的打包路径（同时也是 `AssetId::from_path` 的输入）；
+/// 材质里的纹理 ID 与这里写进包内的路径完全一致。
+#[derive(Debug, Clone)]
+pub struct ImportedSideAsset {
+    /// Project-relative path inside the asset package.
+    pub path: String,
+    /// Cooked runtime bytes (RMAT for materials, RTEX for textures).
+    pub cooked_data: Vec<u8>,
+}
+
+/// glTF/GLB 附带的材质与贴图资产（#520）。
+#[derive(Debug, Clone, Default)]
+pub struct GltfSideAssets {
+    /// One material path per glTF material, in source order.
+    pub material_paths: Vec<String>,
+    /// One material path per mesh submesh, in draw order. Entries fall back to
+    /// a generated default material when the submesh has no source material.
+    pub submesh_material_paths: Vec<String>,
+    /// Cooked side assets to stage at their declared paths.
+    pub assets: Vec<ImportedSideAsset>,
+}
 
 /// 把一套已经拆好的顶点属性写成 RMXI 中间格式。
 ///
@@ -613,16 +638,30 @@ impl GltfImporter {
                     emissive: material.emissive_factor(),
                     alpha_mode: format!("{:?}", material.alpha_mode()),
                     double_sided: material.double_sided(),
-                    base_color_texture: pbr.base_color_texture().map(|t| t.texture().index()),
+                    base_color_texture: pbr
+                        .base_color_texture()
+                        .map(|t| t.texture().source().index()),
                     metallic_roughness_texture: pbr
                         .metallic_roughness_texture()
-                        .map(|t| t.texture().index()),
-                    normal_texture: material.normal_texture().map(|t| t.texture().index()),
-                    occlusion_texture: material.occlusion_texture().map(|t| t.texture().index()),
-                    emissive_texture: material.emissive_texture().map(|t| t.texture().index()),
+                        .map(|t| t.texture().source().index()),
+                    normal_texture: material
+                        .normal_texture()
+                        .map(|t| t.texture().source().index()),
+                    normal_scale: material.normal_texture().map(|t| t.scale()).unwrap_or(1.0),
+                    occlusion_texture: material
+                        .occlusion_texture()
+                        .map(|t| t.texture().source().index()),
+                    occlusion_strength: material
+                        .occlusion_texture()
+                        .map(|t| t.strength())
+                        .unwrap_or(1.0),
+                    emissive_texture: material
+                        .emissive_texture()
+                        .map(|t| t.texture().source().index()),
                 }
             })
             .collect();
+        mesh.image_pixels = images.iter().map(rgba8_from_gltf_image).collect();
         mesh.images = document
             .images()
             .map(|image| {
@@ -699,6 +738,365 @@ impl GltfImporter {
 
         Ok(mesh)
     }
+
+    /// Return the material paths a scene should assign to each submesh of a
+    /// glTF/GLB mesh, in draw order (#520).
+    ///
+    /// This parses the source file but does not cook anything, so the scene
+    /// packer can rewrite `MeshRenderer.material_paths` before cooking the
+    /// scene. Use [`Self::side_assets`] to obtain the actual cooked RMAT/RTEX
+    /// blobs.
+    pub fn submesh_material_paths(
+        path: &Path,
+        mesh_pak_path: &str,
+    ) -> Result<Vec<String>, ImportError> {
+        let mesh = Self::read_gltf(path)?;
+        Ok(gltf_material_plan(&mesh, mesh_pak_path).submesh_material_paths)
+    }
+
+    /// Cook all materials and textures referenced by a glTF/GLB file (#520).
+    ///
+    /// Paths are derived deterministically from `mesh_pak_path`:
+    /// `{mesh}.materials/{index}_{name}.mat.json` and
+    /// `{mesh}.textures/{index}_{name}.png`. The latter contain RTEX bytes;
+    /// keeping the source-style extension matches the rest of the package
+    /// layout, where a `.png` path is a cooked RTEX asset at runtime.
+    pub fn side_assets(path: &Path, mesh_pak_path: &str) -> Result<GltfSideAssets, ImportError> {
+        use crate::cooker::profile::CookSettings;
+        use crate::cooker::{CookContext, Cooker as _, TextureCooker};
+
+        let mesh = Self::read_gltf(path)?;
+        let plan = gltf_material_plan(&mesh, mesh_pak_path);
+        let mut assets = Vec::new();
+
+        // One RTEX per glTF image. Materials point at these by image index.
+        let mut image_paths: Vec<Option<String>> = vec![None; mesh.images.len()];
+        for (index, info) in mesh.images.iter().enumerate() {
+            let Some(pixels) = mesh.image_pixels.get(index) else {
+                continue;
+            };
+            if pixels.is_empty() || info.width == 0 || info.height == 0 {
+                tracing::warn!(
+                    "glTF image {index} has no decodable RGBA8 pixels; skipping texture asset"
+                );
+                continue;
+            }
+            let tex_path = gltf_texture_path(mesh_pak_path, index, info.name.as_deref());
+            let intermediate =
+                TextureImporter::write_intermediate(info.width, info.height, 4, pixels);
+            let record = AssetRecord::new(
+                AssetId::from_path(&tex_path),
+                tex_path.clone(),
+                AssetType::Texture,
+                "texture-importer",
+            );
+            let cooked = TextureCooker
+                .cook(&CookContext {
+                    record: &record,
+                    imported_data: &intermediate,
+                    settings: &CookSettings::default(),
+                })
+                .map_err(|error| {
+                    ImportError::ImportFailed(format!(
+                        "cook glTF texture '{tex_path}' failed: {error}"
+                    ))
+                })?;
+            assets.push(ImportedSideAsset {
+                path: tex_path.clone(),
+                cooked_data: cooked.cooked_data,
+            });
+            image_paths[index] = Some(tex_path);
+        }
+
+        let tex_path = |slot: Option<usize>| -> Option<String> {
+            slot.and_then(|index| image_paths.get(index).cloned().flatten())
+        };
+
+        for (index, info) in mesh.materials.iter().enumerate() {
+            let mat_path = plan.material_paths.get(index).cloned().ok_or_else(|| {
+                ImportError::ImportFailed(format!(
+                    "glTF material {index} has no generated path for '{mesh_pak_path}'"
+                ))
+            })?;
+            let material = MaterialJson {
+                name: info.name.clone(),
+                base_color: info.base_color,
+                metallic: info.metallic,
+                roughness: info.roughness,
+                emissive: info.emissive,
+                emissive_strength: 1.0,
+                normal_scale: info.normal_scale,
+                occlusion_strength: info.occlusion_strength,
+                transmission: 0.0,
+                ior: 1.5,
+                translucency: 0.0,
+                anisotropy: 0.0,
+                clearcoat: 0.0,
+                clearcoat_roughness: 0.0,
+                albedo_tex: tex_path(info.base_color_texture),
+                normal_tex: tex_path(info.normal_texture),
+                metallic_roughness_tex: tex_path(info.metallic_roughness_texture),
+                emissive_tex: tex_path(info.emissive_texture),
+                occlusion_tex: tex_path(info.occlusion_texture),
+            };
+            assets.push(cook_gltf_material(&material, &mat_path)?);
+        }
+
+        if plan.needs_default {
+            let material = MaterialJson {
+                name: Some("glTF default".to_string()),
+                base_color: [0.8, 0.8, 0.8, 1.0],
+                metallic: 0.0,
+                roughness: 0.5,
+                emissive: [0.0; 3],
+                emissive_strength: 1.0,
+                normal_scale: 1.0,
+                occlusion_strength: 1.0,
+                transmission: 0.0,
+                ior: 1.5,
+                translucency: 0.0,
+                anisotropy: 0.0,
+                clearcoat: 0.0,
+                clearcoat_roughness: 0.0,
+                albedo_tex: None,
+                normal_tex: None,
+                metallic_roughness_tex: None,
+                emissive_tex: None,
+                occlusion_tex: None,
+            };
+            assets.push(cook_gltf_material(&material, &plan.default_path)?);
+        }
+
+        Ok(GltfSideAssets {
+            material_paths: plan.material_paths,
+            submesh_material_paths: plan.submesh_material_paths,
+            assets,
+        })
+    }
+}
+
+/// Deterministic material/texture plan for one glTF mesh.
+struct GltfMaterialPlan {
+    /// One path per source material, in glTF material order.
+    material_paths: Vec<String>,
+    /// One path per submesh, in draw order.
+    submesh_material_paths: Vec<String>,
+    default_path: String,
+    /// True when at least one submesh has no source material (or the file has
+    /// no materials at all) and therefore needs the generated default.
+    needs_default: bool,
+}
+
+fn gltf_material_plan(mesh: &MeshData, mesh_pak_path: &str) -> GltfMaterialPlan {
+    let material_paths: Vec<String> = mesh
+        .materials
+        .iter()
+        .enumerate()
+        .map(|(index, info)| {
+            let name = sanitize_asset_name(info.name.as_deref(), "material");
+            format!("{mesh_pak_path}.materials/{index}_{name}.mat.json")
+        })
+        .collect();
+    let default_path = format!("{mesh_pak_path}.materials/default.mat.json");
+
+    let mut needs_default = mesh.materials.is_empty() && !mesh.submeshes.is_empty();
+    let submesh_material_paths = mesh
+        .submeshes
+        .iter()
+        .map(|submesh| {
+            submesh
+                .material_index
+                .and_then(|index| material_paths.get(index).cloned())
+                .unwrap_or_else(|| {
+                    needs_default = true;
+                    default_path.clone()
+                })
+        })
+        .collect();
+
+    GltfMaterialPlan {
+        material_paths,
+        submesh_material_paths,
+        default_path,
+        needs_default,
+    }
+}
+
+fn gltf_texture_path(mesh_pak_path: &str, index: usize, name: Option<&str>) -> String {
+    let name = sanitize_asset_name(name, "image");
+    format!("{mesh_pak_path}.textures/{index}_{name}.png")
+}
+
+fn sanitize_asset_name(name: Option<&str>, fallback: &str) -> String {
+    let mut out = String::new();
+    for character in name.unwrap_or(fallback).chars() {
+        if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+            out.push(character);
+        } else {
+            out.push('_');
+        }
+    }
+    let trimmed = out.trim_matches('_');
+    out = if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed.to_string()
+    };
+    out.truncate(48);
+    out
+}
+
+/// Cook a generated material. `tex_paths` are project-relative pak paths in
+/// RMAT slot order; dependencies are derived with the same `AssetId::from_path`
+/// the packer uses for the staged texture files.
+fn cook_gltf_material(
+    material: &MaterialJson,
+    material_path: &str,
+) -> Result<ImportedSideAsset, ImportError> {
+    use crate::cooker::profile::CookSettings;
+    use crate::cooker::{CookContext, Cooker as _, MaterialCooker};
+
+    let raw_paths: [Option<String>; 5] = [
+        material.albedo_tex.clone(),
+        material.normal_tex.clone(),
+        material.metallic_roughness_tex.clone(),
+        material.emissive_tex.clone(),
+        material.occlusion_tex.clone(),
+    ];
+    let mut resolved: [Option<String>; 5] = [None, None, None, None, None];
+    let mut dependencies = Vec::new();
+    for (index, path) in raw_paths.iter().enumerate() {
+        if let Some(path) = path {
+            resolved[index] = Some(path.clone());
+            dependencies.push(AssetId::from_path(path));
+        }
+    }
+    let intermediate = MaterialImporter::write_intermediate(material, &resolved);
+    let mut record = AssetRecord::new(
+        AssetId::from_path(material_path),
+        material_path.to_string(),
+        AssetType::Material,
+        "material-importer",
+    );
+    record.dependencies = dependencies;
+    let cooked = MaterialCooker
+        .cook(&CookContext {
+            record: &record,
+            imported_data: &intermediate,
+            settings: &CookSettings::default(),
+        })
+        .map_err(|error| {
+            ImportError::ImportFailed(format!(
+                "cook glTF material '{material_path}' failed: {error}"
+            ))
+        })?;
+    Ok(ImportedSideAsset {
+        path: material_path.to_string(),
+        cooked_data: cooked.cooked_data,
+    })
+}
+
+/// Convert a decoded `gltf` image to tightly packed RGBA8.
+fn rgba8_from_gltf_image(data: &gltf::image::Data) -> Vec<u8> {
+    use gltf::image::Format;
+
+    let byte = |value: f32| -> u8 { (value.clamp(0.0, 1.0) * 255.0).round() as u8 };
+    let wide = |value: u16| -> u8 { (value as f32 / 65535.0 * 255.0).round() as u8 };
+    let float = |bytes: &[u8]| -> f32 { f32::from_le_bytes(bytes.try_into().unwrap()) };
+
+    match data.format {
+        Format::R8 => data.pixels.iter().flat_map(|&r| [r, r, r, 255]).collect(),
+        Format::R8G8 => data
+            .pixels
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|p| [p[0], p[1], 0, 255])
+            .collect(),
+        Format::R8G8B8 => data
+            .pixels
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|p| [p[0], p[1], p[2], 255])
+            .collect(),
+        Format::R8G8B8A8 => data.pixels.clone(),
+        Format::R16 => data
+            .pixels
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|p| {
+                let r = wide(u16::from_le_bytes([p[0], p[1]]));
+                [r, r, r, 255]
+            })
+            .collect(),
+        Format::R16G16 => data
+            .pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|p| {
+                let r = wide(u16::from_le_bytes([p[0], p[1]]));
+                let g = wide(u16::from_le_bytes([p[2], p[3]]));
+                [r, g, 0, 255]
+            })
+            .collect(),
+        Format::R16G16B16 => data
+            .pixels
+            .as_chunks::<6>()
+            .0
+            .iter()
+            .flat_map(|p| {
+                let r = wide(u16::from_le_bytes([p[0], p[1]]));
+                let g = wide(u16::from_le_bytes([p[2], p[3]]));
+                let b = wide(u16::from_le_bytes([p[4], p[5]]));
+                [r, g, b, 255]
+            })
+            .collect(),
+        Format::R16G16B16A16 => data
+            .pixels
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .flat_map(|p| {
+                [
+                    wide(u16::from_le_bytes([p[0], p[1]])),
+                    wide(u16::from_le_bytes([p[2], p[3]])),
+                    wide(u16::from_le_bytes([p[4], p[5]])),
+                    wide(u16::from_le_bytes([p[6], p[7]])),
+                ]
+            })
+            .collect(),
+        Format::R32G32B32FLOAT => data
+            .pixels
+            .as_chunks::<12>()
+            .0
+            .iter()
+            .flat_map(|p| {
+                [
+                    byte(float(&p[0..4])),
+                    byte(float(&p[4..8])),
+                    byte(float(&p[8..12])),
+                    255,
+                ]
+            })
+            .collect(),
+        Format::R32G32B32A32FLOAT => data
+            .pixels
+            .as_chunks::<16>()
+            .0
+            .iter()
+            .flat_map(|p| {
+                [
+                    byte(float(&p[0..4])),
+                    byte(float(&p[4..8])),
+                    byte(float(&p[8..12])),
+                    byte(float(&p[12..16])),
+                ]
+            })
+            .collect(),
+    }
 }
 
 /// 累积结果：整棵场景树烘焙成一个世界空间的三角形网格。
@@ -721,6 +1119,9 @@ struct MeshData {
     materials: Vec<MaterialInfo>,
     /// glTF 里的图片尺寸 / 来源（#520）；同样只进 metadata。
     images: Vec<ImageInfo>,
+    /// Decoded RGBA8 pixels for each image, in glTF image order. Empty entries
+    /// mean the decoder could not produce RGBA8 (unsupported format).
+    image_pixels: Vec<Vec<u8>>,
 }
 
 /// 合并网格里的一个 submesh：index 区间 + 它使用的材质。
@@ -745,7 +1146,9 @@ struct MaterialInfo {
     base_color_texture: Option<usize>,
     metallic_roughness_texture: Option<usize>,
     normal_texture: Option<usize>,
+    normal_scale: f32,
     occlusion_texture: Option<usize>,
+    occlusion_strength: f32,
     emissive_texture: Option<usize>,
 }
 
@@ -777,6 +1180,7 @@ impl Default for MeshData {
             submeshes: Vec::new(),
             materials: Vec::new(),
             images: Vec::new(),
+            image_pixels: Vec::new(),
         }
     }
 }

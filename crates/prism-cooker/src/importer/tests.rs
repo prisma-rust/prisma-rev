@@ -655,6 +655,121 @@ fn gltf_import_records_image_metadata_and_material_texture_slots() {
 }
 
 #[test]
+fn gltf_side_assets_cook_rmat_rtex_and_submesh_paths() {
+    let (positions, indices) = triangle_bytes(1.0);
+    let png = one_pixel_png();
+    let mut bin = Vec::new();
+    bin.extend_from_slice(&positions); // 0..36
+    let idx_offset = bin.len();
+    bin.extend_from_slice(&indices); // 36..42
+    let pad = (4 - (bin.len() % 4)) % 4;
+    bin.extend(std::iter::repeat_n(0u8, pad));
+    let image_offset = bin.len();
+    bin.extend_from_slice(&png);
+
+    let json = serde_json::json!({
+        "asset": { "version": "2.0" },
+        "scene": 0,
+        "scenes": [{ "nodes": [0] }],
+        "nodes": [{ "mesh": 0 }],
+        "images": [{ "bufferView": 2, "mimeType": "image/png", "name": "red" }],
+        "textures": [{ "source": 0 }],
+        "materials": [{
+            "name": "Textured",
+            "pbrMetallicRoughness": {
+                "baseColorFactor": [1.0, 0.0, 0.0, 1.0],
+                "metallicFactor": 0.25,
+                "roughnessFactor": 0.75,
+                "baseColorTexture": { "index": 0 }
+            }
+        }],
+        "meshes": [{
+            "primitives": [
+                { "attributes": { "POSITION": 0 }, "indices": 1, "material": 0 }
+            ]
+        }],
+        "accessors": [
+            accessor(0, 5126, 3, "VEC3"),
+            accessor(1, 5123, 3, "SCALAR")
+        ],
+        "bufferViews": [
+            { "buffer": 0, "byteOffset": 0, "byteLength": 36 },
+            { "buffer": 0, "byteOffset": idx_offset, "byteLength": 6 },
+            { "buffer": 0, "byteOffset": image_offset, "byteLength": png.len() }
+        ],
+        "buffers": [{ "byteLength": bin.len() }]
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("textured.glb");
+    std::fs::write(&source, pack_glb(json, &bin)).unwrap();
+
+    let mesh_path = "models/textured.glb";
+    let submesh_paths = GltfImporter::submesh_material_paths(&source, mesh_path).unwrap();
+    assert_eq!(
+        submesh_paths,
+        vec!["models/textured.glb.materials/0_Textured.mat.json"]
+    );
+
+    let side = GltfImporter::side_assets(&source, mesh_path).unwrap();
+    assert_eq!(side.material_paths, submesh_paths);
+    assert_eq!(side.submesh_material_paths, submesh_paths);
+    assert_eq!(side.assets.len(), 2, "one RMAT + one RTEX");
+
+    let texture = side
+        .assets
+        .iter()
+        .find(|asset| asset.path.ends_with(".png"))
+        .expect("generated texture");
+    assert_eq!(&texture.cooked_data[..4], b"RTEX");
+    assert_eq!(texture.path, "models/textured.glb.textures/0_red.png");
+
+    let material = side
+        .assets
+        .iter()
+        .find(|asset| asset.path.ends_with(".mat.json"))
+        .expect("generated material");
+    assert_eq!(&material.cooked_data[..4], b"RMAT");
+    let decoded = crate::cooker::decode_rmat(&material.cooked_data).unwrap();
+    assert_eq!(decoded.scalars[0], 1.0, "base color red");
+    assert_eq!(decoded.scalars[4], 0.25, "metallic");
+    assert_eq!(decoded.scalars[5], 0.75, "roughness");
+    assert_eq!(
+        decoded.texture_ids[0],
+        Some(AssetId::from_path(&texture.path)),
+        "albedo slot must embed the staged texture path id"
+    );
+}
+
+#[test]
+fn gltf_side_assets_generate_a_default_material_for_untagged_primitives() {
+    let (positions, _) = triangle_bytes(1.0);
+    let json = serde_json::json!({
+        "asset": { "version": "2.0" },
+        "scene": 0,
+        "scenes": [{ "nodes": [0] }],
+        "nodes": [{ "mesh": 0 }],
+        "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 } }] }],
+        "accessors": [accessor(0, 5126, 3, "VEC3")],
+        "bufferViews": [{ "buffer": 0, "byteOffset": 0, "byteLength": 36 }],
+        "buffers": [{ "byteLength": positions.len() }]
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("plain.glb");
+    std::fs::write(&source, pack_glb(json, &positions)).unwrap();
+
+    let side = GltfImporter::side_assets(&source, "models/plain.glb").unwrap();
+    assert_eq!(
+        side.submesh_material_paths,
+        vec!["models/plain.glb.materials/default.mat.json"]
+    );
+    assert!(side.material_paths.is_empty());
+    assert_eq!(side.assets.len(), 1);
+    assert_eq!(&side.assets[0].cooked_data[..4], b"RMAT");
+}
+
+#[test]
 fn gltf_import_synthesises_indices_for_non_indexed_primitives() {
     let (positions, _) = triangle_bytes(1.0);
     let json = serde_json::json!({
