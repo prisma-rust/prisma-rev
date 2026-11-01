@@ -209,6 +209,12 @@ pub struct OrbitCamera {
     ///
     /// `distance` 在 2D 里同时充当正交半高，所以滚轮缩放的手感不变。
     pub orthographic: bool,
+    /// 垂直视场角（度）。`project` / 拾取射线与引擎相机共用它（#416）。
+    pub fov_y_degrees: f32,
+    /// 近裁剪面（世界单位），同步给引擎相机。
+    pub near: f32,
+    /// 远裁剪面（世界单位），同步给引擎相机。
+    pub far: f32,
 }
 
 impl Default for OrbitCamera {
@@ -219,6 +225,9 @@ impl Default for OrbitCamera {
             pitch: 0.0,
             distance: 12.0,
             orthographic: false,
+            fov_y_degrees: 60.0,
+            near: 0.1,
+            far: 1000.0,
         }
     }
 }
@@ -235,6 +244,23 @@ impl OrbitCamera {
 
     pub fn toggle_2d(&mut self) {
         self.set_2d(!self.orthographic);
+    }
+
+    /// 设置垂直视场角（度），夹在 10°–170°；非有限值忽略（#416）。
+    pub fn set_fov_degrees(&mut self, degrees: f32) {
+        if degrees.is_finite() {
+            self.fov_y_degrees = degrees.clamp(10.0, 170.0);
+        }
+    }
+
+    /// 设置近 / 远裁剪面；`near > 0`、`far` 至少比 `near` 大 1 cm，非法输入忽略（#416）。
+    pub fn set_clip_planes(&mut self, near: f32, far: f32) {
+        if !near.is_finite() || !far.is_finite() || near <= 0.0 {
+            return;
+        }
+        let far = far.max(near + 0.01);
+        self.near = near;
+        self.far = far;
     }
 
     /// 正交投影的半高（世界单位）。透视相机没有这个概念。
@@ -351,8 +377,9 @@ impl OrbitCamera {
             self.distance = (radius * 1.2).max(0.5);
             return;
         }
-        // 垂直 fov 60°：距离 = 半径 / sin(fov/2) 留 20% 余量。
-        self.distance = (radius / (30.0f32.to_radians().sin()) * 1.2).max(0.5);
+        // 垂直 fov（默认 60°）：距离 = 半径 / sin(fov/2) 留 20% 余量。
+        let half_fov = (self.fov_y_degrees.clamp(10.0, 170.0) * 0.5).to_radians();
+        self.distance = (radius / half_fov.sin() * 1.2).max(0.5);
     }
 }
 
@@ -486,6 +513,10 @@ pub struct Workspace {
     /// Scene View 是否给选中对象画轮廓（#487）。选中反馈弱时唯一的线索是 gizmo，
     /// 密集场景里容易改错对象。
     pub show_selection_outline: bool,
+    /// Scene View 是否画相机图标 / 视锥（#416）。
+    pub show_camera_icons: bool,
+    /// Scene View 是否画光源图标 / 范围（#416）。
+    pub show_light_icons: bool,
     /// Scene View 是否用场景的天空盒当背景（关闭时退回纯色）。
     ///
     /// 对应引擎的 `SceneViewState.showSkybox`（默认开）。
@@ -594,6 +625,8 @@ impl Workspace {
             snap: SnapSettings::default(),
             show_grid: true,
             show_selection_outline: true,
+            show_camera_icons: true,
+            show_light_icons: true,
             show_skybox: true,
             playing: false,
             paused: false,
@@ -4782,6 +4815,47 @@ mod tests {
     }
 
     #[test]
+    fn camera_fov_and_clip_planes_are_clamped() {
+        // #416：View… 面板的输入都经过夹取，坏值不会污染渲染 / 拾取。
+        let mut camera = OrbitCamera::default();
+        assert!((camera.fov_y_degrees - 60.0).abs() < 1e-6);
+        camera.set_fov_degrees(5.0);
+        assert!((camera.fov_y_degrees - 10.0).abs() < 1e-6);
+        camera.set_fov_degrees(400.0);
+        assert!((camera.fov_y_degrees - 170.0).abs() < 1e-6);
+        let before = camera.fov_y_degrees;
+        camera.set_fov_degrees(f32::NAN);
+        assert_eq!(camera.fov_y_degrees, before, "非有限值忽略");
+
+        camera.set_clip_planes(0.0, 100.0);
+        assert!((camera.near - 0.1).abs() < 1e-6, "非法 near 不动");
+        camera.set_clip_planes(1.0, 0.5);
+        assert!((camera.near - 1.0).abs() < 1e-6);
+        assert!((camera.far - 1.01).abs() < 1e-6, "far 至少比 near 大 1cm");
+        camera.set_clip_planes(2.0, 500.0);
+        assert!((camera.near - 2.0).abs() < 1e-6);
+        assert!((camera.far - 500.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn focus_distance_follows_the_configured_fov() {
+        // 视场角越窄，同样半径要退得越远。
+        let mut wide = OrbitCamera::default();
+        wide.set_fov_degrees(90.0);
+        wide.focus([0.0, 0.0, 0.0], 1.0);
+        let mut narrow = OrbitCamera::default();
+        narrow.set_fov_degrees(30.0);
+        narrow.focus([0.0, 0.0, 0.0], 1.0);
+        assert!(
+            narrow.distance > wide.distance,
+            "30° {} 应该比 90° {} 更远",
+            narrow.distance,
+            wide.distance
+        );
+        assert!((wide.distance - 1.2 / 45.0f32.to_radians().sin()).abs() < 1e-3);
+    }
+
+    #[test]
     fn aligning_the_camera_to_an_axis_puts_the_eye_on_that_side() {
         // #416：方向 gizmo 点轴之后，eye 必须落在该轴的正 / 负方向上。
         let mut camera = OrbitCamera::default();
@@ -4899,7 +4973,7 @@ mod tests {
             yaw: 0.4,
             pitch: 0.3,
             distance: 14.0,
-            orthographic: false,
+            ..OrbitCamera::default()
         };
         let before = camera;
         let anchor = anchor_point(&camera, 640.0, 180.0, 800.0, 600.0);

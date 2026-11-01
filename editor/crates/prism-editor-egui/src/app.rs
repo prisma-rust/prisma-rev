@@ -3494,6 +3494,53 @@ impl EditorApp {
                     view.mark_dirty();
                 }
             }
+            // 相机 / 组件图标设置（#416）：FOV、近远裁剪面、按类型开关图标。
+            let mut fov = self.workspace.camera.fov_y_degrees;
+            let mut near = self.workspace.camera.near;
+            let mut far = self.workspace.camera.far;
+            let mut camera_changed = false;
+            ui.menu_button("View…", |ui| {
+                ui.label(egui::RichText::new("Editor camera").strong().size(11.0));
+                if ui
+                    .add(egui::Slider::new(&mut fov, 20.0..=110.0).text("FOV"))
+                    .changed()
+                {
+                    camera_changed = true;
+                }
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut near)
+                            .speed(0.01)
+                            .range(0.001..=100.0)
+                            .prefix("near "),
+                    )
+                    .changed()
+                {
+                    camera_changed = true;
+                }
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut far)
+                            .speed(1.0)
+                            .range(1.0..=100_000.0)
+                            .prefix("far "),
+                    )
+                    .changed()
+                {
+                    camera_changed = true;
+                }
+                ui.separator();
+                ui.checkbox(&mut self.workspace.show_camera_icons, "Camera icons");
+                ui.checkbox(&mut self.workspace.show_light_icons, "Light icons");
+            });
+            if camera_changed {
+                self.workspace.camera.set_fov_degrees(fov);
+                self.workspace.camera.set_clip_planes(near, far);
+                self.mark_scene_dirty();
+                if let Some(view) = self.scene_view.as_mut() {
+                    view.mark_dirty();
+                }
+            }
             let mut settings = self.render_settings.clone();
             if panels::scene_render_mode_combo(ui, &mut settings) {
                 self.apply_render_settings(settings);
@@ -5841,6 +5888,7 @@ fn game_camera_frame(
     let up = matrix.y_axis.truncate().normalize_or_zero();
     let forward = -matrix.z_axis.truncate().normalize_or_zero();
     Some(prism_editor_core::viewport_math::CameraFrame {
+        fov_y_degrees: 60.0,
         eye: eye.to_array(),
         right: right.to_array(),
         up: up.to_array(),

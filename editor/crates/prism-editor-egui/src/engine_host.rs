@@ -443,6 +443,11 @@ impl EngineHost {
             if orbit.orthographic {
                 camera.orthographic_size = orbit.distance.max(0.05);
             }
+            // 编辑器的「View…」设置（#416）：FOV 与裁剪面同时作用于渲染与拾取，
+            // 否则屏幕上的 gizmo / 点选会和画面对不上。
+            camera.fov_y_degrees = orbit.fov_y_degrees.clamp(10.0, 170.0);
+            camera.near = orbit.near;
+            camera.far = orbit.far;
         }
     }
 
