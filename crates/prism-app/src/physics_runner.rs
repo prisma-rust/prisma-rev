@@ -7,6 +7,7 @@
 //!
 //! * 刚体：动力学 / 运动学 / 静态，支持父子层级
 //! * 碰撞体：球 / 盒 / 胶囊（trimesh 尚未接 cook 产物）
+//! * Started/Stopped 碰撞与 sensor 事件：每步写入 ECS `PhysicsEvents` 资源
 //! * 无关节、无 CCD；射线查询在 `prism_engine::physics::raycast`
 //!
 //! # 接线（#522）
@@ -28,6 +29,7 @@ use std::collections::HashMap;
 use std::thread::JoinHandle;
 
 use prism_engine::ecs::{Entity, World};
+use prism_engine::physics::{PhysicsEvent, PhysicsEventKind, PhysicsEvents};
 use prism_engine::scene::components::{
     BodyType, Collider, ColliderShape, LocalTransform, Parent, Rigidbody,
 };
@@ -35,9 +37,12 @@ use rapier3d::dynamics::{
     CCDSolver, IntegrationParameters, IslandManager, RigidBodyBuilder, RigidBodyHandle,
     RigidBodySet, RigidBodyType,
 };
-use rapier3d::geometry::{BroadPhaseBvh, ColliderBuilder, ColliderSet, NarrowPhase};
+use rapier3d::geometry::{
+    BroadPhaseBvh, ColliderBuilder, ColliderHandle, ColliderSet, CollisionEvent,
+    CollisionEventFlags, NarrowPhase,
+};
 use rapier3d::math::{Pose, Rotation, Vector};
-use rapier3d::pipeline::PhysicsPipeline;
+use rapier3d::pipeline::{ActiveEvents, ChannelEventCollector, PhysicsPipeline};
 
 use flume::{Receiver, Sender};
 
@@ -119,6 +124,8 @@ pub enum ColliderDesc {
 
 pub struct PhysicsResult {
     pub transforms: Vec<BodyTransform>,
+    /// 本步 rapier 报告的 Started/Stopped，已映射为 ECS 实体。
+    pub events: Vec<PhysicsEvent>,
 }
 
 pub struct BodyTransform {
@@ -163,6 +170,14 @@ pub fn physics_thread_main(step_rx: Receiver<PhysicsStep>, result_tx: Sender<Phy
 
     // 实体 → Rapier handle 映射表
     let mut entity_map: HashMap<EntityId, RigidBodyHandle> = HashMap::new();
+    let mut body_colliders: HashMap<EntityId, ColliderHandle> = HashMap::new();
+    let mut collider_entities: HashMap<ColliderHandle, Entity> = HashMap::new();
+
+    // rapier 在 step 内通过 EventHandler 报告 Started/Stopped；这里用官方
+    // ChannelEventCollector 把事件排到通道，step 后统一映射回实体。
+    let (collision_tx, collision_rx) = std::sync::mpsc::channel();
+    let (force_tx, _force_rx) = std::sync::mpsc::channel();
+    let event_handler = ChannelEventCollector::new(collision_tx, force_tx);
 
     while let Ok(step) = step_rx.recv() {
         // 1. Apply commands.
@@ -217,10 +232,20 @@ pub fn physics_thread_main(step_rx: Receiver<PhysicsStep>, result_tx: Sender<Phy
                     } else {
                         1.0
                     };
-                    let collider = collider_builder.density(density).sensor(sensor).build();
-                    collider_set.insert_with_parent(collider, body_handle, &mut rigid_body_set);
+                    let collider = collider_builder
+                        .density(density)
+                        .sensor(sensor)
+                        .active_events(ActiveEvents::COLLISION_EVENTS)
+                        .build();
+                    let collider_handle =
+                        collider_set.insert_with_parent(collider, body_handle, &mut rigid_body_set);
+                    body_colliders.insert(entity, collider_handle);
+                    collider_entities.insert(collider_handle, entity_from_key(entity));
                 }
                 PhysicsCommand::DespawnBody { entity } => {
+                    if let Some(collider_handle) = body_colliders.remove(&entity) {
+                        collider_entities.remove(&collider_handle);
+                    }
                     if let Some(handle) = entity_map.remove(&entity) {
                         rigid_body_set.remove(
                             handle,
@@ -259,8 +284,33 @@ pub fn physics_thread_main(step_rx: Receiver<PhysicsStep>, result_tx: Sender<Phy
             &mut multibody_joint_set,
             &mut ccd_solver,
             &(), // PhysicsHooks
-            &(), // EventHandler
+            &event_handler,
         );
+
+        // 2b. Drain collision events and map collider handles back to entities.
+        let mut events = Vec::new();
+        while let Ok(event) = collision_rx.try_recv() {
+            let (kind, handle_a, handle_b, flags) = match event {
+                CollisionEvent::Started(a, b, flags) => (PhysicsEventKind::Started, a, b, flags),
+                CollisionEvent::Stopped(a, b, flags) => (PhysicsEventKind::Stopped, a, b, flags),
+            };
+            let (Some(entity_a), Some(entity_b)) = (
+                collider_entities.get(&handle_a),
+                collider_entities.get(&handle_b),
+            ) else {
+                // 一方在事件到达前已被 despawn：保留给上一步的消费方没有意义。
+                continue;
+            };
+            if entity_a == entity_b {
+                continue;
+            }
+            events.push(PhysicsEvent {
+                kind,
+                entity_a: *entity_a,
+                entity_b: *entity_b,
+                is_sensor: flags.contains(CollisionEventFlags::SENSOR),
+            });
+        }
 
         // 3. Collect 动力学 body transforms.
         let transforms: Vec<BodyTransform> = entity_map
@@ -284,7 +334,7 @@ pub fn physics_thread_main(step_rx: Receiver<PhysicsStep>, result_tx: Sender<Phy
             })
             .collect();
 
-        let _ = result_tx.send(PhysicsResult { transforms });
+        let _ = result_tx.send(PhysicsResult { transforms, events });
     }
 
     log::info!("Physics thread exiting");
@@ -493,6 +543,15 @@ fn world_matrix(world: &World, entity: Entity) -> Option<glam::Mat4> {
 }
 
 fn apply_result(world: &mut World, result: &PhysicsResult) {
+    // 事件只保留双方仍存活的；换场 / despawn 后残留的 Stopped 不再暴露。
+    let events = result
+        .events
+        .iter()
+        .copied()
+        .filter(|event| world.is_alive(event.entity_a) && world.is_alive(event.entity_b))
+        .collect();
+    world.insert_resource(PhysicsEvents { events });
+
     for body in &result.transforms {
         let entity = entity_from_key(body.entity);
         if !world.is_alive(entity) {
@@ -869,6 +928,9 @@ mod tests {
                 ..Default::default()
             },
         );
+        // `PhysicsRuntime` 只同步有 LocalTransform 的实体；触发器也要有位置，
+        // 否则它根本不会被 spawn，测试会假通过。
+        world.insert(trigger, LocalTransform::default());
         let floor = world.spawn();
         world.insert(
             floor,
@@ -910,8 +972,22 @@ mod tests {
         );
 
         let mut runtime = PhysicsRuntime::spawn();
+        let mut saw_started = false;
+        let mut saw_stopped = false;
         for _ in 0..240 {
             assert!(runtime.step(&mut world));
+            let events = world
+                .get_resource::<PhysicsEvents>()
+                .expect("physics events resource");
+            for event in &events.events {
+                if !event.is_sensor || (event.entity_a != ball && event.entity_b != ball) {
+                    continue;
+                }
+                match event.kind {
+                    PhysicsEventKind::Started => saw_started = true,
+                    PhysicsEventKind::Stopped => saw_stopped = true,
+                }
+            }
         }
         let y = world
             .get::<LocalTransform>(ball)
@@ -921,6 +997,14 @@ mod tests {
         assert!(
             (-1.05..-0.95).contains(&y),
             "ball should pass through the sensor and rest at y≈-1.0, got {y}"
+        );
+        assert!(
+            saw_started,
+            "sensor Started event should reach PhysicsEvents"
+        );
+        assert!(
+            saw_stopped,
+            "sensor Stopped event should reach PhysicsEvents"
         );
     }
 

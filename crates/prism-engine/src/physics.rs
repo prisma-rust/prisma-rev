@@ -1,14 +1,49 @@
 //! 物理查询（#522 Phase 1）。
 //!
 //! 这一层只做**纯几何**：把作者的 [`Collider`] 换成世界空间的解析形状，再做射线求交。
-//! rapier 的刚体积分线程还没有接进 `App`（见 issue 的后续步骤），所以这里不依赖
-//! `rapier3d`，也不持有任何物理世界的状态 —— 每次查询都直接读 ECS。
+//! `prism-app` 的 physics feature 已经用 rapier 积分刚体；这里仍然不依赖
+//! `rapier3d`，也不持有物理世界状态 —— 每次查询都直接读 ECS。rapier 的
+//! Started/Stopped 事件由 `prism-app::physics_runner` 写进 [`PhysicsEvents`] 资源。
 //!
 //! 支持的形状：盒（OBB，按实体的旋转/缩放求交）、球、胶囊（沿本地 +Y）。
 //! 胶囊按「盒 + 球」两段求交近似（圆柱段当盒，两端当球），足够做角色/子弹查询。
 
 use prism_ecs::{Entity, World};
 use prism_scene::components::{Collider, ColliderShape, LocalToWorld};
+
+/// 一次碰撞 / 触发器事件的方向。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhysicsEventKind {
+    Started,
+    Stopped,
+}
+
+/// rapier 在固定步内报告的碰撞事件，已映射回 ECS 实体。
+///
+/// `is_sensor == true` 表示至少一方是 `Collider.is_trigger`；普通刚体之间的
+/// 接触也会产生 Started/Stopped，便于做落地 / 撞击逻辑。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhysicsEvent {
+    pub kind: PhysicsEventKind,
+    pub entity_a: Entity,
+    pub entity_b: Entity,
+    pub is_sensor: bool,
+}
+
+/// 主线程可见的物理事件缓冲。
+///
+/// 每个固定步覆盖一次：上一次 `step` 之后发生的 Started/Stopped 都放在这里。
+/// 需要跨步累积的消费方应在每步后自行 drain 到自己的队列。
+#[derive(Debug, Clone, Default)]
+pub struct PhysicsEvents {
+    pub events: Vec<PhysicsEvent>,
+}
+
+impl PhysicsEvents {
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+}
 
 /// 一次命中的结果。
 #[derive(Debug, Clone, Copy, PartialEq)]
