@@ -753,7 +753,9 @@ fn cook_texture(source: &Path) -> Result<Vec<u8>> {
         AssetType::Texture,
         "texture-importer",
     );
-    let settings = CookSettings::default();
+    // 每资产导入设置（#514）：`<asset>.import.json` 覆盖 profile 的 max_size / mips。
+    let mut settings = CookSettings::default();
+    prism_cooker::ImportSettings::load(source).apply(&mut settings);
     let cooked = TextureCooker
         .cook(&prism_cooker::CookContext {
             record: &record,
