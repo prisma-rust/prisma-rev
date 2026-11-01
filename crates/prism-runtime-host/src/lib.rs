@@ -16,8 +16,8 @@ use std::path::{Path, PathBuf};
 use libloading::{Library, Symbol};
 use prism_project_api::{
     GetProjectApi, HostApi, ProjectApi, ABI_VERSION, BUFFER_TOO_SMALL, HOST_CAP_ASSET,
-    HOST_CAP_COMPONENTS, HOST_CAP_DRAW, HOST_CAP_LOGGING, HOST_CAP_STATE, HOST_CAP_WORLD_COMMANDS,
-    INVALID_ARGUMENT, SUCCESS, UNKNOWN_TYPE,
+    HOST_CAP_COMPONENTS, HOST_CAP_DRAW, HOST_CAP_LOGGING, HOST_CAP_SCENE, HOST_CAP_STATE,
+    HOST_CAP_WORLD_COMMANDS, INVALID_ARGUMENT, SUCCESS, UNKNOWN_TYPE,
 };
 use prism_reflect::rtti_bin;
 use thiserror::Error;
@@ -91,6 +91,18 @@ impl AssetIo for NoAssets {
 
 static NO_ASSETS: NoAssets = NoAssets;
 
+/// 项目模块请求的换场动作（#482）。
+///
+/// 回调执行时引擎的世界正被借用，所以只能**记录请求**；宿主在本 tick 结束后
+/// 调 [`WorldCommands::take_scene_request`] 并真正切换场景。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SceneRequest {
+    /// 加载 `.scene.json`；`additive` = 叠加（不卸载旧场景）。
+    Load { path: String, additive: bool },
+    /// 卸载当前场景（`Persistent` 子树保留）。
+    Unload,
+}
+
 struct CommandContext<'a> {
     world: &'a mut prism_ecs::World,
     registry: &'a prism_scene::ComponentRegistry,
@@ -107,6 +119,10 @@ struct CommandContext<'a> {
     /// 所以走函数指针而不是直接调用。
     save_state: Option<fn(&prism_ecs::World)>,
     load_state: Option<fn(&mut prism_ecs::World) -> bool>,
+    /// 本 tick 项目代码请求的换场（#482），由宿主 tick 结束后取走。
+    scene_request: Option<SceneRequest>,
+    /// 宿主是否会执行 `scene_request`；只有会执行的宿主才对外声明能力位。
+    scene_switch: bool,
 }
 
 /// 把宿主世界包装成 [`HostApi`] 函数表。
@@ -132,6 +148,8 @@ impl<'a> WorldCommands<'a> {
                 asset_bytes: Vec::new(),
                 save_state: None,
                 load_state: None,
+                scene_request: None,
+                scene_switch: false,
             },
         }
     }
@@ -155,6 +173,15 @@ impl<'a> WorldCommands<'a> {
         self
     }
 
+    /// 声明宿主会执行项目代码的换场请求（#482）。
+    ///
+    /// 只有真的会在 tick 结束后调用 [`Self::take_scene_request`] 并换场的宿主
+    /// 才能打开这个能力位；否则项目代码会以为请求生效了。
+    pub fn with_scene_switch(mut self) -> Self {
+        self.context.scene_switch = true;
+        self
+    }
+
     /// 本帧输入快照；`ui`/项目代码通过 `HostApi::input` 读取。
     pub fn set_input(&mut self, input: InputSnapshot) {
         self.context.input = input;
@@ -163,6 +190,11 @@ impl<'a> WorldCommands<'a> {
     /// 取走项目本帧提交的 UI 四边形（宿主在 UI 渲染前合并）。
     pub fn take_quads(&mut self) -> Vec<UiQuad> {
         std::mem::take(&mut self.context.quads)
+    }
+
+    /// 取走本 tick 项目代码请求的换场（#482）；宿主在 tick 结束后执行。
+    pub fn take_scene_request(&mut self) -> Option<SceneRequest> {
+        self.context.scene_request.take()
     }
 
     /// 构造本 tick 的能力表。指针只在 `api` 返回后到本 tick 结束之间有效。
@@ -179,6 +211,11 @@ impl<'a> WorldCommands<'a> {
                     HOST_CAP_STATE
                 } else {
                     0
+                }
+                | if self.context.scene_switch {
+                    HOST_CAP_SCENE
+                } else {
+                    0
                 },
             scene_generation: self.context.scene_generation,
             user_data: (&mut self.context as *mut CommandContext).cast(),
@@ -190,6 +227,16 @@ impl<'a> WorldCommands<'a> {
             read_asset_file: Some(host_read_asset_file),
             save_scene_state: Some(host_save_scene_state),
             load_scene_state: Some(host_load_scene_state),
+            load_scene: if self.context.scene_switch {
+                Some(host_load_scene)
+            } else {
+                None
+            },
+            unload_scene: if self.context.scene_switch {
+                Some(host_unload_scene)
+            } else {
+                None
+            },
             query_entities: Some(host_query_entities),
             get_component: Some(host_get_component),
             set_component: Some(host_set_component),
@@ -471,6 +518,39 @@ unsafe extern "C" fn host_is_alive(user_data: *mut std::ffi::c_void, entity: Ent
         return -1;
     };
     i32::from(context.world.is_alive(handle_to_entity(entity)))
+}
+
+/// 记录项目代码的换场请求（#482）。真正执行由宿主在 tick 结束后完成。
+unsafe extern "C" fn host_load_scene(
+    user_data: *mut std::ffi::c_void,
+    path: *const u8,
+    path_len: usize,
+    additive: u8,
+) -> i32 {
+    let Some(context) = (user_data as *mut CommandContext).as_mut() else {
+        return INVALID_ARGUMENT;
+    };
+    if path.is_null() || path_len == 0 {
+        return INVALID_ARGUMENT;
+    }
+    let bytes = unsafe { core::slice::from_raw_parts(path, path_len) };
+    let Ok(path) = core::str::from_utf8(bytes) else {
+        return INVALID_ARGUMENT;
+    };
+    context.scene_request = Some(SceneRequest::Load {
+        path: path.to_string(),
+        additive: additive != 0,
+    });
+    SUCCESS
+}
+
+/// 记录卸载请求（#482）。
+unsafe extern "C" fn host_unload_scene(user_data: *mut std::ffi::c_void) -> i32 {
+    let Some(context) = (user_data as *mut CommandContext).as_mut() else {
+        return INVALID_ARGUMENT;
+    };
+    context.scene_request = Some(SceneRequest::Unload);
+    SUCCESS
 }
 
 unsafe extern "C" fn host_draw_quad(user_data: *mut std::ffi::c_void, quad: UiQuad) -> i32 {
@@ -793,6 +873,68 @@ mod tests {
         assert_ne!(api.capabilities & HOST_CAP_STATE, 0);
         let callback = api.load_scene_state.expect("callback");
         assert_eq!(unsafe { callback(api.user_data) }, 1);
+    }
+
+    /// #482：换场请求只在宿主声明会执行时才可见，并且是延迟执行的记录。
+    #[test]
+    fn scene_switch_requests_are_recorded_only_when_enabled() {
+        let mut world = prism_ecs::World::new();
+        let registry = registry();
+
+        // 没声明能力：不暴露回调，避免项目代码以为换场生效。
+        let mut plain = WorldCommands::new(&mut world, &registry, 3);
+        let api = plain.api();
+        assert_eq!(api.capabilities & HOST_CAP_SCENE, 0);
+        assert!(api.load_scene.is_none() && api.unload_scene.is_none());
+        assert!(plain.take_scene_request().is_none());
+
+        let mut wired = WorldCommands::new(&mut world, &registry, 3).with_scene_switch();
+        let api = wired.api();
+        assert_ne!(api.capabilities & HOST_CAP_SCENE, 0);
+        let load = api.load_scene.expect("load_scene callback");
+        let unload = api.unload_scene.expect("unload_scene callback");
+
+        let path = b"assets/scenes/second.scene.json";
+        assert_eq!(
+            unsafe { load(api.user_data, path.as_ptr(), path.len(), 0) },
+            SUCCESS
+        );
+        assert_eq!(
+            wired.take_scene_request(),
+            Some(SceneRequest::Load {
+                path: "assets/scenes/second.scene.json".to_string(),
+                additive: false,
+            })
+        );
+        assert!(wired.take_scene_request().is_none());
+
+        // additive 标志透传。
+        assert_eq!(
+            unsafe { load(api.user_data, path.as_ptr(), path.len(), 1) },
+            SUCCESS
+        );
+        assert_eq!(
+            wired.take_scene_request(),
+            Some(SceneRequest::Load {
+                path: "assets/scenes/second.scene.json".to_string(),
+                additive: true,
+            })
+        );
+
+        assert_eq!(unsafe { unload(api.user_data) }, SUCCESS);
+        assert_eq!(wired.take_scene_request(), Some(SceneRequest::Unload));
+
+        // 空路径 / 非 UTF-8 路径明确报错，不记录半个请求。
+        assert_eq!(
+            unsafe { load(api.user_data, path.as_ptr(), 0, 0) },
+            prism_project_api::INVALID_ARGUMENT
+        );
+        let invalid = [0xffu8, 0xfe];
+        assert_eq!(
+            unsafe { load(api.user_data, invalid.as_ptr(), invalid.len(), 0) },
+            prism_project_api::INVALID_ARGUMENT
+        );
+        assert!(wired.take_scene_request().is_none());
     }
 
     /// 项目模块拿到的松散资产访问与宿主同一份实现（走 `HOST_CAP_ASSET`）。

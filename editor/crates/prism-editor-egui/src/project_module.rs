@@ -24,7 +24,8 @@ use prism_engine::input::InputManager;
 
 use crate::diagnostics::{diagnostics_from_cargo, Diagnostic};
 use prism_runtime_host::{
-    AssetIo, InputSnapshot, ProjectModule, ProjectSession, UiQuad as HostUiQuad, WorldCommands,
+    AssetIo, InputSnapshot, ProjectModule, ProjectSession, SceneRequest, UiQuad as HostUiQuad,
+    WorldCommands,
 };
 use prism_scene::ComponentRegistry;
 
@@ -141,6 +142,8 @@ pub struct ProjectModuleDriver {
     events: Vec<ProjectEvent>,
     last_error: Option<String>,
     last_tick_error: Option<String>,
+    /// 项目代码在上一 tick 请求的换场（#482），由宿主在 tick 结束后取走执行。
+    pending_scene: Option<SceneRequest>,
 }
 
 impl ProjectModuleDriver {
@@ -185,6 +188,7 @@ impl ProjectModuleDriver {
             events: Vec::new(),
             last_error: None,
             last_tick_error: None,
+            pending_scene: None,
         };
 
         if driver.prebuilt.is_some() {
@@ -329,8 +333,9 @@ impl ProjectModuleDriver {
             return;
         };
 
-        let mut commands =
-            WorldCommands::new(world, &self.components, scene_generation).with_assets(&self.assets);
+        let mut commands = WorldCommands::new(world, &self.components, scene_generation)
+            .with_assets(&self.assets)
+            .with_scene_switch();
         // 项目代码可以调 `GameWorld::save_scene_state()`（#484）；引擎在这里，
         // runtime-host 只持有函数指针。
         commands = commands.with_scene_state(
@@ -341,6 +346,8 @@ impl ProjectModuleDriver {
         let host = commands.api();
         let result = session.tick(&host, dt.max(0.000_5));
         let quads = commands.take_quads();
+        // 换场请求不能在回调里执行（世界正被借用），先存下来交给宿主（#482）。
+        self.pending_scene = commands.take_scene_request();
         queue_project_quads(world, quads);
 
         let error = result.err().map(|error| error.to_string());
@@ -354,6 +361,11 @@ impl ProjectModuleDriver {
             }
             self.last_tick_error = error;
         }
+    }
+
+    /// 取走项目代码请求的换场；宿主在本 tick 的引擎 update 之后执行。
+    pub fn take_scene_request(&mut self) -> Option<SceneRequest> {
+        self.pending_scene.take()
     }
 
     // ------------------------------------------------------------------
