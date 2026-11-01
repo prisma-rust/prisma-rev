@@ -423,6 +423,7 @@ pub(crate) fn particle_entries_2d(
                     dst_blend: prism_scene::render_enums::BlendMode::OneMinusSrcAlpha,
                     blend_op: prism_scene::render_enums::BlendOp::Add,
                     clip: prism_render::NO_CLIP,
+                    receive_lights: false,
                 },
             ));
         }

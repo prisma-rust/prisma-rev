@@ -182,6 +182,102 @@ fn light_json_round_trips_and_fills_missing_fields() {
 }
 
 #[test]
+fn light_2d_defaults_and_round_trips() {
+    // #611：2D 光照用「美术单位」——intensity 1.0 = 原色。
+    let light = Light2D::default();
+    assert_eq!(light.kind, Light2DKind::Point);
+    assert_eq!(light.color, [1.0, 1.0, 1.0]);
+    assert!(approx(light.intensity, 1.0));
+    assert!(approx(light.radius, 5.0));
+    assert_eq!(light.direction, [0.0, -1.0]);
+    assert!(light.enabled);
+    assert!(light.contributes());
+
+    let authored: Light2D =
+        serde_json::from_str(r#"{"kind":"Ambient","color":[0.2,0.25,0.5],"intensity":0.35}"#)
+            .unwrap();
+    assert_eq!(authored.kind, Light2DKind::Ambient);
+    assert_eq!(authored.color, [0.2, 0.25, 0.5]);
+    assert!(approx(authored.intensity, 0.35));
+    assert_eq!(authored.radius, 5.0, "没写的字段走默认");
+
+    let json = serde_json::to_string(&authored).unwrap();
+    let back: Light2D = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.kind, Light2DKind::Ambient);
+    assert!(approx(back.intensity, 0.35));
+}
+
+#[test]
+fn light_2d_ignores_disabled_or_degenerate_values() {
+    let mut light = Light2D {
+        enabled: false,
+        ..Light2D::default()
+    };
+    assert!(!light.contributes(), "关掉的光不参与");
+
+    light.enabled = true;
+    light.intensity = 0.0;
+    assert!(!light.contributes(), "0 强度 = 无贡献");
+    assert_eq!(light.strength(), 0.0);
+
+    light.intensity = f32::NAN;
+    assert!(!light.contributes());
+    assert_eq!(light.strength(), 0.0);
+
+    light.intensity = 2.0;
+    light.color = [0.0, 0.0, 0.0];
+    assert!(!light.contributes(), "黑色光不点亮任何东西");
+
+    light.color = [1.0, 1.0, 1.0];
+    light.radius = 0.0;
+    assert!(light.contributes());
+    assert_eq!(light.falloff_radius(), 0.0, "半径 0 = 不衰减");
+    light.radius = f32::INFINITY;
+    assert_eq!(light.falloff_radius(), 0.0);
+    light.radius = -3.0;
+    assert_eq!(light.falloff_radius(), 0.0);
+    light.radius = 2.5;
+    assert!(approx(light.falloff_radius(), 2.5));
+}
+
+#[test]
+fn light_2d_kind_exposes_reflect_variants() {
+    use prism_reflect::ReflectType;
+    assert_eq!(
+        Light2DKind::enum_variants(),
+        Some(&["Ambient", "Point", "Directional"][..])
+    );
+    for (index, kind) in [
+        Light2DKind::Ambient,
+        Light2DKind::Point,
+        Light2DKind::Directional,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(kind.to_value(), prism_reflect::Value::U64(index as u64));
+        assert_eq!(Light2DKind::from_value(kind.to_value()).unwrap(), kind);
+    }
+    assert!(Light2DKind::from_value(prism_reflect::Value::U64(9)).is_err());
+}
+
+#[test]
+fn sprites_stay_unlit_unless_receive_lights_is_enabled() {
+    // #611：默认不参与光照，老场景的调色板完全不变。
+    let legacy: SpriteRenderer = serde_json::from_str(r#"{"sprite_path":"a.png"}"#).unwrap();
+    assert!(!legacy.receive_lights);
+
+    let lit = SpriteRenderer {
+        sprite_path: "a.png".into(),
+        receive_lights: true,
+        ..SpriteRenderer::default()
+    };
+    let json = serde_json::to_string(&lit).unwrap();
+    let back: SpriteRenderer = serde_json::from_str(&json).unwrap();
+    assert!(back.receive_lights);
+}
+
+#[test]
 fn light_effective_color_applies_temperature_only_when_enabled() {
     let mut light = Light {
         color: glam::Vec3::new(1.0, 0.5, 0.25),
@@ -274,6 +370,7 @@ fn sprite_json_round_trips_and_fills_missing_fields() {
         blend_op: BlendOp::Add,
         clip_enabled: true,
         clip_rect: [-4.0, -2.0, 4.0, 2.0],
+        receive_lights: true,
     };
     let json = serde_json::to_string(&sprite).unwrap();
     let back: SpriteRenderer = serde_json::from_str(&json).unwrap();
@@ -292,6 +389,7 @@ fn sprite_json_round_trips_and_fills_missing_fields() {
     assert_eq!(back.blend_op, BlendOp::Add);
     assert!(back.clip_enabled);
     assert_eq!(back.clip_rect, [-4.0, -2.0, 4.0, 2.0]);
+    assert!(back.receive_lights);
 
     // 老文档只有路径：其余字段走 serde 默认。
     let legacy: SpriteRenderer = serde_json::from_str(r#"{"sprite_path":"a.png"}"#).unwrap();

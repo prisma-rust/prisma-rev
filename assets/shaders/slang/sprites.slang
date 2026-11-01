@@ -8,10 +8,12 @@
 // Sets (must match `SpritePass::ensure_pipeline`):
 //   set 0, binding 0 - bindless SamplerState[] (globalSamplers, shared table)
 //   set 0, binding 1 - bindless Texture2D[] (bindlessSrvs, shared table)
+//   set 1, binding 0 - StructuredBuffer<SpriteLight> (2D lights, #611)
 // The bindless layout is bound at set 0 here (it is bound at set 1 in the
 // scene pipeline; the layout object is index-agnostic).
 //
-// Push constants: SpritePush (64 bytes) = world-view-projection.
+// Push constants: SpritePush (80 bytes) = world-view-projection + light params
+// (`lightParams.x` = number of valid entries in the light buffer).
 //
 // Per-instance vertex data (one 112-byte record, instance rate):
 //   loc 0..3 : the four world-space quad corners, BL, BR, TR, TL (float3 each)
@@ -19,6 +21,7 @@
 //   loc 5    : color (linear RGBA, multiplied with the sampled texel)
 //   loc 6    : bindless texture index
 //   loc 7    : world-space clip rect (min_x, min_y, max_x, max_y); max < min = off
+//   loc 8    : flags (bit 0 = receive 2D lights, #611)
 //
 // Sprites expand their model matrix on the CPU; 2D lines hand over explicit
 // world-space triangles (a triangle is a quad whose last two corners coincide).
@@ -42,12 +45,34 @@ Texture2D bindlessSrvs[];
 // 2 = nearest, 3 = shadow.
 static const uint SAMPLER_NEAREST = 2u;
 
+// Mirrors `prism_render::SpriteLight` (three float4 = 48 bytes). The engine
+// keeps 64-byte records so `std430` array stride stays 16-byte aligned.
+struct SpriteLight
+{
+    // xy = world position, z = falloff radius (0 = none), w = intensity
+    float4 positionRange;
+    // rgb = linear colour, w = kind (0 = ambient, 1 = point, 2 = directional)
+    float4 colorKind;
+    // xy = direction (world space); zw reserved
+    float4 direction;
+};
+
+[[vk::binding(0, 1)]]
+StructuredBuffer<SpriteLight> spriteLights;
+
 struct SpritePush
 {
     float4x4 viewProj;
+    // x = light count; yzw reserved
+    float4 lightParams;
 };
 [[vk::push_constant]]
 ConstantBuffer<SpritePush> pc;
+
+static const uint LIGHT_KIND_AMBIENT = 0u;
+static const uint LIGHT_KIND_POINT = 1u;
+
+static const uint SPRITE_FLAG_RECEIVE_LIGHTS = 1u;
 
 struct SpriteVertexIn
 {
@@ -59,6 +84,7 @@ struct SpriteVertexIn
     [[vk::location(5)]] float4 color;
     [[vk::location(6)]] uint   textureIndex;
     [[vk::location(7)]] float4 clip;
+    [[vk::location(8)]] uint   flags;
 };
 
 struct SpriteVaryings
@@ -69,6 +95,7 @@ struct SpriteVaryings
     uint   textureIndex : TEXCOORD1;
     float3 worldPos : TEXCOORD2;
     nointerpolation float4 clip : TEXCOORD3;
+    nointerpolation uint flags : TEXCOORD4;
 };
 
 // Unit quad as two triangles. `QUAD_CORNER` indexes the four corner records;
@@ -96,6 +123,7 @@ SpriteVaryings vertexMain(SpriteVertexIn in, uint vertexId : SV_VertexID)
     out.textureIndex = in.textureIndex;
     out.worldPos = world;
     out.clip = in.clip;
+    out.flags = in.flags;
     return out;
 }
 

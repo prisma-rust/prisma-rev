@@ -225,6 +225,8 @@ pub fn extract_frame_packet_into_with_shadow(
     };
     // 2D 也走同一份主相机视锥：瓦片地图逐格裁剪（#529）。
     scene_view.sprite_items_with_frustum_into(frustum.as_ref(), &mut packet.sprite_items);
+    // 2D 光照（#611）：只有 `receive_lights` 的精灵会用到，没灯光时为空。
+    scene_view.sprite_lights_into(&mut packet.sprite_lights);
     // 3D 粒子：世界空间 billboard，按到眼睛的距离远到近排序（透明混合）。
     scene_view.particle_items_into(packet.scene.eye, &mut packet.particle_items);
 
@@ -256,6 +258,8 @@ pub struct FramePacket {
     /// ECS `SpriteRenderer` entities resolved into flat 2D draw records
     /// (already sorted back-to-front).
     pub sprite_items: Vec<prism_render::SpriteDrawItem>,
+    /// `Light2D` entities for the 2D sprite pass (#611).
+    pub sprite_lights: Vec<prism_render::SpriteLight>,
     /// `ParticleSystem` emitters resolved into world-space billboards
     /// (already sorted back-to-front).
     pub particle_items: Vec<prism_render::ParticleDrawItem>,
@@ -571,6 +575,7 @@ pub fn render_system(
         ref gizmos,
         skybox,
         ref sprite_items,
+        ref sprite_lights,
         ref particle_items,
         ref ui_overlay,
         settings: _,
@@ -649,6 +654,7 @@ pub fn render_system(
         draw_items,
         gizmos,
         sprite_items,
+        sprite_lights,
         particle_items,
         skybox,
         frame_data: &frame_data,
@@ -1096,6 +1102,7 @@ mod tests {
                 packet.draw_items.capacity(),
                 packet.gizmos.capacity(),
                 packet.sprite_items.capacity(),
+                packet.sprite_lights.capacity(),
                 packet.scene.lights.capacity(),
                 packet.scene.pt_lights.capacity(),
                 packet.ui_overlay.quads.capacity(),

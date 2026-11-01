@@ -1695,6 +1695,7 @@ impl RenderPassNode for ForwardPass {
                 self.bindless_layout,
                 &ctx.frame.view_proj,
                 ctx.frame.sprite_items,
+                ctx.frame.sprite_lights,
             ) {
                 log::warn!("SpritePass draw failed (sprites skipped): {e:#}");
             }

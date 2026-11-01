@@ -946,3 +946,153 @@ fn no_frustum_matches_the_unculled_extraction() {
     assert_eq!(culled.len(), 2);
     assert_eq!(culled.len(), scene_render_system(&world).len());
 }
+
+// ---------------------------------------------------------------------------
+// 2D 光照（Light2D，#611）
+// ---------------------------------------------------------------------------
+
+fn spawn_light(world: &mut World, light: Light2D, position: glam::Vec3) -> prism_ecs::Entity {
+    let entity = world.spawn();
+    world.insert(entity, LocalToWorld(glam::Mat4::from_translation(position)));
+    world.insert(entity, light);
+    entity
+}
+
+#[test]
+fn a_point_light_2d_reports_its_world_position_colour_and_falloff() {
+    let mut world = World::new();
+    spawn_light(
+        &mut world,
+        Light2D {
+            color: [1.0, 0.4, 0.2],
+            intensity: 1.5,
+            radius: 8.0,
+            ..Light2D::default()
+        },
+        glam::Vec3::new(12.0, -3.0, 5.0),
+    );
+
+    let lights = sprite_light_entries(&world);
+    assert_eq!(lights.len(), 1);
+    assert_eq!(lights[0].position_range, [12.0, -3.0, 8.0, 1.5]);
+    assert_eq!(lights[0].color_kind[0..3], [1.0, 0.4, 0.2]);
+    assert_eq!(
+        lights[0].color_kind[3],
+        prism_render::SPRITE_LIGHT_POINT as f32
+    );
+}
+
+#[test]
+fn ambient_and_directional_lights_2d_map_to_their_shader_kinds() {
+    let mut world = World::new();
+    spawn_light(
+        &mut world,
+        Light2D {
+            kind: Light2DKind::Ambient,
+            color: [0.2, 0.25, 0.5],
+            intensity: 0.35,
+            ..Light2D::default()
+        },
+        glam::Vec3::ZERO,
+    );
+    spawn_light(
+        &mut world,
+        Light2D {
+            kind: Light2DKind::Directional,
+            direction: [2.0, 0.0],
+            intensity: 0.75,
+            ..Light2D::default()
+        },
+        glam::Vec3::new(100.0, 100.0, 0.0),
+    );
+
+    let lights = sprite_light_entries(&world);
+    assert_eq!(lights.len(), 2);
+
+    let ambient = lights
+        .iter()
+        .find(|light| light.color_kind[3] == prism_render::SPRITE_LIGHT_AMBIENT as f32)
+        .expect("ambient light");
+    assert_eq!(ambient.color_kind[0..3], [0.2, 0.25, 0.5]);
+    assert_eq!(ambient.position_range[3], 0.35);
+    assert_eq!(ambient.position_range[2], 0.0, "氛围光没有半径");
+
+    let directional = lights
+        .iter()
+        .find(|light| light.color_kind[3] == prism_render::SPRITE_LIGHT_DIRECTIONAL as f32)
+        .expect("directional light");
+    // 方向被归一化成单位向量，位置不参与。
+    assert_eq!(directional.direction[0..2], [1.0, 0.0]);
+    assert_eq!(directional.position_range[0..2], [0.0, 0.0]);
+}
+
+#[test]
+fn disabled_or_inactive_light_2d_entries_are_skipped() {
+    let mut world = World::new();
+    let disabled = spawn_light(
+        &mut world,
+        Light2D {
+            enabled: false,
+            ..Light2D::default()
+        },
+        glam::Vec3::ZERO,
+    );
+    let inactive = spawn_light(&mut world, Light2D::default(), glam::Vec3::ZERO);
+    world.insert(inactive, prism_scene::components::Active(false));
+    assert!(sprite_light_entries(&world).is_empty());
+
+    // 关掉的父级同样会连带隐藏光。
+    world.get_mut::<Light2D>(disabled).unwrap().enabled = true;
+    let parent = spawn_light(&mut world, Light2D::default(), glam::Vec3::ZERO);
+    world.insert(parent, prism_scene::components::Active(false));
+    prism_scene::HierarchyHelper::reparent(&mut world, disabled, Some(parent));
+    // 父级开关是通过 `ActiveInHierarchy` 传播的派生值，模拟步末尾才算。
+    super::super::hierarchy::active_hierarchy_system(&mut world);
+    assert!(sprite_light_entries(&world).is_empty());
+}
+
+#[test]
+fn only_3d_lights_leave_the_2d_light_table_empty() {
+    // 3D 光照不参与 2D：表为空，精灵保持不受光照（并打印一次提示）。
+    let mut world = World::new();
+    let entity = world.spawn();
+    world.insert(
+        entity,
+        prism_scene::components::PointLight {
+            ..prism_scene::components::PointLight::default()
+        },
+    );
+    assert!(sprite_light_entries(&world).is_empty());
+}
+
+#[test]
+fn receive_lights_reaches_the_sprite_draw_item() {
+    let mut world = World::new();
+    spawn_sprite(
+        &mut world,
+        glam::Vec3::ZERO,
+        SpriteRenderer {
+            sprite_path: "lit.png".into(),
+            receive_lights: true,
+            ..SpriteRenderer::default()
+        },
+        [16, 16],
+        0,
+    );
+    let items = scene_sprite_system(&world);
+    assert!(items[0].receive_lights);
+
+    let mut world = World::new();
+    spawn_sprite(
+        &mut world,
+        glam::Vec3::ZERO,
+        SpriteRenderer {
+            sprite_path: "unlit.png".into(),
+            ..SpriteRenderer::default()
+        },
+        [16, 16],
+        0,
+    );
+    let items = scene_sprite_system(&world);
+    assert!(!items[0].receive_lights, "默认不受光照");
+}

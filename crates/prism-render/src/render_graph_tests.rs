@@ -408,3 +408,52 @@ fn internal_scale_mode_parses_authoring_values() {
     assert_eq!(InternalScaleMode::default().as_str(), "stretch");
     assert_eq!(InternalScaleMode::Integer.as_str(), "integer");
 }
+
+#[test]
+fn sprite_lights_are_sorted_by_strength_and_truncated() {
+    // #611：2D 光表固定 16 条，超出的按「强度 × 亮度」丢掉最弱的。
+    let mut lights: Vec<SpriteLight> = (0..SPRITE_LIGHT_MAX + 4)
+        .map(|index| {
+            SpriteLight::point(
+                [index as f32, 0.0],
+                [1.0, 1.0, 1.0],
+                index as f32 + 1.0,
+                0.0,
+            )
+        })
+        .collect();
+    // 一条比所有点光都暗的氛围光：不该挤进前 16 名。
+    lights.push(SpriteLight::ambient([1.0, 1.0, 1.0], 0.01));
+    trim_sprite_lights(&mut lights);
+
+    assert_eq!(lights.len(), SPRITE_LIGHT_MAX);
+    // 最强的那条 20 留在最前面。
+    assert_eq!(lights[0].position_range[3], 20.0);
+    // 最弱的 0.01 氛围光被丢掉；最小的点光现在是 5.0。
+    assert!(lights.iter().all(|light| light.position_range[3] >= 5.0));
+}
+
+#[test]
+fn sprite_light_constructors_pack_the_shader_layout() {
+    let point = SpriteLight::point([3.0, -4.0], [0.2, 0.4, 1.0], 1.5, 6.0);
+    assert_eq!(point.position_range, [3.0, -4.0, 6.0, 1.5]);
+    assert_eq!(point.color_kind, [0.2, 0.4, 1.0, SPRITE_LIGHT_POINT as f32]);
+
+    let ambient = SpriteLight::ambient([0.1, 0.1, 0.2], 0.5);
+    assert_eq!(ambient.position_range[3], 0.5);
+    assert_eq!(ambient.position_range[2], 0.0, "氛围光没有半径");
+    assert_eq!(ambient.color_kind[3], SPRITE_LIGHT_AMBIENT as f32);
+
+    let directional = SpriteLight::directional([1.0, 0.0], [1.0, 0.9, 0.8], 0.75);
+    assert_eq!(directional.direction[0..2], [1.0, 0.0]);
+    assert_eq!(directional.color_kind[3], SPRITE_LIGHT_DIRECTIONAL as f32);
+    assert_eq!(
+        std::mem::size_of::<SpriteLight>(),
+        48,
+        "stride 是 3 个 float4"
+    );
+
+    // 方向会被归一化，零向量回落到「向下」。
+    let zero = SpriteLight::directional([0.0, 0.0], [1.0; 3], 1.0);
+    assert_eq!(zero.direction[0..2], [0.0, -1.0]);
+}

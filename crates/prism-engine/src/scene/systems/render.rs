@@ -223,6 +223,70 @@ fn sort_draw_items_into(
     out.extend(entries.into_iter().map(|(_, item)| item));
 }
 
+/// 收集场景里的 [`Light2D`]（#611），按贡献从强到弱，最多
+/// [`prism_render::SPRITE_LIGHT_MAX`] 盏。
+///
+/// 只有 `SpriteRenderer.receive_lights` 为真的精灵才会用到这些数据，所以
+/// 没有灯光时返回空列表即可——着色器看到 `light_count == 0` 会保持 unlit。
+///
+/// 3D 光源（`PointLight` / `DirectionalLight` / `SpotLight`）不会照亮 2D 精灵；
+/// 只放了 3D 光源时这里 warn 一次，避免「组件合法但完全没效果」被静默吞掉。
+pub fn sprite_light_entries(world: &World) -> Vec<prism_render::SpriteLight> {
+    use std::sync::Once;
+    static WARNED: Once = Once::new();
+
+    let mut lights: Vec<prism_render::SpriteLight> = Vec::new();
+    for (entity, transform, light) in world.query2::<LocalToWorld, Light2D>() {
+        if !crate::scene::systems::hierarchy::is_active_in_hierarchy(world, entity)
+            || !light.contributes()
+        {
+            continue;
+        }
+        let origin = transform.0.w_axis;
+        let position = [origin.x, origin.y];
+        let color = light.color;
+        let intensity = light.strength();
+        let radius = light.falloff_radius();
+        lights.push(match light.kind {
+            prism_scene::components::Light2DKind::Ambient => {
+                prism_render::SpriteLight::ambient(color, intensity)
+            }
+            prism_scene::components::Light2DKind::Point => {
+                prism_render::SpriteLight::point(position, color, intensity, radius)
+            }
+            prism_scene::components::Light2DKind::Directional => {
+                prism_render::SpriteLight::directional(light.direction, color, intensity)
+            }
+        });
+    }
+
+    if lights.is_empty() {
+        let has_3d_light = world
+            .query::<prism_scene::components::PointLight>()
+            .next()
+            .is_some()
+            || world
+                .query::<prism_scene::components::SpotLight>()
+                .next()
+                .is_some()
+            || world
+                .query::<prism_scene::components::DirectionalLight>()
+                .next()
+                .is_some();
+        if has_3d_light {
+            WARNED.call_once(|| {
+                log::warn!(
+                    "2D sprites ignore 3D lights (PointLight / SpotLight / DirectionalLight); \
+                     add a `Light2D` entity and enable `SpriteRenderer.receive_lights` (#611)"
+                );
+            });
+        }
+    }
+
+    prism_render::trim_sprite_lights(&mut lights);
+    lights
+}
+
 fn sprite_entries(world: &World) -> Vec<(SortKey, prism_render::SpriteDrawItem)> {
     world
         .query3::<LocalToWorld, SpriteRenderer, SpriteRef>()
@@ -263,6 +327,7 @@ fn sprite_entries(world: &World) -> Vec<(SortKey, prism_render::SpriteDrawItem)>
                     dst_blend: sprite.dst_blend,
                     blend_op: sprite.blend_op,
                     clip: prism_render::clip_bounds(sprite.clip_enabled, sprite.clip_rect),
+                    receive_lights: sprite.receive_lights,
                 },
             )
         })
@@ -305,6 +370,7 @@ fn line_entries(world: &World) -> Vec<(SortKey, prism_render::SpriteDrawItem)> {
                     dst_blend: prism_scene::render_enums::BlendMode::OneMinusSrcAlpha,
                     blend_op: prism_scene::render_enums::BlendOp::Add,
                     clip: prism_render::NO_CLIP,
+                    receive_lights: false,
                 },
             ));
         }

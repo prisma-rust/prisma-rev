@@ -11,7 +11,7 @@ pub const ENTRY_VERTEX_MAIN: &str = "vertexMain"; // stage: VERTEX
 pub const ENTRY_FRAGMENT_MAIN: &str = "fragmentMain"; // stage: FRAGMENT
 
 /// Push-constant block size in bytes (reflected).
-pub const PUSH_CONSTANT_SIZE: u32 = 64;
+pub const PUSH_CONSTANT_SIZE: u32 = 80;
 
 // --- descriptor set 0 ---
 pub const GLOBAL_SAMPLERS_SET: u32 = 0;
@@ -19,14 +19,20 @@ pub const GLOBAL_SAMPLERS_BINDING: u32 = 0; // UNIFORM_BUFFER
 pub const BINDLESS_SRVS_SET: u32 = 0;
 pub const BINDLESS_SRVS_BINDING: u32 = 1; // UNIFORM_BUFFER
 
+// --- descriptor set 1 ---
+pub const SPRITE_LIGHTS_SET: u32 = 1;
+pub const SPRITE_LIGHTS_BINDING: u32 = 0; // UNIFORM_BUFFER
+
 /// Push-constant struct (auto-generated from Slang `SpritePush`).
 ///
 /// Field offsets are the reflected std140 ones — alignment holes are emitted as
-/// explicit `_pad_*` fillers, so `size_of` is 64 bytes and every field sits
+/// explicit `_pad_*` fillers, so `size_of` is 80 bytes and every field sits
 /// where the shader expects it.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct SpritePush {
     /// offset 0, size 64
     pub viewProj: [[f32; 4]; 4],
+    /// offset 64, size 16
+    pub lightParams: [f32; 4],
 }

@@ -141,6 +141,12 @@ impl<'a> SceneReadView<'a> {
         super::systems::render::scene_2d_system_into_with_frustum(self.world, frustum, out)
     }
 
+    /// 提取 `Light2D`（#611），已按贡献修剪到 `SPRITE_LIGHT_MAX`。
+    pub fn sprite_lights_into(&self, out: &mut Vec<prism_render::SpriteLight>) {
+        out.clear();
+        out.extend(super::systems::render::sprite_light_entries(self.world));
+    }
+
     /// 提取 3D 粒子 billboard（已按到 `eye` 的距离**远到近**排序）。
     pub fn particle_items_into(
         &self,
