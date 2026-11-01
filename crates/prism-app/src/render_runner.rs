@@ -448,6 +448,7 @@ fn render_one_frame(
         light_view_proj: scene.light_view_proj.to_cols_array_2d(),
         inv_projection: scene.inv_projection.to_cols_array_2d(),
         debug_flags: settings.debug_flags,
+        wireframe: settings.wireframe,
         tonemap_mode: settings.tonemap_mode,
         aa_mode: settings.aa_mode,
         debug_rt: settings.debug_rt,

@@ -102,6 +102,8 @@ pub struct FrameInput<'a> {
     pub light_view_proj: [[f32; 4]; 4],
     pub inv_projection: [[f32; 4]; 4],
     pub debug_flags: u32,
+    /// 前向管线线框模式（#431）；设备不支持 `fillModeNonSolid` 时被忽略。
+    pub wireframe: bool,
     pub tonemap_mode: u32,
     /// Post-process anti-aliasing mode (0 = off, 1 = FXAA). Runs inside
     /// `PostPass`, so it costs no extra render targets and works identically for
@@ -2122,6 +2124,7 @@ impl GraphRenderer {
             light_view_proj,
             inv_projection,
             debug_flags,
+            wireframe,
             tonemap_mode,
             aa_mode,
             debug_rt,
@@ -2193,6 +2196,7 @@ impl GraphRenderer {
                     ShadowMode::None
                 },
                 debug_flags,
+                wireframe: *wireframe,
                 grade: grade.sanitized(),
                 inv_view_rot: {
                     let v = &frame_data.view;
@@ -2601,6 +2605,7 @@ impl GraphRenderer {
         exposure: f32,
         pt_lights: &[PtAnalyticLight],
         grade: crate::render_graph::PostGrade,
+        wireframe: bool,
     ) -> anyhow::Result<bool> {
         let ctx = match self.begin_frame()? {
             Some(c) => c,
@@ -2617,6 +2622,7 @@ impl GraphRenderer {
             light_view_proj,
             inv_projection,
             debug_flags,
+            wireframe,
             tonemap_mode,
             aa_mode,
             debug_rt,

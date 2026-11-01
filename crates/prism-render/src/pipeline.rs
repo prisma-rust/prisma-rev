@@ -100,6 +100,11 @@ pub struct PipelineDesc<'a> {
     /// 覆盖正面绕序（默认 [`vk::FrontFace::COUNTER_CLOCKWISE`]）。
     /// 阴影管线使用无 Y 翻转的正交光照投影，因此需要 [`vk::FrontFace::CLOCKWISE`]。
     pub front_face: Option<vk::FrontFace>,
+    /// 光栅化模式（默认 [`vk::PolygonMode::FILL`]）。
+    ///
+    /// Wireframe 用 `LINE`；需要设备开启 `fillModeNonSolid`
+    /// （`VulkanContext::wireframe_supported`）。
+    pub polygon_mode: Option<vk::PolygonMode>,
 }
 
 /// A compiled graphics 管线 with its 布局
@@ -164,7 +169,7 @@ impl GraphicsPipeline {
         let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
             .depth_clamp_enable(false)
             .rasterizer_discard_enable(false)
-            .polygon_mode(vk::PolygonMode::FILL)
+            .polygon_mode(desc.polygon_mode.unwrap_or(vk::PolygonMode::FILL))
             .line_width(1.0)
             .cull_mode(desc.cull_mode.unwrap_or(vk::CullModeFlags::BACK))
             // 视图 矩阵 is now a proper 旋转 (det +1); the projection's

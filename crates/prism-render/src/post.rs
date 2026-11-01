@@ -485,6 +485,7 @@ impl PostPass {
             color_attachment_count: None,
             color_blend_attachments: Some(std::slice::from_ref(&blend_attachment)),
             front_face: None,
+            polygon_mode: None,
         })
         .context("PostPass: create pipeline")?;
 

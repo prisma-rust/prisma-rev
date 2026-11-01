@@ -66,6 +66,8 @@ pub struct RenderSettings {
     /// PostPass 调试 render-target viewer (Tab cycles). 0 = 法线 tonemapped
     /// 高动态范围 1 = linearized 深度 2 = view-space 法线
     pub debug_rt: u32,
+    /// 前向管线用 `POLYGON_MODE_LINE` 画网格（#431）。设备不支持时为 no-op。
+    pub wireframe: bool,
     /// 当前 渲染 众数 光栅化 (PBR) or PathTrace (real-time PT).
     pub render_mode: RenderMode,
     /// 最大 path 深度 (bounces) for path tracing.
@@ -128,6 +130,7 @@ impl Default for RenderSettings {
             tonemap_mode: 0,
             aa_mode: 0,
             debug_rt: 0,
+            wireframe: false,
             render_mode: RenderMode::Raster,
             pt_max_bounces: 3,
             pt_ray_max_distance: 1000.0,

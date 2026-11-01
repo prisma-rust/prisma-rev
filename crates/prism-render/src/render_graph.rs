@@ -797,6 +797,8 @@ pub struct GraphFrame<'a> {
     /// `PBR_FLAG_*`). 0 = all components neutral (raw baseColor). Forwarded
     /// to the bindless 推送 常量 `debug_flags` field.
     pub debug_flags: u32,
+    /// 前向管线线框模式（#431）。设备不支持 `fillModeNonSolid` 时忽略。
+    pub wireframe: bool,
     /// Inverse-view 旋转 (upper-left 3x3 of inverse(view)), packed as mat4.
     /// Used by the skybox pass to 旋转 view-space look directions into 世界
     /// 空间 Because the 视图 矩阵 is a 刚体 变换 this is just the

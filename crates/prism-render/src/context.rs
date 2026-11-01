@@ -41,6 +41,9 @@ pub struct VulkanContext {
     /// All fields are `false` on non-RT hardware; callers can 分支 freely.
     pub rt_caps: RayTracingCaps,
 
+    /// `fillModeNonSolid` 是否可用（Wireframe 管线需要）。
+    pub wireframe_supported: bool,
+
     /// 加速度 structure 函数 pointers (loaded when the
     /// `VK_KHR_acceleration_structure` 扩展 is 启用 `None` otherwise).
     pub acceleration_structure_fn: Option<ash::khr::acceleration_structure::Device>,
@@ -83,6 +86,9 @@ impl VulkanContext {
         // conditionally enable extensions and 链 the 右 特性 structs.
         let rt_caps = unsafe { capabilities::probe(&instance, physical_device) };
         log::info!("RT capabilities: {rt_caps}");
+        let wireframe_supported = unsafe { instance.get_physical_device_features(physical_device) }
+            .fill_mode_non_solid
+            != 0;
 
         let graphics_queue_family = pick_graphics_queue_family(&instance, physical_device)
             .context("no graphics-capable queue family found")?;
@@ -117,6 +123,7 @@ impl VulkanContext {
             physical_device_properties,
             physical_device_memory_properties,
             rt_caps,
+            wireframe_supported,
             acceleration_structure_fn,
             enabled_extensions,
             ownership: ContextOwnership::Owned,
@@ -147,6 +154,9 @@ impl VulkanContext {
 
         let rt_caps = unsafe { capabilities::probe(&instance, physical_device) };
         log::info!("RT capabilities (host device): {rt_caps}");
+        let wireframe_supported = unsafe { instance.get_physical_device_features(physical_device) }
+            .fill_mode_non_solid
+            != 0;
 
         let (device, enabled_extensions) = create_device(
             &instance,
@@ -176,6 +186,7 @@ impl VulkanContext {
             physical_device_properties,
             physical_device_memory_properties,
             rt_caps,
+            wireframe_supported,
             acceleration_structure_fn,
             enabled_extensions,
             ownership: ContextOwnership::External,
@@ -468,6 +479,8 @@ fn create_device(
         // every 附件 must share the same 混合 配置 Universally
         // supported on desktop + modern Android
         independent_blend: available_features.independent_blend,
+        // Wireframe（POLYGON_MODE_LINE）需要这个特性；设备不支持时不要请求。
+        fill_mode_non_solid: available_features.fill_mode_non_solid,
         ..vk::PhysicalDeviceFeatures::default()
     };
 

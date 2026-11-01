@@ -93,7 +93,8 @@ pub struct ForwardPass {
     ///
     /// 所有变体的描述符集合布局 / 推送常量范围完全相同，只有光栅化与颜色
     /// 混合状态不同，因此描述符绑定与推送常量在一次绘制列表内可以跨变体复用。
-    pipelines: std::collections::HashMap<DrawState, GraphicsPipeline>,
+    /// key 的第二项是线框开关（#431）：`POLYGON_MODE_LINE` 需要单独的管线。
+    pipelines: std::collections::HashMap<(DrawState, bool), GraphicsPipeline>,
     ibl_descriptor_set: vk::DescriptorSet,
     /// IBL 描述符 集合 布局 (borrowed from `IblResources`). Used by the
     /// skybox pass to 构建 its 管线 布局
@@ -1167,11 +1168,16 @@ impl ForwardPass {
     /// 剔除 / 深度写 / 混合都是 Vulkan **管线状态**，所以按状态分管线；所有
     /// 变体的描述符布局与推送常量完全一致。调用方在录制命令前把本帧需要的
     /// 状态收集齐（见 `execute`），避免在命令缓冲录制中间创建管线。
-    fn ensure_pipelines(&mut self, device: &ash::Device, states: &[DrawState]) -> Result<()> {
+    fn ensure_pipelines(
+        &mut self,
+        device: &ash::Device,
+        states: &[DrawState],
+        wireframe: bool,
+    ) -> Result<()> {
         let missing: Vec<DrawState> = states
             .iter()
             .copied()
-            .filter(|state| !self.pipelines.contains_key(state))
+            .filter(|state| !self.pipelines.contains_key(&(*state, wireframe)))
             .collect();
         if missing.is_empty() {
             return Ok(());
@@ -1273,9 +1279,16 @@ impl ForwardPass {
                 color_attachment_count: None,
                 color_blend_attachments: Some(&blend_attachments),
                 front_face: None,
+                polygon_mode: Some(if wireframe {
+                    vk::PolygonMode::LINE
+                } else {
+                    vk::PolygonMode::FILL
+                }),
             })
-            .with_context(|| format!("ForwardPass: create pipeline ({state:?})"))?;
-            self.pipelines.insert(state, pipeline);
+            .with_context(|| {
+                format!("ForwardPass: create pipeline ({state:?}, wireframe={wireframe})")
+            })?;
+            self.pipelines.insert((state, wireframe), pipeline);
         }
 
         unsafe { device.destroy_shader_module(vert_module, None) };
@@ -1390,6 +1403,8 @@ impl RenderPassNode for ForwardPass {
         self.ensure_render_pass(ctx.context)?;
         // 录制命令前把本帧需要的管线状态收集齐（不透明默认状态永远需要：
         // 描述符集用它的 layout 绑定）。
+        // 设备不支持 `fillModeNonSolid` 时静默退回填充，不影响正常渲染。
+        let wireframe = ctx.frame.wireframe && ctx.context.wireframe_supported;
         let mut states: Vec<DrawState> = vec![DrawState::default()];
         let mut seen = std::collections::HashSet::new();
         seen.insert(DrawState::default());
@@ -1398,7 +1413,7 @@ impl RenderPassNode for ForwardPass {
                 states.push(item.state);
             }
         }
-        self.ensure_pipelines(ctx.device, &states)?;
+        self.ensure_pipelines(ctx.device, &states, wireframe)?;
 
         let rp = self.render_pass.unwrap();
         // Pick the per-swapchain-image 帧缓冲 Indexed by `image_index`
@@ -1416,7 +1431,7 @@ impl RenderPassNode for ForwardPass {
         // （不透明、背面剔除）变体的 layout 绑定一次即可；循环里只按需重绑管线。
         let pipeline = self
             .pipelines
-            .get(&DrawState::default())
+            .get(&(DrawState::default(), wireframe))
             .context("ForwardPass: default pipeline missing")?;
 
         // 解析 the per-frame 描述符 集合 now (used after the skybox 绘制
@@ -1595,7 +1610,7 @@ impl RenderPassNode for ForwardPass {
             // 循环开始前刚绑定的是默认（不透明）管线；只有遇到别的状态才重绑
             // （剔除 / 深度写 / 混合都是管线状态）。描述符与推送常量布局在所有
             // 变体之间一致，所以不需要重新绑定描述符集。
-            let mut bound_state = DrawState::default();
+            let mut bound_state = (DrawState::default(), wireframe);
             for item in ctx.frame.draw_list {
                 // `ShadowsOnly` 物体不参与相机主通道（`ShadowCastingMode`）。
                 if !item.visible_in_main_pass {
@@ -1605,8 +1620,9 @@ impl RenderPassNode for ForwardPass {
                     Some(m) => &m.mesh,
                     None => continue,
                 };
-                if item.state != bound_state {
-                    let variant = self.pipelines.get(&item.state).with_context(|| {
+                let key = (item.state, wireframe);
+                if key != bound_state {
+                    let variant = self.pipelines.get(&key).with_context(|| {
                         format!("ForwardPass: no pipeline for {:?}", item.state)
                     })?;
                     ctx.device.cmd_bind_pipeline(
@@ -1614,7 +1630,7 @@ impl RenderPassNode for ForwardPass {
                         vk::PipelineBindPoint::GRAPHICS,
                         variant.pipeline,
                     );
-                    bound_state = item.state;
+                    bound_state = key;
                 }
                 drawn += 1;
 
@@ -1769,7 +1785,7 @@ impl RenderPassNode for ForwardPass {
             return Ok(());
         }
         self.ensure_render_pass(context)?;
-        self.ensure_pipelines(device, &[DrawState::default()])
+        self.ensure_pipelines(device, &[DrawState::default()], false)
     }
 }
 
