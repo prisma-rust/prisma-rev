@@ -55,6 +55,19 @@ fn spawn_interactive(world: &mut World, rect: [f32; 4]) -> Entity {
 }
 
 #[test]
+fn border_radius_is_normalised_by_the_quad_size() {
+    let mut world = world_with_screen();
+    let entity = spawn_quad(&mut world, [100.0, 100.0, 200.0, 100.0]);
+    world.get_mut::<Style>(entity).unwrap().border_radius = 20.0;
+
+    ui_render_system(&mut world);
+    let overlay = convert_ui_draw_list_to_overlay(&world);
+    let quad = overlay.quads.first().expect("one quad");
+    // 200px wide quad → NDC width 0.5; 20px radius → 20 / 200 * 2 = 0.2.
+    assert!((quad.border_radius - 0.2).abs() < 1e-6, "{quad:?}");
+}
+
+#[test]
 fn inactive_entities_are_skipped_by_drawing() {
     let mut world = world_with_screen();
     let visible_quad = spawn_quad(&mut world, [0.0, 0.0, 10.0, 10.0]);
