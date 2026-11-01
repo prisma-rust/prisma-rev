@@ -56,6 +56,8 @@ pub struct RenderConfig {
     pub debug_rt: Option<u32>,
     /// 前向管线线框模式（#431）。
     pub wireframe: Option<bool>,
+    /// 填充 + 线框叠加（#431）。
+    pub shaded_wireframe: Option<bool>,
     pub pt_max_bounces: Option<u32>,
     pub pt_ray_max_distance: Option<f32>,
     /// 0 = accumulate forever。
@@ -84,6 +86,9 @@ impl RenderConfig {
         }
         if let Some(wireframe) = self.wireframe {
             settings.wireframe = wireframe;
+        }
+        if let Some(shaded_wireframe) = self.shaded_wireframe {
+            settings.shaded_wireframe = shaded_wireframe;
         }
         if let Some(mode) = self.tonemap_mode {
             settings.tonemap_mode = mode;
@@ -166,6 +171,7 @@ impl RenderConfig {
             vignette: ini.get_f32("render", "vignette"),
             debug_rt: ini.get_u32("render", "debug_rt"),
             wireframe: ini.get_bool("render", "wireframe"),
+            shaded_wireframe: ini.get_bool("render", "shaded_wireframe"),
             pt_max_bounces: ini.get_u32("render", "pt_max_bounces"),
             pt_ray_max_distance: ini.get_f32("render", "pt_ray_max_distance"),
             pt_max_iterations: ini.get_u32("render", "pt_max_iterations"),
@@ -389,6 +395,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "vignette",
             "debug_rt",
             "wireframe",
+            "shaded_wireframe",
             "pt_max_bounces",
             "pt_ray_max_distance",
             "pt_max_iterations",
@@ -507,7 +514,7 @@ mod tests {
         use crate::render_settings::{RenderMode, RenderSettings};
 
         let cfg = AppConfig::from_ini(
-            "[render]\nrender_mode = \"path_trace\"\ntonemap_mode = 1\naa_mode = 1\ncontrast = 1.4\nsaturation = 0.6\nvignette = 0.3\nshadow_distance = 120.0\nshadow_map_size = 1024\nwireframe = true\npt_max_bounces = 7\n",
+            "[render]\nrender_mode = \"path_trace\"\ntonemap_mode = 1\naa_mode = 1\ncontrast = 1.4\nsaturation = 0.6\nvignette = 0.3\nshadow_distance = 120.0\nshadow_map_size = 1024\nwireframe = true\nshaded_wireframe = true\npt_max_bounces = 7\n",
         );
         let mut settings = RenderSettings::default();
         cfg.render.apply(&mut settings);
@@ -523,6 +530,7 @@ mod tests {
         assert_eq!(settings.shadow_distance, 120.0);
         assert_eq!(settings.shadow_map_size, 1024);
         assert!(settings.wireframe);
+        assert!(settings.shaded_wireframe);
         // Unspecified fields keep their defaults.
         assert_eq!(settings.pt_max_iterations, 0);
     }

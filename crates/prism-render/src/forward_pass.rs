@@ -111,6 +111,9 @@ pub struct ForwardPass {
     /// 选中描边的反向外壳管线（#487）：只读 set 0 的帧 UBO，片元输出纯色。
     /// 与场景网格共享顶点格式 / 渲染 pass / 深度附件，只是剔除正面、不写深度。
     outline_pipeline: Option<GraphicsPipeline>,
+    /// 填充 + 线框叠加的覆盖管线（#431）。复用 outline 着色器（厚度 0、纯色），
+    /// `POLYGON_MODE_LINE` + 负深度 bias 压在填充面上。
+    shaded_wireframe_pipeline: Option<GraphicsPipeline>,
     ibl_descriptor_set: vk::DescriptorSet,
     /// IBL 描述符 集合 布局 (borrowed from `IblResources`). Used by the
     /// skybox pass to 构建 its 管线 布局
@@ -204,6 +207,7 @@ impl ForwardPass {
             render_pass: None,
             pipelines: std::collections::HashMap::new(),
             outline_pipeline: None,
+            shaded_wireframe_pipeline: None,
             ibl_descriptor_set: vk::DescriptorSet::null(),
             ibl_layout: vk::DescriptorSetLayout::null(),
             shadow_ds_layout: None,
@@ -432,6 +436,7 @@ impl ForwardPass {
         }
         // 管线（三种剔除变体，frees 管线 + 布局 via GraphicsPipeline::Drop）。
         self.pipelines.clear();
+        self.shaded_wireframe_pipeline = None;
 
         // 集合 0: 帧 UBO + materials SSBO 布局 + 池 (sets freed with 池
         if let Some(layout) = self.frame_set_layout.take() {
@@ -1400,6 +1405,85 @@ impl ForwardPass {
         self.outline_pipeline = Some(pipeline);
         Ok(())
     }
+
+    /// 惰性创建「填充 + 线框叠加」管线（#431）。
+    ///
+    /// 复用 outline 着色器：顶点只做 `model` 变换（厚度 0，不外扩），片元输出
+    /// 深色线。`POLYGON_MODE_LINE` + 负深度 bias 让线压在填充面上，避免
+    /// z-fighting；不写深度，所以线不会污染后续的深度测试 / 选中描边。
+    fn ensure_shaded_wireframe_pipeline(&mut self, device: &ash::Device) -> Result<()> {
+        if self.shaded_wireframe_pipeline.is_some() {
+            return Ok(());
+        }
+        let rp = self
+            .render_pass
+            .context("ForwardPass: render_pass not created before shaded wireframe")?;
+        const VERT_SPV: &[u8] = include_bytes!("../../../assets/shaders/outline.vert.spv");
+        const FRAG_SPV: &[u8] = include_bytes!("../../../assets/shaders/outline.frag.spv");
+        let vert_module =
+            shader::load_shader_module(device, VERT_SPV).context("wireframe overlay: load vert")?;
+        let frag_module =
+            shader::load_shader_module(device, FRAG_SPV).context("wireframe overlay: load frag")?;
+
+        let vert_entry = std::ffi::CString::new("vertexMain").unwrap();
+        let frag_entry = std::ffi::CString::new("fragmentMain").unwrap();
+        let vert_stage = shader::shader_stage(
+            vk::ShaderStageFlags::VERTEX,
+            vert_module,
+            vert_entry.as_c_str(),
+        );
+        let frag_stage = shader::shader_stage(
+            vk::ShaderStageFlags::FRAGMENT,
+            frag_module,
+            frag_entry.as_c_str(),
+        );
+        let shader_stages = [vert_stage, frag_stage];
+        let binding_desc = Vertex::binding_description();
+        let attr_descs = Vertex::attribute_descriptions();
+        let frame_set_layout = self
+            .frame_set_layout
+            .context("ForwardPass: set0 layout not set (call set_resources)")?;
+        let set_layouts = [frame_set_layout];
+        let push = [vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
+            .offset(0)
+            .size(std::mem::size_of::<OutlinePush>() as u32)];
+        let blend_attachments = [
+            vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::RGBA)
+                .blend_enable(false),
+            vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::empty())
+                .blend_enable(false),
+        ];
+        let pipeline = GraphicsPipeline::new(&PipelineDesc {
+            device,
+            shader_stages: &shader_stages,
+            vertex_binding_desc: std::slice::from_ref(&binding_desc),
+            vertex_attr_descs: &attr_descs,
+            descriptor_set_layouts: &set_layouts,
+            push_constant_ranges: &push,
+            render_pass: rp,
+            subpass: 0,
+            cull_mode: Some(vk::CullModeFlags::BACK),
+            depth_bias_enable: Some(true),
+            // 负 bias 把线拉向相机；线框只覆盖填充面的边缘，不写深度。
+            depth_bias_constant_factor: Some(-2.0),
+            depth_bias_slope_factor: Some(-1.0),
+            depth_write_enable: Some(false),
+            depth_test_enable: None,
+            color_attachment_count: None,
+            color_blend_attachments: Some(&blend_attachments),
+            front_face: None,
+            polygon_mode: Some(vk::PolygonMode::LINE),
+        })
+        .context("ForwardPass: create shaded wireframe pipeline")?;
+
+        unsafe { device.destroy_shader_module(vert_module, None) };
+        unsafe { device.destroy_shader_module(frag_module, None) };
+        self.shaded_wireframe_pipeline = Some(pipeline);
+        Ok(())
+    }
 }
 impl RenderPassNode for ForwardPass {
     fn name(&self) -> &str {
@@ -1504,6 +1588,8 @@ impl RenderPassNode for ForwardPass {
         // 描述符集用它的 layout 绑定）。
         // 设备不支持 `fillModeNonSolid` 时静默退回填充，不影响正常渲染。
         let wireframe = ctx.frame.wireframe && ctx.context.wireframe_supported;
+        let shaded_wireframe =
+            !wireframe && ctx.frame.shaded_wireframe && ctx.context.wireframe_supported;
         let mut states: Vec<DrawState> = vec![DrawState::default()];
         let mut seen = std::collections::HashSet::new();
         seen.insert(DrawState::default());
@@ -1513,6 +1599,9 @@ impl RenderPassNode for ForwardPass {
             }
         }
         self.ensure_pipelines(ctx.device, &states, wireframe)?;
+        if shaded_wireframe {
+            self.ensure_shaded_wireframe_pipeline(ctx.device)?;
+        }
 
         let rp = self.render_pass.unwrap();
         // Pick the per-swapchain-image 帧缓冲 Indexed by `image_index`
@@ -1781,6 +1870,81 @@ impl RenderPassNode for ForwardPass {
                         .cmd_draw_indexed(ctx.cmd, index_count, 1, item.index_start, 0, 0);
                 } else {
                     ctx.device.cmd_draw(ctx.cmd, uploaded.vertex_count, 1, 0, 0);
+                }
+            }
+        }
+
+        // 填充 + 线框叠加（#431）：填充已经画完，再用 outline 着色器画一遍
+        // `POLYGON_MODE_LINE`；负深度 bias + 不写深度让线稳定压在面上。
+        if shaded_wireframe {
+            let overlay = self
+                .shaded_wireframe_pipeline
+                .as_ref()
+                .context("ForwardPass: shaded wireframe pipeline missing")?;
+            unsafe {
+                ctx.device.cmd_bind_pipeline(
+                    ctx.cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    overlay.pipeline,
+                );
+                ctx.device.cmd_bind_descriptor_sets(
+                    ctx.cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    overlay.layout,
+                    0,
+                    std::slice::from_ref(&frame_set),
+                    &[],
+                );
+            }
+            for item in ctx.frame.draw_list {
+                if !item.visible_in_main_pass {
+                    continue;
+                }
+                let Some(uploaded) = ctx.frame.mesh_manager.get(item.mesh) else {
+                    continue;
+                };
+                let pc = OutlinePush {
+                    model: item.model,
+                    // 深色线在亮面上可读；不随材质变化，接近 Unity 的
+                    // Shaded Wireframe。
+                    color: [0.02, 0.02, 0.02, 1.0],
+                    thickness: 0.0,
+                    _pad: [0.0; 3],
+                };
+                unsafe {
+                    let vertex_buffers = [uploaded.mesh.vertex_buffer];
+                    let offsets = [0u64];
+                    ctx.device
+                        .cmd_bind_vertex_buffers(ctx.cmd, 0, &vertex_buffers, &offsets);
+                    ctx.device.cmd_push_constants(
+                        ctx.cmd,
+                        overlay.layout,
+                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                        0,
+                        std::slice::from_raw_parts(
+                            &pc as *const _ as *const u8,
+                            std::mem::size_of::<OutlinePush>(),
+                        ),
+                    );
+                    if let Some(ib) = uploaded.mesh.index_buffer {
+                        let index_count = item.index_count.unwrap_or(uploaded.mesh.index_count);
+                        if index_count == 0 {
+                            continue;
+                        }
+                        ctx.device
+                            .cmd_bind_index_buffer(ctx.cmd, ib, 0, vk::IndexType::UINT32);
+                        ctx.device.cmd_draw_indexed(
+                            ctx.cmd,
+                            index_count,
+                            1,
+                            item.index_start,
+                            0,
+                            0,
+                        );
+                    } else {
+                        ctx.device
+                            .cmd_draw(ctx.cmd, uploaded.mesh.vertex_count, 1, 0, 0);
+                    }
                 }
             }
         }

@@ -68,6 +68,9 @@ pub struct RenderSettings {
     pub debug_rt: u32,
     /// 前向管线用 `POLYGON_MODE_LINE` 画网格（#431）。设备不支持时为 no-op。
     pub wireframe: bool,
+    /// 正常填充渲染 + 线框叠加（#431）。设备不支持 `fillModeNonSolid` 时为 no-op；
+    /// `wireframe == true` 时它被纯线框覆盖。
+    pub shaded_wireframe: bool,
     /// 当前 渲染 众数 光栅化 (PBR) or PathTrace (real-time PT).
     pub render_mode: RenderMode,
     /// 最大 path 深度 (bounces) for path tracing.
@@ -131,6 +134,7 @@ impl Default for RenderSettings {
             aa_mode: 0,
             debug_rt: 0,
             wireframe: false,
+            shaded_wireframe: false,
             render_mode: RenderMode::Raster,
             pt_max_bounces: 3,
             pt_ray_max_distance: 1000.0,

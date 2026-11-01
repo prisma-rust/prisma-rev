@@ -449,6 +449,7 @@ fn render_one_frame(
         inv_projection: scene.inv_projection.to_cols_array_2d(),
         debug_flags: settings.debug_flags,
         wireframe: settings.wireframe,
+        shaded_wireframe: settings.shaded_wireframe,
         tonemap_mode: settings.tonemap_mode,
         aa_mode: settings.aa_mode,
         debug_rt: settings.debug_rt,

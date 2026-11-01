@@ -104,6 +104,8 @@ pub struct FrameInput<'a> {
     pub debug_flags: u32,
     /// 前向管线线框模式（#431）；设备不支持 `fillModeNonSolid` 时被忽略。
     pub wireframe: bool,
+    /// 正常填充 + 线框叠加（#431）。`wireframe` 为 true 时被纯线框覆盖。
+    pub shaded_wireframe: bool,
     pub tonemap_mode: u32,
     /// Post-process anti-aliasing mode (0 = off, 1 = FXAA). Runs inside
     /// `PostPass`, so it costs no extra render targets and works identically for
@@ -2144,6 +2146,7 @@ impl GraphRenderer {
             inv_projection,
             debug_flags,
             wireframe,
+            shaded_wireframe,
             tonemap_mode,
             aa_mode,
             debug_rt,
@@ -2216,6 +2219,7 @@ impl GraphRenderer {
                 },
                 debug_flags,
                 wireframe: *wireframe,
+                shaded_wireframe: *shaded_wireframe,
                 outline_entities: &self.outline_entities,
                 grade: grade.sanitized(),
                 inv_view_rot: {
@@ -2626,6 +2630,7 @@ impl GraphRenderer {
         pt_lights: &[PtAnalyticLight],
         grade: crate::render_graph::PostGrade,
         wireframe: bool,
+        shaded_wireframe: bool,
     ) -> anyhow::Result<bool> {
         let ctx = match self.begin_frame()? {
             Some(c) => c,
@@ -2643,6 +2648,7 @@ impl GraphRenderer {
             inv_projection,
             debug_flags,
             wireframe,
+            shaded_wireframe,
             tonemap_mode,
             aa_mode,
             debug_rt,

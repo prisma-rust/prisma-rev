@@ -139,6 +139,7 @@ fn headless_render_real_frame_and_readback() {
             &[],
             prism_render::render_graph::PostGrade::default(),
             false,
+            false,
         )
         .expect("headless render failed");
 
@@ -195,6 +196,7 @@ fn headless_wireframe_pipeline_builds_and_renders() {
             &[],
             prism_render::render_graph::PostGrade::default(),
             true,
+            false,
         )
         .expect("wireframe render failed");
 

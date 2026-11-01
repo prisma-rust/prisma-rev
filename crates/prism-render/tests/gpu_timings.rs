@@ -56,6 +56,7 @@ fn render_once(renderer: &mut GraphRenderer) {
             &[],
             PostGrade::default(),
             false,
+            false,
         )
         .expect("headless render failed");
 }
