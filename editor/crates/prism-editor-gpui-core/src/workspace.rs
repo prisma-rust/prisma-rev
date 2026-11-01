@@ -842,6 +842,7 @@ impl Workspace {
             .primary_selection()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "未选择实体"))?;
         let doc = self.document().doc.extract_subtree(&[index]);
+        let doc = self.pruned_doc(doc);
         let stem = project::sanitize_stem(name);
         let folder = folder
             .filter(|folder| folder.starts_with("assets/"))
@@ -895,6 +896,7 @@ impl Workspace {
         }
 
         let doc = self.document().doc.extract_subtree(&[index]);
+        let doc = self.pruned_doc(doc);
         project::write_document(&root, &link, &doc)?;
         self.refresh_project_files();
         self.log(
@@ -1073,6 +1075,7 @@ impl Workspace {
             if rewritten == 0 {
                 continue;
             }
+            let doc = self.pruned_doc(doc);
             match project::write_document(root, &path, &doc) {
                 Ok(()) => {
                     references += rewritten;
@@ -1582,6 +1585,12 @@ impl Workspace {
         self.write_document_now(index)
     }
 
+    /// 写盘前按 schema 去掉默认值与只读字段（#636）。
+    fn pruned_doc(&self, mut doc: SceneDoc) -> SceneDoc {
+        doc.prune_defaults(&self.schema);
+        doc
+    }
+
     fn write_document_now(&mut self, index: usize) -> io::Result<String> {
         let root = self
             .project_root
@@ -1599,6 +1608,7 @@ impl Workspace {
             };
             (path, document.doc.clone())
         };
+        let doc = self.pruned_doc(doc);
         project::write_document(&root, &path, &doc)?;
         {
             let document = self.docs.get_mut(index).expect("checked above");
@@ -1640,6 +1650,7 @@ impl Workspace {
             ));
         }
         let doc = self.document().doc.clone();
+        let doc = self.pruned_doc(doc);
         project::write_document(&root, &path, &doc)?;
         {
             let document = self.document_mut();
@@ -4223,7 +4234,8 @@ impl Workspace {
             .project_root
             .clone()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "没有项目根"))?;
-        project::write_document(&root, &root_id, &updated)?;
+        let disk = self.pruned_doc(updated);
+        project::write_document(&root, &root_id, &disk)?;
         Ok(())
     }
 
@@ -6757,6 +6769,39 @@ mod tests {
         workspace.reload_active().unwrap();
         assert_eq!(workspace.document().doc.entities.len(), 2);
         assert_eq!(workspace.selection, vec![0, 1]);
+    }
+
+    #[test]
+    fn saving_a_scene_omits_default_and_read_only_component_fields() {
+        let project = TempProject::new("prune-defaults");
+        std::fs::write(
+            project.root.join("assets/scenes/a.scene.json"),
+            r#"{"version":3,"entities":[
+                {"id":1,"name":"Camera","parent":null,
+                 "transform":{"position":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
+                 "components":{"prism_engine::scene::Camera":{"fov_y_degrees":60.0}}}
+            ]}"#,
+        )
+        .unwrap();
+
+        let mut workspace = Workspace::load_fixture(&fixture());
+        workspace.load_project(project.root.clone()).unwrap();
+        workspace.save_document(0).unwrap();
+
+        let saved =
+            std::fs::read_to_string(project.root.join("assets/scenes/a.scene.json")).unwrap();
+        assert!(
+            !saved.contains("fov_y_degrees"),
+            "默认值不应写进作者文档: {saved}"
+        );
+
+        workspace.reload_active().unwrap();
+        assert_eq!(
+            workspace.document().doc.entities[0].components["prism_engine::scene::Camera"]
+                ["fov_y_degrees"],
+            json!(60.0),
+            "读取时默认值必须补回来"
+        );
     }
 
     #[test]
