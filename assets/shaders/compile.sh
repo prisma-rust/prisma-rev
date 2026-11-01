@@ -181,6 +181,9 @@ emit_reflection ui_overlay vertexMain vertex fragmentMain fragment
 # texture table, drawn inside ForwardPass' HDR render pass).
 compile_stage sprites vertexMain vertex
 compile_stage sprites fragmentMain fragment
+# Slang puts an illegal ArrayStride on the bindless opaque runtime arrays;
+# strip it before validation/startup (#580).
+fix_spv "$OUT/sprites.frag.spv"
 emit_reflection sprites vertexMain vertex fragmentMain fragment
 
 # particles: vertex + fragment (world-space billboards, no texture: the radial
@@ -201,6 +204,17 @@ emit_reflection rt_render vertexMain vertex fragmentMain fragment
 # RenderTexture through the bindless SRV table (经典 RT usage).
 compile_stage rt_preview vertexMain vertex
 compile_stage rt_preview fragmentMain fragment
+fix_spv "$OUT/rt_preview.frag.spv"
 emit_reflection rt_preview vertexMain vertex fragmentMain fragment
+
+# Hard gate: every emitted module must be valid SPIR-V (#580). Slang can emit
+# illegal layout decorations that only show up as a Vulkan validation error at
+# startup; fail the compile instead of shipping them.
+if command -v spirv-val >/dev/null 2>&1; then
+    for spv in "$OUT"/*.spv; do
+        spirv-val --target-env vulkan1.2 "$spv" >/dev/null
+    done
+    echo "spirv-val: all modules valid"
+fi
 
 echo "All Slang shaders compiled. SPIR-V in $OUT, reflection JSON in $REFL"
