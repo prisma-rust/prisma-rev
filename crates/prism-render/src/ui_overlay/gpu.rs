@@ -894,7 +894,31 @@ impl UiOverlay {
         }
     }
 
+    /// 一个字符的前进量（图集未命中时现光栅化；拿不到字形按 0 计）。
+    fn advance_of(&mut self, ch: char, font_size: f32) -> f32 {
+        match self.atlas.glyph(ch, font_size) {
+            Some(glyph) => glyph.advance,
+            None => 0.0,
+        }
+    }
+
+    /// 行前进量：后端的 `line_height`，拿不到时退回 `1.2 × font_size`。
+    fn line_advance(&self, font_size: f32) -> f32 {
+        let metrics = self
+            .atlas
+            .rasterizer
+            .as_deref()
+            .and_then(|backend| backend.line_metrics(font_size));
+        match metrics {
+            Some(metrics) if metrics.line_height > 0.0 => metrics.line_height,
+            _ => font_size * 1.2,
+        }
+    }
+
     /// 把一个文本命令展开成逐字形四边形（像素 → NDC，字形带图集 uv）。
+    ///
+    /// `UiTextInput::wrap` 打开时按矩形宽度断行（见 [`super::wrap_line_ranges`]）；
+    /// 两种情况都会把 `\n` 当硬换行。超出矩形高度的行被裁掉。
     fn emit_text(&mut self, vertices: &mut Vec<UiVertex>, t: &UiTextInput, w: f32, h: f32) {
         let [left, top, rect_w, rect_h] = t.rect;
         if t.font_size <= 0.0 || rect_w <= 0.0 || rect_h <= 0.0 {
@@ -904,56 +928,72 @@ impl UiOverlay {
             return;
         }
 
-        // 1. 测量整串宽度（advance 求和）。
-        let mut total = 0.0f32;
-        for ch in t.content.chars() {
-            if let Some(g) = self.atlas.glyph(ch, t.font_size) {
-                total += g.advance;
-            }
-        }
-        if total <= 0.0 {
+        // 1. 逐字符量前进量（顺带把字形烤进图集），再交给断行器。
+        let chars: Vec<(char, f32)> = t
+            .content
+            .chars()
+            .map(|ch| (ch, self.advance_of(ch, t.font_size)))
+            .collect();
+        if chars.iter().all(|(_, advance)| *advance <= 0.0) {
             return;
         }
 
-        // 2. 对齐决定起始 x。
-        let start_x = match t.alignment {
-            UiTextAlign::Left => left,
-            UiTextAlign::Center => left + (rect_w - total) * 0.5,
-            UiTextAlign::Right => left + rect_w - total,
-        };
+        let lines = super::wrap_line_ranges(&chars, rect_w, t.wrap);
+        let line_advance = self.line_advance(t.font_size).max(1.0);
+        let max_lines = ((rect_h / line_advance).floor() as usize).max(1);
 
-        // 3. 逐字形发射四边形。基线来自后端行度量（ascent），拿不到时退回 0.8×字号。
         let baseline = top + self.atlas.baseline_offset(t.font_size);
         let [r, g, b, a] = t.color;
-        let mut cursor_x = start_x;
-        for ch in t.content.chars() {
-            let Some(glyph) = self.atlas.glyph(ch, t.font_size) else {
+
+        for (row, (start, end)) in lines.iter().take(max_lines).enumerate() {
+            let range = *start..*end;
+            if range.is_empty() {
                 continue;
-            };
-            if let Some([gx, gy, gw, gh]) = glyph.rect {
-                let px = cursor_x + glyph.xmin as f32;
-                let py = baseline + glyph.ymin as f32;
-                // 像素坐标（左上角原点，y 向下）→ Vulkan NDC（y=-1 屏幕顶，y=+1 屏幕底）。
-                // 两者 y 方向一致，所以不做翻转；翻一次会把文字画成倒的。
-                let x0 = (px / w) * 2.0 - 1.0;
-                let y0 = pixel_y_to_ndc(py, h);
-                let x1 = ((px + gw as f32) / w) * 2.0 - 1.0;
-                let y1 = pixel_y_to_ndc(py + gh as f32, h);
-                let inv = 1.0 / ATLAS_SIZE as f32;
-                let u0 = gx as f32 * inv;
-                let v0 = gy as f32 * inv;
-                let u1 = (gx + gw) as f32 * inv;
-                let v1 = (gy + gh) as f32 * inv;
-                emit_quad(
-                    vertices,
-                    [x0, y0],
-                    [x1, y1],
-                    [u0, v0],
-                    [u1, v1],
-                    [r, g, b, a],
-                );
             }
-            cursor_x += glyph.advance;
+            let total: f32 = chars[range.clone()]
+                .iter()
+                .map(|(_, advance)| *advance)
+                .sum();
+            let start_x = match t.alignment {
+                UiTextAlign::Left => left,
+                UiTextAlign::Center => left + (rect_w - total) * 0.5,
+                UiTextAlign::Right => left + rect_w - total,
+            };
+            let line_baseline = baseline + row as f32 * line_advance;
+            let mut cursor_x = start_x;
+            for &(ch, _) in &chars[range] {
+                if ch == '\n' {
+                    continue;
+                }
+                let Some(glyph) = self.atlas.glyph(ch, t.font_size) else {
+                    continue;
+                };
+                let advance = glyph.advance;
+                if let Some([gx, gy, gw, gh]) = glyph.rect {
+                    let px = cursor_x + glyph.xmin as f32;
+                    let py = line_baseline + glyph.ymin as f32;
+                    // 像素坐标（左上角原点，y 向下）→ Vulkan NDC（y=-1 屏幕顶，y=+1 屏幕底）。
+                    // 两者 y 方向一致，所以不做翻转；翻一次会把文字画成倒的。
+                    let x0 = (px / w) * 2.0 - 1.0;
+                    let y0 = pixel_y_to_ndc(py, h);
+                    let x1 = ((px + gw as f32) / w) * 2.0 - 1.0;
+                    let y1 = pixel_y_to_ndc(py + gh as f32, h);
+                    let inv = 1.0 / ATLAS_SIZE as f32;
+                    let u0 = gx as f32 * inv;
+                    let v0 = gy as f32 * inv;
+                    let u1 = (gx + gw) as f32 * inv;
+                    let v1 = (gy + gh) as f32 * inv;
+                    emit_quad(
+                        vertices,
+                        [x0, y0],
+                        [x1, y1],
+                        [u0, v0],
+                        [u1, v1],
+                        [r, g, b, a],
+                    );
+                }
+                cursor_x += advance;
+            }
         }
     }
 }

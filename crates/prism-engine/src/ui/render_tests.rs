@@ -307,6 +307,31 @@ fn a_later_sibling_covers_the_text_of_an_earlier_one() {
     );
 }
 
+/// `Text::wrap` 要一路传到渲染侧的文本命令（#527）。
+#[test]
+fn the_wrap_flag_reaches_the_render_command() {
+    let mut world = world_with_screen();
+    let entity = world.spawn();
+    world.insert(entity, Node {});
+    world.insert(entity, ComputedLayout::from_rect([0.0, 0.0, 120.0, 60.0]));
+    world.insert(
+        entity,
+        Text {
+            content: "a long sentence that has to wrap".to_string(),
+            wrap: true,
+            ..Text::default()
+        },
+    );
+
+    ui_render_system(&mut world);
+
+    let draw_list = world.get_resource::<UiDrawList>().expect("draw list");
+    assert!(
+        matches!(&draw_list.items[0], UiDrawItem::Text(t) if t.wrap),
+        "the wrap flag must survive the render command"
+    );
+}
+
 #[test]
 fn children_draw_above_their_parent_even_when_created_first() {
     let mut world = world_with_screen();

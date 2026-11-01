@@ -47,6 +47,8 @@ pub struct UiTextCmd {
     pub font_size: f32,
     pub color: [f32; 4],
     pub alignment: TextAlign,
+    /// 超宽时按矩形宽度换行（`Text::wrap`）。
+    pub wrap: bool,
     /// 见 [`UiQuad::layer`]。
     pub layer: i32,
     /// 见 [`UiQuad::order`]。
@@ -180,6 +182,7 @@ pub fn ui_render_system(world: &mut World) {
                 font_size: text.font_size,
                 color: text.color,
                 alignment: text.alignment,
+                wrap: text.wrap,
                 layer: 0,
                 order: layout.order,
             }),
@@ -244,6 +247,7 @@ pub fn convert_ui_draw_list_to_overlay_into(world: &World, out: &mut prism_rende
                         TextAlign::Center => prism_render::ui_overlay::UiTextAlign::Center,
                         TextAlign::Right => prism_render::ui_overlay::UiTextAlign::Right,
                     },
+                    wrap: text.wrap,
                 });
                 continue;
             }

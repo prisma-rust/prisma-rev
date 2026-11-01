@@ -229,6 +229,11 @@ pub struct Text {
     pub font_size: f32,
     pub color: [f32; 4],
     pub alignment: TextAlign,
+    /// 按布局矩形的宽度自动换行（#527）。
+    ///
+    /// `false`（默认，保持旧行为）= 整串单行；`true` = 超宽时在空格处断行、
+    /// 单词本身比整行还长时按字符硬断。两种情况都会把 `\n` 当硬换行。
+    pub wrap: bool,
 }
 
 impl Default for Text {
@@ -238,6 +243,7 @@ impl Default for Text {
             font_size: 16.0,
             color: [1.0; 4],
             alignment: TextAlign::Center,
+            wrap: false,
         }
     }
 }
