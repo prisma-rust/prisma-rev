@@ -298,6 +298,9 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
 - **渲染图（Render Graph）**：Scene view 出首帧（以及每 60 帧）把当前图导出成
   `<工程>/target/prism-render-graph.json`，面板直接读它——不需要任何环境变量；
   游戏进程要同样的报告时设 `PRISMREV_RENDER_GRAPH_REPORT=<path>`。
+  面板还会显示上一帧总 GPU 时间与按成本排序的 per-pass 表（#518；设备不报时间戳时
+  整段隐藏，不用 CPU 墙钟冒充），以及**纹理 / 网格 / 材质的驻留量**与估算字节
+  （#518 Phase 2，数据来自渲染器管理器，旧报告没有该字段时同样隐藏）。
 - **分辨率倍率**：渲染图面板里的 `Viewport res`（0.5×–1.5×）只缩放离屏目标，
   不改变 UI 的 points 布局，给高 DPI 屏 / 弱 GPU 一个折中。
 - **工程自带字体（UI 文本）**：把 `.ttf` / `.otf` / `.ttc` 放进 `assets/fonts/`，

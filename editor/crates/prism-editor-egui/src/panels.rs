@@ -5090,6 +5090,7 @@ pub fn render_graph(
             let parsed = prism_editor_core::render_graph::RenderGraphReport::parse(json);
             if let Some(parsed) = &parsed {
                 render_graph_timings(ui, parsed);
+                render_graph_stats(ui, parsed);
             }
             ui.collapsing("Raw JSON", |ui| {
                 egui::ScrollArea::both()
@@ -5111,6 +5112,34 @@ pub fn render_graph(
         }
     }
     changed
+}
+
+/// 资源统计（#518 Phase 2）：纹理 / 网格 / 材质的驻留量与估算字节。
+///
+/// 数据由渲染器的管理器实时给出；旧报告没有 `stats` 时整段隐藏（不是 0 值冒充）。
+fn render_graph_stats(ui: &mut Ui, report: &prism_editor_core::render_graph::RenderGraphReport) {
+    let Some(stats) = report.stats else {
+        return;
+    };
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Resources").strong());
+        ui.label(
+            RichText::new(format!("~{} resident", format_bytes(stats.total_bytes())))
+                .weak()
+                .size(10.0),
+        );
+    });
+    egui::Grid::new("graph-resource-stats")
+        .num_columns(2)
+        .spacing([12.0, 3.0])
+        .show(ui, |ui| {
+            for (label, count, bytes) in stats.rows() {
+                ui.label(RichText::new(label).weak().size(11.0));
+                ui.label(RichText::new(format!("{count}  ·  {}", format_bytes(bytes))).size(11.0));
+                ui.end_row();
+            }
+        });
 }
 
 /// 每帧预算（16.6 ms ≈ 60 FPS），超过的 pass 标红。
@@ -6389,6 +6418,14 @@ mod window_smoke_tests {
             let mut settings = prism_engine::render_settings::RenderSettings::default();
             let mut viewport_scale = 1.0;
             let _ = render_graph(ui, None, &mut settings, &mut viewport_scale);
+        });
+        let report = r#"{"generatedAtMs":1,"frame":2,"passes":[],"resources":[],
+            "stats":{"textures":3,"textureBytes":1024,"meshes":2,"meshBytes":2048,
+                     "materials":4,"materialBytes":384}}"#;
+        run_frame(|ui, _workspace, _state| {
+            let mut settings = prism_engine::render_settings::RenderSettings::default();
+            let mut viewport_scale = 1.0;
+            let _ = render_graph(ui, Some(report), &mut settings, &mut viewport_scale);
         });
         run_frame(|ui, _workspace, state| project_settings(ui, None, state));
         run_frame(|ui, workspace, state| {

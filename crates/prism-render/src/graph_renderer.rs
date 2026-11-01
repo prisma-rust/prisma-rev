@@ -1864,6 +1864,21 @@ impl GraphRenderer {
         &self.gpu_timings
     }
 
+    /// 纹理 / 网格 / 材质的实时驻留统计（#518 Phase 2）。
+    pub fn render_stats(&self) -> crate::render_graph_report::ReportStats {
+        let (textures, texture_bytes) = self.texture_manager.stats();
+        let (meshes, mesh_bytes) = self.mesh_manager.stats();
+        let (materials, material_bytes) = self.material_manager.stats();
+        crate::render_graph_report::ReportStats {
+            textures,
+            texture_bytes,
+            meshes,
+            mesh_bytes,
+            materials,
+            material_bytes,
+        }
+    }
+
     /// 准备阶段：在命令录制前批量同步 CPU 场景状态和 GPU 资源。
     /// 当前实现：校验输入 + 日志脏标记，为下一步扩展 DirtyDispatch 预留上传点。
     pub fn prepare(&mut self, _ctx: &FrameCtx, input: &FrameInput<'_>) -> anyhow::Result<()> {

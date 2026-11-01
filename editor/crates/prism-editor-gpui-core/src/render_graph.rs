@@ -21,6 +21,42 @@ pub struct RenderGraphReport {
     /// 上一帧总 GPU 时间（ms）；设备不支持时间戳时缺失。
     #[serde(default)]
     pub gpu_total_ms: Option<f32>,
+    /// 纹理 / 网格 / 材质的驻留统计（#518 Phase 2）；旧报告没有该字段。
+    #[serde(default)]
+    pub stats: Option<ReportStats>,
+}
+
+/// 管理器侧的实时资源统计（#518 Phase 2）。
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportStats {
+    #[serde(default)]
+    pub textures: usize,
+    #[serde(default)]
+    pub texture_bytes: u64,
+    #[serde(default)]
+    pub meshes: usize,
+    #[serde(default)]
+    pub mesh_bytes: u64,
+    #[serde(default)]
+    pub materials: usize,
+    #[serde(default)]
+    pub material_bytes: u64,
+}
+
+impl ReportStats {
+    pub fn total_bytes(&self) -> u64 {
+        self.texture_bytes + self.mesh_bytes + self.material_bytes
+    }
+
+    /// 面板显示用的三行（名字, 数量, 字节）；纯函数，方便单测。
+    pub fn rows(&self) -> [(&'static str, usize, u64); 3] {
+        [
+            ("Textures", self.textures, self.texture_bytes),
+            ("Meshes", self.meshes, self.mesh_bytes),
+            ("Materials", self.materials, self.material_bytes),
+        ]
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -110,6 +146,32 @@ pub fn report_path(root: Option<&Path>) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resource_stats_are_optional_and_have_rows() {
+        // 旧报告没有 stats：整段隐藏，不拿 0 值冒充。
+        let legacy: RenderGraphReport =
+            serde_json::from_str(r#"{"generatedAtMs":1,"frame":1,"passes":[],"resources":[]}"#)
+                .unwrap();
+        assert!(legacy.stats.is_none());
+
+        let parsed: RenderGraphReport = serde_json::from_str(
+            r#"{"generatedAtMs":1,"frame":2,"passes":[],"resources":[],
+                "stats":{"textures":3,"textureBytes":1024,"meshes":2,"meshBytes":2048,
+                         "materials":4,"materialBytes":384}}"#,
+        )
+        .unwrap();
+        let stats = parsed.stats.expect("stats");
+        assert_eq!(stats.total_bytes(), 3456);
+        assert_eq!(
+            stats.rows(),
+            [
+                ("Textures", 3, 1024),
+                ("Meshes", 2, 2048),
+                ("Materials", 4, 384),
+            ]
+        );
+    }
 
     #[test]
     fn parses_runtime_report_and_resolves_handles() {

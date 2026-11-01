@@ -375,6 +375,15 @@ impl RenderMaterialManager {
     pub fn is_empty(&self) -> bool {
         self.materials.is_empty()
     }
+
+    /// 驻留材质槽数与估算字节数（#518 Phase 2）。
+    pub fn stats(&self) -> (usize, u64) {
+        let count = self.materials.len();
+        (
+            count,
+            count as u64 * std::mem::size_of::<GpuMaterial>() as u64,
+        )
+    }
 }
 
 impl Drop for RenderMaterialManager {
