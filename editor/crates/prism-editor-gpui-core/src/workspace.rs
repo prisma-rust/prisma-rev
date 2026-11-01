@@ -242,6 +242,27 @@ impl OrbitCamera {
         self.orthographic.then_some(self.distance.max(0.05))
     }
 
+    /// 把相机摆到世界轴的正 / 负方向看回 `target`（#416 的方向 gizmo / Align To Axis）。
+    ///
+    /// `axis`：0 = X、1 = Y、2 = Z；`sign < 0` 表示从负半轴看过去。
+    /// 与 [`Self::eye`] 的球面参数一致：先由 `side` 求 `pitch`，再由 XZ 分量求 `yaw`。
+    /// 正交视图同样适用（`orthographic` 只锁定轨道拖拽，不阻止轴向对齐）。
+    pub fn align_to_axis(&mut self, axis: usize, sign: f32) {
+        if axis > 2 {
+            return;
+        }
+        let sign = if sign < 0.0 { -1.0 } else { 1.0 };
+        let mut side = [0.0f32; 3];
+        side[axis] = sign;
+        self.pitch = side[1].clamp(-1.0, 1.0).asin();
+        // ±Y 轴的 `cos(pitch) == 0`，yaw 无意义，固定 0 让结果稳定。
+        self.yaw = if side[0].abs() > 1e-6 || side[2].abs() > 1e-6 {
+            side[0].atan2(side[2])
+        } else {
+            0.0
+        };
+    }
+
     pub fn eye(&self) -> [f32; 3] {
         let (sin_yaw, cos_yaw) = self.yaw.sin_cos();
         let (sin_pitch, cos_pitch) = self.pitch.sin_cos();
@@ -4758,6 +4779,50 @@ mod tests {
         assert_eq!(workspace.maximized_tab.as_deref(), Some("hierarchy"));
         workspace.stop();
         assert_eq!(workspace.maximized_tab.as_deref(), Some("hierarchy"));
+    }
+
+    #[test]
+    fn aligning_the_camera_to_an_axis_puts_the_eye_on_that_side() {
+        // #416：方向 gizmo 点轴之后，eye 必须落在该轴的正 / 负方向上。
+        let mut camera = OrbitCamera::default();
+        camera.target = [1.0, 2.0, 3.0];
+        for (axis, sign) in [
+            (0, 1.0),
+            (0, -1.0),
+            (1, 1.0),
+            (1, -1.0),
+            (2, 1.0),
+            (2, -1.0),
+        ] {
+            camera.align_to_axis(axis, sign);
+            let eye = camera.eye();
+            let offset = [
+                eye[0] - camera.target[0],
+                eye[1] - camera.target[1],
+                eye[2] - camera.target[2],
+            ];
+            let length =
+                (offset[0] * offset[0] + offset[1] * offset[1] + offset[2] * offset[2]).sqrt();
+            let expected = camera.distance;
+            assert!(
+                (length - expected).abs() < 1e-3,
+                "axis {axis} sign {sign}: eye 距离 {} != {}",
+                length,
+                expected
+            );
+            for other in 0..3 {
+                let want = if other == axis { sign } else { 0.0 };
+                let normalized = offset[other] / length;
+                assert!(
+                    (normalized - want).abs() < 1e-3,
+                    "axis {axis} sign {sign} component {other}: {normalized} != {want}"
+                );
+            }
+        }
+        // 非法轴不动相机。
+        let before = camera;
+        camera.align_to_axis(9, 1.0);
+        assert_eq!(camera, before);
     }
 
     #[test]

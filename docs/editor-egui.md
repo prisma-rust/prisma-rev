@@ -150,6 +150,12 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
 - 平移 gizmo：`pick_gizmo_axis` 命中轴后，按「屏幕位移 · 轴屏幕方向 / 每世界
   单位像素」换算世界位移，交给 `Workspace::translate_entity_world`；
 - 选中高亮复用引擎的 `Gizmo` 组件（世界三色轴箭头），不引入新的渲染概念。
+- **点选循环穿透（#416）**：同一个位置连续点击时，依次选中被挡住的下一层
+  （候选集按射线距离从近到远，4px 内算同一次点选；换位置 / 换候选集就回到最近的
+  一个）。Shift / Ctrl 的加选 / 减选不循环，永远取最近的一个；
+- **方向 gizmo（#416）**：Scene 视图右上角 6 个世界轴手柄（背向相机的更淡），
+  点一下把相机对齐到该轴；`OrbitCamera::align_to_axis` 直接解出 yaw / pitch，
+  正交视图同样可用。
 - 工具：`W` / `E` / `R` 切换移动 / 旋转 / 缩放 gizmo，`X` 切世界/局部，`G` 开关网格；
   `S` 开关 Scene view 背景（场景天空盒 / 纯色，与引擎的
   `SceneViewState.showSkybox` 同语义，默认开）；
