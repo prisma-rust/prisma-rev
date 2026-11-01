@@ -62,7 +62,7 @@ fn world_position_to_local(doc: &SceneDoc, index: usize, target_world: [f32; 3])
     world_delta_to_parent_local(doc, index, delta)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DocKind {
     Scene,
     Prefab,
@@ -1836,6 +1836,98 @@ impl Workspace {
             return None;
         }
         Some(self.save_active())
+    }
+
+    /// 把所有 dirty 文档写进退出快照（#619）。
+    ///
+    /// 返回写入的文档数；没有绑定项目根 / 没有 dirty 文档时为 0。快照路径固定在
+    /// `target/editor-recovery/recovery.json`，不会覆盖原场景或预制体。
+    pub fn write_recovery(&self) -> io::Result<usize> {
+        let Some(root) = self.project_root.as_deref() else {
+            return Ok(0);
+        };
+        let entries: Vec<crate::recovery::RecoveredDocument> = self
+            .docs
+            .iter()
+            .filter(|document| document.dirty)
+            .map(|document| crate::recovery::RecoveredDocument {
+                path: document.path.clone(),
+                kind: document.kind,
+                document: document.doc.clone(),
+            })
+            .collect();
+        crate::recovery::write(root, &entries)
+    }
+
+    /// 上次退出留下了几条待恢复文档（没有快照 = 0）。
+    pub fn recovery_pending(&self) -> io::Result<usize> {
+        let Some(root) = self.project_root.as_deref() else {
+            return Ok(0);
+        };
+        crate::recovery::read(root).map(|entries| entries.len())
+    }
+
+    /// 把退出快照读回工作区。
+    ///
+    /// 同路径 / 同类型的文档**就地替换**（保留 tab 位置），其余追加到末尾；
+    /// 恢复出来的文档一律是 dirty，用户确认后再保存。成功后删除快照。
+    pub fn recover_unsaved(&mut self) -> io::Result<usize> {
+        let Some(root) = self.project_root.clone() else {
+            return Ok(0);
+        };
+        let entries = crate::recovery::read(&root)?;
+        let count = entries.len();
+        let mut first = None;
+        for entry in entries {
+            let existing = entry.path.as_deref().and_then(|path| {
+                self.docs.iter().position(|document| {
+                    document.kind == entry.kind && document.path.as_deref() == Some(path)
+                })
+            });
+            let index = match existing {
+                Some(index) => {
+                    let document = &mut self.docs[index];
+                    document.doc = entry.document;
+                    document.undo = crate::undo::UndoStack::new();
+                    document.dirty = true;
+                    document.externally_modified = false;
+                    index
+                }
+                None => {
+                    let mut document = Document::new(entry.kind, entry.path, entry.document);
+                    document.dirty = true;
+                    self.docs.push(document);
+                    self.docs.len() - 1
+                }
+            };
+            first.get_or_insert(index);
+        }
+        if let Some(index) = first {
+            self.set_active(index);
+        }
+        crate::recovery::clear(&root)?;
+        if count > 0 {
+            self.log(
+                LogSource::Editor,
+                LogLevel::Warn,
+                format!("已恢复 {count} 个上次退出时未保存的文档（仍未保存）"),
+            );
+        }
+        Ok(count)
+    }
+
+    /// 丢弃退出快照。
+    pub fn discard_recovery(&mut self) -> io::Result<()> {
+        let Some(root) = self.project_root.as_deref() else {
+            return Ok(());
+        };
+        crate::recovery::clear(root)?;
+        self.log(
+            LogSource::Editor,
+            LogLevel::Info,
+            "已丢弃退出时的未保存快照",
+        );
+        Ok(())
     }
 
     /// 另存为（路径相对项目根；空串/非法输入返回错误）。
@@ -9031,5 +9123,91 @@ mod tests {
             (restored[3] - 1.0).abs() < 1e-5,
             "一次 undo 回到两个实体都未改的状态"
         );
+    }
+
+    #[test]
+    fn recovery_snapshot_round_trips_only_dirty_documents() {
+        let project = TempProject::new("recovery-roundtrip");
+        let mut workspace = Workspace::sample();
+        workspace.project_root = Some(project.root.clone());
+        workspace.document_mut().path = Some("assets/scenes/recovery.scene.json".to_string());
+        workspace
+            .document_mut()
+            .doc
+            .add_named_child(None, "recovered");
+        workspace.document_mut().dirty = true;
+        let expected = workspace.document().doc.clone();
+        // 干净文档不进快照。
+        workspace.docs.push(Document::new(
+            DocKind::Scene,
+            Some("assets/scenes/clean.scene.json".to_string()),
+            SceneDoc::default(),
+        ));
+
+        assert_eq!(workspace.write_recovery().unwrap(), 1);
+
+        let mut fresh = Workspace::sample();
+        fresh.project_root = Some(project.root.clone());
+        assert_eq!(fresh.recovery_pending().unwrap(), 1);
+        assert_eq!(fresh.recover_unsaved().unwrap(), 1);
+        assert_eq!(fresh.recovery_pending().unwrap(), 0);
+        let recovered = fresh
+            .docs
+            .iter()
+            .find(|document| document.path.as_deref() == Some("assets/scenes/recovery.scene.json"))
+            .expect("恢复出来的文档要出现在工作区");
+        assert!(recovered.dirty, "恢复的文档必须保持 dirty");
+        assert_eq!(recovered.doc, expected);
+    }
+
+    #[test]
+    fn recovery_replaces_an_already_open_document_without_a_second_tab() {
+        let project = TempProject::new("recovery-replace");
+        let mut workspace = Workspace::sample();
+        workspace.project_root = Some(project.root.clone());
+        workspace.document_mut().path = Some("assets/scenes/open.scene.json".to_string());
+        workspace
+            .document_mut()
+            .doc
+            .add_named_child(None, "from-recovery");
+        workspace.document_mut().dirty = true;
+        workspace.write_recovery().unwrap();
+
+        let mut fresh = Workspace::sample();
+        fresh.project_root = Some(project.root.clone());
+        fresh.document_mut().path = Some("assets/scenes/open.scene.json".to_string());
+        let tabs = fresh.docs.len();
+
+        assert_eq!(fresh.recover_unsaved().unwrap(), 1);
+        assert_eq!(
+            fresh.docs.len(),
+            tabs,
+            "同路径文档应就地替换，不能多开一个 tab"
+        );
+        assert!(fresh.document().dirty);
+        assert!(fresh
+            .document()
+            .doc
+            .entities
+            .iter()
+            .any(|entity| entity.name.as_deref() == Some("from-recovery")));
+    }
+
+    #[test]
+    fn discarding_recovery_removes_the_snapshot() {
+        let project = TempProject::new("recovery-discard");
+        let mut workspace = Workspace::sample();
+        workspace.project_root = Some(project.root.clone());
+        workspace.document_mut().dirty = true;
+        workspace.write_recovery().unwrap();
+        assert_eq!(workspace.recovery_pending().unwrap(), 1);
+
+        workspace.discard_recovery().unwrap();
+        assert_eq!(workspace.recovery_pending().unwrap(), 0);
+        assert!(!project
+            .root
+            .join(crate::recovery::RECOVERY_DIR)
+            .join(crate::recovery::RECOVERY_FILE)
+            .exists());
     }
 }

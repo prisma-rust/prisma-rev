@@ -361,6 +361,8 @@ pub struct UiState {
     pub material_error: Option<String>,
     /// 等待用户回答的关闭请求（有未保存改动时才会出现）。
     pub pending_close: Option<CloseTarget>,
+    /// 上次非正常退出留下的未保存快照数量（#619）；0 = 没有待恢复内容。
+    pub pending_recovery: usize,
 }
 
 /// 关闭前确认的目标：某个文档标签，或整个编辑器窗口。
