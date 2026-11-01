@@ -1268,7 +1268,13 @@ impl GraphRenderer {
                 self.mesh_manager.unregister(&device, handle);
                 freed += 1;
             }
+            let mut material_slots = release.material_slots.clone();
             if let Some(slot) = release.material_slot {
+                if !material_slots.contains(&slot) {
+                    material_slots.push(slot);
+                }
+            }
+            for slot in material_slots {
                 if self.material_manager.unregister_slot(slot) {
                     freed += 1;
                 }
@@ -1302,8 +1308,11 @@ impl GraphRenderer {
                 None => None,
             };
 
-            let material_slot = match &req.material {
-                Some(mat) => {
+            let material_slots: Vec<Option<u32>> = req
+                .materials
+                .iter()
+                .map(|material| {
+                    let mat = material.as_ref()?;
                     let mut slots: [Option<u32>; 5] = [None; 5];
                     for (i, tex) in mat.textures.iter().enumerate() {
                         if let Some(t) = tex {
@@ -1336,9 +1345,9 @@ impl GraphRenderer {
                     self.register_material(input)
                         .ok()
                         .and_then(|h| self.material_slot(h))
-                }
-                None => None,
-            };
+                })
+                .collect();
+            let material_slot = material_slots.iter().find_map(|slot| *slot);
 
             let (texture_slot, texture_size) = match &req.texture {
                 Some(input) => {
@@ -1357,6 +1366,7 @@ impl GraphRenderer {
             results.push(crate::asset_bridge::AssetResolveResult {
                 mesh_handle,
                 material_slot,
+                material_slots,
                 texture_slot,
                 texture_size,
             });
@@ -1911,7 +1921,10 @@ impl GraphRenderer {
             let triangles = self
                 .mesh_manager
                 .get(item.mesh)
-                .map(|uploaded| (uploaded.mesh.index_count as u64 / 3).max(1))
+                .map(|uploaded| {
+                    let indices = item.index_count.unwrap_or(uploaded.mesh.index_count);
+                    (indices as u64 / 3).max(1)
+                })
                 .unwrap_or(0);
             calls.push(ReportDrawCall {
                 pass: "forward".to_string(),

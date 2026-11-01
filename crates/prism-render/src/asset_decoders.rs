@@ -8,14 +8,18 @@
 //! RTEX  [magic "RTEX"][version 1][width 4][height 4][mip_levels 4][format 1]
 //!       [offset table: mip_levels × u32][mip 0][mip 1]…[mip n]
 //!
-//! RMES  [magic "RMES"][version 1][vert_count 4][idx_count 4][uv_channels 4]
+//! RMES  [magic "RMES"][version 1 or 2][vert_count 4][idx_count 4][uv_channels 4]
 //!       [stride 4][positions_offset 4][normals_offset 4][uv0_offset 4]
 //!       [vertex block][index block]
+//!       v2: [submesh_count 4][index_start 4][index_count 4][material_index 4]…
 //! ```
 //!
 //! RMES attribute blocks are **planar** (positions → normals → uv) and located
 //! by the three absolute offset fields; `stride` is the interleaved size the
-//! cooker records and is deliberately *not* used to locate attributes.
+//! cooker records and is deliberately *not* used to locate attributes. The v2
+//! submesh table is ignored here: render draw ranges arrive through
+//! `DrawItem::index_start` / `index_count` from the engine (this decoder only
+//! uploads the buffers).
 //!
 //! Both decoders are pure data transforms: they are not wired into
 //! `BatchUploader` yet (that is the remaining part of DESIGN §10.11 G1).
@@ -182,7 +186,7 @@ pub fn decode_rmes(bytes: &[u8]) -> Result<MeshUploadInput> {
     if &bytes[0..4] != b"RMES" {
         bail!("RMES bad magic");
     }
-    if bytes[4] != 1 {
+    if bytes[4] != 1 && bytes[4] != 2 {
         bail!("RMES unsupported version {}", bytes[4]);
     }
     let vert_count = read_u32(bytes, 5)?;

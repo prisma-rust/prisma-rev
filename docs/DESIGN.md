@@ -634,7 +634,7 @@ AnyHandle = 类型擦除版本，支持异构存储
 | 格式 | 魔数 | 载荷 |
 |------|------|------|
 | **RTXI**（纹理中间） | `b"RTXI"` | `[magic:4][w:4][h:4][ch:1][fmt:1][RGBA8 pixels:N]` |
-| **RMXI**（网格中间） | `b"RMXI"` | `[magic:4][ver:1][verts:4][idxs:4][uv_ch:4][pos:N][nrm:N][uv:N][idx:N]` |
+| **RMXI**（网格中间） | `b"RMXI"` | v1：`[magic:4][ver:1][verts:4][idxs:4][uv_ch:4][pos:N][nrm:N][uv:N][idx:N]`；v2 末尾追加 `[submesh_count:4][index_start:4][index_count:4][material_index:4]…` |
 
 中间格式是纯 CPU 数据，无 GPU 依赖。Importer 负责从源文件解码，
 Cooker 负责消费中间格式生成运行时格式。
@@ -644,7 +644,10 @@ Cooker 负责消费中间格式生成运行时格式。
 | 格式 | 魔数 | 结构 |
 |------|------|------|
 | **RTEX**（cooked 纹理） | `b"RTEX"` | header + mip 偏移表 + 各级 mip 数据（box filter 降采样） |
-| **RMES**（cooked 网格） | `b"RMES"` | header + 属性偏移表 + **平面**顶点块（positions → normals → uv，偏移字段为权威寻址）+ 索引数据 |
+| **RMES**（cooked 网格） | `b"RMES"` | header + 属性偏移表 + **平面**顶点块（positions → normals → uv，偏移字段为权威寻址）+ 索引数据；v2 末尾追加同一份 submesh 表 |
+
+> RMES v2 的 submesh 表让一个实体按 `MeshRenderer.material_paths` 拆成多个
+> `DrawItem`（`index_start` / `index_count`），同一网格的不同区间可以使用不同材质。
 
 > RMES 头里的 `stride` 字段不用于定位属性：`MeshCooker::write_rmes` 写的是平面块，
 > `stride` 只是记录交错尺寸。`prism-render/src/asset_decoders.rs` 的 `decode_rmes`
@@ -777,8 +780,9 @@ prism-scene::rscn::encode_scene
   把 manifest 中 `.scene.json` 路径重写为 `.rscn` 后打进包，并产出运行时使用的
   `assets/scenes.pak` + `.pak.meta.json`；这是发布入口。
   它同时**递归收集场景引用的资源**：环境 HDR、`SpriteRenderer.sprite_path`、
-  `MeshRenderer.mesh_path`（glTF/GLB → RMES）与 `material_path`（`.mat.json` → RMAT，
-  连同 5 张贴图）、`Style.image` / `Tilemap.tileset_path` / `Text.font`。任何引用解析
+  `MeshRenderer.mesh_path`（glTF/GLB → RMES）与
+  `material_path` / `material_paths`（`.mat.json` → RMAT，连同 5 张贴图）、
+  `Style.image` / `Tilemap.tileset_path` / `Text.font`。任何引用解析
   不到（文件不存在、绝对路径、逃出 `assets/`）都会让 `build-scenes` **非零退出**并列
   出路径——否则打包产物会在运行期静默缺资源（#530）；
 - `prism-build-pipeline cook <input.scene.json>` 单场景 cook，直接调用 `SceneCooker`；

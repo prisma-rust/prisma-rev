@@ -385,6 +385,12 @@ pub struct DrawItem {
     /// 主相机视锥剔除在提取阶段使用；光源视锥剔除（#526）在帧打包后用它
     /// 判断是否还需要写阴影贴图。
     pub world_bounds: Option<crate::culling::Aabb>,
+    /// 索引缓冲里的起始索引（#520 submesh）。非索引网格忽略。
+    pub index_start: u32,
+    /// 本次绘制使用的索引数；`None` = 整个网格（旧行为）。
+    ///
+    /// `Some(0)` 的绘制项会被渲染器跳过，方便调用方表达空 submesh。
+    pub index_count: Option<u32>,
 }
 
 impl DrawItem {

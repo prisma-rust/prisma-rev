@@ -41,6 +41,72 @@ fn entity_with_all_components_yields_draw_item() {
 }
 
 #[test]
+fn submeshes_become_one_draw_item_each_with_their_material() {
+    let mut world = World::new();
+    let e = world.spawn();
+    world.insert(
+        e,
+        LocalToWorld(glam::Mat4::from_cols_array_2d(&[[1.0; 4]; 4])),
+    );
+    world.insert(
+        e,
+        MeshRef {
+            asset_id: SceneAssetId::generate(),
+            render_handle: MeshHandle::default(),
+            generation: 1,
+        },
+    );
+    world.insert(
+        e,
+        MaterialRef {
+            asset_id: SceneAssetId::generate(),
+            material_slot: 9,
+            generation: 1,
+        },
+    );
+    world.insert(
+        e,
+        MaterialSlots {
+            slots: vec![Some(2), None, Some(5)],
+        },
+    );
+    world.insert(
+        e,
+        MeshSubmeshes {
+            submeshes: vec![
+                MeshSubmesh {
+                    index_start: 0,
+                    index_count: 3,
+                    material_index: Some(0),
+                },
+                MeshSubmesh {
+                    index_start: 3,
+                    index_count: 6,
+                    material_index: Some(1),
+                },
+                MeshSubmesh {
+                    index_start: 9,
+                    index_count: 3,
+                    material_index: None,
+                },
+            ],
+        },
+    );
+
+    let items = scene_render_system(&world);
+    assert_eq!(items.len(), 3, "每个 submesh 一条 draw item");
+    assert_eq!(items[0].index_start, 0);
+    assert_eq!(items[0].index_count, Some(3));
+    assert_eq!(items[0].material, Some(2));
+    assert_eq!(items[1].index_start, 3);
+    assert_eq!(items[1].index_count, Some(6));
+    assert_eq!(items[1].material, None, "没有材质的 submesh 回落默认槽");
+    assert_eq!(items[2].index_start, 9);
+    assert_eq!(items[2].index_count, Some(3));
+    assert_eq!(items[2].material, Some(5));
+}
+
+#[test]
 fn inactive_entity_is_skipped() {
     let mut world = World::new();
     let e = world.spawn();

@@ -414,7 +414,7 @@ fn mesh_cooker_writes_rmes() {
 
     // 验证 RMES magic.
     assert_eq!(&result.cooked_data[..4], b"RMES");
-    assert_eq!(result.cooked_data[4], 1); // version
+    assert_eq!(result.cooked_data[4], 2); // version (v2 = submesh table)
 
     let vert_count = u32::from_le_bytes(result.cooked_data[5..9].try_into().unwrap());
     let idx_count = u32::from_le_bytes(result.cooked_data[9..13].try_into().unwrap());
@@ -644,6 +644,59 @@ fn mesh_cooker_roundtrip() {
         rmes.index_data, expected_idx,
         "RMES index data must match RMXI index data"
     );
+}
+
+#[test]
+fn mesh_cooker_preserves_the_rmxi_v2_submesh_table() {
+    // 6 个顶点、两个三角形、没有 normals：两个 submesh 各用 3 个索引。
+    let verts = 6u32;
+    let idxs = 6u32;
+    let mut intermediate = Vec::new();
+    intermediate.extend_from_slice(b"RMXI");
+    intermediate.push(2); // v2: 末尾带 submesh 表
+    intermediate.extend_from_slice(&verts.to_le_bytes());
+    intermediate.extend_from_slice(&idxs.to_le_bytes());
+    intermediate.extend_from_slice(&0u32.to_le_bytes()); // uv channels
+
+    for i in 0..verts {
+        for axis in 0..3 {
+            intermediate.extend_from_slice(&((i * 3 + axis) as f32).to_le_bytes());
+        }
+    }
+    for i in 0..idxs {
+        intermediate.extend_from_slice(&i.to_le_bytes());
+    }
+    intermediate.extend_from_slice(&2u32.to_le_bytes()); // submesh count
+    for (start, count, material) in [(0u32, 3u32, 7u32), (3, 3, u32::MAX)] {
+        intermediate.extend_from_slice(&start.to_le_bytes());
+        intermediate.extend_from_slice(&count.to_le_bytes());
+        intermediate.extend_from_slice(&material.to_le_bytes());
+    }
+
+    let cooker = MeshCooker;
+    let settings = profile::CookSettings::default();
+    let id = AssetId::from_raw((1u64 << 32) | 201);
+    let record = crate::db::AssetRecord::new(
+        id,
+        "submeshes.gltf".into(),
+        AssetType::Mesh,
+        "gltf-importer",
+    );
+    let ctx = CookContext {
+        record: &record,
+        imported_data: &intermediate,
+        settings: &settings,
+    };
+    let result = cooker.cook(&ctx).unwrap();
+
+    let rmes = decode_rmes(&result.cooked_data).expect("should decode RMES v2");
+    assert_eq!(rmes.submeshes.len(), 2);
+    assert_eq!(rmes.submeshes[0].index_start, 0);
+    assert_eq!(rmes.submeshes[0].index_count, 3);
+    assert_eq!(rmes.submeshes[0].material_index, Some(7));
+    assert_eq!(rmes.submeshes[1].index_start, 3);
+    assert_eq!(rmes.submeshes[1].index_count, 3);
+    assert_eq!(rmes.submeshes[1].material_index, None);
 }
 
 #[test]

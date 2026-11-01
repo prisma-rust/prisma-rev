@@ -555,6 +555,10 @@ fn gltf_import_bakes_every_node_and_primitive_into_one_mesh() {
     let (verts, idxs) = rmxi_counts(&result.output_data);
     assert_eq!(verts, 12, "两个节点 × 两个 primitive × 3 顶点");
     assert_eq!(idxs, 12);
+    assert_eq!(
+        result.output_data[4], 2,
+        "多 primitive 网格必须写 RMXI v2 submesh 表"
+    );
 
     let meta = result.metadata.unwrap();
     assert_eq!(meta["primitive_count"], 4);

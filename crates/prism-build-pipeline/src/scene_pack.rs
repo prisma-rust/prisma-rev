@@ -491,91 +491,102 @@ fn stage_material_assets(
 
     for (doc_rel, components) in scene_component_maps(asset_root, manifest) {
         for entity in components {
-            let Some(value) = component_string(
+            let mut material_paths: Vec<String> = Vec::new();
+            if let Some(path) = component_string(
                 &entity,
                 "prism_engine::scene::MeshRenderer",
                 "material_path",
-            ) else {
-                continue;
-            };
-            let Some(pak_path) = resolve_asset_path(asset_root, &doc_rel, value) else {
-                missing.push(format!(
-                    "{doc_rel}: material_path '{value}' is absolute or escapes assets/"
-                ));
-                continue;
-            };
-            if !staged.insert(pak_path.clone()) {
-                continue;
+            ) {
+                material_paths.push(path.to_string());
             }
-            let source = asset_root.join(&pak_path);
-            if !source.is_file() {
-                missing.push(format!("{doc_rel}: material '{pak_path}' not found"));
-                continue;
-            }
+            material_paths.extend(component_string_array(
+                &entity,
+                "prism_engine::scene::MeshRenderer",
+                "material_paths",
+            ));
+            material_paths.sort();
+            material_paths.dedup();
 
-            // 先把贴图路径与 ID 登记进数据库，importer 才能按槽位顺序解析依赖。
-            let text =
-                fs::read_to_string(&source).with_context(|| format!("read material {pak_path}"))?;
-            let mut db = AssetDatabase::new();
-            let mut texture_targets: Vec<String> = Vec::new();
-            for raw in material_texture_paths(&text) {
-                let Some(texture_pak) = resolve_asset_path(asset_root, &doc_rel, &raw) else {
+            for value in material_paths {
+                let Some(pak_path) = resolve_asset_path(asset_root, &doc_rel, &value) else {
                     missing.push(format!(
-                        "{doc_rel}: material texture '{raw}' is absolute or escapes assets/"
+                        "{doc_rel}: material_path '{value}' is absolute or escapes assets/"
                     ));
                     continue;
                 };
-                let texture_source = asset_root.join(&texture_pak);
-                if !texture_source.is_file() {
-                    missing.push(format!(
-                        "{doc_rel}: material texture '{texture_pak}' not found"
-                    ));
+                if !staged.insert(pak_path.clone()) {
                     continue;
                 }
-                // 数据库键必须与 material importer 查询的字符串完全一致。
+                let source = asset_root.join(&pak_path);
+                if !source.is_file() {
+                    missing.push(format!("{doc_rel}: material '{pak_path}' not found"));
+                    continue;
+                }
+
+                // 先把贴图路径与 ID 登记进数据库，importer 才能按槽位顺序解析依赖。
+                let text = fs::read_to_string(&source)
+                    .with_context(|| format!("read material {pak_path}"))?;
+                let mut db = AssetDatabase::new();
+                let mut texture_targets: Vec<String> = Vec::new();
+                for raw in material_texture_paths(&text) {
+                    let Some(texture_pak) = resolve_asset_path(asset_root, &doc_rel, &raw) else {
+                        missing.push(format!(
+                            "{doc_rel}: material texture '{raw}' is absolute or escapes assets/"
+                        ));
+                        continue;
+                    };
+                    let texture_source = asset_root.join(&texture_pak);
+                    if !texture_source.is_file() {
+                        missing.push(format!(
+                            "{doc_rel}: material texture '{texture_pak}' not found"
+                        ));
+                        continue;
+                    }
+                    // 数据库键必须与 material importer 查询的字符串完全一致。
+                    let mut record = prism_cooker::AssetRecord::new(
+                        AssetId::from_path(&texture_pak),
+                        raw.replace('\\', "/"),
+                        AssetType::Texture,
+                        "texture-importer",
+                    );
+                    record.source_hash = texture_hash(&texture_source)?;
+                    let _ = db.insert(record);
+                    texture_targets.push(texture_pak);
+                }
+                let db = std::sync::Arc::new(db);
+
+                let imported = MaterialImporter
+                    .import(&ImportContext {
+                        source_path: source.clone(),
+                        source_hash: texture_hash(&source)?,
+                        settings: serde_json::json!({}),
+                        db: db.clone(),
+                    })
+                    .with_context(|| format!("import material {pak_path}"))?;
+
                 let mut record = prism_cooker::AssetRecord::new(
-                    AssetId::from_path(&texture_pak),
-                    raw.replace('\\', "/"),
-                    AssetType::Texture,
-                    "texture-importer",
+                    AssetId::from_path(&pak_path),
+                    pak_path.clone(),
+                    AssetType::Material,
+                    "material-importer",
                 );
-                record.source_hash = texture_hash(&texture_source)?;
-                let _ = db.insert(record);
-                texture_targets.push(texture_pak);
-            }
-            let db = std::sync::Arc::new(db);
+                record.dependencies = imported.dependencies.clone();
 
-            let imported = MaterialImporter
-                .import(&ImportContext {
-                    source_path: source.clone(),
-                    source_hash: texture_hash(&source)?,
-                    settings: serde_json::json!({}),
-                    db: db.clone(),
-                })
-                .with_context(|| format!("import material {pak_path}"))?;
+                let cooked = MaterialCooker
+                    .cook(&prism_cooker::CookContext {
+                        record: &record,
+                        imported_data: &imported.output_data,
+                        settings: &CookSettings::default(),
+                    })
+                    .with_context(|| format!("cook material {pak_path}"))?;
+                write_staged(staging, Path::new(&pak_path), &cooked.cooked_data)?;
+                log::info!("packaged material: {pak_path}");
 
-            let mut record = prism_cooker::AssetRecord::new(
-                AssetId::from_path(&pak_path),
-                pak_path.clone(),
-                AssetType::Material,
-                "material-importer",
-            );
-            record.dependencies = imported.dependencies.clone();
-
-            let cooked = MaterialCooker
-                .cook(&prism_cooker::CookContext {
-                    record: &record,
-                    imported_data: &imported.output_data,
-                    settings: &CookSettings::default(),
-                })
-                .with_context(|| format!("cook material {pak_path}"))?;
-            write_staged(staging, Path::new(&pak_path), &cooked.cooked_data)?;
-            log::info!("packaged material: {pak_path}");
-
-            for texture_pak in texture_targets {
-                let cooked = cook_texture(&asset_root.join(&texture_pak))?;
-                write_staged(staging, Path::new(&texture_pak), &cooked)?;
-                log::info!("packaged material texture: {texture_pak}");
+                for texture_pak in texture_targets {
+                    let cooked = cook_texture(&asset_root.join(&texture_pak))?;
+                    write_staged(staging, Path::new(&texture_pak), &cooked)?;
+                    log::info!("packaged material texture: {texture_pak}");
+                }
             }
         }
     }
@@ -632,6 +643,27 @@ fn component_string<'a>(
         .and_then(|payload| payload.get(field))
         .and_then(|value| value.as_str())
         .filter(|value| !value.is_empty())
+}
+
+/// 读取字符串数组字段（`MeshRenderer.material_paths`）。
+fn component_string_array(
+    components: &serde_json::Map<String, serde_json::Value>,
+    component: &str,
+    field: &str,
+) -> Vec<String> {
+    components
+        .get(component)
+        .and_then(|payload| payload.get(field))
+        .and_then(|value| value.as_array())
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str())
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// 材质 JSON 里 5 个贴图槽（与 `MATERIAL_TEX_SLOTS` 顺序一致）。
@@ -1106,6 +1138,15 @@ mod tests {
         )
         .unwrap();
         fs::write(
+            assets.join("materials/skin.mat.json"),
+            br#"{
+                "base_color": [1.0, 0.8, 0.7, 1.0],
+                "metallic": 0.0,
+                "roughness": 0.7
+            }"#,
+        )
+        .unwrap();
+        fs::write(
             assets.join("scenes/room.scene.json"),
             br#"{
                 "version": 1,
@@ -1116,7 +1157,11 @@ mod tests {
                     "components": {
                         "prism_engine::scene::MeshRenderer": {
                             "mesh_path": "models/tri.gltf",
-                            "material_path": "materials/marble.mat.json"
+                            "material_path": "materials/marble.mat.json",
+                            "material_paths": [
+                                "materials/marble.mat.json",
+                                "materials/skin.mat.json"
+                            ]
                         }
                     }
                 }]
@@ -1144,6 +1189,7 @@ mod tests {
         for expected in [
             "models/tri.gltf",
             "materials/marble.mat.json",
+            "materials/skin.mat.json",
             "textures/marble.png",
             "scenes/room.rscn",
         ] {

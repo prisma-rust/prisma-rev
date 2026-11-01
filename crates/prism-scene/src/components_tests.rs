@@ -523,12 +523,19 @@ fn mesh_renderer_state_defaults_and_round_trips() {
     assert_eq!(legacy.blend_op, BlendOp::Add);
     // One / Zero / Add = 不透明。
     assert!(!legacy.blends());
+    assert!(legacy.material_paths.is_empty());
+    assert_eq!(
+        legacy.material_path_for_submesh(3, 4, None),
+        Some("m.mat"),
+        "缺少 material_paths 时回退到单数字段"
+    );
 
     // 作者格式用变体名（与 `CameraClearFlags` / `TextAlign` 一致），
     // 队列是数字（`Material.renderQueue` 的 int 形状）。
     let json = serde_json::to_value(MeshRenderer {
         mesh_path: "m.mesh".into(),
         material_path: "m.mat".into(),
+        material_paths: Vec::new(),
         shadow_casting_mode: ShadowCastingMode::Off,
         cull_mode: CullMode::Off,
         render_queue: RenderQueue::new(RenderQueue::TRANSPARENT),
@@ -551,6 +558,46 @@ fn mesh_renderer_state_defaults_and_round_trips() {
     assert_eq!(back.dst_blend, BlendMode::OneMinusSrcAlpha);
     // 标准 alpha 混合 = 透明。
     assert!(back.blends());
+}
+
+#[test]
+fn mesh_renderer_resolves_material_paths_per_submesh() {
+    let renderer = MeshRenderer {
+        material_path: "materials/fallback.mat".into(),
+        material_paths: vec![
+            "materials/skin.mat".into(),
+            String::new(),
+            "materials/metal.mat".into(),
+        ],
+        ..MeshRenderer::default()
+    };
+
+    // 一一对应时按 submesh 下标取。
+    assert_eq!(
+        renderer.material_path_for_submesh(0, 3, Some(2)),
+        Some("materials/skin.mat")
+    );
+    // 空字符串不冒充材质，继续按 glTF 材质索引找。
+    assert_eq!(
+        renderer.material_path_for_submesh(1, 3, Some(2)),
+        Some("materials/metal.mat")
+    );
+    // 找不到时回退到单数字段。
+    assert_eq!(
+        renderer.material_path_for_submesh(1, 3, None),
+        Some("materials/fallback.mat")
+    );
+
+    // 长度不是 submesh 数时，按源材质索引匹配（Unity 的共享材质用法）。
+    let shared = MeshRenderer {
+        material_paths: vec!["materials/a.mat".into(), "materials/b.mat".into()],
+        ..MeshRenderer::default()
+    };
+    assert_eq!(
+        shared.material_path_for_submesh(0, 8, Some(1)),
+        Some("materials/b.mat")
+    );
+    assert!(shared.has_material());
 }
 
 #[test]
