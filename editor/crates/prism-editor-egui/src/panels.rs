@@ -1580,16 +1580,16 @@ fn transform_rows(
                     value: position[axis],
                 });
             }
-            if ui
+            let response = ui
                 .add(
                     egui::DragValue::new(&mut position[axis])
                         .speed(0.01)
                         .max_decimals(3)
                         .custom_parser(widgets::number_parser),
                 )
-                .on_hover_text("Type an expression: 90/2, 2*(3+4)")
-                .changed()
-            {
+                .on_hover_text("Type an expression: 90/2, 2*(3+4)");
+            transform_row_menu(&response, TransformRow::Position, transform, &mut write);
+            if response.changed() {
                 write(TransformEdit::Axis {
                     field: "position",
                     axis,
@@ -1620,7 +1620,7 @@ fn transform_rows(
         for axis in 0..3 {
             let mut changed =
                 widgets::scrubbable_label(ui, axis_labels[axis], &mut euler[axis], 0.5);
-            if ui
+            let response = ui
                 .add(
                     egui::DragValue::new(&mut euler[axis])
                         .speed(0.5)
@@ -1628,9 +1628,9 @@ fn transform_rows(
                         .suffix("°")
                         .custom_parser(widgets::number_parser),
                 )
-                .on_hover_text("Type an expression: 90/2, 45+15")
-                .changed()
-            {
+                .on_hover_text("Type an expression: 90/2, 45+15");
+            transform_row_menu(&response, TransformRow::Rotation, transform, &mut write);
+            if response.changed() {
                 changed = true;
             }
             if changed {
@@ -1667,16 +1667,16 @@ fn transform_rows(
                     value: scale[axis],
                 });
             }
-            if ui
+            let response = ui
                 .add(
                     egui::DragValue::new(&mut scale[axis])
                         .speed(0.01)
                         .max_decimals(3)
                         .custom_parser(widgets::number_parser),
                 )
-                .on_hover_text("Type an expression: 90/2, 2*(3+4)")
-                .changed()
-            {
+                .on_hover_text("Type an expression: 90/2, 2*(3+4)");
+            transform_row_menu(&response, TransformRow::Scale, transform, &mut write);
+            if response.changed() {
                 write(TransformEdit::Axis {
                     field: "scale",
                     axis,
@@ -1693,6 +1693,100 @@ fn transform_rows(
         });
     }
     let _ = state;
+}
+
+/// Transform 的三行（Position / Rotation / Scale），右键菜单按行共享剪贴板（#418 第 9 条）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TransformRow {
+    Position,
+    Rotation,
+    Scale,
+}
+
+impl TransformRow {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Position => "Position",
+            Self::Rotation => "Rotation",
+            Self::Scale => "Scale",
+        }
+    }
+
+    /// 该行的重置值（局部坐标；旋转是四元数）。
+    fn reset(self) -> Vec<f32> {
+        match self {
+            Self::Position => vec![0.0, 0.0, 0.0],
+            Self::Scale => vec![1.0, 1.0, 1.0],
+            Self::Rotation => vec![0.0, 0.0, 0.0, 1.0],
+        }
+    }
+
+    fn from_transform(self, transform: &prism_editor_core::TransformJson) -> Vec<f32> {
+        match self {
+            Self::Position => transform.position.to_vec(),
+            Self::Scale => transform.scale.to_vec(),
+            Self::Rotation => transform.rotation.to_vec(),
+        }
+    }
+}
+
+/// Transform 数值框的右键菜单：Copy / Paste / Reset 整行（比 Edit 菜单近得多）。
+fn transform_row_menu(
+    response: &egui::Response,
+    row: TransformRow,
+    transform: &prism_editor_core::TransformJson,
+    write: &mut impl FnMut(TransformEdit),
+) {
+    const CLIPBOARD: &str = "prism-transform-row-clipboard";
+    let id = egui::Id::new(CLIPBOARD);
+    response.context_menu(|ui| {
+        if ui.button(format!("Copy {}", row.label())).clicked() {
+            let values = row.from_transform(transform);
+            ui.ctx().copy_text(format!("{values:?}"));
+            ui.data_mut(|data| data.insert_temp(id, (row, values)));
+            ui.close();
+        }
+        let clipboard = ui.data(|data| data.get_temp::<(TransformRow, Vec<f32>)>(id));
+        let compatible = clipboard
+            .as_ref()
+            .map(|(kind, _)| *kind == row)
+            .unwrap_or(false);
+        if ui
+            .add_enabled(
+                compatible,
+                egui::Button::new(format!("Paste {}", row.label())),
+            )
+            .on_hover_text("Rows only accept a value copied from the same row")
+            .clicked()
+        {
+            if let Some((_, values)) = clipboard {
+                apply_transform_row(row, &values, &mut *write);
+            }
+            ui.close();
+        }
+        if ui.button(format!("Reset {}", row.label())).clicked() {
+            apply_transform_row(row, &row.reset(), &mut *write);
+            ui.close();
+        }
+    });
+}
+
+/// 把一行 Transform 值写成一次编辑；形状不对时不写（粘贴 / 重置共用）。
+fn apply_transform_row(row: TransformRow, values: &[f32], write: &mut impl FnMut(TransformEdit)) {
+    match row {
+        TransformRow::Position if values.len() == 3 => write(TransformEdit::Vector {
+            field: "position",
+            values: [values[0], values[1], values[2]],
+        }),
+        TransformRow::Scale if values.len() == 3 => write(TransformEdit::Vector {
+            field: "scale",
+            values: [values[0], values[1], values[2]],
+        }),
+        TransformRow::Rotation if values.len() == 4 => write(TransformEdit::Rotation([
+            values[0], values[1], values[2], values[3],
+        ])),
+        _ => {}
+    }
 }
 
 /// 瓦片地图组件名（`prism-scene` 的反射名）。
@@ -5972,6 +6066,40 @@ mod window_smoke_tests {
         ping_asset(&mut workspace, &mut state, "assets/models/missing.gltf");
         assert!(workspace.selection.is_empty());
         assert!(state.status.contains("no object references"));
+    }
+
+    #[test]
+    fn transform_row_actions_emit_the_expected_edits() {
+        // #418：Transform 行的 Copy / Paste / Reset 都收敛到同一个写入口。
+        let mut edits = Vec::new();
+        apply_transform_row(TransformRow::Position, &[1.0, 2.0, 3.0], &mut |edit| {
+            edits.push(edit);
+        });
+        apply_transform_row(TransformRow::Rotation, &[0.0, 0.0, 0.0, 1.0], &mut |edit| {
+            edits.push(edit);
+        });
+        apply_transform_row(TransformRow::Scale, &[2.0, 2.0, 2.0], &mut |edit| {
+            edits.push(edit);
+        });
+        // 形状不对（少分量）不产生编辑。
+        apply_transform_row(TransformRow::Rotation, &[1.0, 0.0], &mut |edit| {
+            edits.push(edit);
+        });
+        assert_eq!(edits.len(), 3);
+        assert!(matches!(
+            &edits[0],
+            TransformEdit::Vector { field: "position", values } if *values == [1.0, 2.0, 3.0]
+        ));
+        assert!(matches!(&edits[1], TransformEdit::Rotation(_)));
+        assert!(matches!(
+            &edits[2],
+            TransformEdit::Vector { field: "scale", .. }
+        ));
+
+        // 重置值：位置 0、旋转单位四元数、缩放 1。
+        assert_eq!(TransformRow::Position.reset(), vec![0.0, 0.0, 0.0]);
+        assert_eq!(TransformRow::Rotation.reset(), vec![0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(TransformRow::Scale.reset(), vec![1.0, 1.0, 1.0]);
     }
 
     #[test]
