@@ -3692,6 +3692,8 @@ impl Workspace {
             Some(AssetKind::Audio)
         } else if leaf.contains("material") {
             Some(AssetKind::Material)
+        } else if leaf == "font" || leaf.contains("font") {
+            Some(AssetKind::Font)
         } else if leaf.contains("prefab") {
             Some(AssetKind::Prefab)
         } else if leaf.contains("scene") {

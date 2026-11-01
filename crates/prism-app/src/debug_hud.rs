@@ -88,6 +88,7 @@ impl DebugHud {
                 font_size: 20.0,
                 color: WARN_COLOR,
                 alignment: UiTextAlign::Center,
+                font: None,
             });
         }
 
@@ -103,6 +104,7 @@ impl DebugHud {
                 font_size: FONT_SIZE,
                 color: TEXT_COLOR,
                 alignment: UiTextAlign::Left,
+                font: None,
             });
         }
     }

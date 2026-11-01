@@ -276,6 +276,11 @@ pub struct GraphRenderer {
     /// `PRESENT_SRC_KHR`), so the two paths need separate caches (#597).
     #[cfg(feature = "ui")]
     ui_overlay_offscreen: Option<crate::ui_overlay::UiOverlay>,
+    /// 工程自带字体（`Text.font` 的资产路径 → 字体原始字节，#583）。
+    ///
+    /// `UiOverlay` 是懒创建的（第一帧有 UI 命令时才建），所以字体先存在这里，
+    /// 创建 overlay 时灌进去；已经存在的 overlay 直接当场注册。
+    ui_fonts: std::collections::BTreeMap<String, Vec<u8>>,
     /// True when no 表面 is available (headless / CI / server 众数
     is_headless: bool,
     /// Offscreen 目标 for headless 众数 — owned device-local 图像 +
@@ -314,6 +319,17 @@ pub struct FrameCtx {
     fence: vk::Fence,
     image_available: vk::Semaphore,
     render_finished: vk::Semaphore,
+}
+
+/// 把已登记的工程字体灌进（刚创建的）UI overlay（#583）。
+#[cfg(feature = "ui")]
+fn apply_ui_fonts(
+    fonts: &std::collections::BTreeMap<String, Vec<u8>>,
+    overlay: &mut crate::ui_overlay::UiOverlay,
+) {
+    for (name, bytes) in fonts {
+        overlay.register_font(name, bytes.clone());
+    }
 }
 
 impl GraphRenderer {
@@ -585,6 +601,7 @@ impl GraphRenderer {
             ui_overlay: None,
             #[cfg(feature = "ui")]
             ui_overlay_offscreen: None,
+            ui_fonts: std::collections::BTreeMap::new(),
             is_headless: false,
             offscreen: None,
             headless_fence: vk::Fence::null(),
@@ -636,6 +653,27 @@ impl GraphRenderer {
     /// 离屏渲染目标的尺寸（无窗口宿主模式）；有交换链时返回 `None`。
     pub fn offscreen_extent(&self) -> Option<ash::vk::Extent2D> {
         self.offscreen.as_ref().map(|target| target.extent())
+    }
+
+    /// 注册一个工程自带字体（`.ttf` / `.otf` / `.ttc` 的原始字节，#583）。
+    ///
+    /// 宿主从 `.pak` 读出字节后调用一次即可；名字是 `Text.font` 里写的资产路径。
+    /// UI overlay 是懒创建的，所以这里先把字节存起来，等第一帧真正画 UI 时
+    /// 再灌进图集；已经创建的那一份立即生效。
+    pub fn register_ui_font(&mut self, name: impl Into<String>, bytes: Vec<u8>) {
+        let name = name.into();
+        self.ui_fonts.insert(name.clone(), bytes.clone());
+        #[cfg(feature = "ui")]
+        {
+            if let Some(gpu) = self.ui_overlay.as_mut() {
+                gpu.register_font(&name, bytes.clone());
+            }
+            if let Some(gpu) = self.ui_overlay_offscreen.as_mut() {
+                gpu.register_font(&name, bytes);
+            }
+        }
+        #[cfg(not(feature = "ui"))]
+        let _ = (name, bytes);
     }
 
     /// 离屏颜色图像视图（`R8G8B8A8_UNORM`）。帧结束后先调用
@@ -929,6 +967,7 @@ impl GraphRenderer {
             ui_overlay: None,
             #[cfg(feature = "ui")]
             ui_overlay_offscreen: None,
+            ui_fonts: std::collections::BTreeMap::new(),
             is_headless: true,
             pending_screenshot: None,
             screenshot: None,
@@ -1943,12 +1982,13 @@ impl GraphRenderer {
                     // `B8G8R8A8_SRGB` is unavailable.
                     let color_format = sw.format.format;
                     if self.ui_overlay.is_none() {
-                        let gpu = crate::ui_overlay::UiOverlay::with_color_format(
+                        let mut gpu = crate::ui_overlay::UiOverlay::with_color_format(
                             &self.runtime.context,
                             self.runtime.command_pool,
                             color_format,
                         )
                         .context("create ui overlay")?;
+                        apply_ui_fonts(&self.ui_fonts, &mut gpu);
                         self.ui_overlay = Some(gpu);
                     }
                     if let Some(gpu) = self.ui_overlay.as_mut() {
@@ -2007,13 +2047,15 @@ impl GraphRenderer {
                     // must end in COLOR_ATTACHMENT_OPTIMAL and use its own
                     // UiOverlay instance (different final layout).
                     if self.ui_overlay_offscreen.is_none() {
-                        let gpu = crate::ui_overlay::UiOverlay::with_color_format_and_final_layout(
-                            &self.runtime.context,
-                            self.runtime.command_pool,
-                            color_format,
-                            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                        )
-                        .context("create offscreen ui overlay")?;
+                        let mut gpu =
+                            crate::ui_overlay::UiOverlay::with_color_format_and_final_layout(
+                                &self.runtime.context,
+                                self.runtime.command_pool,
+                                color_format,
+                                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                            )
+                            .context("create offscreen ui overlay")?;
+                        apply_ui_fonts(&self.ui_fonts, &mut gpu);
                         self.ui_overlay_offscreen = Some(gpu);
                     }
                     if let Some(gpu) = self.ui_overlay_offscreen.as_mut() {

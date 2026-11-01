@@ -25,6 +25,8 @@ pub enum AssetType {
     Scene = 6,
     /// 音频 片段 (PCM, Ogg, etc.).
     Audio = 7,
+    /// 字体文件（ttf / otf / ttc），原样进包，运行时交给 UI 文本光栅器（#583）。
+    Font = 8,
     /// 回退 for unrecognised formats.
     Unknown = 0xFF,
 }
@@ -46,6 +48,7 @@ impl AssetType {
             AssetType::Prefab => "prefab",
             AssetType::Scene => "scene",
             AssetType::Audio => "audio",
+            AssetType::Font => "font",
             AssetType::Unknown => "unknown",
         }
     }
@@ -61,6 +64,7 @@ impl AssetType {
             5 => AssetType::Prefab,
             6 => AssetType::Scene,
             7 => AssetType::Audio,
+            8 => AssetType::Font,
             _ => AssetType::Unknown,
         }
     }
@@ -96,6 +100,8 @@ impl AssetType {
             "scene" => AssetType::Scene,
             // 音频
             "wav" | "mp3" | "ogg" | "flac" | "aac" | "m4a" => AssetType::Audio,
+            // 字体（UI 文本用；原样进包，不需要 cook）
+            "ttf" | "otf" | "ttc" => AssetType::Font,
             _ => AssetType::Unknown,
         }
     }

@@ -68,6 +68,25 @@ fn border_radius_is_normalised_by_the_quad_size() {
 }
 
 #[test]
+fn text_font_path_reaches_the_overlay_input() {
+    // #583：`Text.font` 是资产路径；空字符串表示用系统默认字体。
+    let mut world = world_with_screen();
+    let entity = spawn_text(&mut world, [0.0, 0.0, 200.0, 24.0], "HUD");
+
+    ui_render_system(&mut world);
+    let overlay = convert_ui_draw_list_to_overlay(&world);
+    assert_eq!(overlay.texts[0].font, None, "空 = 系统默认字体");
+
+    world.get_mut::<Text>(entity).unwrap().font = "assets/fonts/hud.ttf".into();
+    ui_render_system(&mut world);
+    let overlay = convert_ui_draw_list_to_overlay(&world);
+    assert_eq!(
+        overlay.texts[0].font.as_deref(),
+        Some("assets/fonts/hud.ttf")
+    );
+}
+
+#[test]
 fn inactive_entities_are_skipped_by_drawing() {
     let mut world = world_with_screen();
     let visible_quad = spawn_quad(&mut world, [0.0, 0.0, 10.0, 10.0]);

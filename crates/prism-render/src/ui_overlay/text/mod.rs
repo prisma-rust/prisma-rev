@@ -17,6 +17,15 @@
 //! * [`LineMetrics`]：基线到行顶 / 行底 / 行高（px），`emit_text` 用 [`baseline_offset`]
 //!   从 `ascent` 推出基线（不再用 `0.8 × font_size` 的硬编码近似）。
 //!
+//! 字体来源（#583）：
+//!
+//! * `font = None`（组件里 `font` 为空）= 系统默认字体（`PRISMREV_UI_FONT` /
+//!   内置候选路径）。
+//! * `font = Some(path)` = 工程自带字体，由宿主用 [`TextRasterizer::register_font`]
+//!   注册过字节；找不到（未注册 / 解析失败）时回落到系统默认字体并只 warn 一次。
+//! * 图集按 `(字体 id, 字符, 字号)` 分桶，多个字体共用同一张 R8 图集，所以混合
+//!   多种字体的 UI 仍然只有一次 draw call。
+//!
 //! 明确**不做**的事（两个后端都只画单字形，不进复杂文本管线）：
 //!
 //! * 阿拉伯语 / 印度语系的连写与上下文替换（需要 `IDWriteTextLayout` 的 shaping 或
@@ -63,11 +72,21 @@ pub(crate) fn baseline_offset(metrics: Option<LineMetrics>, font_size: f32) -> f
 /// 实现必须可增量调用：`rasterize` 只在图集未命中时调用一次，结果由图集缓存。
 pub(crate) trait TextRasterizer {
     /// 行度量（px）。`None` = 该字号不可用（调用方退回 [`baseline_offset`] 的近似）。
-    fn line_metrics(&self, font_size: f32) -> Option<LineMetrics>;
+    ///
+    /// `font` 是工程自带字体的资产路径；`None` 或未注册时用系统默认字体。
+    fn line_metrics(&self, font: Option<&str>, font_size: f32) -> Option<LineMetrics>;
 
     /// 光栅化单个字符。空白字形（如空格）返回 `width == height == 0`，
     /// 但仍然带正确的 `advance`。
-    fn rasterize(&mut self, ch: char, font_size: f32) -> Option<GlyphBitmap>;
+    fn rasterize(&mut self, font: Option<&str>, ch: char, font_size: f32) -> Option<GlyphBitmap>;
+
+    /// 注册工程自带字体（`.ttf` / `.otf` / `.ttc` 的原始字节，#583）。
+    ///
+    /// 返回 `false` 表示该后端不支持多字体或字节解析失败；调用方照常继续，
+    /// 文本会回落到系统默认字体。
+    fn register_font(&mut self, _name: &str, _bytes: Vec<u8>) -> bool {
+        false
+    }
 }
 
 #[cfg(all(windows, feature = "ui-directwrite"))]
@@ -79,10 +98,12 @@ mod fontdue_backend;
 mod coverage;
 
 /// 按编译进来的 feature 构造后端；`None` = 只画 quad、不画文字。
+///
+/// fontdue 后端即使找不到系统字体也会返回实例：工程自带字体是运行时注册的
+/// （#583），不能因为在没有系统字体的机器上启动就把后端永久关掉。
 #[cfg(feature = "ui-fontdue")]
 pub(crate) fn create() -> Option<Box<dyn TextRasterizer>> {
-    fontdue_backend::FontdueRasterizer::new()
-        .map(|backend| Box::new(backend) as Box<dyn TextRasterizer>)
+    Some(Box::new(fontdue_backend::FontdueRasterizer::new()) as Box<dyn TextRasterizer>)
 }
 
 #[cfg(all(windows, feature = "ui-directwrite", not(feature = "ui-fontdue")))]

@@ -612,6 +612,13 @@ impl EngineHost {
 
     /// 资产解析：CPU 段 → GPU 上传 → 结果写回 ECS，全部同步。
     fn pump_assets(&mut self) {
+        // 工程自带字体（#583）：读 `.pak` 里的字节交给 UI 图集。只在新路径出现时
+        // 读一次，和贴图/网格的失败缓存同一策略。
+        let fonts = self.asset_resolver.prepare_ui_fonts(self.engine.world());
+        for (name, bytes) in fonts {
+            self.renderer.register_ui_font(name, bytes);
+        }
+
         let requests = self
             .asset_resolver
             .prepare_requests(self.engine.world_mut());
