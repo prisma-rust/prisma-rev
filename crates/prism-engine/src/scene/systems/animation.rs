@@ -250,21 +250,33 @@ pub fn keyframe_animation_system(world: &mut World, dt: f32) {
             head.finished = duration > 0.0 && !clip.looped && raw >= duration;
             let local = local_time_at(raw, duration, clip.looped);
 
-            // #490：只处理正向播放；倒放 / 暂停不发射事件。
+            // #490：正向和反向播放都要发事件；暂停不发射。
             let mut events = Vec::new();
-            if clip.playing && speed >= 0.0 && duration > 0.0 && dt.is_finite() {
+            if clip.playing && duration > 0.0 && dt.is_finite() {
                 let previous_raw = previous_head.time + clip.phase;
                 let previous_local = local_time_at(previous_raw, duration, clip.looped);
-                let cycles = (raw / duration).floor() - (previous_raw / duration).floor();
-                if clip.looped && cycles >= 1.0 {
-                    // 跨过了一次（或多次）循环：先扫到本圈末尾，再从 0 扫到新的播放头。
-                    collect_events(clip, previous_local, duration, false, &mut events);
-                    collect_events(clip, 0.0, local, true, &mut events);
+                if speed >= 0.0 {
+                    let cycles = (raw / duration).floor() - (previous_raw / duration).floor();
+                    if clip.looped && cycles >= 1.0 {
+                        // 跨过了一次（或多次）循环：先扫到本圈末尾，再从 0 扫到新的播放头。
+                        collect_events(clip, previous_local, duration, false, &mut events);
+                        collect_events(clip, 0.0, local, true, &mut events);
+                    } else {
+                        // 刚起步时把 0 秒事件也算进来（否则第一个事件永远差一个 dt）。
+                        let include_start =
+                            previous_head.time == 0.0 && previous_raw <= 0.0 && clip.phase == 0.0;
+                        collect_events(clip, previous_local, local, include_start, &mut events);
+                    }
                 } else {
-                    // 刚起步时把 0 秒事件也算进来（否则第一个事件永远差一个 dt）。
-                    let include_start =
-                        previous_head.time == 0.0 && previous_raw <= 0.0 && clip.phase == 0.0;
-                    collect_events(clip, previous_local, local, include_start, &mut events);
+                    // 反向：播放头从 `previous_local` 降到 `local`，事件按经过的区间收集。
+                    let cycles = (previous_raw / duration).floor() - (raw / duration).floor();
+                    if clip.looped && cycles >= 1.0 {
+                        // 从上一圈的位置倒回 0，再从末尾倒到新的播放头。
+                        collect_events(clip, 0.0, previous_local, true, &mut events);
+                        collect_events(clip, local, duration, false, &mut events);
+                    } else {
+                        collect_events(clip, local, previous_local, false, &mut events);
+                    }
                 }
             }
 
