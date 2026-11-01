@@ -49,6 +49,7 @@ fn draw_item(queue: i32, eye_distance_x: f32) -> DrawItem {
             render_queue: queue,
             ..DrawState::default()
         },
+        world_bounds: None,
     }
 }
 

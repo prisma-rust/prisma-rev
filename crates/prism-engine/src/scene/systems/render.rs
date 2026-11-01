@@ -126,9 +126,13 @@ pub fn scene_render_system_into_with_frustum(
                 let mode = renderer
                     .map(|renderer| renderer.shadow_casting_mode)
                     .unwrap_or_default();
+                let model = wt.0.to_cols_array_2d();
+                let world_bounds = bounds
+                    .and_then(|bounds| bounds.get(mr.render_handle))
+                    .and_then(|local| local.transformed(&model));
                 DrawItem {
                     mesh: mr.render_handle,
-                    model: wt.0.to_cols_array_2d(),
+                    model,
                     material: world
                         .get::<MaterialRef>(entity)
                         .map(|material| material.material_slot),
@@ -136,9 +140,32 @@ pub fn scene_render_system_into_with_frustum(
                     visible_in_main_pass: mode.visible_in_main_pass(),
                     cast_shadow_two_sided: mode.casts_two_sided_shadows(),
                     state: draw_state(renderer),
+                    world_bounds,
                 }
             }),
     );
+}
+
+/// 按**光源视锥**剔除阴影投射者（#526）。
+///
+/// `light_view_proj` 是本帧方向光阴影盒子的光空间矩阵；阴影通道只需要覆盖这个
+/// 盒子。没有世界 AABB 的实体（程序化网格 / 句柄还没解析）保持 `cast_shadow`
+/// 不变——和主相机剔除一样，数据未知时不冒险让影子消失。
+pub fn cull_shadow_casters(items: &mut [DrawItem], light_view_proj: &[[f32; 4]; 4]) {
+    let Some(frustum) = prism_render::culling::Frustum::from_view_proj(light_view_proj) else {
+        return;
+    };
+    for item in items {
+        if !item.cast_shadow {
+            continue;
+        }
+        let Some(bounds) = item.world_bounds else {
+            continue;
+        };
+        if !frustum.intersects_aabb(&bounds) {
+            item.cast_shadow = false;
+        }
+    }
 }
 
 /// 2D 绘制项的排序键：`(sorting_layer, order_in_layer, z, entity_id)`。
