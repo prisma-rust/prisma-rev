@@ -477,6 +477,11 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   `crates/prism-engine/src/config/ini.rs`（引擎读取）、
   `crates/prism-editor-api/src/ini.rs`（MCP / 工具，需保留未知段）、
   `editor/crates/prism-editor-gpui-core/src/ini.rs`（编辑器数据层）。
+- `[render] internal_resolution`（`640x360` / `off`）与 `internal_scale_mode`
+  （`stretch` / `integer`）把场景渲染分辨率与窗口分辨率分开（#613）：中间目标按内部
+  尺寸渲染、相机按内部宽高比投影、`PostPass` 再放大到窗口（`integer` = 最近邻 +
+  整数倍 + 居中等比黑边）。游戏进程与编辑器 Game 视图走同一条
+  `GraphRenderer::set_internal_resolution` 路径，默认 `off` 保持旧行为。
 - 兼容旧项目：读端「新文件优先、旧 `.toml` 只读回退 + `warn!`」，`.pak` 里的旧
   `scenes.toml` 清单同样可解析；**写端只产出新格式**。一次性迁移 =
   `prism-build-pipeline build-scenes`（`migrate_legacy_config`，幂等，打印 `migrated …`）。

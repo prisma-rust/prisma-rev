@@ -5232,6 +5232,10 @@ fn render_settings_from_json(
             .get("showGrid")
             .and_then(|value| value.as_bool())
             .unwrap_or(fallback_grid),
+        // #613：内部分辨率属于工程配置（`assets/settings.ini [render]`），
+        // 编辑器偏好不覆盖它——否则 Game 视图和打包产物的像素比例会不一致。
+        internal_resolution: base.internal_resolution,
+        internal_scale_mode: base.internal_scale_mode,
     }
 }
 

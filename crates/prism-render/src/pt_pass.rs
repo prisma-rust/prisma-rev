@@ -1000,8 +1000,9 @@ impl RenderPassNode for PathTracePass {
 
         let device = ctx.device;
         let cmd = ctx.cmd;
-        let w = ctx.extent.width.max(1);
-        let h = ctx.extent.height.max(1);
+        // #613：内部渲染分辨率开启时 PT 也在内部尺寸上累积。
+        let w = ctx.render_extent.width.max(1);
+        let h = ctx.render_extent.height.max(1);
 
         // 调整大小 accumulation buffers if needed
         self.resize_images(device, &ctx.context.physical_device_memory_properties, w, h)?;

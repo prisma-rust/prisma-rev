@@ -645,7 +645,11 @@ impl EngineHost {
             );
         }
         self.pump_assets();
-        let aspect = self.width as f32 / self.height.max(1) as f32;
+        // #613：内部渲染分辨率与游戏进程走同一条路径，编辑器 Game 视图看到的
+        // 像素比例就是真机的比例。
+        let aspect = self
+            .settings
+            .render_aspect(self.width as f32 / self.height.max(1) as f32);
         extract_frame_packet_into_with_shadow(
             self.engine.world_mut(),
             aspect,
@@ -713,6 +717,10 @@ impl EngineHost {
             show_grid: editor_grid_visible(self.kind, &self.settings, self.view_2d),
         };
 
+        self.renderer.set_internal_resolution(
+            self.settings.internal_resolution,
+            self.settings.internal_scale_mode,
+        );
         let Some(ctx) = self.renderer.begin_frame()? else {
             return Ok(None);
         };

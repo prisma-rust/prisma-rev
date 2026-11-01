@@ -263,6 +263,15 @@ pub struct RenderSettings {
     /// 最大 iterations (samples per 像素 for path tracing.
     /// 0 = accumulate forever 默认
     pub pt_max_iterations: u32,
+
+    /// 内部渲染分辨率 `[宽度, 高度]`（#613）；`[0, 0]` = 关闭。
+    ///
+    /// 开启后场景（网格 / 2D 精灵 / 瓦片 / 粒子 / PT）按这个尺寸渲染，
+    /// `PostPass` 再放大到窗口。UI 仍在窗口分辨率上绘制。
+    pub internal_resolution: [u32; 2],
+
+    /// 内部图像放大到窗口的方式（见 [`InternalScaleMode`]）。
+    pub internal_scale_mode: InternalScaleMode,
 }
 
 impl Default for RenderSettings {
@@ -278,6 +287,8 @@ impl Default for RenderSettings {
             pt_max_bounces: 3,
             pt_ray_max_distance: 1000.0,
             pt_max_iterations: 0,
+            internal_resolution: [0, 0],
+            internal_scale_mode: InternalScaleMode::Stretch,
         }
     }
 }
@@ -479,6 +490,111 @@ pub fn clip_bounds(enabled: bool, rect: [f32; 4]) -> [f32; 4] {
     bounds
 }
 
+// ---------------------------------------------------------------------------
+// 内部渲染分辨率（#613）
+// ---------------------------------------------------------------------------
+
+/// 内部渲染分辨率放大到窗口的方式。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InternalScaleMode {
+    /// 铺满整个窗口：允许非整数倍，用线性采样放大。
+    #[default]
+    Stretch,
+    /// 整数倍放大并居中，四周留黑边；用最近邻采样，像素方块等宽（像素画）。
+    Integer,
+}
+
+impl InternalScaleMode {
+    /// 作者可写的名字（`settings.ini` 用）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Stretch => "stretch",
+            Self::Integer => "integer",
+        }
+    }
+
+    /// 解析 `"stretch"` / `"integer"`（大小写不敏感）；未知值返回 `None`。
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "stretch" | "fill" => Some(Self::Stretch),
+            "integer" | "pixel" | "nearest" => Some(Self::Integer),
+            _ => None,
+        }
+    }
+}
+
+/// 窗口 extent → 内部渲染 extent；`resolution == [0, 0]` 返回 `None`（关闭）。
+///
+/// 只有一个维度为 0 时按窗口宽高比推导另一个，避免作者写半边尺寸时得到
+/// 0 像素的目标。
+pub fn internal_extent(swapchain: vk::Extent2D, resolution: [u32; 2]) -> Option<vk::Extent2D> {
+    let (mut width, mut height) = (resolution[0], resolution[1]);
+    if width == 0 && height == 0 {
+        return None;
+    }
+    if width == 0 {
+        let aspect = if swapchain.height > 0 {
+            swapchain.width as f32 / swapchain.height as f32
+        } else {
+            1.0
+        };
+        width = ((height as f32 * aspect).round() as u32).max(1);
+    }
+    if height == 0 {
+        let aspect = if swapchain.width > 0 {
+            swapchain.height as f32 / swapchain.width as f32
+        } else {
+            1.0
+        };
+        height = ((width as f32 * aspect).round() as u32).max(1);
+    }
+    Some(vk::Extent2D {
+        width: width.max(1),
+        height: height.max(1),
+    })
+}
+
+/// `PostPass` 把内部图像放到窗口里的目标矩形。
+///
+/// `Stretch` 铺满整个窗口；`Integer` 取 `floor(min(倍率))`（至少 1）并居中，
+/// 剩下的边由 render pass 的清屏色填成黑边。内部尺寸比窗口还大时按比例缩小。
+pub fn post_destination(
+    swapchain: vk::Extent2D,
+    internal: vk::Extent2D,
+    mode: InternalScaleMode,
+) -> vk::Rect2D {
+    let full = vk::Rect2D {
+        offset: vk::Offset2D { x: 0, y: 0 },
+        extent: swapchain,
+    };
+    if internal.width == 0 || internal.height == 0 {
+        return full;
+    }
+    let scale = match mode {
+        InternalScaleMode::Stretch => return full,
+        InternalScaleMode::Integer => {
+            let by_width = swapchain.width as f32 / internal.width as f32;
+            let by_height = swapchain.height as f32 / internal.height as f32;
+            let factor = by_width.min(by_height);
+            if factor >= 1.0 {
+                factor.floor()
+            } else {
+                factor
+            }
+        }
+    };
+    let width = ((internal.width as f32 * scale).round() as u32).clamp(1, swapchain.width.max(1));
+    let height =
+        ((internal.height as f32 * scale).round() as u32).clamp(1, swapchain.height.max(1));
+    vk::Rect2D {
+        offset: vk::Offset2D {
+            x: ((swapchain.width as i32 - width as i32) / 2).max(0),
+            y: ((swapchain.height as i32 - height as i32) / 2).max(0),
+        },
+        extent: vk::Extent2D { width, height },
+    }
+}
+
 /// Display-referred color grading applied by `PostPass` **after** tonemapping
 /// (#502).
 ///
@@ -670,6 +786,11 @@ pub struct RenderContext<'a> {
     pub image_index: u32,
     /// 当前 交换链 extent.
     pub extent: vk::Extent2D,
+    /// 场景实际渲染的 extent（内部渲染分辨率，#613）。
+    ///
+    /// 没有开启内部分辨率时与 [`Self::extent`] 相同。`ForwardPass` / 路径追踪
+    /// 按这个尺寸分配目标；`PostPass` / UI 叠加 / 截图仍用 `extent`。
+    pub render_extent: vk::Extent2D,
     /// Per-frame scene + lighting 状态 (see [`GraphFrame`]).
     pub frame: &'a GraphFrame<'a>,
 }

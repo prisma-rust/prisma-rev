@@ -11,7 +11,7 @@ pub mod ini;
 
 use ini::Ini;
 
-use crate::render_settings::{RenderMode, RenderSettings};
+use crate::render_settings::{InternalScaleMode, RenderMode, RenderSettings};
 
 // ---------------------------------------------------------------------------
 // Top-level 配置
@@ -56,6 +56,10 @@ pub struct RenderConfig {
     pub pt_ray_max_distance: Option<f32>,
     /// 0 = accumulate forever。
     pub pt_max_iterations: Option<u32>,
+    /// 内部渲染分辨率 `"640x360"`（#613）；`"off"` / 空 = 按窗口渲染。
+    pub internal_resolution: Option<String>,
+    /// 放大方式：`"stretch"`（默认，铺满窗口）或 `"integer"`（整数倍 + 黑边）。
+    pub internal_scale_mode: Option<String>,
 }
 
 impl RenderConfig {
@@ -110,6 +114,23 @@ impl RenderConfig {
         if let Some(iterations) = self.pt_max_iterations {
             settings.pt_max_iterations = iterations;
         }
+        if let Some(value) = &self.internal_resolution {
+            match parse_internal_resolution(value) {
+                Some(resolution) => settings.internal_resolution = resolution,
+                None => log::warn!(
+                    "settings: internal_resolution '{value}' is not '<w>x<h>' or 'off'; \
+                     rendering at window resolution"
+                ),
+            }
+        }
+        if let Some(value) = &self.internal_scale_mode {
+            match InternalScaleMode::parse(value) {
+                Some(mode) => settings.internal_scale_mode = mode,
+                None => {
+                    log::warn!("settings: unknown internal_scale_mode '{value}'; using 'stretch'")
+                }
+            }
+        }
     }
 
     fn from_ini(ini: &Ini) -> Self {
@@ -126,8 +147,25 @@ impl RenderConfig {
             pt_max_bounces: ini.get_u32("render", "pt_max_bounces"),
             pt_ray_max_distance: ini.get_f32("render", "pt_ray_max_distance"),
             pt_max_iterations: ini.get_u32("render", "pt_max_iterations"),
+            internal_resolution: ini.get("render", "internal_resolution").map(str::to_string),
+            internal_scale_mode: ini.get("render", "internal_scale_mode").map(str::to_string),
         }
     }
+}
+
+/// 解析 `"640x360"` / `"640,360"` / `"640*360"`；`"off"` / `"native"` / 空 → `[0, 0]`。
+fn parse_internal_resolution(value: &str) -> Option<[u32; 2]> {
+    let lower = value.trim().to_ascii_lowercase();
+    if lower.is_empty() || lower == "off" || lower == "native" || lower == "none" {
+        return Some([0, 0]);
+    }
+    let mut parts = lower.split(|ch| ch == 'x' || ch == ',' || ch == '*');
+    let width: u32 = parts.next()?.trim().parse().ok()?;
+    let height: u32 = parts.next()?.trim().parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some([width, height])
 }
 
 // ---------------------------------------------------------------------------
@@ -330,6 +368,8 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "pt_max_bounces",
             "pt_ray_max_distance",
             "pt_max_iterations",
+            "internal_resolution",
+            "internal_scale_mode",
         ],
     ),
 ];
@@ -459,6 +499,44 @@ mod tests {
         assert_eq!(settings.shadow_distance, 120.0);
         // Unspecified fields keep their defaults.
         assert_eq!(settings.pt_max_iterations, 0);
+    }
+
+    #[test]
+    fn internal_resolution_and_scale_mode_come_from_the_render_section() {
+        use crate::render_settings::{InternalScaleMode, RenderSettings};
+
+        // #613：`[render] internal_resolution = 640x360` + `internal_scale_mode = integer`
+        let cfg = AppConfig::from_ini(
+            "[render]\ninternal_resolution = 640x360\ninternal_scale_mode = integer\n",
+        );
+        let mut settings = RenderSettings::default();
+        cfg.render.apply(&mut settings);
+        assert_eq!(settings.internal_resolution, [640, 360]);
+        assert_eq!(settings.internal_scale_mode, InternalScaleMode::Integer);
+
+        // 其它分隔符与关闭写法都接受。
+        for (value, expected) in [
+            ("640,360", [640, 360]),
+            ("640*360", [640, 360]),
+            ("off", [0, 0]),
+            ("native", [0, 0]),
+            ("", [0, 0]),
+        ] {
+            let key = format!("[render]\ninternal_resolution = {value}\n");
+            let mut settings = RenderSettings::default();
+            AppConfig::from_ini(&key).render.apply(&mut settings);
+            assert_eq!(settings.internal_resolution, expected, "{value}");
+        }
+
+        // 无法解析时保持默认（不把整份配置打成无效）。
+        let mut settings = RenderSettings::default();
+        AppConfig::from_ini(
+            "[render]\ninternal_resolution = 640x360x2\ninternal_scale_mode = nope\n",
+        )
+        .render
+        .apply(&mut settings);
+        assert_eq!(settings.internal_resolution, [0, 0]);
+        assert_eq!(settings.internal_scale_mode, InternalScaleMode::Stretch);
     }
 
     #[test]

@@ -316,6 +316,8 @@ pub struct FrameCtx {
     pub image_index: u32,
     pub frame_index: u32,
     pub extent: vk::Extent2D,
+    /// 场景实际渲染的 extent（内部渲染分辨率，#613）；未开启时等于 `extent`。
+    pub render_extent: vk::Extent2D,
     fence: vk::Fence,
     image_available: vk::Semaphore,
     render_finished: vk::Semaphore,
@@ -1420,6 +1422,32 @@ impl GraphRenderer {
         self.load_probe_volume_data(data, scene_name)
     }
 
+    /// 设置内部渲染分辨率（#613）：`[0, 0]` = 按窗口分辨率渲染。
+    ///
+    /// 每帧调用是安全的：值没变时直接返回。改动后 `ForwardPass` 会在下一次
+    /// `execute` 发现 extent 不同并重建目标（`ensure_target` 已经按 extent
+    /// 做了失效判断）。
+    pub fn set_internal_resolution(
+        &mut self,
+        resolution: [u32; 2],
+        mode: crate::render_graph::InternalScaleMode,
+    ) {
+        if self.settings.internal_resolution == resolution
+            && self.settings.internal_scale_mode == mode
+        {
+            return;
+        }
+        self.settings.internal_resolution = resolution;
+        self.settings.internal_scale_mode = mode;
+    }
+
+    /// 场景实际渲染 extent（内部渲染分辨率生效时小于 [`Self::extent`]）。
+    pub fn render_extent(&self) -> vk::Extent2D {
+        let swapchain = self.extent();
+        crate::render_graph::internal_extent(swapchain, self.settings.internal_resolution)
+            .unwrap_or(swapchain)
+    }
+
     pub fn extent(&self) -> vk::Extent2D {
         self.swapchain
             .as_ref()
@@ -1721,12 +1749,16 @@ impl GraphRenderer {
                     height: 256,
                 });
 
+            let render_extent =
+                crate::render_graph::internal_extent(extent, self.settings.internal_resolution)
+                    .unwrap_or(extent);
             return Ok(Some(FrameCtx {
                 device,
                 cmd,
                 image_index: 0,
                 frame_index: 0,
                 extent,
+                render_extent,
                 fence: self.headless_fence,
                 image_available: vk::Semaphore::null(),
                 render_finished: vk::Semaphore::null(),
@@ -1755,6 +1787,9 @@ impl GraphRenderer {
 
         let cmd = self.runtime.command_buffers[frame];
         let extent = self.extent();
+        let render_extent =
+            crate::render_graph::internal_extent(extent, self.settings.internal_resolution)
+                .unwrap_or(extent);
 
         // 上一帧（同一帧槽位）的时间戳结果现在一定写好了（acquire 已等过栅栏）。
         self.begin_gpu_timings(&device, frame as u32);
@@ -1772,6 +1807,7 @@ impl GraphRenderer {
             image_index,
             frame_index: frame as u32,
             extent,
+            render_extent,
             fence,
             image_available,
             render_finished,
@@ -1826,6 +1862,7 @@ impl GraphRenderer {
         let frame = ctx.frame_index as usize;
         let image_index = ctx.image_index;
         let extent = ctx.extent;
+        let render_extent = ctx.render_extent;
 
         let FrameInput {
             draw_items,
@@ -1952,6 +1989,7 @@ impl GraphRenderer {
                 frame_index: frame as u32,
                 image_index,
                 extent,
+                render_extent,
                 frame: &graph_frame,
             };
             record = self

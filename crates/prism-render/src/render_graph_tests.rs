@@ -311,3 +311,100 @@ fn clip_bounds_normalises_and_disables_degenerate_rects() {
     assert_eq!(below, [-1.0e4, -1.0e4, 1.0e4, 12.0]);
     assert!(below[2] >= below[0] && below[3] >= below[1]);
 }
+
+/// #613：内部分辨率只在两个轴都有效时生效，单轴时按窗口宽高比推导。
+#[test]
+fn internal_extent_derives_and_clamps() {
+    let swapchain = vk::Extent2D {
+        width: 2000,
+        height: 1125,
+    };
+    assert_eq!(internal_extent(swapchain, [0, 0]), None);
+    assert_eq!(
+        internal_extent(swapchain, [640, 360]),
+        Some(vk::Extent2D {
+            width: 640,
+            height: 360
+        })
+    );
+    // 只给宽：高度按窗口比例推出来（640 / (2000/1125) = 360）。
+    assert_eq!(
+        internal_extent(swapchain, [640, 0]),
+        Some(vk::Extent2D {
+            width: 640,
+            height: 360
+        })
+    );
+    // 空窗口不能算出 0 尺寸的目标。
+    let tiny = vk::Extent2D {
+        width: 0,
+        height: 0,
+    };
+    let derived = internal_extent(tiny, [640, 0]).expect("width only");
+    assert!(derived.width >= 1 && derived.height >= 1, "{derived:?}");
+}
+
+/// #613：整数缩放取整到最大整数倍并居中，stretch 铺满窗口。
+#[test]
+fn post_destination_centres_an_integer_upscale() {
+    let swapchain = vk::Extent2D {
+        width: 2000,
+        height: 1125,
+    };
+    let internal = vk::Extent2D {
+        width: 640,
+        height: 360,
+    };
+
+    let stretched = post_destination(swapchain, internal, InternalScaleMode::Stretch);
+    assert_eq!(stretched.offset.x, 0);
+    assert_eq!(stretched.offset.y, 0);
+    assert_eq!(stretched.extent.width, 2000);
+    assert_eq!(stretched.extent.height, 1125);
+
+    // min(2000/640, 1125/360) = min(3.125, 3.125) → 3 倍，1920x1080，居中。
+    let integer = post_destination(swapchain, internal, InternalScaleMode::Integer);
+    assert_eq!(integer.extent.width, 1920);
+    assert_eq!(integer.extent.height, 1080);
+    assert_eq!(integer.offset.x, 40);
+    assert_eq!(integer.offset.y, 22);
+
+    // 内部分辨率比窗口还大时不会有 0 倍：退化成 1 倍并居中裁切。
+    let oversized = post_destination(
+        swapchain,
+        vk::Extent2D {
+            width: 4000,
+            height: 2250,
+        },
+        InternalScaleMode::Integer,
+    );
+    assert!(oversized.extent.width >= 1 && oversized.extent.height >= 1);
+    assert_eq!(oversized.offset.x, 0);
+}
+
+#[test]
+fn internal_scale_mode_parses_authoring_values() {
+    assert_eq!(
+        InternalScaleMode::parse("stretch"),
+        Some(InternalScaleMode::Stretch)
+    );
+    assert_eq!(
+        InternalScaleMode::parse(" Fill "),
+        Some(InternalScaleMode::Stretch)
+    );
+    assert_eq!(
+        InternalScaleMode::parse("integer"),
+        Some(InternalScaleMode::Integer)
+    );
+    assert_eq!(
+        InternalScaleMode::parse("Nearest"),
+        Some(InternalScaleMode::Integer)
+    );
+    assert_eq!(
+        InternalScaleMode::parse("pixel"),
+        Some(InternalScaleMode::Integer)
+    );
+    assert_eq!(InternalScaleMode::parse("bogus"), None);
+    assert_eq!(InternalScaleMode::default().as_str(), "stretch");
+    assert_eq!(InternalScaleMode::Integer.as_str(), "integer");
+}
