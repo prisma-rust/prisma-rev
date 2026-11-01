@@ -369,6 +369,17 @@ pub struct UiState {
     pub render_graph_frozen: Option<String>,
     /// Frame Debugger 当前选中的 draw call 下标（#518）。
     pub render_graph_call: Option<usize>,
+    /// Project 面板请求的音频试听动作（#508），由 `EditorApp` 在同一帧消费。
+    pub pending_audio_preview: Option<AudioPreviewAction>,
+    /// 当前正在试听的音频资产路径（`None` = 没在播）。
+    pub audio_preview_path: Option<String>,
+}
+
+/// Project 面板 → `EditorApp` 的音频试听请求。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AudioPreviewAction {
+    Play(String),
+    Stop,
 }
 
 /// 关闭前确认的目标：某个文档标签，或整个编辑器窗口。
@@ -1450,6 +1461,28 @@ fn asset_inspector(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) 
         AssetPreview::None => {
             ui.label(RichText::new("no preview for this kind").weak().size(11.0));
         }
+    }
+
+    if details.asset.kind == AssetKind::Audio {
+        ui.add_space(4.0);
+        let playing = state.audio_preview_path.as_deref() == Some(path.as_str());
+        ui.horizontal(|ui| {
+            let label = if playing { "Stop" } else { "Play" };
+            if ui
+                .button(label)
+                .on_hover_text("Preview this clip with the editor audio engine (#508)")
+                .clicked()
+            {
+                state.pending_audio_preview = Some(if playing {
+                    AudioPreviewAction::Stop
+                } else {
+                    AudioPreviewAction::Play(path.clone())
+                });
+            }
+            if playing {
+                ui.label(RichText::new("playing…").weak().size(10.0));
+            }
+        });
     }
 
     if !details.references.is_empty() {
