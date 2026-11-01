@@ -5339,6 +5339,19 @@ fn render_graph_stats(ui: &mut Ui, report: &prism_editor_core::render_graph::Ren
 /// 每帧预算（16.6 ms ≈ 60 FPS），超过的 pass 标红。
 const FRAME_BUDGET_MS: f32 = 16.6;
 
+/// 每个有 GPU 时间的 pass 分到的预算份额（#518）。
+///
+/// 没有逐 pass 的用户配置时，最直观的「分层预算」是把整帧预算均分给当前
+/// 实际计时的 pass；某个 pass 独占超过自己的份额就标红。pass 数为 0 时返回
+/// 0，调用方不会拿它做除法。
+fn per_pass_budget_ms(pass_count: usize) -> f32 {
+    if pass_count == 0 {
+        0.0
+    } else {
+        FRAME_BUDGET_MS / pass_count as f32
+    }
+}
+
 /// per-pass GPU 时间表（#518）：总时间 + 按成本从高到低排的 pass。
 ///
 /// 数据来自渲染器的时间戳查询（延迟一帧）。设备不支持时整段隐藏 —— 面板只显示
@@ -5353,6 +5366,10 @@ fn render_graph_timings(ui: &mut Ui, report: &prism_editor_core::render_graph::R
         return;
     };
 
+    let passes = report.passes_by_cost();
+    let measured = passes.iter().filter(|pass| pass.gpu_ms.is_some()).count();
+    let budget = per_pass_budget_ms(measured);
+
     ui.horizontal(|ui| {
         ui.label(RichText::new("GPU").strong());
         let color = if total > FRAME_BUDGET_MS {
@@ -5362,34 +5379,41 @@ fn render_graph_timings(ui: &mut Ui, report: &prism_editor_core::render_graph::R
         };
         ui.label(RichText::new(format!("{total:.2} ms")).color(color));
         ui.label(
-            RichText::new(format!("budget {FRAME_BUDGET_MS:.1} ms"))
-                .weak()
-                .size(10.0),
+            RichText::new(format!(
+                "budget {FRAME_BUDGET_MS:.1} ms · {budget:.2} ms/pass"
+            ))
+            .weak()
+            .size(10.0),
         );
     });
 
     egui::Grid::new("graph-pass-timings")
-        .num_columns(3)
+        .num_columns(4)
         .spacing([12.0, 3.0])
         .show(ui, |ui| {
             ui.label(RichText::new("Pass").weak().size(10.0));
             ui.label(RichText::new("Kind").weak().size(10.0));
             ui.label(RichText::new("GPU ms").weak().size(10.0));
+            ui.label(RichText::new("Budget").weak().size(10.0));
             ui.end_row();
-            for pass in report.passes_by_cost() {
+            for pass in &passes {
                 ui.label(RichText::new(&pass.name).size(11.0));
                 ui.label(RichText::new(&pass.kind).weak().size(11.0));
                 match pass.gpu_ms {
                     Some(ms) => {
-                        let color = if ms > FRAME_BUDGET_MS * 0.5 {
+                        let color = if budget > 0.0 && ms > budget {
+                            Color32::from_rgb(232, 96, 96)
+                        } else if budget > 0.0 && ms > budget * 0.8 {
                             Color32::from_rgb(226, 178, 84)
                         } else {
                             ui.visuals().text_color()
                         };
                         ui.label(RichText::new(format!("{ms:.2}")).size(11.0).color(color));
+                        ui.label(RichText::new(format!("{budget:.2}")).weak().size(10.0));
                     }
                     None => {
                         ui.label(RichText::new("—").weak().size(11.0));
+                        ui.label(RichText::new("—").weak().size(10.0));
                     }
                 }
                 ui.end_row();
@@ -6650,6 +6674,14 @@ mod window_smoke_tests {
             play_mode_banner(workspace.playing && workspace.has_play_snapshot()),
             None
         );
+    }
+
+    #[test]
+    fn per_pass_budget_splits_the_frame_budget_and_handles_zero() {
+        assert_eq!(per_pass_budget_ms(0), 0.0);
+        assert!((per_pass_budget_ms(1) - FRAME_BUDGET_MS).abs() < 1e-6);
+        assert!((per_pass_budget_ms(4) - FRAME_BUDGET_MS / 4.0).abs() < 1e-6);
+        assert!(per_pass_budget_ms(8) < per_pass_budget_ms(4));
     }
 
     #[test]
