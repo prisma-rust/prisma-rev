@@ -58,7 +58,7 @@ fn upload_grid(
     context: &VulkanContext,
     verts: &[GridVertex],
 ) -> anyhow::Result<(vk::Buffer, vk::DeviceMemory, u32)> {
-    let buf_size = (verts.len() * size_of::<GridVertex>()) as vk::DeviceSize;
+    let buf_size = std::mem::size_of_val(verts) as vk::DeviceSize;
     let (buffer, memory) = create_buffer(
         context,
         buf_size,
