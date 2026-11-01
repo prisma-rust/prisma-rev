@@ -4756,6 +4756,7 @@ mod hierarchy_search_tests {
         let mut doc = SceneDoc {
             version: 3,
             entities: Vec::new(),
+            ..Default::default()
         };
         let parent = doc.add_named_child(None, "Boat");
         let child = doc.add_named_child(Some(parent), "Rod");
