@@ -139,6 +139,12 @@ pub struct App {
 
     // ---------- 每帧状态 ----------
     display_aspect: f32,
+    /// 开发期资产热重载（#495）：`PRISMREV_HOT_RELOAD` 打开时轮询 `.pak`。
+    ///
+    /// 发布版默认关（不建线程、不做任何 stat）；打开后重建 `.pak` 不用退出
+    /// 再进游戏。旧 GPU 句柄不会立即释放（渲染器还没有按句柄回收的接口），
+    /// 所以只适合开发期反复迭代。
+    pak_watcher: Option<prism_engine::scene::hot_reload::HotReloadWatcher>,
     surface_rotation: glam::Mat4,
 
     // ---------- 输入（主线程） ----------
@@ -293,6 +299,7 @@ impl App {
             render_settings,
             debug_hud: DebugHud::default(),
             display_aspect: 16.0 / 9.0,
+            pak_watcher: spawn_pak_watcher(),
             surface_rotation: glam::Mat4::IDENTITY,
             input: InputManager::new(),
             #[cfg(feature = "audio")]
@@ -530,6 +537,10 @@ impl App {
 
     /// 停止宿主渲染线程并收尾（音频 / 引擎 pre/post shutdown）。
     pub fn shutdown_hosted(&mut self) {
+        if let Some(watcher) = self.pak_watcher.as_mut() {
+            watcher.stop();
+        }
+        self.pak_watcher = None;
         #[cfg(feature = "audio")]
         self.stop_audio_decode_thread();
         self.stop_render_thread();
@@ -575,6 +586,7 @@ impl App {
         self.engine = Some(Engine::empty());
         self.asset_resolver = GpuAssetResolver::new();
         self.asset_resolver.load_resource_package();
+        self.pak_watcher = spawn_pak_watcher();
         let engine = self.engine.as_mut().expect("engine just re-created");
         let entities = engine.load_scene_json_file(path)?;
         engine.runtime_initialize();
@@ -1112,6 +1124,9 @@ impl App {
             }
         } // engine 借用在此结束
 
+        // --- 开发期热重载（#495）：重建 `.pak` 后不用退出再进 ---
+        self.poll_asset_changes();
+
         // --- 资产解析：主线程 CPU 段准备请求 → 通道 → 渲染线程 GPU 段 ---
         self.pump_asset_requests();
 
@@ -1185,6 +1200,70 @@ impl App {
             self.asset_resolver
                 .apply_results(engine.world_mut(), &results);
         }
+    }
+
+    /// 开发期资产热重载：`.pak` 重建后换掉 reader 并让实体重新解析（#495）。
+    ///
+    /// 只在 [`spawn_pak_watcher`] 建了轮询线程时生效（`PRISMREV_HOT_RELOAD`
+    /// 打开）。和编辑器一样分三步：`on_pak_changed` 换文件字节 → 重载路径清单
+    /// → `invalidate_assets` 把实体打回待解析，下一帧 `pump_asset_requests`
+    /// 会重新上传。
+    ///
+    /// 已知代价：渲染器没有「按句柄释放」的接口，被替换的旧纹理 / 网格槽会一直
+    /// 占用，所以这条路径只用于开发期。
+    fn poll_asset_changes(&mut self) {
+        let Some(watcher) = self.pak_watcher.as_ref() else {
+            return;
+        };
+        // 先把事件收干净再改状态：`receiver()` 借的是 watcher，处理事件要借 self。
+        let mut changed: Vec<std::path::PathBuf> = Vec::new();
+        while let Ok(event) = watcher.receiver().try_recv() {
+            match event {
+                prism_engine::scene::hot_reload::HotReloadEvent::PakModified(path) => {
+                    if !changed.contains(&path) {
+                        changed.push(path);
+                    }
+                }
+                prism_engine::scene::hot_reload::HotReloadEvent::WatchError(error) => {
+                    log::warn!("hot reload: {error}");
+                }
+            }
+        }
+        if changed.is_empty() {
+            return;
+        }
+
+        let Some(engine) = self.engine.as_mut() else {
+            return;
+        };
+        let mut reloaded = 0usize;
+        for pak in &changed {
+            if let Err(error) = self.asset_resolver.resource_manager.on_pak_changed(pak) {
+                log::warn!("hot reload: reopening {} failed: {error}", pak.display());
+                continue;
+            }
+            let manifest = pak.with_extension("pak.meta.json");
+            if manifest.is_file() {
+                if let Err(error) = self
+                    .asset_resolver
+                    .resource_manager
+                    .load_path_manifest(&manifest)
+                {
+                    log::warn!(
+                        "hot reload: path manifest {} failed: {error}",
+                        manifest.display()
+                    );
+                }
+            }
+            reloaded += 1;
+        }
+        if reloaded == 0 {
+            return;
+        }
+        let count = self.asset_resolver.invalidate_assets(engine.world_mut());
+        log::info!(
+            "hot reload: {count} entity/entities re-resolved after {reloaded} package(s) were rebuilt"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1564,6 +1643,52 @@ impl ApplicationHandler for App {
     }
 }
 
+/// `PRISMREV_HOT_RELOAD` 的取值是否表示「打开」（#495）。
+///
+/// 接受 `1` / `true` / `yes` / `on`（大小写、首尾空白都忽略）；其它值（含 `0`、
+/// 空串、未设置）一律算关。发布版默认关，所以运行时既不起线程也不 stat 文件。
+fn hot_reload_enabled(raw: Option<&str>) -> bool {
+    raw.map(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+    .unwrap_or(false)
+}
+
+/// `PRISMREV_HOT_RELOAD=1` 时给 `assets/` 下所有 `.pak` 建一个轮询器（#495）。
+///
+/// 发布版默认不建：没有线程、没有 stat，行为与之前完全一致。接受 `1` / `true` /
+/// `yes` / `on`（大小写无关），其它值（含 `0`、空串）都当关。
+fn spawn_pak_watcher() -> Option<prism_engine::scene::hot_reload::HotReloadWatcher> {
+    let raw = std::env::var("PRISMREV_HOT_RELOAD").ok();
+    if !hot_reload_enabled(raw.as_deref()) {
+        return None;
+    }
+    let paks = prism_engine::asset_paths::pak_files();
+    if paks.is_empty() {
+        log::warn!("hot reload: no `.pak` under assets/ to watch");
+        return None;
+    }
+    match prism_engine::scene::hot_reload::HotReloadWatcher::watch_files(
+        paks.clone(),
+        Duration::from_millis(500),
+    ) {
+        Ok(watcher) => {
+            log::info!(
+                "hot reload: watching {} package(s) for changes (development only)",
+                paks.len()
+            );
+            Some(watcher)
+        }
+        Err(error) => {
+            log::warn!("hot reload: cannot start the package watcher: {error}");
+            None
+        }
+    }
+}
+
 /// Esc 是指针锁定的逃生口：锁定态下它先释放光标，再作为普通按键交给游戏。
 fn should_release_pointer_lock(
     key: prism_engine::input::KeyCode,
@@ -1844,5 +1969,22 @@ mod tests {
         assert_eq!(engine_key_from_native(K::Other(0x5A)), Eng::Other(0x5A));
         // 引擎没有 F 键变体，用虚拟键码承载。
         assert_eq!(engine_key_from_native(K::F3), Eng::Other(0x72));
+    }
+}
+
+#[cfg(test)]
+mod hot_reload_tests {
+    use super::hot_reload_enabled;
+
+    /// #495：只有显式的「开」才建轮询线程，发布版默认完全不做额外工作。
+    #[test]
+    fn only_explicit_truthy_values_enable_hot_reload() {
+        for value in ["1", "true", "TRUE", " yes ", "On"] {
+            assert!(hot_reload_enabled(Some(value)), "{value}");
+        }
+        for value in ["0", "false", "", "  ", "off", "no", "2", "enabled"] {
+            assert!(!hot_reload_enabled(Some(value)), "{value}");
+        }
+        assert!(!hot_reload_enabled(None), "未设置 = 关");
     }
 }
