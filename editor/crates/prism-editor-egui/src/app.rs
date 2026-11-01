@@ -2873,9 +2873,19 @@ impl EditorApp {
                 self.mark_scene_dirty();
             }
 
+        });
+    }
+
+    fn status_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(&self.state.status).size(11.0));
+            if !self.workspace.status.is_empty() {
+                ui.label(RichText::new(&self.workspace.status).size(11.0).weak());
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 // 模块编译状态 + 显式的 Compile：没有脚本层，代码就是一个可重载的 cdylib，
                 // 所以这里对应 UE 的 Compile 按钮，而不是 Unity 的脚本编译。
+                // 放在状态栏右侧：工具栏在 1366/1440 宽度下已经没有空间再塞这一组（#603）。
                 if let Some(status) = self.project_module_status() {
                     if status.available {
                         if ui
@@ -2925,17 +2935,6 @@ impl EditorApp {
                     Color32::from_gray(150)
                 };
                 ui.label(RichText::new(text).size(10.0).color(color).strong());
-            });
-        });
-    }
-
-    fn status_bar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(&self.state.status).size(11.0));
-            if !self.workspace.status.is_empty() {
-                ui.label(RichText::new(&self.workspace.status).size(11.0).weak());
-            }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let selected = self.workspace.selection.len();
                 let entities = self.workspace.document().doc.entities.len();
                 ui.label(
