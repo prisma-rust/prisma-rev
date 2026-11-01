@@ -20,12 +20,11 @@ use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::time::{Duration, Instant, SystemTime};
 
 use prism_editor_core::LogLevel;
-use prism_engine::input::{InputManager, MouseButton};
+use prism_engine::input::InputManager;
 
 use crate::diagnostics::{diagnostics_from_cargo, Diagnostic};
 use prism_runtime_host::{
-    AssetIo, InputSnapshot, ProjectModule, ProjectSession, TouchSnapshot, UiQuad as HostUiQuad,
-    WorldCommands,
+    AssetIo, InputSnapshot, ProjectModule, ProjectSession, UiQuad as HostUiQuad, WorldCommands,
 };
 use prism_scene::ComponentRegistry;
 
@@ -544,63 +543,10 @@ impl ProjectModuleDriver {
 
 /// 把宿主输入打包成 ABI 快照。
 ///
-/// `keys` 用**按住**语义（`InputManager::held_keys`），不是「本帧刚按下」：
-/// gameplay 代码用 `input.key(SPACE)` 检测持续按住（fishing 的收线）。
-/// 「刚按下 / 刚松开」走 `key_edges`（`InputSnapshot::key_pressed/key_released`），
-/// 右键 / 中键 / 滚轮 / 鼠标位移 / 触摸同理——类型本身由 `prism-project-api`
-/// 定义，这里只负责填表（#485）。
+/// 映射本体在 [`prism_engine::input::input_snapshot`]：静态 Player 的
+/// `GameWorld::input()` 读的是同一份实现（#589），两边不会漂移。
 fn input_snapshot(input: &InputManager, screen: [f32; 2]) -> InputSnapshot {
-    let mut snapshot = InputSnapshot::default();
-    let cursor = input.mouse_position();
-    snapshot.cursor = [cursor[0] as f32, cursor[1] as f32];
-    snapshot.screen = screen;
-    snapshot.left_clicked = input.mouse_just_pressed(MouseButton::Left);
-    snapshot.left_held = input.mouse_held(MouseButton::Left);
-    snapshot.right_clicked = input.mouse_just_pressed(MouseButton::Right);
-    snapshot.right_held = input.mouse_held(MouseButton::Right);
-    snapshot.middle_clicked = input.mouse_just_pressed(MouseButton::Middle);
-    snapshot.middle_held = input.mouse_held(MouseButton::Middle);
-    let delta = input.mouse_delta();
-    snapshot.mouse_delta = [delta[0] as f32, delta[1] as f32];
-    snapshot.scroll = input.scroll_delta() as f32;
-    snapshot.pointer_locked = input.pointer_locked;
-
-    for key in input.held_keys() {
-        snapshot.set_key(key.bit_index(), true);
-    }
-    for key in input.pressed_keys() {
-        snapshot.set_key_edge(key.bit_index(), true);
-    }
-    for key in input.released_keys() {
-        snapshot.set_key_edge(key.bit_index(), false);
-    }
-
-    let touches = input.touches();
-    let count = touches.len().min(InputSnapshot::MAX_TOUCHES);
-    snapshot.touch_count = count as u32;
-    for (slot, touch) in snapshot.touches.iter_mut().zip(touches.iter()).take(count) {
-        *slot = TouchSnapshot {
-            id: touch.id,
-            position: [touch.position[0] as f32, touch.position[1] as f32],
-            phase: touch_phase_code(touch.phase),
-            _reserved: 0,
-        };
-    }
-    snapshot
-}
-
-/// 引擎触点阶段 → ABI 常量。
-fn touch_phase_code(phase: prism_engine::input::TouchPhase) -> u32 {
-    use prism_engine::input::TouchPhase;
-    use prism_runtime_host::{
-        TOUCH_PHASE_CANCELLED, TOUCH_PHASE_ENDED, TOUCH_PHASE_MOVED, TOUCH_PHASE_STARTED,
-    };
-    match phase {
-        TouchPhase::Started => TOUCH_PHASE_STARTED,
-        TouchPhase::Moved => TOUCH_PHASE_MOVED,
-        TouchPhase::Ended => TOUCH_PHASE_ENDED,
-        TouchPhase::Cancelled => TOUCH_PHASE_CANCELLED,
-    }
+    prism_engine::input::input_snapshot(input, screen)
 }
 
 /// 项目模块提交的四边形 → 引擎的 `ExternalUiQuads`。
@@ -885,6 +831,7 @@ fn collect_newest_source(dir: &Path, newest: &mut Option<SystemTime>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use prism_engine::input::MouseButton;
     use prism_engine::input::{ElementState, KeyCode};
 
     fn temp_dir(name: &str) -> PathBuf {

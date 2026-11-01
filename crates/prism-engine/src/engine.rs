@@ -444,6 +444,18 @@ impl Engine {
             pressed_keys: input_manager.pressed_keys().to_vec(),
         });
 
+        // ── 同一份输入也给 gameplay 代码（#589）──────────────────
+        // 静态 Player 的 `GameWorld::input()` 读的就是这个 World resource。
+        // 以前只有编辑器的插件后端能拿到输入，发布包里的 `GameWorld::input()`
+        // 永远是全零。尺寸取自 `ScreenSize`（宿主在每帧 update 前写入）。
+        let screen = self
+            .world
+            .get_resource::<crate::ui::ScreenSize>()
+            .map(|size| [size.width as f32, size.height as f32])
+            .unwrap_or([0.0, 0.0]);
+        self.world
+            .insert_resource(crate::input::input_snapshot(input_manager, screen));
+
         // Run the ECS 系统 调度 (user‑registered + built‑in systems).
         self.schedule.run(&mut self.world, dt);
 

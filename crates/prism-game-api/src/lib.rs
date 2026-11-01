@@ -55,6 +55,9 @@ pub fn entity_from_handle(handle: EntityHandle) -> Entity {
 pub struct GameWorld<'a> {
     backend: Backend<'a>,
     /// 仅 host 后端使用：插件后端的输入来自 `HostApi::input`。
+    ///
+    /// 正常情况下 `input()` 优先读世界里的 `InputSnapshot` resource（引擎每帧
+    /// 写入）；这个字段是资源还没写时的兜底与 `set_input` 的镜像。
     #[cfg_attr(not(feature = "host"), allow(dead_code))]
     input: InputSnapshot,
     #[cfg_attr(not(feature = "host"), allow(dead_code))]
@@ -98,17 +101,29 @@ impl<'a> GameWorld<'a> {
 
     pub fn input(&self) -> InputSnapshot {
         match &self.backend {
+            // 静态 Player：引擎每帧把这一份写进 World resource（#589）。
             #[cfg(feature = "host")]
-            Backend::Host(_) => self.input,
+            Backend::Host(world) => world
+                .get_resource::<InputSnapshot>()
+                .copied()
+                .unwrap_or(self.input),
             #[cfg(feature = "plugin")]
             Backend::Plugin(backend) => backend.api.input,
         }
     }
 
-    /// 仅 host 后端生效：插件后端的输入由宿主每 tick 通过 `HostApi::input` 下发。
+    /// 覆盖本帧输入（host 后端）。
+    ///
+    /// 正常运行时不需要调用：`Engine::update` 每帧把
+    /// [`prism_engine::input::input_snapshot`] 写进世界。这个入口留给测试与
+    /// 自己驱动世界的宿主；写入后同一帧的 `input()` 立即读到新值。
+    /// 插件后端的输入由宿主每 tick 通过 `HostApi::input` 下发。
     #[cfg(feature = "host")]
     pub fn set_input(&mut self, input: InputSnapshot) {
         self.input = input;
+        if let Backend::Host(world) = &mut self.backend {
+            world.insert_resource(input);
+        }
     }
 
     pub fn screen_size(&self) -> [f32; 2] {
@@ -595,6 +610,46 @@ impl PluginBackend<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #589：静态 Player 的输入来自引擎每帧写进世界的 `InputSnapshot`，
+    /// 不是 `GameWorld::host()` 构造时的默认值。
+    #[cfg(feature = "host")]
+    #[test]
+    fn host_input_reads_the_world_resource() {
+        let mut world = World::new();
+        world.insert_resource(InputSnapshot {
+            cursor: [12.0, 34.0],
+            left_clicked: true,
+            ..InputSnapshot::default()
+        });
+
+        let api = GameWorld::host(&mut world);
+        assert_eq!(api.input().cursor, [12.0, 34.0]);
+        assert!(api.input().left_clicked);
+        assert_eq!(api.screen_size(), [0.0, 0.0]);
+    }
+
+    /// `set_input` 必须写穿到世界：同一个世界上的下一个 `GameWorld` 也能读到。
+    #[cfg(feature = "host")]
+    #[test]
+    fn set_input_writes_through_to_the_world() {
+        let mut world = World::new();
+        {
+            let mut api = GameWorld::host(&mut world);
+            api.set_input(InputSnapshot {
+                scroll: 2.5,
+                ..InputSnapshot::default()
+            });
+            assert_eq!(api.input().scroll, 2.5);
+        }
+        assert_eq!(
+            world
+                .get_resource::<InputSnapshot>()
+                .expect("set_input writes the resource")
+                .scroll,
+            2.5
+        );
+    }
 
     #[derive(Reflect, Clone, Debug, Default, PartialEq)]
     struct Health {

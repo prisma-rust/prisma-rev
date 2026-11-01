@@ -1878,6 +1878,7 @@ dependencies = [
  "log",
  "prism-asset",
  "prism-ecs",
+ "prism-project-api",
  "prism-reflect",
  "prism-render",
  "prism-scene",
