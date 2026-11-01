@@ -696,6 +696,11 @@ impl EditorApp {
         }
         let was_playing = self.workspace.playing;
         let was_paused = self.workspace.paused;
+        // Console 的 Clear on Play（#421）：在 Play 真正开始前清空，这样 Play 自己
+        // 打的第一行日志不会被吞掉。
+        if command == Command::Play && !was_playing && self.state.log_clear_on_play {
+            self.workspace.log.clear();
+        }
         self.workspace.run(command);
 
         if command == Command::Play && !was_playing {
@@ -3237,6 +3242,16 @@ impl EditorApp {
                         self.workspace.show_panel("prefabOverrides");
                         ui.close();
                     }
+                    let mut maximize_on_play = self.workspace.maximize_on_play;
+                    if ui
+                        .checkbox(&mut maximize_on_play, "Maximize Game View on Play")
+                        .on_hover_text(
+                            "Enter Play with the Game view maximized (Unity maximizeOnPlay)",
+                        )
+                        .changed()
+                    {
+                        self.workspace.maximize_on_play = maximize_on_play;
+                    }
                     if ui.button("Material").clicked() {
                         self.workspace.show_panel("material");
                         ui.close();
@@ -4886,8 +4901,30 @@ impl EditorApp {
     /// 把 `log` 记录搬进 Console 面板（每帧一次）。
     fn drain_engine_logs(&mut self) {
         let entries = logging::drain();
+        let mut saw_error = false;
         for (source, level, text) in entries {
+            if matches!(
+                level,
+                prism_editor_core::LogLevel::Error | prism_editor_core::LogLevel::Panic
+            ) {
+                saw_error = true;
+            }
             self.workspace.log.push(source, level, text);
+        }
+        // Error Pause（#421）：Play 中第一次出现 Error / Panic 就暂停，并写一行
+        // 说明原因 —— 否则画面只是「停住」，看起来像卡死。
+        if saw_error
+            && self.state.log_error_pause
+            && self.workspace.playing
+            && !self.workspace.paused
+        {
+            self.apply_command(Command::Pause);
+            self.state.status = "paused: an error was logged (Error Pause)".to_string();
+            self.workspace.log(
+                prism_editor_core::LogSource::Editor,
+                prism_editor_core::LogLevel::Warn,
+                "Error Pause: paused because an error was logged while playing",
+            );
         }
     }
 

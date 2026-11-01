@@ -435,6 +435,14 @@ pub struct Workspace {
     ///
     /// 只影响绘制：dock tree 原样保留，所以还原时不会丢布局。
     pub maximized_tab: Option<String>,
+    /// 按 Play 时自动最大化 Game 视图（Unity `maximizeOnPlay`，退出时还原）。
+    pub maximize_on_play: bool,
+    /// 进入 Play 前的最大化状态；`None` = 这次 Play 没有改动布局。
+    ///
+    /// 用 `Option<Option<String>>` 而不是 `Option<String>`：进入 Play 前本来没有
+    /// 最大化任何 tab 时，退出 Play 必须回到「都不最大化」，不能把 `Some(tab)`
+    /// 当成「没保存」。
+    play_maximized_before: Option<Option<String>>,
     pub selection: Vec<usize>,
     /// 最后点击 / 右键的实体（检查器与 Add Component 的「活动对象」，#507）。
     ///
@@ -550,6 +558,8 @@ impl Workspace {
             dock: dock::default_dock(),
             floating: Vec::new(),
             maximized_tab: None,
+            maximize_on_play: false,
+            play_maximized_before: None,
             selection: Vec::new(),
             selection_active: None,
             expanded: HashSet::new(),
@@ -3760,6 +3770,12 @@ impl Workspace {
         }
         // 进入播放前先留住编辑态：Stop 要原样还回去（#500）。
         self.play_snapshot = Some(self.take_play_snapshot());
+        // 播放中自动最大化 Game 视图（#421）；Stop 时连「原本有没有最大化」
+        // 一起还原，所以用户自己最大化过的面板不会被吞掉。
+        if self.maximize_on_play {
+            self.play_maximized_before = Some(self.maximized_tab.clone());
+            self.maximized_tab = Some("gameView".to_string());
+        }
         self.playing = true;
         self.paused = false;
         self.play_time_s = 0.0;
@@ -3770,6 +3786,9 @@ impl Workspace {
         let restored = self.play_snapshot.take().map(|snapshot| {
             self.restore_play_snapshot(snapshot);
         });
+        if let Some(previous) = self.play_maximized_before.take() {
+            self.maximized_tab = previous;
+        }
         self.playing = false;
         self.paused = false;
         self.play_time_s = 0.0;
@@ -4622,6 +4641,40 @@ fn normalize_quat(quat: [f32; 4]) -> Option<[f32; 4]> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn maximize_on_play_restores_the_previous_layout() {
+        // #421：Play 自动最大化 Game 视图，Stop 回到进入前的状态。
+        let mut workspace = Workspace::sample();
+        workspace.maximize_on_play = true;
+        assert!(workspace.maximized_tab.is_none());
+
+        workspace.play();
+        assert_eq!(workspace.maximized_tab.as_deref(), Some("gameView"));
+
+        workspace.stop();
+        assert!(
+            workspace.maximized_tab.is_none(),
+            "进入 Play 前没有最大化任何面板，Stop 后也必须回到都没有最大化"
+        );
+
+        // 用户自己最大化过 Scene 视图：Play / Stop 之后仍应保持 Scene 最大化。
+        workspace.maximized_tab = Some("sceneView".to_string());
+        workspace.play();
+        assert_eq!(workspace.maximized_tab.as_deref(), Some("gameView"));
+        workspace.stop();
+        assert_eq!(workspace.maximized_tab.as_deref(), Some("sceneView"));
+    }
+
+    #[test]
+    fn maximize_on_play_off_leaves_the_layout_alone() {
+        let mut workspace = Workspace::sample();
+        workspace.maximized_tab = Some("hierarchy".to_string());
+        workspace.play();
+        assert_eq!(workspace.maximized_tab.as_deref(), Some("hierarchy"));
+        workspace.stop();
+        assert_eq!(workspace.maximized_tab.as_deref(), Some("hierarchy"));
+    }
 
     #[test]
     fn orbit_applies_horizontal_and_vertical_deltas_independently() {

@@ -157,6 +157,16 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
 视口里 `prism_render` / `prism_engine` 的警告（与引擎日志
 是同一思路）。`Trace` 不转发，避免淹没窗口。
 
+**Console 的四个工具开关（#421）**：`Collapse` 把相同的 `(级别, 来源, 文本)` 合并成
+一行并显示 `×N`（保持首次出现的时间顺序）；`Clear on Play` 在 Play 开始时清空；
+`Error Pause` 在 Play 中第一次出现 Error / Panic 时自动暂停（并写一行说明，避免
+看起来像卡死）；日志行里带 `path:line[:col]` 时**双击**用默认编辑器跳到该位置
+（与 Problems 面板同一套 `open_source_location`）。
+
+**Play 自动最大化（#421）**：`Window → General → Maximize Game View on Play` 打开后，
+按 Play 自动最大化 Game 视图，Stop 恢复到进入前的布局（进入前没有最大化任何面板时
+也回到「都不最大化」，不会把用户自己最大化的面板吞掉）。
+
 ## 4.2 菜单（结构）
 
 菜单按引擎的分组组织，二 / 三级菜单里都是真实命令：
