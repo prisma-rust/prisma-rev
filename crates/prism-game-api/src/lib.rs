@@ -28,12 +28,25 @@ pub use prism_project_api::{EntityHandle, InputSnapshot};
 use prism_reflect::Reflect;
 
 #[cfg(feature = "plugin")]
-use prism_project_api::{HostApi, HOST_CAP_SCENE, SUCCESS};
+use prism_project_api::{HostApi, HOST_CAP_PHYSICS, HOST_CAP_SCENE, SUCCESS};
 #[cfg(feature = "plugin")]
 use prism_reflect::{rtti_bin, TypeRegistry};
 
 /// 一条 2D UI 四边形（定义在 ABI crate，这里重新导出）。
 pub use prism_project_api::UiQuad;
+
+/// 一次射线命中的结果（#522）。
+///
+/// 两个后端返回同一形状：`point` / `normal` 是世界空间，`distance` 从射线起点
+/// 算起；`is_trigger` 的碰撞体参与查询但不阻挡移动。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RaycastHit {
+    pub entity: EntityHandle,
+    pub distance: f32,
+    pub point: [f32; 3],
+    pub normal: [f32; 3],
+    pub is_trigger: bool,
+}
 
 /// 把 ECS 句柄转成跨边界句柄。
 pub fn handle_from_entity(entity: Entity) -> EntityHandle {
@@ -215,6 +228,61 @@ impl<'a> GameWorld<'a> {
             Backend::Host(_) => 0,
             #[cfg(feature = "plugin")]
             Backend::Plugin(backend) => backend.scene_generation(),
+        }
+    }
+
+    /// 射线查询（#522）：返回最近的命中。
+    ///
+    /// - host 后端直接调用 `prism_engine::physics::raycast`（与编辑器点选 / 玩法
+    ///   查询是同一套几何）；
+    /// - plugin 后端走 `HostApi::raycast`；宿主没有注入实现（没有
+    ///   `HOST_CAP_PHYSICS`）时返回 `None`。
+    ///
+    /// `layer_mask` 与碰撞体的 `layer` 相与非 0 才参与；`max_distance` 之外不算命中。
+    pub fn raycast(
+        &self,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        max_distance: f32,
+        layer_mask: u32,
+    ) -> Option<RaycastHit> {
+        match &self.backend {
+            #[cfg(feature = "host")]
+            Backend::Host(world) => {
+                prism_engine::physics::raycast(world, origin, direction, max_distance, layer_mask)
+                    .map(|hit| RaycastHit {
+                        entity: handle_from_entity(hit.entity),
+                        distance: hit.distance,
+                        point: hit.point,
+                        normal: hit.normal,
+                        is_trigger: hit.is_trigger,
+                    })
+            }
+            #[cfg(feature = "plugin")]
+            Backend::Plugin(backend) => {
+                if backend.api.capabilities & HOST_CAP_PHYSICS == 0 {
+                    return None;
+                }
+                let raycast = backend.api.raycast?;
+                let mut raw = prism_project_api::RaycastHit::default();
+                let code = unsafe {
+                    raycast(
+                        backend.api.user_data,
+                        &origin,
+                        &direction,
+                        max_distance,
+                        layer_mask,
+                        &mut raw,
+                    )
+                };
+                (code == 1).then_some(RaycastHit {
+                    entity: raw.entity,
+                    distance: raw.distance,
+                    point: raw.point,
+                    normal: raw.normal,
+                    is_trigger: raw.is_trigger != 0,
+                })
+            }
         }
     }
 
@@ -821,6 +889,89 @@ mod tests {
         assert!(!api.load_scene("assets/scenes/second.scene.json", false));
         assert!(!api.unload_scene());
         assert_eq!(api.scene_generation(), 0);
+    }
+
+    /// #522：host 后端直接用引擎的纯几何查询（不需要 ABI）。
+    #[cfg(feature = "host")]
+    #[test]
+    fn host_backend_raycasts_against_colliders() {
+        let mut world = World::new();
+        let entity = world.spawn();
+        world.insert(entity, prism_scene::components::Collider::default());
+        world.insert(
+            entity,
+            prism_scene::components::LocalToWorld(glam::Mat4::IDENTITY),
+        );
+
+        let api = GameWorld::host(&mut world);
+        let hit = api
+            .raycast([0.0, 0.0, 5.0], [0.0, 0.0, -1.0], 10.0, u32::MAX)
+            .expect("the default box must be hit");
+        assert_eq!(hit.entity, handle_from_entity(entity));
+        assert!((hit.distance - 4.5).abs() < 1e-5);
+        assert_eq!(hit.normal, [0.0, 0.0, 1.0]);
+        assert!(!hit.is_trigger);
+
+        // 朝反方向射不中。
+        assert!(api
+            .raycast([0.0, 0.0, -5.0], [0.0, 0.0, -1.0], 10.0, u32::MAX)
+            .is_none());
+    }
+
+    /// #522：plugin 后端把查询转发给宿主；宿主没注入实现时返回 `None`。
+    #[cfg(feature = "plugin")]
+    #[test]
+    fn plugin_backend_forwards_raycast_to_the_host() {
+        fn fake_raycast(
+            _world: &World,
+            origin: [f32; 3],
+            _direction: [f32; 3],
+            _max_distance: f32,
+            layer_mask: u32,
+        ) -> Option<prism_runtime_host::RaycastResult> {
+            if layer_mask == 0 {
+                return None;
+            }
+            Some(prism_runtime_host::RaycastResult {
+                entity: prism_ecs::Entity::from_raw(7, 2),
+                distance: 1.5,
+                point: origin,
+                normal: [0.0, 1.0, 0.0],
+                is_trigger: true,
+            })
+        }
+
+        let mut world = World::new();
+        let mut components = prism_scene::ComponentRegistry::new();
+        prism_scene::register_builtin_components(&mut components);
+
+        let mut commands = prism_runtime_host::WorldCommands::new(&mut world, &components, 1)
+            .with_raycast(fake_raycast);
+        let host = commands.api();
+        assert_ne!(host.capabilities & prism_project_api::HOST_CAP_PHYSICS, 0);
+        let api = GameWorld::plugin(&host, components.type_registry());
+        let hit = api
+            .raycast([1.0, 2.0, 3.0], [0.0, 0.0, -1.0], 10.0, 1)
+            .expect("the fake host always hits");
+        assert_eq!(
+            hit.entity,
+            EntityHandle {
+                id: 7,
+                generation: 2
+            }
+        );
+        assert_eq!(hit.distance, 1.5);
+        assert_eq!(hit.point, [1.0, 2.0, 3.0]);
+        assert_eq!(hit.normal, [0.0, 1.0, 0.0]);
+        assert!(hit.is_trigger);
+
+        // 宿主没声明能力位时不要调用回调。
+        let mut plain = prism_runtime_host::WorldCommands::new(&mut world, &components, 1);
+        let host = plain.api();
+        let api = GameWorld::plugin(&host, components.type_registry());
+        assert!(api
+            .raycast([0.0; 3], [0.0, 0.0, -1.0], 10.0, u32::MAX)
+            .is_none());
     }
 
     /// 插件后端通过 `HOST_CAP_ASSET` 读松散资产，签名与 host 后端一致。

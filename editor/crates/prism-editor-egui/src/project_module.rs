@@ -24,8 +24,8 @@ use prism_engine::input::InputManager;
 
 use crate::diagnostics::{diagnostics_from_cargo, Diagnostic};
 use prism_runtime_host::{
-    AssetIo, InputSnapshot, ProjectModule, ProjectSession, SceneRequest, UiQuad as HostUiQuad,
-    WorldCommands,
+    AssetIo, InputSnapshot, ProjectModule, ProjectSession, RaycastResult, SceneRequest,
+    UiQuad as HostUiQuad, WorldCommands,
 };
 use prism_scene::ComponentRegistry;
 
@@ -335,7 +335,8 @@ impl ProjectModuleDriver {
 
         let mut commands = WorldCommands::new(world, &self.components, scene_generation)
             .with_assets(&self.assets)
-            .with_scene_switch();
+            .with_scene_switch()
+            .with_raycast(engine_raycast);
         // 项目代码可以调 `GameWorld::save_scene_state()`（#484）；引擎在这里，
         // runtime-host 只持有函数指针。
         commands = commands.with_scene_state(
@@ -559,6 +560,27 @@ impl ProjectModuleDriver {
 /// `GameWorld::input()` 读的是同一份实现（#589），两边不会漂移。
 fn input_snapshot(input: &InputManager, screen: [f32; 2]) -> InputSnapshot {
     prism_engine::input::input_snapshot(input, screen)
+}
+
+/// 把项目模块的射线查询接到引擎的纯几何实现（#522）。
+///
+/// runtime-host 不依赖引擎，只收函数指针；编辑器是宿主，所以在这里做适配。
+fn engine_raycast(
+    world: &prism_engine::ecs::World,
+    origin: [f32; 3],
+    direction: [f32; 3],
+    max_distance: f32,
+    layer_mask: u32,
+) -> Option<RaycastResult> {
+    prism_engine::physics::raycast(world, origin, direction, max_distance, layer_mask).map(|hit| {
+        RaycastResult {
+            entity: hit.entity,
+            distance: hit.distance,
+            point: hit.point,
+            normal: hit.normal,
+            is_trigger: hit.is_trigger,
+        }
+    })
 }
 
 /// 项目模块提交的四边形 → 引擎的 `ExternalUiQuads`。
