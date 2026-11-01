@@ -132,6 +132,34 @@ fn frame_count_is_derived_from_the_texture_width() {
 }
 
 #[test]
+fn one_shot_restarts_when_playing_is_re_enabled() {
+    let mut world = World::new();
+    let entity = spawn(
+        &mut world,
+        SpriteAnimation {
+            frames: 3,
+            fps: 10.0,
+            looped: false,
+            ..SpriteAnimation::default()
+        },
+        [48, 16],
+    );
+
+    sprite_animation_system(&mut world, 5.0);
+    assert_eq!(frame_of(&world, entity), 2, "一次性动画停在末帧");
+
+    world.get_mut::<SpriteAnimation>(entity).unwrap().playing = false;
+    sprite_animation_system(&mut world, 5.0);
+    assert_eq!(frame_of(&world, entity), 2, "暂停时保持当前帧");
+
+    world.get_mut::<SpriteAnimation>(entity).unwrap().playing = true;
+    sprite_animation_system(&mut world, 0.05);
+    assert_eq!(frame_of(&world, entity), 0, "重新播放从第 0 帧开始");
+    sprite_animation_system(&mut world, 0.1);
+    assert_eq!(frame_of(&world, entity), 1);
+}
+
+#[test]
 fn phase_offsets_the_start_frame() {
     let mut world = World::new();
     let entity = spawn(

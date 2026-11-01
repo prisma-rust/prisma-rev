@@ -19,10 +19,19 @@ use crate::scene::components::{
     KeyframeAnimation, LocalTransform, SpriteAnimation, SpriteRef, SpriteRenderer,
 };
 
-/// 全局动画时钟（秒）。系统在首个 tick 自动创建。
-#[derive(Debug, Default, Clone, Copy)]
-pub struct SpriteAnimationClock {
-    pub elapsed: f32,
+/// 单个精灵的播放头（秒）。运行时组件，**不写进** `.scene.json`。
+///
+/// 1. 每个实体有自己的起点，不再用「进程启动以来的全局时间」；
+/// 2. `playing` 从 `false` 变 `true` 时重置为 0，所以一次性动画可以重播；
+/// 3. `was_playing` 只用来检测这次 false→true 的边沿，暂停期间保留当前帧。
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct SpriteAnimationState {
+    /// 已播放的时间（不含 `phase`）。
+    pub time: f32,
+    /// 上一帧的 `SpriteAnimation.playing`，用于检测重播边沿。
+    pub was_playing: bool,
+    /// 是否已经初始化过：首次观察到实体时不要误判成「重播」。
+    pub initialized: bool,
 }
 
 /// 每帧推进所有精灵动画。
@@ -30,38 +39,67 @@ pub struct SpriteAnimationClock {
 /// 帧数优先级：`SpriteAnimation.frames`（>0）→ 纹理宽度 / 单帧宽度
 /// → 1（无法确定时静止在第一帧）。
 pub fn sprite_animation_system(world: &mut World, dt: f32) {
-    let mut clock = world
-        .remove_resource::<SpriteAnimationClock>()
-        .unwrap_or_default();
-    clock.elapsed += dt;
-
-    // 先收集，避免同时借用世界与可变组件。
-    let updates: Vec<(prism_ecs::Entity, u32)> = world
+    let dt = if dt.is_finite() { dt.max(0.0) } else { 0.0 };
+    let entities: Vec<prism_ecs::Entity> = world
         .query3::<SpriteRenderer, SpriteAnimation, SpriteRef>()
-        .filter(|(_, _, animation, _)| animation.playing && animation.fps > 0.0)
-        .filter_map(|(entity, sprite, animation, sprite_ref)| {
-            let total = total_frames(animation, sprite, sprite_ref.size);
-            if total <= 1 {
-                return None;
-            }
-            let t = (clock.elapsed + animation.phase).max(0.0) * animation.fps;
-            let raw = t as u32;
-            let index = if animation.looped {
-                raw % total
-            } else {
-                raw.min(total - 1)
-            };
-            Some((entity, index))
-        })
+        .filter(|(_, _, animation, _)| animation.fps > 0.0)
+        .map(|(entity, _, _, _)| entity)
         .collect();
 
-    for (entity, index) in updates {
+    for entity in entities {
+        let Some(animation) = world.get::<SpriteAnimation>(entity).cloned() else {
+            continue;
+        };
+        let total = {
+            let Some(sprite) = world.get::<SpriteRenderer>(entity) else {
+                continue;
+            };
+            let Some(sprite_ref) = world.get::<SpriteRef>(entity) else {
+                continue;
+            };
+            total_frames(&animation, sprite, sprite_ref.size)
+        };
+        if total <= 1 {
+            continue;
+        }
+
+        let mut state = world
+            .remove::<SpriteAnimationState>(entity)
+            .unwrap_or_default();
+        if !state.initialized {
+            state.initialized = true;
+            state.was_playing = animation.playing;
+        }
+        if animation.playing {
+            // 一次性动画 / 手动暂停后重新播放：从第 0 帧开始。
+            if !state.was_playing {
+                state.time = 0.0;
+            }
+            state.time += dt;
+            state.was_playing = true;
+        } else {
+            // 暂停时保留播放头；下一次 playing=true 会重置。
+            state.was_playing = false;
+        }
+
+        let duration = total as f32 / animation.fps;
+        let raw_time = if animation.looped {
+            state.time
+        } else {
+            state.time.min(duration)
+        };
+        let raw = (raw_time + animation.phase).max(0.0) * animation.fps;
+        let index = if animation.looped {
+            raw as u32 % total
+        } else {
+            raw.min(total - 1) as u32
+        };
+
+        world.insert(entity, state);
         if let Some(sprite) = world.get_mut::<SpriteRenderer>(entity) {
             sprite.frame_index = index;
         }
     }
-
-    world.insert_resource(clock);
 }
 
 /// 动画总帧数（至少 1）。
