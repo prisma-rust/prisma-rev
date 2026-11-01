@@ -531,6 +531,15 @@ impl EditorApp {
             pending_input: std::collections::VecDeque::new(),
         };
 
+        // 上次退出时留下的未保存快照（#619）：有就弹 Recover / Discard。
+        app.state.pending_recovery = match app.workspace.recovery_pending() {
+            Ok(count) => count,
+            Err(error) => {
+                log::warn!("failed to read editor recovery snapshot: {error:#}");
+                0
+            }
+        };
+
         // Preferences 的日志上限在启动时生效，而不是等用户再拖一次滑条。
         app.workspace
             .log
@@ -4646,6 +4655,64 @@ impl EditorApp {
         }
     }
 
+    /// 上次退出后留下的未保存快照（#619）：Recover 读回为 dirty 文档，Discard 删除。
+    fn recovery_dialog(&mut self, ctx: &egui::Context) {
+        let count = self.state.pending_recovery;
+        if count == 0 {
+            return;
+        }
+        let mut recover = None;
+        egui::Window::new("Unsaved Changes Recovered")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "{count} document(s) from the previous session were not saved."
+                ));
+                ui.label(
+                    egui::RichText::new(
+                        "Recover them as unsaved documents, or discard the snapshot?",
+                    )
+                    .weak(),
+                );
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Recover").clicked() {
+                        recover = Some(true);
+                    }
+                    if ui.button("Discard").clicked() {
+                        recover = Some(false);
+                    }
+                });
+            });
+
+        match recover {
+            Some(true) => match self.workspace.recover_unsaved() {
+                Ok(count) => {
+                    self.state.pending_recovery = 0;
+                    self.state.status = format!("recovered {count} unsaved document(s)");
+                    // 让引擎按恢复后的文档重新加载。
+                    self.doc_hash = 0;
+                    self.mark_scene_dirty();
+                }
+                Err(error) => {
+                    self.state.status = format!("recover failed: {error}");
+                }
+            },
+            Some(false) => match self.workspace.discard_recovery() {
+                Ok(()) => {
+                    self.state.pending_recovery = 0;
+                    self.state.status = "discarded the recovery snapshot".to_string();
+                }
+                Err(error) => {
+                    self.state.status = format!("discard failed: {error}");
+                }
+            },
+            None => {}
+        }
+    }
+
     /// 执行未保存关闭对话框的选择（UI 与 `dialog:close:*` 共用，#618）。
     fn apply_close_decision(
         &mut self,
@@ -5202,6 +5269,29 @@ impl EditorApp {
 }
 
 impl App for EditorApp {
+    /// egui-ash 在 winit `CloseRequested` 里已经先 `event_loop.exit()` 了，app 的
+    /// `ui` 可能来不及看到 `close_requested`。`LoopExiting` 是事件循环结束前
+    /// 唯一还能访问 app 的钩子：在这里把 dirty 文档落成恢复快照（#619）。
+    fn handle_event(&mut self, event: egui_ash::event::Event<'_>) {
+        let egui_ash::event::Event::AppEvent {
+            event: egui_ash::event::AppEvent::LoopExiting,
+        } = event
+        else {
+            return;
+        };
+        // 控制通道的 quit 是故意跳过确认的（自动化需要确定性退出），不制造快照。
+        if self.force_quit {
+            return;
+        }
+        match self.workspace.write_recovery() {
+            Ok(0) => {}
+            Ok(count) => {
+                log::warn!("wrote recovery snapshot for {count} unsaved document(s) before exit")
+            }
+            Err(error) => log::error!("failed to write recovery snapshot: {error:#}"),
+        }
+    }
+
     fn ui(&mut self, ctx: &egui::Context) {
         self.frame_count += 1;
         self.state.build_running = self.build_job_running();
@@ -5365,6 +5455,7 @@ impl App for EditorApp {
         self.confirm_dialog(ctx);
         self.close_confirm_dialog(ctx);
         self.save_conflict_dialog(ctx);
+        self.recovery_dialog(ctx);
         panels::doc_delete_confirm(ctx, &mut self.workspace, &mut self.state);
 
         let mut about = self.state.about_open;

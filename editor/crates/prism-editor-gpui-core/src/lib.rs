@@ -28,6 +28,7 @@ pub mod logbuf;
 pub mod manifest;
 pub mod palette;
 pub mod project;
+pub mod recovery;
 pub mod render_graph;
 pub mod schema;
 pub mod settings;
@@ -55,6 +56,7 @@ pub use keys::{
 pub use logbuf::{LogBuffer, LogFilter, LogLevel, LogLine, LogSource, LOG_ROW_HEIGHT};
 pub use manifest::{doc_relative_path, SceneEntry, SceneManifest};
 pub use project::{find_project_root, scan_documents, ProjectFile};
+pub use recovery::{RecoveredDocument, RECOVERY_DIR, RECOVERY_FILE};
 pub use schema::{
     component_value_with_overrides, get_at, set_at_path, EntityPreset, FieldSchema, FieldWidget,
     PropertyAttribute, PropertyDrawer, Schema, TypeSchema,
