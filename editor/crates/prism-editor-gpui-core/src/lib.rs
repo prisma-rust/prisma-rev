@@ -48,7 +48,10 @@ pub use dock::{
     DockDirection, DockEdge, DockLayout, DockNode, DockZone, FloatPanel, LAYOUT_PRESETS,
 };
 pub use i18n::{I18n, Locale};
-pub use keys::{command_for, Command, KeyChord, SHORTCUTS, SHORTCUT_ALIASES};
+pub use keys::{
+    command_for, conflicting_command, default_keys, effective_bindings, effective_keys, Command,
+    KeyChord, SHORTCUTS, SHORTCUT_ALIASES,
+};
 pub use logbuf::{LogBuffer, LogFilter, LogLevel, LogLine, LogSource, LOG_ROW_HEIGHT};
 pub use manifest::{doc_relative_path, SceneEntry, SceneManifest};
 pub use project::{find_project_root, scan_documents, ProjectFile};

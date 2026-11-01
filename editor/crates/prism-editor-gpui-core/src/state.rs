@@ -27,6 +27,8 @@ pub struct Preferences {
     /// 松散资产变化后自动重打场景包（#495）。默认开：改贴图 / HDR / 网格后
     /// 不用退出 Play 就能看到；关掉可以避免频繁重打包。
     pub hot_reload_assets: bool,
+    /// 快捷键覆盖：`Command::id()` → 键位（`"Ctrl+Shift+S"`）；空 = 默认表（#421）。
+    pub shortcut_overrides: BTreeMap<String, String>,
     pub max_log_lines: f32,
     pub locale_auto: bool,
 }
@@ -38,6 +40,7 @@ impl Default for Preferences {
             confirm_delete: true,
             compact: false,
             hot_reload_assets: true,
+            shortcut_overrides: BTreeMap::new(),
             max_log_lines: 5000.0,
             locale_auto: true,
         }

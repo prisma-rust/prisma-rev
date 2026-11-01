@@ -231,6 +231,13 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
 `Ctrl+I` = 反选，
 `W/E/R` = 移动 / 旋转 / 缩放，`X` 世界/局部，`G` 网格，`S` 天空盒，`F` 框住全部，`Del` 删除。
 
+**可重绑快捷键（#421）**：`Help → Shortcuts` 面板里**点一下键位**再按新组合键即可改绑
+（Esc / Cancel 取消，行尾 `Reset` 恢复单条，顶部 `Reset all` 清空全部）。捕获期间
+`handle_shortcuts` 整体让路，按键不会顺带触发命令；与其它命令冲突时拒绝改动并在面板
+里提示占用的命令。覆盖表存在 `Preferences::shortcut_overrides`（随编辑器状态
+`target/editor-egui/state.json` 持久化，键是 `Command::id()`），菜单提示与实际分发
+读的是同一张 `effective_bindings` 表，覆盖后旧的别名键位不再生效。
+
 命名布局存在 `target/editor-egui/layouts.json`（`{name: {version,dock,floating}}`），
 可以整份导出/导入成 JSON 文件（与 Web 的 `prisma-editor.dock.v4` 同形）。
 

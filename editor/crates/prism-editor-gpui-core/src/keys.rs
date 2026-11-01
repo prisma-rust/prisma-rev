@@ -3,6 +3,8 @@
 //! 所有菜单项都对应一个 `Command`；`SHORTCUTS` 是「命令 → 默认键位」的单一事实源，
 //! 菜单里显示的提示与按键分发用的是同一张表。
 
+use std::collections::BTreeMap;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Command {
     // 文件
@@ -475,6 +477,59 @@ pub fn command_for(event: &KeyChord) -> Option<Command> {
         .map(|entry| entry.command)
 }
 
+/// 命令的默认键位（[`SHORTCUTS`] 里那条）。
+pub fn default_keys(command: Command) -> Option<&'static str> {
+    SHORTCUTS
+        .iter()
+        .find(|entry| entry.command == command)
+        .map(|entry| entry.keys)
+}
+
+/// 命令当前生效的键位：用户覆盖优先，其次默认值。
+pub fn effective_keys(command: Command, overrides: &BTreeMap<String, String>) -> Option<String> {
+    overrides
+        .get(command.id())
+        .cloned()
+        .or_else(|| default_keys(command).map(str::to_string))
+}
+
+/// 当前生效的全部绑定（主键 + 别名）。
+///
+/// 被用户覆盖过的命令**不再使用旧别名**：一个命令只留一个键位，否则改键之后
+/// 旧键仍然生效，界面和实际行为对不上。
+pub fn effective_bindings(overrides: &BTreeMap<String, String>) -> Vec<(Command, KeyChord)> {
+    let mut out = Vec::new();
+    for entry in SHORTCUTS {
+        if let Some(chord) = effective_keys(entry.command, overrides)
+            .as_deref()
+            .and_then(KeyChord::parse)
+        {
+            out.push((entry.command, chord));
+        }
+    }
+    for entry in SHORTCUT_ALIASES {
+        if overrides.contains_key(entry.command.id()) {
+            continue;
+        }
+        if let Some(chord) = KeyChord::parse(entry.keys) {
+            out.push((entry.command, chord));
+        }
+    }
+    out
+}
+
+/// 把 `chord` 绑给 `command` 是否与别的命令冲突（返回占用者）。
+pub fn conflicting_command(
+    overrides: &BTreeMap<String, String>,
+    command: Command,
+    chord: &KeyChord,
+) -> Option<Command> {
+    effective_bindings(overrides)
+        .into_iter()
+        .find(|(other, existing)| *other != command && existing.matches(chord))
+        .map(|(other, _)| other)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,6 +585,59 @@ mod tests {
             assert!(!command.label_key().is_empty());
             assert!(!command.id().is_empty());
         }
+    }
+
+    #[test]
+    fn overrides_replace_default_keys_and_drop_the_old_alias() {
+        // #421：改键后旧键不再生效；别名也不该继续触发同一个命令。
+        let mut overrides = BTreeMap::new();
+        overrides.insert(Command::Play.id().to_string(), "Ctrl+Shift+P".to_string());
+        assert_eq!(
+            effective_keys(Command::Play, &overrides).as_deref(),
+            Some("Ctrl+Shift+P")
+        );
+        assert_eq!(
+            effective_keys(Command::Save, &overrides).as_deref(),
+            Some("Ctrl+S")
+        );
+        let bindings = effective_bindings(&overrides);
+        assert!(bindings.iter().any(|(command, chord)| {
+            *command == Command::Play && chord.matches(&KeyChord::parse("Ctrl+Shift+P").unwrap())
+        }));
+
+        let mut overrides = BTreeMap::new();
+        overrides.insert(Command::Redo.id().to_string(), "Ctrl+Alt+Z".to_string());
+        let bindings = effective_bindings(&overrides);
+        assert!(
+            !bindings.iter().any(|(command, chord)| {
+                *command == Command::Redo && chord.matches(&KeyChord::parse("Ctrl+Y").unwrap())
+            }),
+            "覆盖后 Ctrl+Y 这个别名必须失效"
+        );
+        assert!(bindings.iter().any(|(command, chord)| {
+            *command == Command::Redo && chord.matches(&KeyChord::parse("Ctrl+Alt+Z").unwrap())
+        }));
+    }
+
+    #[test]
+    fn conflicts_are_reported_against_the_effective_table() {
+        let overrides = BTreeMap::new();
+        let save = KeyChord::parse("Ctrl+S").unwrap();
+        assert_eq!(
+            conflicting_command(&overrides, Command::Play, &save),
+            Some(Command::Save)
+        );
+        // 绑回自己原来的键不算冲突。
+        assert_eq!(conflicting_command(&overrides, Command::Save, &save), None);
+
+        // 覆盖表参与判断：把 Play 改成 Ctrl+Shift+P 后，别的命令不能再占它。
+        let mut overrides = BTreeMap::new();
+        overrides.insert(Command::Play.id().to_string(), "Ctrl+Shift+P".to_string());
+        let chord = KeyChord::parse("Ctrl+Shift+P").unwrap();
+        assert_eq!(
+            conflicting_command(&overrides, Command::Save, &chord),
+            Some(Command::Play)
+        );
     }
 
     #[test]

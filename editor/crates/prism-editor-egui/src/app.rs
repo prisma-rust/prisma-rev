@@ -12,10 +12,7 @@ use egui::{Align, Color32, CursorIcon, Layout, Rect, RichText, Sense, Stroke, Ve
 use egui_ash::{App, CreationContext, ExitSignal, HandleRedraw};
 
 use prism_editor_core::dock::split_side_length;
-use prism_editor_core::{
-    Command, DockDirection, DockNode, KeyChord, Locale, Preferences, Workspace, SHORTCUTS,
-    SHORTCUT_ALIASES,
-};
+use prism_editor_core::{Command, DockDirection, DockNode, Locale, Preferences, Workspace};
 use serde_json::json;
 
 use crate::engine_host::ViewKind;
@@ -182,27 +179,28 @@ fn dock_zone(rect: Rect, pos: egui::Pos2) -> prism_editor_core::dock::DockZone {
 /// 所以不会出现「面板写 Ctrl+Shift+S，按下却触发 Save」这种漂移。
 ///
 /// 顺序按修饰键数量从多到少：带 Shift/Alt 的 chord 必须先于它的子集被消费。
-fn editor_shortcuts() -> Vec<(egui::KeyboardShortcut, Command)> {
+fn editor_shortcuts(
+    overrides: &std::collections::BTreeMap<String, String>,
+) -> Vec<(egui::KeyboardShortcut, Command)> {
     use egui::{KeyboardShortcut, Modifiers};
-    let mut shortcuts: Vec<(KeyboardShortcut, Command)> = SHORTCUTS
-        .iter()
-        .chain(SHORTCUT_ALIASES.iter())
-        .filter_map(|entry| {
-            let chord = KeyChord::parse(entry.keys)?;
-            let key = key_for(&chord.key)?;
-            let mut modifiers = Modifiers::NONE;
-            if chord.ctrl {
-                modifiers |= Modifiers::CTRL;
-            }
-            if chord.shift {
-                modifiers |= Modifiers::SHIFT;
-            }
-            if chord.alt {
-                modifiers |= Modifiers::ALT;
-            }
-            Some((KeyboardShortcut::new(modifiers, key), entry.command))
-        })
-        .collect();
+    let mut shortcuts: Vec<(KeyboardShortcut, Command)> =
+        prism_editor_core::effective_bindings(overrides)
+            .into_iter()
+            .filter_map(|(command, chord)| {
+                let key = key_for(&chord.key)?;
+                let mut modifiers = Modifiers::NONE;
+                if chord.ctrl {
+                    modifiers |= Modifiers::CTRL;
+                }
+                if chord.shift {
+                    modifiers |= Modifiers::SHIFT;
+                }
+                if chord.alt {
+                    modifiers |= Modifiers::ALT;
+                }
+                Some((KeyboardShortcut::new(modifiers, key), command))
+            })
+            .collect();
     shortcuts.sort_by_key(|(shortcut, _)| {
         std::cmp::Reverse(
             u8::from(shortcut.modifiers.ctrl)
@@ -4200,7 +4198,7 @@ impl EditorApp {
                     self.start_build(kind);
                 }
             }
-            "shortcuts" => panels::shortcuts(ui),
+            "shortcuts" => panels::shortcuts(ui, &mut self.preferences, &mut self.state),
             "about" => panels::about(ui),
             other => {
                 ui.label(RichText::new(format!("panel '{other}' not implemented")).weak());
@@ -4681,6 +4679,13 @@ impl EditorApp {
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         use egui::{Key, KeyboardShortcut, Modifiers};
+        // 改键捕获期间按键属于 Shortcuts 面板：不要触发任何命令（#421）。
+        if self.state.shortcut_capture.is_some() {
+            if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+                self.state.shortcut_capture = None;
+            }
+            return;
+        }
         // Ctrl+K：全局搜索（Unity 的习惯；Ctrl+P 已经是 Play）。
         if ctx.input_mut(|input| {
             input.consume_shortcut(&KeyboardShortcut::new(Modifiers::CTRL, Key::K))
@@ -4698,7 +4703,7 @@ impl EditorApp {
         {
             return;
         }
-        let shortcuts = editor_shortcuts();
+        let shortcuts = editor_shortcuts(&self.preferences.shortcut_overrides);
 
         let wants_keyboard = ctx.memory(|memory| memory.focused()).is_some();
         // W / E / R 工具、X 世界/局部、G 网格（文本输入时不抢键）。
@@ -5338,8 +5343,13 @@ impl App for EditorApp {
         self.state.about_open = about;
 
         let mut shortcuts = self.state.shortcuts_open;
-        panels::boolean_window(ctx, &mut shortcuts, "Shortcuts", panels::shortcuts);
+        panels::boolean_window(ctx, &mut shortcuts, "Shortcuts", |ui| {
+            panels::shortcuts(ui, &mut self.preferences, &mut self.state);
+        });
         self.state.shortcuts_open = shortcuts;
+        if !self.state.shortcuts_open {
+            self.state.shortcut_capture = None;
+        }
 
         // 关闭窗口 = 退出（与游戏窗口一致的行为）；有未保存改动时先拦截。
         if ctx.input(|input| input.viewport().close_requested()) {
@@ -5568,6 +5578,7 @@ fn read_report(root: Option<&Path>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use prism_editor_core::{KeyChord, SHORTCUTS, SHORTCUT_ALIASES};
 
     #[test]
     fn the_scene_overlay_stays_inside_the_viewport() {
@@ -5591,6 +5602,28 @@ mod tests {
         Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(400.0, 300.0))
     }
 
+    #[test]
+    fn shortcut_overrides_change_the_consumed_binding() {
+        // #421：改键后分发用的是覆盖表，不是 `SHORTCUTS` 的默认值。
+        let mut overrides = std::collections::BTreeMap::new();
+        overrides.insert(Command::Play.id().to_string(), "Ctrl+Shift+P".to_string());
+        let table = editor_shortcuts(&overrides);
+        let (play, _) = table
+            .iter()
+            .find(|(_, command)| *command == Command::Play)
+            .expect("play binding");
+        assert_eq!(play.logical_key, egui::Key::P);
+        assert!(play.modifiers.ctrl && play.modifiers.shift);
+        // 默认的 Ctrl+P 不再绑 Play。
+        assert!(!table.iter().any(|(shortcut, command)| {
+            *command == Command::Play
+                && shortcut.logical_key == egui::Key::P
+                && shortcut.modifiers == egui::Modifiers::CTRL
+        }));
+        // 其它命令不受影响。
+        assert!(table.iter().any(|(_, command)| *command == Command::Save));
+    }
+
     /// #516：表里的每一条都必须能翻译成 egui 的键位，否则面板写着却按不出来。
     #[test]
     fn every_listed_shortcut_maps_to_a_key() {
@@ -5605,7 +5638,7 @@ mod tests {
             );
         }
         assert_eq!(
-            editor_shortcuts().len(),
+            editor_shortcuts(&Default::default()).len(),
             SHORTCUTS.len() + SHORTCUT_ALIASES.len(),
             "分发表应当覆盖整张表（含别名）"
         );
@@ -5614,7 +5647,7 @@ mod tests {
     /// #516：带 Shift / Alt 的 chord 必须先于它的子集被消费，且基键不能被它抢走。
     #[test]
     fn shifted_chords_do_not_fall_back_to_their_base_key() {
-        let table = editor_shortcuts();
+        let table = editor_shortcuts(&Default::default());
         // 修饰键多的排在前面。
         for pair in table.windows(2) {
             let modifiers = |shortcut: &egui::KeyboardShortcut| {
@@ -5680,7 +5713,7 @@ mod tests {
     /// #516：表里列出的命令必须真的能触发（Stop / Frame All / Save As 曾经只是「写了」）。
     #[test]
     fn every_table_command_is_dispatched() {
-        let table = editor_shortcuts();
+        let table = editor_shortcuts(&Default::default());
         for entry in SHORTCUTS {
             assert!(
                 table.iter().any(|(_, command)| *command == entry.command),
@@ -5704,7 +5737,7 @@ mod tests {
     /// #499：`Select All` 必须带 Ctrl，裸 `A` 不再绑任何命令。
     #[test]
     fn select_all_is_ctrl_a() {
-        let table = editor_shortcuts();
+        let table = editor_shortcuts(&Default::default());
         let (shortcut, _) = table
             .iter()
             .find(|(_, command)| *command == Command::SelectAll)

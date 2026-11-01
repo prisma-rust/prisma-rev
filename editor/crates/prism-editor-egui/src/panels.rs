@@ -257,6 +257,8 @@ pub struct UiState {
     pub tilemap_palette: u32,
     /// Scene 视图左上角的浮层工具条是否折叠（#421）。
     pub scene_overlay_collapsed: bool,
+    /// 快捷键改键：正在等待用户按键的命令（#421）。
+    pub shortcut_capture: Option<prism_editor_core::Command>,
     /// Project 面板的列表 / 网格视图（#419）。
     pub asset_view: AssetView,
     /// Project 面板的一列 / 两列（左目录树 + 右内容，#419）。
@@ -5559,21 +5561,143 @@ pub fn build(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
     );
 }
 
-pub fn shortcuts(ui: &mut Ui) {
+/// 快捷键面板（#421）：点键位 → 按新键改绑；冲突 / Esc / Cancel 都给出明确反馈。
+pub fn shortcuts(ui: &mut Ui, preferences: &mut Preferences, state: &mut UiState) {
+    ui.horizontal_wrapped(|ui| {
+        ui.label(
+            RichText::new("Click a key to rebind it. Esc cancels; Reset restores the default.")
+                .weak()
+                .size(11.0),
+        );
+        if ui.button("Reset all").clicked() {
+            preferences.shortcut_overrides.clear();
+            state.shortcut_capture = None;
+            state.status = "shortcuts reset to defaults".to_string();
+        }
+    });
+
+    if let Some(command) = state.shortcut_capture {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(format!("Press a new key for {command:?}"))
+                    .strong()
+                    .color(Color32::from_rgb(255, 180, 80)),
+            );
+            if ui.small_button("Cancel").clicked() {
+                state.shortcut_capture = None;
+            }
+        });
+        if let Some(captured) = captured_shortcut(ui) {
+            match captured {
+                CapturedShortcut::Cancel => state.shortcut_capture = None,
+                CapturedShortcut::Bound(keys) => match prism_editor_core::KeyChord::parse(&keys) {
+                    Some(chord) => {
+                        match prism_editor_core::conflicting_command(
+                            &preferences.shortcut_overrides,
+                            command,
+                            &chord,
+                        ) {
+                            Some(other) => {
+                                state.status = format!("{keys} is already bound to {other:?}");
+                            }
+                            None => {
+                                preferences
+                                    .shortcut_overrides
+                                    .insert(command.id().to_string(), keys.clone());
+                                state.status = format!("bound {command:?} to {keys}");
+                                state.shortcut_capture = None;
+                            }
+                        }
+                    }
+                    None => state.status = format!("cannot bind {keys}"),
+                },
+            }
+        }
+        ui.separator();
+    }
+
     egui::ScrollArea::vertical()
         .id_salt("shortcuts-scroll")
         .show(ui, |ui| {
             egui::Grid::new("shortcuts-grid")
-                .num_columns(2)
+                .num_columns(3)
                 .striped(true)
                 .show(ui, |ui| {
                     for entry in prism_editor_core::SHORTCUTS {
-                        ui.label(entry.keys);
+                        let capturing = state.shortcut_capture == Some(entry.command);
+                        let overridden = preferences
+                            .shortcut_overrides
+                            .contains_key(entry.command.id());
+                        let keys = prism_editor_core::effective_keys(
+                            entry.command,
+                            &preferences.shortcut_overrides,
+                        )
+                        .unwrap_or_else(|| entry.keys.to_string());
+                        let text = if capturing {
+                            "Press…".to_string()
+                        } else {
+                            keys
+                        };
+                        let mut rich = RichText::new(text);
+                        if overridden || capturing {
+                            rich = rich.strong();
+                        }
+                        if ui
+                            .add(egui::Button::new(rich))
+                            .on_hover_text("Click, then press the new key")
+                            .clicked()
+                        {
+                            state.shortcut_capture = Some(entry.command);
+                        }
                         ui.label(format!("{:?}", entry.command));
+                        if overridden {
+                            if ui.small_button("Reset").clicked() {
+                                preferences.shortcut_overrides.remove(entry.command.id());
+                                if state.shortcut_capture == Some(entry.command) {
+                                    state.shortcut_capture = None;
+                                }
+                            }
+                        } else {
+                            ui.label("");
+                        }
                         ui.end_row();
                     }
                 });
         });
+}
+
+/// 改键捕获到的一次按键。
+enum CapturedShortcut {
+    Cancel,
+    Bound(String),
+}
+
+/// 从这一帧的输入里取第一个按下的键（忽略按住重复）。
+fn captured_shortcut(ui: &Ui) -> Option<CapturedShortcut> {
+    ui.input(|input| {
+        input.events.iter().find_map(|event| match event {
+            egui::Event::Key {
+                key,
+                pressed: true,
+                repeat: false,
+                modifiers,
+                ..
+            } => {
+                if *key == egui::Key::Escape {
+                    Some(CapturedShortcut::Cancel)
+                } else {
+                    let chord = prism_editor_core::KeyChord::from_event(
+                        modifiers.ctrl || modifiers.command,
+                        modifiers.shift,
+                        modifiers.alt,
+                        key.name(),
+                    );
+                    Some(CapturedShortcut::Bound(chord.display()))
+                }
+            }
+            _ => None,
+        })
+    })
 }
 
 pub fn about(ui: &mut Ui) {
@@ -6235,7 +6359,10 @@ mod window_smoke_tests {
         });
         run_frame(|ui, workspace, _state| theme(ui, workspace));
         run_frame(|ui, workspace, state| build(ui, workspace, state));
-        run_frame(|ui, _workspace, _state| shortcuts(ui));
+        run_frame(|ui, _workspace, state| {
+            let mut prefs = Preferences::default();
+            shortcuts(ui, &mut prefs, state);
+        });
         run_frame(|ui, _workspace, _state| about(ui));
         run_frame(|ui, workspace, state| tools(ui, workspace, state));
     }
