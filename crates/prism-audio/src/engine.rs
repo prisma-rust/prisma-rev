@@ -4,10 +4,12 @@ use std::num::NonZeroU32;
 use std::time::Duration;
 
 use firewheel::core::channel_config::{ChannelCount, NonZeroChannelCount};
-use firewheel::core::diff::Notify;
+use firewheel::core::diff::{Notify, ParamPath};
+use firewheel::core::event::{NodeEventType, ParamData};
 use firewheel::core::node::NodeID;
 use firewheel::cpal::{CpalConfig, CpalOutputConfig, CpalStream};
 use firewheel::nodes::sampler::*;
+use firewheel::nodes::volume_pan::VolumePanNode;
 use firewheel::*;
 
 use crate::error::AudioError;
@@ -71,6 +73,13 @@ impl Default for AudioConfig {
 struct ActiveSound {
     handle: PlaybackHandle,
     node_id: NodeID,
+    /// 立体声输出上的音量 / 声像节点；单声道设备为 `None`。
+    ///
+    /// 声像必须在播放中实时更新（#508），所以它不能像旧实现那样在 `play()`
+    /// 时烘焙进采样数据 —— 这里用 Firewheel 的 `VolumePanNode` 做实时 pan。
+    pan_node: Option<NodeID>,
+    /// 最近一次下发给 `pan_node` 的声像，避免每帧重复排队事件。
+    pan: f32,
     /// 本地副本，用于调用 `sync_*_event()`。
     sampler: SamplerNode,
     /// 采样器节点的共享状态，用于观察音频线程真实的播放进度。
@@ -225,6 +234,9 @@ impl AudioEngine {
                 return true;
             }
             let _ = ctx.remove_node(s.node_id);
+            if let Some(pan_id) = s.pan_node {
+                let _ = ctx.remove_node(pan_id);
+            }
             false
         });
 
@@ -304,16 +316,39 @@ impl AudioEngine {
         self.ctx
             .queue_event_for(node_id, SamplerNode::set_dyn_sample_event(resource));
 
+        // 立体声输出上插一个实时音量 / 声像节点（#508）；单声道设备保持旧链路。
+        let pan_node = if self.channels >= 2 {
+            let pan = VolumePanNode::from_pan(0.0);
+            match self.ctx.add_node(pan, None) {
+                Ok(id) => Some(id),
+                Err(e) => {
+                    ::log::error!("Failed to add pan node to graph: {e}");
+                    let _ = self.ctx.remove_node(node_id);
+                    return PlaybackHandle(0);
+                }
+            }
+        } else {
+            None
+        };
+
         // 连接到图形输出。单声道连接 (0, 0)，立体声连接立体声对。
         let out = self.ctx.graph_out_node_id();
-        let res = if self.channels == 1 {
-            self.ctx.connect(node_id, out, &[(0, 0)], false)
-        } else {
-            self.ctx.connect_stereo(node_id, out, false)
+        let res = match pan_node {
+            Some(pan_id) => {
+                // 采样器在立体声设备上始终配置为 STEREO（mono_to_stereo = true）。
+                self.ctx
+                    .connect(node_id, pan_id, &[(0, 0), (1, 1)], false)
+                    .and_then(|_| self.ctx.connect_stereo(pan_id, out, false))
+                    .map(|_| ())
+            }
+            None => self.ctx.connect(node_id, out, &[(0, 0)], false).map(|_| ()),
         };
         if let Err(e) = res {
             ::log::error!("Failed to connect sampler to graph output: {e}");
             let _ = self.ctx.remove_node(node_id);
+            if let Some(pan_id) = pan_node {
+                let _ = self.ctx.remove_node(pan_id);
+            }
             return PlaybackHandle(0);
         }
 
@@ -323,6 +358,8 @@ impl AudioEngine {
         self.active.push(ActiveSound {
             handle: id,
             node_id,
+            pan_node,
+            pan: 0.0,
             sampler,
             state,
             seen_playing: false,
@@ -334,8 +371,11 @@ impl AudioEngine {
     /// 立即停止声音。
     pub fn stop(&mut self, handle: &PlaybackHandle) {
         if let Some(idx) = self.active.iter().position(|s| s.handle == *handle) {
-            let _ = self.ctx.remove_node(self.active[idx].node_id);
-            self.active.swap_remove(idx);
+            let sound = self.active.swap_remove(idx);
+            let _ = self.ctx.remove_node(sound.node_id);
+            if let Some(pan_id) = sound.pan_node {
+                let _ = self.ctx.remove_node(pan_id);
+            }
         }
     }
 
@@ -348,6 +388,32 @@ impl AudioEngine {
         s.sampler.volume = Volume::from_percent(vol * 100.0);
         self.ctx
             .queue_event_for(s.node_id, s.sampler.sync_volume_event());
+    }
+
+    /// 实时设置声像：`-1` 全左、`0` 居中、`+1` 全右。
+    ///
+    /// 立体声设备上通过播放链里的 `VolumePanNode` 平滑生效，不需要重播片段；
+    /// 单声道设备没有左右声道，调用是空操作。非有限值忽略。
+    pub fn set_pan(&mut self, handle: &PlaybackHandle, pan: f32) {
+        if !pan.is_finite() {
+            return;
+        }
+        let pan = pan.clamp(-1.0, 1.0);
+        let Some(s) = self.active.iter_mut().find(|s| s.handle == *handle) else {
+            return;
+        };
+        s.pan = pan;
+        let Some(pan_id) = s.pan_node else {
+            return;
+        };
+        self.ctx.queue_event_for(
+            pan_id,
+            NodeEventType::Param {
+                data: ParamData::F32(pan),
+                // VolumePanNode 字段顺序：volume(0), pan(1), ...
+                path: ParamPath::Single(1),
+            },
+        );
     }
 
     /// 暂停声音（冻结播放位置）。
@@ -502,6 +568,41 @@ mod tests {
         );
         engine.stop(&handle);
         assert_eq!(engine.active_count(), 0);
+    }
+
+    #[test]
+    fn stereo_playback_has_a_realtime_pan_node() {
+        let mut engine = AudioEngine::new(AudioConfig::default()).expect("engine new");
+        let handle = engine.play(&dummy_audio(2));
+        assert!(handle.is_valid());
+        let sound = engine.active.first().expect("active sound");
+        assert!(
+            sound.pan_node.is_some(),
+            "stereo output needs a VolumePanNode"
+        );
+        assert_eq!(sound.pan, 0.0);
+
+        engine.set_pan(&handle, 2.5);
+        assert_eq!(engine.active[0].pan, 1.0, "pan is clamped to [-1, 1]");
+        engine.set_pan(&handle, f32::NAN);
+        assert_eq!(engine.active[0].pan, 1.0, "non-finite pan is ignored");
+        engine.stop(&handle);
+        assert_eq!(engine.active_count(), 0);
+    }
+
+    #[test]
+    fn mono_playback_has_no_pan_node() {
+        let config = AudioConfig {
+            channels: 1,
+            ..Default::default()
+        };
+        let mut engine = AudioEngine::new(config).expect("engine new");
+        let handle = engine.play(&dummy_audio(1));
+        assert!(handle.is_valid());
+        assert!(engine.active[0].pan_node.is_none());
+        engine.set_pan(&handle, 1.0);
+        assert_eq!(engine.active[0].pan, 1.0, "state still records the request");
+        engine.stop(&handle);
     }
 
     #[test]
