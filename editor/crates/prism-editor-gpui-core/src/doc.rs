@@ -5,6 +5,7 @@
 //! 重排、删除、预制体实例化都不会让父子关系漂移。
 
 use crate::components::ComponentMap;
+use crate::schema::Schema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -139,6 +140,40 @@ impl SceneDoc {
 
     pub fn to_json_string(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_default()
+    }
+
+    /// 写盘前去掉 schema 默认值与只读派生字段（#636）。
+    ///
+    /// 编辑器内存里的组件经过 hydration 后会带齐所有默认值；直接序列化会把
+    /// 它们全部写进作者文档，并连带写出 `Camera.aspect` 这种 `read_only`
+    /// 字段。这里按 schema 做「默认值省略」，读取端仍靠 serde/反射默认值补回。
+    ///
+    /// 只处理组件顶层字段：嵌套 struct 里部分改动的对象整体保留，避免破坏
+    /// 没有 `serde(default)` 的嵌套类型。
+    pub fn prune_defaults(&mut self, schema: &Schema) {
+        for entity in &mut self.entities {
+            for (name, value) in entity.components.iter_mut() {
+                let Some(component) = schema.component(name) else {
+                    continue;
+                };
+                let Some(object) = value.as_object_mut() else {
+                    continue;
+                };
+                let defaults = component.default_value();
+                let default_object = defaults.as_object();
+                for field in &component.fields {
+                    if field.read_only {
+                        object.remove(&field.name);
+                        continue;
+                    }
+                    if let Some(default) = default_object.and_then(|map| map.get(&field.name)) {
+                        if object.get(&field.name) == Some(default) {
+                            object.remove(&field.name);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// 给缺失 id 的实体按数组顺序补 id，并把 `parent`（旧文档里可能是下标）
@@ -1103,6 +1138,50 @@ mod tests {
         let round = SceneDoc::from_json_str(&saved).unwrap();
         assert_eq!(round.extra, doc.extra);
         assert_eq!(round.entities[0].extra, doc.entities[0].extra);
+    }
+
+    #[test]
+    fn prune_defaults_removes_defaults_and_read_only_fields() {
+        let schema = Schema::from_value(serde_json::json!({
+            "types": [{
+                "name": "test::Comp",
+                "isComponent": true,
+                "defaultJson": { "a": 1.0, "b": 2.0 },
+                "fields": [
+                    { "name": "a", "kind": "f32" },
+                    { "name": "b", "kind": "f32", "readOnly": true }
+                ]
+            }]
+        }))
+        .unwrap();
+
+        let mut components = ComponentMap::new();
+        components.insert(
+            "test::Comp".to_string(),
+            serde_json::json!({ "a": 1.0, "b": 2.0, "keep": 3 }),
+        );
+        let mut doc = SceneDoc {
+            entities: vec![EntityJson {
+                components,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        doc.prune_defaults(&schema);
+        let value = &doc.entities[0].components["test::Comp"];
+        assert_eq!(value, &serde_json::json!({ "keep": 3 }));
+
+        // 非默认值必须保留。
+        doc.entities[0].components.insert(
+            "test::Comp".to_string(),
+            serde_json::json!({ "a": 5.0, "b": 2.0 }),
+        );
+        doc.prune_defaults(&schema);
+        assert_eq!(
+            doc.entities[0].components["test::Comp"],
+            serde_json::json!({ "a": 5.0 })
+        );
     }
 
     #[test]
