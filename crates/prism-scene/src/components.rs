@@ -313,6 +313,12 @@ pub struct SpriteRenderer {
     pub sorting_layer: i32,
     /// 同层内顺序 = `sortingOrder`。
     pub order_in_layer: i32,
+    /// 源混合因子（默认 `SrcAlpha`，标准 alpha 混合，#610）。
+    pub src_blend: BlendMode,
+    /// 目标混合因子（默认 `OneMinusSrcAlpha`）。
+    pub dst_blend: BlendMode,
+    /// 混合运算（默认 `Add`）；加色辉光用 `SrcAlpha` / `One`。
+    pub blend_op: BlendOp,
 }
 
 impl Default for SpriteRenderer {
@@ -330,6 +336,9 @@ impl Default for SpriteRenderer {
             flip_y: false,
             sorting_layer: 0,
             order_in_layer: 0,
+            src_blend: BlendMode::SrcAlpha,
+            dst_blend: BlendMode::OneMinusSrcAlpha,
+            blend_op: BlendOp::Add,
         }
     }
 }

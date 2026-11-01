@@ -241,6 +241,9 @@ fn sprite_entries(world: &World) -> Vec<(SortKey, prism_render::SpriteDrawItem)>
                     uv_rect: sprite_uv_rect(sprite, sref.size),
                     color: sprite.color,
                     texture: sref.texture_slot,
+                    src_blend: sprite.src_blend,
+                    dst_blend: sprite.dst_blend,
+                    blend_op: sprite.blend_op,
                 },
             )
         })
@@ -290,6 +293,10 @@ fn line_entries(world: &World) -> Vec<(SortKey, prism_render::SpriteDrawItem)> {
                     uv_rect: [0.0, 0.0, 1.0, 1.0],
                     color: line.color,
                     texture: SOLID_TEXTURE,
+                    // 折线没有作者态混合字段：保持标准 alpha 混合。
+                    src_blend: prism_scene::render_enums::BlendMode::SrcAlpha,
+                    dst_blend: prism_scene::render_enums::BlendMode::OneMinusSrcAlpha,
+                    blend_op: prism_scene::render_enums::BlendOp::Add,
                 },
             ));
         }

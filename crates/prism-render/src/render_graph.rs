@@ -435,6 +435,10 @@ pub struct SpriteDrawItem {
     pub color: [f32; 4],
     /// Bindless texture slot.
     pub texture: u32,
+    /// Blend state for this sprite (#610).
+    pub src_blend: prism_gfx::BlendMode,
+    pub dst_blend: prism_gfx::BlendMode,
+    pub blend_op: prism_gfx::BlendOp,
 }
 
 /// Display-referred color grading applied by `PostPass` **after** tonemapping

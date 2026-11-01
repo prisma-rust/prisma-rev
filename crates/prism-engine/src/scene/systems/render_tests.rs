@@ -6,6 +6,7 @@ use super::*;
 use prism_ecs::World;
 use prism_render::managers::MeshHandle;
 use prism_render::DrawState;
+use prism_scene::render_enums::BlendOp;
 use prism_scene::{BlendMode, CullMode, RenderQueue, ShadowCastingMode};
 
 #[test]
@@ -440,6 +441,29 @@ fn explicit_sheet_columns_override_the_texture_derivation() {
 
     let items = scene_sprite_system(&world);
     assert_eq!(items[0].uv_rect, [0.0, 0.5, 0.25, 1.0]);
+}
+
+#[test]
+fn sprite_blend_state_reaches_the_draw_item() {
+    // #610：加色辉光 = SrcAlpha / One，而不是默认的 alpha 混合。
+    let mut world = World::new();
+    spawn_sprite(
+        &mut world,
+        glam::Vec3::ZERO,
+        SpriteRenderer {
+            sprite_path: "glow.png".into(),
+            src_blend: BlendMode::SrcAlpha,
+            dst_blend: BlendMode::One,
+            blend_op: BlendOp::Add,
+            ..SpriteRenderer::default()
+        },
+        [64, 64],
+        0,
+    );
+    let items = scene_sprite_system(&world);
+    assert_eq!(items[0].src_blend, BlendMode::SrcAlpha);
+    assert_eq!(items[0].dst_blend, BlendMode::One);
+    assert_eq!(items[0].blend_op, BlendOp::Add);
 }
 
 #[test]
