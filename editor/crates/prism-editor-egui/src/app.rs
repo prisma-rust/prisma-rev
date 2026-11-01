@@ -4204,6 +4204,7 @@ impl EditorApp {
                     &mut settings,
                     &mut self.state.viewport_scale,
                     &mut paused,
+                    &mut self.state.render_graph_call,
                 ) {
                     self.apply_render_settings(settings);
                 }

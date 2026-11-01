@@ -367,6 +367,8 @@ pub struct UiState {
     pub render_graph_paused: bool,
     /// 暂停时冻结的报告 JSON；`None` = 还没收到第一份报告。
     pub render_graph_frozen: Option<String>,
+    /// Frame Debugger 当前选中的 draw call 下标（#518）。
+    pub render_graph_call: Option<usize>,
 }
 
 /// 关闭前确认的目标：某个文档标签，或整个编辑器窗口。
@@ -4991,6 +4993,7 @@ pub fn render_graph(
     settings: &mut prism_engine::render_settings::RenderSettings,
     viewport_scale: &mut f32,
     paused: &mut bool,
+    selected_call: &mut Option<usize>,
 ) -> bool {
     let mut changed = false;
     ui.heading("Render Settings");
@@ -5152,7 +5155,7 @@ pub fn render_graph(
                 render_graph_timings(ui, parsed);
                 render_graph_history(ui, parsed);
                 render_graph_stats(ui, parsed);
-                render_graph_draw_calls(ui, parsed);
+                render_graph_draw_calls(ui, parsed, paused, selected_call);
             }
             ui.collapsing("Raw JSON", |ui| {
                 egui::ScrollArea::both()
@@ -5182,19 +5185,43 @@ pub fn render_graph(
 fn render_graph_draw_calls(
     ui: &mut Ui,
     report: &prism_editor_core::render_graph::RenderGraphReport,
+    paused: &mut bool,
+    selected: &mut Option<usize>,
 ) {
-    if report.draw_calls.is_empty() {
+    let count = report.draw_calls.len();
+    if count == 0 {
         return;
     }
+    if selected.is_some_and(|index| index >= count) {
+        *selected = Some(count - 1);
+    }
+
     ui.add_space(4.0);
+    let mut step = None;
     ui.horizontal(|ui| {
         ui.label(RichText::new("Draw calls").strong());
-        ui.label(
-            RichText::new(format!("{} recorded", report.draw_calls.len()))
-                .weak()
-                .size(10.0),
-        );
+        ui.label(RichText::new(format!("{count} recorded")).weak().size(10.0));
+        if ui.button("◀ Prev").clicked() {
+            step = Some(-1);
+        }
+        if ui.button("Next ▶").clicked() {
+            step = Some(1);
+        }
+        match *selected {
+            Some(index) => ui.label(
+                RichText::new(format!("call {}/{}", index + 1, count))
+                    .weak()
+                    .size(10.0),
+            ),
+            None => ui.label(RichText::new("no call selected").weak().size(10.0)),
+        };
     });
+    if let Some(delta) = step {
+        *selected = stepped_call(*selected, count, delta);
+        // 单步检查的语义就是「把这一帧固定住」：还没暂停时自动暂停。
+        *paused = true;
+    }
+
     egui::ScrollArea::vertical()
         .id_salt("graph-draw-calls")
         .max_height(160.0)
@@ -5209,12 +5236,18 @@ fn render_graph_draw_calls(
                     ui.label(RichText::new("Tris").weak().size(10.0));
                     ui.label(RichText::new("State").weak().size(10.0));
                     ui.end_row();
-                    for call in &report.draw_calls {
+                    for (index, call) in report.draw_calls.iter().enumerate() {
                         let mut text = RichText::new(call.summary()).size(11.0);
                         if !call.visible {
                             text = text.weak().italics();
                         }
-                        ui.label(text);
+                        if ui
+                            .selectable_label(*selected == Some(index), text)
+                            .clicked()
+                        {
+                            *selected = Some(index);
+                            *paused = true;
+                        }
                         ui.label(RichText::new(call.instances.to_string()).size(11.0));
                         ui.label(RichText::new(call.triangles.to_string()).size(11.0));
                         let mut state = RichText::new(call.state.as_deref().unwrap_or("—"))
@@ -5228,6 +5261,51 @@ fn render_graph_draw_calls(
                     }
                 });
         });
+
+    let Some(index) = *selected else {
+        return;
+    };
+    let Some(call) = report.draw_calls.get(index) else {
+        return;
+    };
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.label(
+            RichText::new(format!("Call {}/{} · {}", index + 1, count, call.summary()))
+                .strong()
+                .size(11.0),
+        );
+        ui.label(
+            RichText::new(format!(
+                "instances {} · triangles {} · visible {}",
+                call.instances,
+                call.triangles,
+                if call.visible { "yes" } else { "no (culled)" }
+            ))
+            .size(10.0),
+        );
+        ui.label(
+            RichText::new(format!(
+                "pipeline: {}",
+                call.state.as_deref().unwrap_or("not recorded")
+            ))
+            .size(10.0),
+        );
+    });
+}
+
+/// Frame Debugger 的 Prev / Next 下标推进：不越界、不环绕。
+fn stepped_call(current: Option<usize>, count: usize, delta: isize) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    let start = match current {
+        Some(index) => index.min(count - 1) as isize,
+        // 没有选择时：Next 选中第一条，Prev 选中最后一条。
+        None if delta < 0 => count as isize,
+        None => -1,
+    };
+    let next = (start + delta).clamp(0, count as isize - 1);
+    Some(next as usize)
 }
 
 /// 资源统计（#518 Phase 2）：纹理 / 网格 / 材质的驻留量与估算字节。
@@ -6575,6 +6653,20 @@ mod window_smoke_tests {
     }
 
     #[test]
+    fn stepped_call_moves_between_draw_calls_without_wrapping() {
+        assert_eq!(stepped_call(None, 0, 1), None);
+        assert_eq!(stepped_call(Some(0), 0, 1), None);
+        // 第一次 Next 从 0 开始，第一次 Prev 从最后一条开始。
+        assert_eq!(stepped_call(None, 3, 1), Some(0));
+        assert_eq!(stepped_call(None, 3, -1), Some(2));
+        assert_eq!(stepped_call(Some(0), 3, -1), Some(0));
+        assert_eq!(stepped_call(Some(2), 3, 1), Some(2));
+        assert_eq!(stepped_call(Some(1), 3, 1), Some(2));
+        // 冻结帧换了一份更短的报告时，旧下标被夹回范围内。
+        assert_eq!(stepped_call(Some(9), 2, 0), Some(1));
+    }
+
+    #[test]
     fn every_editor_panel_builds_a_frame() {
         run_frame(|ui, workspace, state| hierarchy(ui, workspace, state));
         run_frame(|ui, workspace, state| inspector(ui, workspace, state));
@@ -6585,7 +6677,14 @@ mod window_smoke_tests {
         run_frame(|ui, _workspace, _state| {
             let mut settings = prism_engine::render_settings::RenderSettings::default();
             let mut viewport_scale = 1.0;
-            let _ = render_graph(ui, None, &mut settings, &mut viewport_scale, &mut false);
+            let _ = render_graph(
+                ui,
+                None,
+                &mut settings,
+                &mut viewport_scale,
+                &mut false,
+                &mut None,
+            );
         });
         let report = r#"{"generatedAtMs":1,"frame":2,"passes":[],"resources":[],
             "stats":{"textures":3,"textureBytes":1024,"meshes":2,"meshBytes":2048,
@@ -6606,6 +6705,7 @@ mod window_smoke_tests {
                 &mut settings,
                 &mut viewport_scale,
                 &mut true,
+                &mut Some(1),
             );
         });
         run_frame(|ui, _workspace, state| project_settings(ui, None, state));
