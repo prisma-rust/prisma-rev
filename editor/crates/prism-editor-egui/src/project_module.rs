@@ -687,7 +687,7 @@ fn build_module(manifest: &Path, target_dir: &Path) -> BuildOutcome {
         .arg("--target-dir")
         .arg(target_dir)
         // 结构化诊断：Problems 面板要 file:line:col，不是一段彩色 stderr。
-        .args(["--message-format", "json-render-diagnostics"]);
+        .args(["--message-format", "json"]);
     if let Some(dir) = manifest.parent() {
         command.current_dir(dir);
     }

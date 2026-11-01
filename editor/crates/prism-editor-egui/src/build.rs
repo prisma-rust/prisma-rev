@@ -247,7 +247,7 @@ fn forward_lines(
     })
 }
 
-/// `cargo --message-format=json-render-diagnostics` 的 stdout：解析成诊断，
+/// `cargo --message-format=json` 的 stdout：解析成诊断，
 /// 同时在 Console 留一行人类可读的摘要（JSON 本身没人想看）。
 fn forward_cargo_json(
     stream: impl Read + Send + 'static,
@@ -327,7 +327,7 @@ impl BuildJob {
                 };
 
                 // 这一步是不是结构化诊断模式（只有 `cargo build` 带这个参数）。
-                let json = args.iter().any(|arg| arg == "json-render-diagnostics");
+                let json = args.iter().any(|arg| arg == "json");
                 if json {
                     worker_diagnostics.lock().unwrap().clear();
                 }
@@ -656,7 +656,7 @@ mod tests {
                 "--manifest-path".to_string(),
                 root.join("Cargo.toml").display().to_string(),
                 "--message-format".to_string(),
-                "json-render-diagnostics".to_string(),
+                "json".to_string(),
             ]
         );
         assert_eq!(
@@ -671,11 +671,11 @@ mod tests {
         let root = project_root("diagnostics", "profile = debug");
         for kind in [BuildKind::Player, BuildKind::PlayerRun] {
             let commands = kind.commands(&root).unwrap();
-            assert!(mentions(&commands[0], "json-render-diagnostics"));
+            assert!(mentions(&commands[0], "json"));
         }
         // 打包步骤走真实仓库根（临时根里没有 pipeline workspace）。
         let pack = BuildKind::ScenePack.commands(&repo_root()).unwrap();
-        assert!(!mentions(&pack[0], "json-render-diagnostics"));
+        assert!(!mentions(&pack[0], "json"));
     }
 
     /// `Build And Run` 运行的是**摆好的产物**，不是 `cargo run` 的调试版。

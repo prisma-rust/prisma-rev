@@ -1,4 +1,4 @@
-//! `cargo --message-format=json-render-diagnostics` 的解析结果。
+//! `cargo --message-format=json` 的解析结果。
 //!
 //! 项目模块（Game View 的 Play）和玩家构建（`cargo build`）都走这条路：
 //! 编辑器只关心 error / warning + `file:line:col`，Problems 面板点一行就能跳转。

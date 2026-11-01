@@ -180,7 +180,7 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
     recorded in the PE, so renaming the dll degrades module frames to the export name.
     Auto Refresh can be disabled; `Ctrl+R` forces a rebuild. The toolbar
     shows the module state (ready / changes not compiled / compiling / failed), and
-    `cargo --message-format=json-render-diagnostics` is parsed into the Problems panel
+    `cargo --message-format=json` is parsed into the Problems panel
     (`file:line:col`, click to open); the player build (`BuildKind::Player`) uses the same
     parser, `cargo run` must not. Reload replaces the whole module — never call it
     "hot reload".
