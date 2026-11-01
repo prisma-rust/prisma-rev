@@ -324,18 +324,7 @@ impl EngineHost {
             .world_mut()
             .insert_resource(prism_engine::ui::ScreenSize::new(self.width, self.height));
 
-        // 场景声明式光照：只有声明的环境贴图真的换了才重新卷积 IBL。
-        let env_path =
-            prism_engine::scene::SceneReadView::new(&self.engine.world()).environment_asset_path();
-        if env_path != self.env_path {
-            let env_bytes = self
-                .engine
-                .current_scene_env_bytes_with_provider(&mut self.asset_resolver.resource_manager);
-            if let Err(error) = self.renderer.set_environment(env_bytes) {
-                log::warn!("set scene environment failed: {error:#}");
-            }
-            self.env_path = env_path;
-        }
+        self.refresh_scene_environment();
 
         let count = entities.len();
         self.entities = entities;
@@ -503,6 +492,67 @@ impl EngineHost {
         Ok(())
     }
 
+    /// 场景声明式光照：只有声明的环境贴图真的换了才重新卷积 IBL。
+    fn refresh_scene_environment(&mut self) {
+        let env_path =
+            prism_engine::scene::SceneReadView::new(&self.engine.world()).environment_asset_path();
+        if env_path == self.env_path {
+            return;
+        }
+        let env_bytes = self
+            .engine
+            .current_scene_env_bytes_with_provider(&mut self.asset_resolver.resource_manager);
+        if let Err(error) = self.renderer.set_environment(env_bytes) {
+            log::warn!("set scene environment failed: {error:#}");
+        }
+        self.env_path = env_path;
+    }
+
+    /// 执行项目代码请求的换场（#482）。在 tick 的引擎 update 之后调用。
+    ///
+    /// 复用同一个 `Engine`（`Single` 会保留 `Persistent` 子树），并推进
+    /// `scene_generation`，让项目模块丢掉旧世界的实体句柄；旧资产的 GPU 槽位
+    /// 由解析器记账后交回渲染器回收（#495）。新场景加载失败时保留旧场景。
+    fn apply_scene_request(&mut self, request: prism_runtime_host::SceneRequest) {
+        match request {
+            prism_runtime_host::SceneRequest::Load { path, additive } => {
+                let mode = if additive {
+                    prism_engine::engine::LoadSceneMode::Additive
+                } else {
+                    prism_engine::engine::LoadSceneMode::Single
+                };
+                match self
+                    .engine
+                    .load_scene_json_file_with_mode(Path::new(&path), mode)
+                {
+                    Ok(entities) => {
+                        self.scene_generation = self.scene_generation.wrapping_add(1).max(1);
+                        log::info!(
+                            "scene switched to {path} ({} entities, additive={additive})",
+                            entities.len()
+                        );
+                    }
+                    Err(error) => {
+                        log::error!(
+                            "scene switch to {path} failed: {error}; keeping the current scene"
+                        );
+                        return;
+                    }
+                }
+            }
+            prism_runtime_host::SceneRequest::Unload => {
+                let count = self.engine.unload_scene();
+                self.scene_generation = self.scene_generation.wrapping_add(1).max(1);
+                log::info!("scene unloaded ({count} entities)");
+            }
+        }
+        self.engine.runtime_initialize();
+        self.asset_resolver
+            .forget_missing_entities(self.engine.world_mut());
+        self.refresh_scene_environment();
+        self.pump_assets();
+    }
+
     /// 推进模拟（Play）或只传播层级（编辑态），并把资产上传同步做完。
     pub fn tick(&mut self) {
         // ECS UI 布局依赖 `ScreenSize`；离屏宿主没有 winit 窗口，自己写。
@@ -536,6 +586,7 @@ impl EngineHost {
             self.step_pending = false;
             // 用户项目的 gameplay 代码先于引擎 system 执行：它写入的组件
             // 和 UI 四边形在同一帧被 hierarchy / ui::render 看到。
+            let mut scene_request = None;
             if let Some(project) = self.project.as_mut() {
                 project.tick(
                     self.engine.world_mut(),
@@ -544,6 +595,11 @@ impl EngineHost {
                     self.scene_generation,
                     [self.width as f32, self.height as f32],
                 );
+                scene_request = project.take_scene_request();
+            }
+            // 项目代码请求的换场在世界借用结束后执行（#482）。
+            if let Some(request) = scene_request {
+                self.apply_scene_request(request);
             }
             self.engine.update(dt, &self.input);
             self.engine.late_update();

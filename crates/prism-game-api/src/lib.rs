@@ -28,7 +28,7 @@ pub use prism_project_api::{EntityHandle, InputSnapshot};
 use prism_reflect::Reflect;
 
 #[cfg(feature = "plugin")]
-use prism_project_api::{HostApi, SUCCESS};
+use prism_project_api::{HostApi, HOST_CAP_SCENE, SUCCESS};
 #[cfg(feature = "plugin")]
 use prism_reflect::{rtti_bin, TypeRegistry};
 
@@ -170,6 +170,51 @@ impl<'a> GameWorld<'a> {
             Backend::Host(world) => prism_engine::scene_state::load_scene_state(world),
             #[cfg(feature = "plugin")]
             Backend::Plugin(backend) => backend.load_scene_state(),
+        }
+    }
+
+    /// 请求切换场景（#482）：`additive = true` 保留旧场景（`LoadSceneMode::Additive`）。
+    ///
+    /// 返回 `true` 只表示**请求已交给宿主**；真正换场发生在本 tick 结束后，
+    /// 下一帧的 [`Self::scene_generation`] 会递增。旧实体句柄全部失效。
+    pub fn load_scene(&mut self, path: &str, additive: bool) -> bool {
+        match &mut self.backend {
+            #[cfg(feature = "host")]
+            Backend::Host(_) => {
+                log::warn!(
+                    "load_scene is only available through the runtime host (HOST_CAP_SCENE)"
+                );
+                false
+            }
+            #[cfg(feature = "plugin")]
+            Backend::Plugin(backend) => backend.load_scene(path, additive),
+        }
+    }
+
+    /// 请求卸载当前场景（`Persistent` 子树保留）；同样是延迟执行。
+    pub fn unload_scene(&mut self) -> bool {
+        match &mut self.backend {
+            #[cfg(feature = "host")]
+            Backend::Host(_) => {
+                log::warn!(
+                    "unload_scene is only available through the runtime host (HOST_CAP_SCENE)"
+                );
+                false
+            }
+            #[cfg(feature = "plugin")]
+            Backend::Plugin(backend) => backend.unload_scene(),
+        }
+    }
+
+    /// 场景代数：宿主每次换场 / 卸载 +1。项目代码用它判断缓存的实体句柄是否失效。
+    ///
+    /// 静态 Player（host 后端）没有跨场景切换，恒为 `0`。
+    pub fn scene_generation(&self) -> u64 {
+        match &self.backend {
+            #[cfg(feature = "host")]
+            Backend::Host(_) => 0,
+            #[cfg(feature = "plugin")]
+            Backend::Plugin(backend) => backend.scene_generation(),
         }
     }
 
@@ -577,6 +622,41 @@ impl PluginBackend<'_> {
         unsafe { callback(self.api.user_data) == 1 }
     }
 
+    fn load_scene(&self, path: &str, additive: bool) -> bool {
+        if self.api.capabilities & HOST_CAP_SCENE == 0 {
+            log::warn!("host does not expose scene switching (HOST_CAP_SCENE)");
+            return false;
+        }
+        let Some(callback) = self.api.load_scene else {
+            log::warn!("host does not expose scene switching (HOST_CAP_SCENE)");
+            return false;
+        };
+        unsafe {
+            callback(
+                self.api.user_data,
+                path.as_ptr(),
+                path.len(),
+                u8::from(additive),
+            ) == SUCCESS
+        }
+    }
+
+    fn unload_scene(&self) -> bool {
+        if self.api.capabilities & HOST_CAP_SCENE == 0 {
+            log::warn!("host does not expose scene switching (HOST_CAP_SCENE)");
+            return false;
+        }
+        let Some(callback) = self.api.unload_scene else {
+            log::warn!("host does not expose scene switching (HOST_CAP_SCENE)");
+            return false;
+        };
+        unsafe { callback(self.api.user_data) == SUCCESS }
+    }
+
+    fn scene_generation(&self) -> u64 {
+        self.api.scene_generation
+    }
+
     fn read_asset_text(&self, relative: &str) -> std::io::Result<String> {
         let Some(callback) = self.api.read_asset_file else {
             return Err(std::io::Error::new(
@@ -687,6 +767,60 @@ mod tests {
 
         assert!(!api.save_scene_state());
         assert!(!api.load_scene_state());
+    }
+
+    /// #482：换场请求走宿主回调，tick 结束后由宿主取走执行。
+    #[cfg(feature = "plugin")]
+    #[test]
+    fn scene_requests_are_forwarded_to_the_host() {
+        let mut world = World::new();
+        let mut components = prism_scene::ComponentRegistry::new();
+        prism_scene::register_builtin_components(&mut components);
+        let mut commands =
+            prism_runtime_host::WorldCommands::new(&mut world, &components, 7).with_scene_switch();
+        let host = commands.api();
+        assert_eq!(
+            host.capabilities & prism_project_api::HOST_CAP_SCENE,
+            prism_project_api::HOST_CAP_SCENE
+        );
+        let mut api = GameWorld::plugin(&host, components.type_registry());
+        assert_eq!(api.scene_generation(), 7);
+
+        assert!(api.load_scene("assets/scenes/second.scene.json", false));
+        assert_eq!(
+            commands.take_scene_request(),
+            Some(prism_runtime_host::SceneRequest::Load {
+                path: "assets/scenes/second.scene.json".to_string(),
+                additive: false,
+            })
+        );
+        assert!(commands.take_scene_request().is_none());
+
+        assert!(api.load_scene("assets/scenes/extra.scene.json", true));
+        assert_eq!(
+            commands.take_scene_request(),
+            Some(prism_runtime_host::SceneRequest::Load {
+                path: "assets/scenes/extra.scene.json".to_string(),
+                additive: true,
+            })
+        );
+
+        assert!(api.unload_scene());
+        assert_eq!(
+            commands.take_scene_request(),
+            Some(prism_runtime_host::SceneRequest::Unload)
+        );
+    }
+
+    /// 静态 Player 没有换场：明确返回 false，而不是假装成功。
+    #[cfg(feature = "host")]
+    #[test]
+    fn host_backend_reports_scene_switching_unavailable() {
+        let mut world = World::new();
+        let mut api = GameWorld::host(&mut world);
+        assert!(!api.load_scene("assets/scenes/second.scene.json", false));
+        assert!(!api.unload_scene());
+        assert_eq!(api.scene_generation(), 0);
     }
 
     /// 插件后端通过 `HOST_CAP_ASSET` 读松散资产，签名与 host 后端一致。

@@ -215,8 +215,14 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   engine / 资源解析器 / `.pak` 监听，之后走 `Engine::load_scene_json_file`（`Single`：
   先加载成功再卸载旧场景）。`Persistent` 实体连子树活过换场，用户注册的 system 不会被冲掉；
   旧实体的 GPU 句柄由解析器记账并交回渲染器回收（#495）。`Engine::scene_generation()`
-  每次换场 +1。项目代码还拿不到换场 API（`prism-game-api` / `HostApi` 的
-  `scene_generation` 接缝未接），那是后续单独的一刀。
+  每次换场 +1。
+- **项目代码换场（#482，ABI 9）**：`HostApi::load_scene` / `unload_scene` 只是**记录请求**
+  （回调执行时世界正被借用），宿主在 tick 结束后执行；`WorldCommands::with_scene_switch()`
+  是宿主声明「我会执行」的开关（能力位 `HOST_CAP_SCENE`，没声明时不暴露回调）。
+  项目侧用 `GameWorld::load_scene(path, additive)` / `unload_scene()` /
+  `scene_generation()`；编辑器 `ProjectModuleDriver` → `EngineHost::apply_scene_request`
+  复用同一个 `Engine`（`Persistent` 子树保留）、推进代数、回收旧资产槽位、刷新 IBL。
+  加 `HostApi` 字段是 ABI 变更：`ABI_VERSION` 8 → 9，旧模块需要重编。
 - `prism-app` keeps the neutral `FrameHook` / `prism_render::external_overlay::SwapchainOverlay`
   seams for debug hosts and future tooling; main → render thread UI data crosses as a
   **type-erased** `OverlayMessage` (`Box<dyn FnOnce(&mut dyn SwapchainOverlay) + Send>`) via

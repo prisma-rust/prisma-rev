@@ -41,7 +41,7 @@ pub mod keys {
     pub const OTHER_BASE: usize = 30;
 }
 
-pub const ABI_VERSION: u32 = 8;
+pub const ABI_VERSION: u32 = 9;
 
 pub const SUCCESS: i32 = 0;
 pub const INVALID_ARGUMENT: i32 = 1;
@@ -81,6 +81,9 @@ pub const HOST_CAP_COMPONENTS: u64 = 1 << 2;
 pub const HOST_CAP_DRAW: u64 = 1 << 3;
 /// 引擎自带的场景存档（`save_scene_state` / `load_scene_state`，#484）。
 pub const HOST_CAP_STATE: u64 = 1 << 5;
+/// 场景切换（`load_scene` / `unload_scene`，#482）。请求是**延迟执行**的：
+/// 宿主在本 tick 结束后才真正换场，因为回调执行时世界正被借用。
+pub const HOST_CAP_SCENE: u64 = 1 << 6;
 
 // ---------------------------------------------------------------------------
 // POD payloads
@@ -311,6 +314,21 @@ pub type SaveSceneState = unsafe extern "C" fn(user_data: *mut core::ffi::c_void
 /// 读取场景存档：返回 1 = 已恢复，0 = 没有存档，负数为错误。
 pub type LoadSceneState = unsafe extern "C" fn(user_data: *mut core::ffi::c_void) -> i32;
 
+/// 请求切换场景（#482）：`path` 是 UTF-8 的 `.scene.json` 路径，`additive = 0`
+/// 表示 `Single`（卸载旧场景）。
+///
+/// 返回 [`SUCCESS`] 只表示请求已记录；真正的换场发生在本 tick 结束后
+/// （`HostApi::scene_generation` 会在下一帧递增）。失败返回负数。
+pub type LoadScene = unsafe extern "C" fn(
+    user_data: *mut core::ffi::c_void,
+    path: *const u8,
+    path_len: usize,
+    additive: u8,
+) -> i32;
+
+/// 请求卸载当前场景（`Persistent` 子树保留）：同样是延迟执行。
+pub type UnloadScene = unsafe extern "C" fn(user_data: *mut core::ffi::c_void) -> i32;
+
 pub type LogMessage = unsafe extern "C" fn(
     user_data: *mut core::ffi::c_void,
     level: u32,
@@ -426,6 +444,9 @@ pub struct HostApi {
     /// 引擎自带存档（#484）。缺失时项目模块拿不到持久化能力。
     pub save_scene_state: Option<SaveSceneState>,
     pub load_scene_state: Option<LoadSceneState>,
+    /// 场景切换（#482）；能力位 [`HOST_CAP_SCENE`]。
+    pub load_scene: Option<LoadScene>,
+    pub unload_scene: Option<UnloadScene>,
 }
 
 impl HostApi {
@@ -452,6 +473,8 @@ impl HostApi {
             read_asset_file: None,
             save_scene_state: None,
             load_scene_state: None,
+            load_scene: None,
+            unload_scene: None,
         }
     }
 }
