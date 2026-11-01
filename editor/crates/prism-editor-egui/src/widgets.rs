@@ -251,6 +251,48 @@ mod tests {
     }
 
     #[test]
+    fn anchor_presets_cover_points_and_stretches() {
+        let current = (0.2, 0.8, 0.2, 0.8);
+        assert_eq!(
+            AnchorPreset::Point { x: 0, y: 0 }.anchors(current),
+            (0.0, 0.0, 0.0, 0.0)
+        );
+        assert_eq!(
+            AnchorPreset::Point { x: 1, y: 1 }.anchors(current),
+            (0.5, 0.5, 0.5, 0.5)
+        );
+        assert_eq!(
+            AnchorPreset::Point { x: 2, y: 2 }.anchors(current),
+            (1.0, 1.0, 1.0, 1.0)
+        );
+
+        // 拉伸只改一个轴，另一轴保留当前中心。
+        assert_eq!(
+            AnchorPreset::StretchHorizontal.anchors(current),
+            (0.0, 0.8, 1.0, 0.8)
+        );
+        assert_eq!(
+            AnchorPreset::StretchVertical.anchors(current),
+            (0.2, 0.0, 0.2, 1.0)
+        );
+        assert_eq!(AnchorPreset::Stretch.anchors(current), (0.0, 0.0, 1.0, 1.0));
+
+        // 高亮判定：水平拉伸不能把「全拉伸」也算成自己。
+        let horizontal = AnchorPreset::StretchHorizontal.anchors(current);
+        assert!(AnchorPreset::StretchHorizontal.is_active(horizontal));
+        assert!(!AnchorPreset::Stretch.is_active(horizontal));
+        assert!(AnchorPreset::Stretch.is_active((0.0, 0.0, 1.0, 1.0)));
+
+        // 写回 JSON 的键必须是 schema 里的 snake_case。
+        let value = anchors_value((0.0, 0.5, 1.0, 0.5));
+        assert_eq!(value["min_x"], serde_json::json!(0.0));
+        assert_eq!(value["min_y"], serde_json::json!(0.5));
+        assert_eq!(value["max_x"], serde_json::json!(1.0));
+        assert_eq!(value["max_y"], serde_json::json!(0.5));
+        assert_eq!(anchors_tuple(&value), (0.0, 0.5, 1.0, 0.5));
+    }
+
+    #[test]
     fn asset_filters_match_expected_extensions() {
         assert!(asset_matches("mesh_path", "assets/ship.GLTF"));
         assert!(!asset_matches("mesh_path", "assets/ship.png"));
@@ -912,6 +954,10 @@ fn field_row_at(
         // Nested struct (`Style.anchors`, `Style.pivot`, `Margin` …): recurse
         // through the registry so every leaf keeps its real widget and path.
         FieldWidget::Struct => {
+            // UI 锚点：在数值字段之上加 Unity `RectTransform` 式预设网格（#429）。
+            if field.struct_type.as_deref() == Some("prism_engine::ui::Anchors") {
+                anchor_preset_grid(ui, &name, value, set);
+            }
             let fields = field
                 .struct_type
                 .as_deref()
@@ -945,6 +991,170 @@ fn field_row_at(
             }
         }
     }
+}
+
+/// 锚点预设（Unity `LayoutDropdownWindow` 的 9 个点 + 3 种拉伸）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AnchorPreset {
+    Point { x: u8, y: u8 },
+    StretchHorizontal,
+    StretchVertical,
+    Stretch,
+}
+
+impl AnchorPreset {
+    /// 3×3 点锚点网格，按「上 → 下、左 → 右」排列。
+    const GRID: [[Self; 3]; 3] = [
+        [
+            Self::Point { x: 0, y: 0 },
+            Self::Point { x: 1, y: 0 },
+            Self::Point { x: 2, y: 0 },
+        ],
+        [
+            Self::Point { x: 0, y: 1 },
+            Self::Point { x: 1, y: 1 },
+            Self::Point { x: 2, y: 1 },
+        ],
+        [
+            Self::Point { x: 0, y: 2 },
+            Self::Point { x: 1, y: 2 },
+            Self::Point { x: 2, y: 2 },
+        ],
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Point { x: 0, y: 0 } => "TL",
+            Self::Point { x: 1, y: 0 } => "T",
+            Self::Point { x: 2, y: 0 } => "TR",
+            Self::Point { x: 0, y: 1 } => "L",
+            Self::Point { x: 1, y: 1 } => "C",
+            Self::Point { x: 2, y: 1 } => "R",
+            Self::Point { x: 0, y: 2 } => "BL",
+            Self::Point { x: 1, y: 2 } => "B",
+            Self::Point { x: 2, y: 2 } => "BR",
+            Self::Point { .. } => "?",
+            Self::StretchHorizontal => "H",
+            Self::StretchVertical => "V",
+            Self::Stretch => "Full",
+        }
+    }
+
+    fn tooltip(self) -> &'static str {
+        match self {
+            Self::Point { x: 0, y: 0 } => "Anchor: top left",
+            Self::Point { x: 1, y: 0 } => "Anchor: top center",
+            Self::Point { x: 2, y: 0 } => "Anchor: top right",
+            Self::Point { x: 0, y: 1 } => "Anchor: middle left",
+            Self::Point { x: 1, y: 1 } => "Anchor: center",
+            Self::Point { x: 2, y: 1 } => "Anchor: middle right",
+            Self::Point { x: 0, y: 2 } => "Anchor: bottom left",
+            Self::Point { x: 1, y: 2 } => "Anchor: bottom center",
+            Self::Point { x: 2, y: 2 } => "Anchor: bottom right",
+            Self::Point { .. } => "Anchor",
+            Self::StretchHorizontal => "Stretch horizontally (keep vertical anchor)",
+            Self::StretchVertical => "Stretch vertically (keep horizontal anchor)",
+            Self::Stretch => "Stretch to fill the parent",
+        }
+    }
+
+    /// 把预设应用到当前锚点。拉伸预设保留另一轴的中心，和 Unity 的
+    /// `anchorMin/anchorMax` 面板一致。
+    fn anchors(self, current: (f32, f32, f32, f32)) -> (f32, f32, f32, f32) {
+        let (min_x, min_y, max_x, max_y) = current;
+        let center_x = (min_x + max_x) * 0.5;
+        let center_y = (min_y + max_y) * 0.5;
+        match self {
+            Self::Point { x, y } => {
+                let point_x = f32::from(x) * 0.5;
+                let point_y = f32::from(y) * 0.5;
+                (point_x, point_y, point_x, point_y)
+            }
+            Self::StretchHorizontal => (0.0, center_y, 1.0, center_y),
+            Self::StretchVertical => (center_x, 0.0, center_x, 1.0),
+            Self::Stretch => (0.0, 0.0, 1.0, 1.0),
+        }
+    }
+
+    fn is_active(self, current: (f32, f32, f32, f32)) -> bool {
+        let (min_x, min_y, max_x, max_y) = self.anchors(current);
+        let close = |a: f32, b: f32| (a - b).abs() <= 1e-4;
+        match self {
+            Self::Point { .. } | Self::Stretch => {
+                close(current.0, min_x)
+                    && close(current.1, min_y)
+                    && close(current.2, max_x)
+                    && close(current.3, max_y)
+            }
+            // 拉伸预设只保证「另一轴是点锚点」，中心值随当前值变化。
+            Self::StretchHorizontal => {
+                close(current.0, 0.0) && close(current.2, 1.0) && close(current.1, current.3)
+            }
+            Self::StretchVertical => {
+                close(current.1, 0.0) && close(current.3, 1.0) && close(current.0, current.2)
+            }
+        }
+    }
+}
+
+fn anchors_tuple(value: &Value) -> (f32, f32, f32, f32) {
+    let read = |key: &str| {
+        value
+            .get(key)
+            .and_then(Value::as_f64)
+            .map(|value| value as f32)
+            .unwrap_or(0.0)
+    };
+    (read("min_x"), read("min_y"), read("max_x"), read("max_y"))
+}
+
+fn anchors_value(anchors: (f32, f32, f32, f32)) -> Value {
+    let (min_x, min_y, max_x, max_y) = anchors;
+    serde_json::json!({
+        "min_x": min_x,
+        "min_y": min_y,
+        "max_x": max_x,
+        "max_y": max_y,
+    })
+}
+
+/// 在 `Anchors` struct 上方画预设按钮；点击整份 anchors 写回（一个撤销步）。
+fn anchor_preset_grid(ui: &mut Ui, name: &str, value: &Value, set: &mut dyn FnMut(&str, Value)) {
+    let current = anchors_tuple(value);
+    egui::Grid::new(("anchor-presets", name))
+        .spacing([2.0, 2.0])
+        .show(ui, |ui| {
+            for row in AnchorPreset::GRID {
+                for preset in row {
+                    let response = ui.add_sized(
+                        [26.0, 18.0],
+                        egui::Button::new(preset.label()).selected(preset.is_active(current)),
+                    );
+                    if response.clicked() {
+                        set(name, anchors_value(preset.anchors(current)));
+                    }
+                    response.on_hover_text(preset.tooltip());
+                }
+                ui.end_row();
+            }
+        });
+    ui.horizontal(|ui| {
+        for preset in [
+            AnchorPreset::StretchHorizontal,
+            AnchorPreset::StretchVertical,
+            AnchorPreset::Stretch,
+        ] {
+            let response = ui.add_sized(
+                [40.0, 18.0],
+                egui::Button::new(preset.label()).selected(preset.is_active(current)),
+            );
+            if response.clicked() {
+                set(name, anchors_value(preset.anchors(current)));
+            }
+            response.on_hover_text(preset.tooltip());
+        }
+    });
+    ui.add_space(2.0);
 }
 
 /// 字段右键菜单（#418）：复制 / 粘贴值、复制属性路径。
