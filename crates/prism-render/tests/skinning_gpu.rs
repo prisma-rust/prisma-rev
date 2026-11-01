@@ -132,7 +132,8 @@ fn render(renderer: &mut GraphRenderer, items: &[DrawItem], bones: &[[[f32; 4]; 
             1.0,
             &[],
             PostGrade::default(),
-            false,
+            false, // wireframe
+            false, // shaded wireframe
             bones,
         )
         .expect("headless render failed");
@@ -147,7 +148,9 @@ fn non_background(pixels: &[u8]) -> usize {
     // pixel is geometry.
     let corner = &pixels[0..4];
     pixels
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|pixel| *pixel != corner)
         .count()
 }
