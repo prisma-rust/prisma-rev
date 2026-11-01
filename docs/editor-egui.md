@@ -251,8 +251,22 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
 控制通道（`src/control.rs`）：启动时在 `127.0.0.1:0` 上监听并把端口写进
 `<项目根>/target/editor-egui/control.port`，一行 JSON 一问一答：
 `ping` / `status` / `play` / `stop` / `pause` / `logs` / `input` / `capture` /
-`ui.snapshot` / `ui.click` / `ui.set` / `quit`。`logs` 读 Console 的同一份缓冲（`since`
-增量、`limit` 条数），自动化因此能拿到引擎日志、工程模块的 `project:` 日志和 panic 栈。
+`ui.snapshot` / `ui.click` / `ui.move` / `ui.wheel` / `ui.drag` / `ui.set` / `quit`。
+`logs` 读 Console 的同一份缓冲（`since` 增量、`limit` 条数），自动化因此能拿到引擎日志、
+工程模块的 `project:` 日志和 panic 栈。
+
+视口里的指针操作也走控制通道（#643），坐标单位是**视口局部逻辑像素**：
+
+| 命令 | 参数 | 行为 |
+|---|---|---|
+| `ui.move` | `node`+`offset` 或 `tab`+`x`/`y` | Scene：返回该点下的实体（`hit`）与 gizmo 轴（`gizmo_axis`），不改选择；Game：把光标送进玩法输入 |
+| `ui.wheel` | 同上 + `delta`（默认 120） | Scene：缩放到光标（`Camera::zoom_towards`，#511）；Game：滚轮进玩法输入 |
+| `ui.drag` | `from` / `to` + `steps`（默认 8） | Scene：起点命中 gizmo 就按真实拖动逻辑变换（吸附、撤销步一致），否则 `mode:"orbit"` 转轨道相机，再否则框选；Game：按下 → 逐步移动 → 松开 |
+
+`from` / `to` 是对象：`{"node":"view:scene:entity:2","offset":[40,0]}`（物体节点锚点是
+其 `screen_rect` 中心）或 `{"x":220,"y":610}`。Scene 的框选结果直接写进选择集，回执带
+`selected` 节点列表；gizmo 拖动回执带 `changed`，用于断言变换真的发生了。
+`ui.click` 的 Game 分支也走同一套 letterbox / 离屏尺寸换算（#463/#585）。
 
 模态对话框也走节点树（#618）：`ui.snapshot` 的 `dialogs` 列出当前打开的对话框
 （`delete-entities` / `delete-document` / `delete-assets` / `save-conflict` / `close` /
