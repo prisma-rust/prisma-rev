@@ -295,6 +295,60 @@ fn paused_clips_do_not_fire_events_and_the_queue_is_cleared() {
     assert!(fired(&world).is_empty());
 }
 
+/// #490：倒放时播放头向下穿过事件也要入队。
+#[test]
+fn reverse_playback_fires_events_when_the_playhead_crosses_backwards() {
+    let mut world = World::new();
+    let entity = spawn(
+        &mut world,
+        KeyframeAnimation {
+            looped: false,
+            speed: -1.0,
+            events: vec![AnimationEvent::new(0.5, "back")],
+            ..clip(&[(0.0, [0.0; 3]), (1.0, [10.0; 3])], &[])
+        },
+    );
+    world.insert(
+        entity,
+        ClipPlayhead {
+            time: 0.9,
+            finished: false,
+        },
+    );
+
+    // 0.9 → 0.7：还没到 0.5。
+    keyframe_animation_system(&mut world, 0.2);
+    assert!(fired(&world).is_empty());
+    // 0.7 → 0.4：向下穿过 0.5。
+    keyframe_animation_system(&mut world, 0.3);
+    assert_eq!(fired(&world), vec![("back".to_string(), 0.5)]);
+}
+
+#[test]
+fn reverse_looped_playback_fires_events_after_wrapping_past_zero() {
+    let mut world = World::new();
+    let entity = spawn(
+        &mut world,
+        KeyframeAnimation {
+            looped: true,
+            speed: -1.0,
+            events: vec![AnimationEvent::new(0.8, "tail")],
+            ..clip(&[(0.0, [0.0; 3]), (1.0, [10.0; 3])], &[])
+        },
+    );
+    world.insert(
+        entity,
+        ClipPlayhead {
+            time: 0.1,
+            finished: false,
+        },
+    );
+
+    // 0.1 → -0.2 回绕到 0.8：倒放跨过 0 后从末尾继续，命中 0.8。
+    keyframe_animation_system(&mut world, 0.3);
+    assert_eq!(fired(&world), vec![("tail".to_string(), 0.8)]);
+}
+
 #[test]
 fn a_clip_with_only_events_still_advances_and_fires() {
     let mut world = World::new();
