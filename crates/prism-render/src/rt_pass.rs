@@ -137,6 +137,7 @@ impl RtPreviewPass {
                 color_attachment_count: Some(1),
                 color_blend_attachments: None,
                 front_face: None,
+                polygon_mode: None,
             })
             .context("RtPreviewPass: create pipeline")?;
 

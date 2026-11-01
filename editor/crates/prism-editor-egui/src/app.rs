@@ -5784,6 +5784,7 @@ fn render_settings_json(
         "vignette": settings.vignette,
         "shadowDistance": settings.shadow_distance,
         "debugRt": settings.debug_rt,
+        "wireframe": settings.wireframe,
         "pathTrace": settings.render_mode == RenderMode::PathTrace,
         "ptMaxBounces": settings.pt_max_bounces,
         "ptRayMaxDistance": settings.pt_ray_max_distance,
@@ -5828,6 +5829,10 @@ fn render_settings_from_json(
         // #526：贴图边长只在构造渲染器时生效；编辑器 UI 还没暴露滑杆时保持默认。
         shadow_map_size: u32_field("shadowMapSize", base.shadow_map_size),
         debug_rt: u32_field("debugRt", base.debug_rt),
+        wireframe: value
+            .get("wireframe")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(base.wireframe),
         render_mode: if path_trace {
             RenderMode::PathTrace
         } else {
@@ -6110,6 +6115,7 @@ mod tests {
             show_grid: true,
             debug_flags: 0b1010,
             debug_rt: 2,
+            wireframe: true,
             render_mode: RenderMode::PathTrace,
             tonemap_mode: 2,
             ..Default::default()
@@ -6119,12 +6125,14 @@ mod tests {
         assert!(!game.show_grid, "grid is a scene-view helper");
         assert_eq!(game.debug_flags, 0, "PBR isolate is a scene-view helper");
         assert_eq!(game.debug_rt, 0, "debug RT is a scene-view helper");
+        assert!(!game.wireframe, "wireframe is a scene-view helper");
 
         // Scene view 反过来：它就该从工具栏当前状态出发。
         let scene = initial_view_settings(ViewKind::Scene, &editor);
         assert!(scene.show_grid);
         assert_eq!(scene.debug_flags, 0b1010);
         assert_eq!(scene.debug_rt, 2);
+        assert!(scene.wireframe);
     }
 
     #[test]

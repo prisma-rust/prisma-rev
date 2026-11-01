@@ -665,6 +665,7 @@ pub fn render_system(
         light_view_proj: light_view_proj.to_cols_array_2d(),
         inv_projection: inv_projection.to_cols_array_2d(),
         debug_flags: settings.debug_flags,
+        wireframe: settings.wireframe,
         tonemap_mode: settings.tonemap_mode,
         aa_mode: settings.aa_mode,
         debug_rt: settings.debug_rt,

@@ -138,6 +138,7 @@ fn headless_render_real_frame_and_readback() {
             1.0,
             &[],
             prism_render::render_graph::PostGrade::default(),
+            false,
         )
         .expect("headless render failed");
 
@@ -155,6 +156,53 @@ fn headless_render_real_frame_and_readback() {
         px[0] > 0 && px[1] > 0 && px[2] > 0,
         "first pixel should contain rendered color, got {px:?}"
     );
+}
+
+/// #431：设备支持 `fillModeNonSolid` 时，线框管线能正常创建并出帧。
+///
+/// 空 draw list 也会走到 `ForwardPass::ensure_pipelines`，所以这条覆盖的是
+/// `POLYGON_MODE_LINE` 的 pipeline 创建，而不只是设置字段。
+#[test]
+fn headless_wireframe_pipeline_builds_and_renders() {
+    let mut renderer = match try_create_headless() {
+        Some(r) => r,
+        None => return,
+    };
+    if !renderer.context().wireframe_supported {
+        eprintln!("[SKIP] fillModeNonSolid not supported by this driver");
+        return;
+    }
+
+    let frame_data = prism_render::descriptor::FrameUBOData::default();
+    renderer
+        .render(
+            &[],
+            &frame_data,
+            [[0.0; 4]; 4],
+            [[0.0; 4]; 4],
+            0,
+            0,
+            0,
+            0,
+            0.0,
+            0.0,
+            &[],
+            prism_render::RenderMode::Raster,
+            0,
+            0.0,
+            0,
+            1.0,
+            &[],
+            prism_render::render_graph::PostGrade::default(),
+            true,
+        )
+        .expect("wireframe render failed");
+
+    renderer
+        .copy_offscreen_to_readback()
+        .expect("copy_offscreen_to_readback failed");
+    let pixels = renderer.readback_pixels().expect("readback_pixels failed");
+    assert_eq!(pixels.len(), 256 * 256 * 4);
 }
 
 #[test]

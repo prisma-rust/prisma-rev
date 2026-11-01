@@ -238,6 +238,7 @@ impl ShadowMapPass {
             color_attachment_count: Some(0),
             color_blend_attachments: None,
             front_face: Some(Self::SHADOW_FRONT_FACE),
+            polygon_mode: None,
         })
         .context("create shadow depth-only pipeline")?;
 

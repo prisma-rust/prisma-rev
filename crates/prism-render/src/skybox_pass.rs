@@ -186,6 +186,7 @@ impl SkyboxPass {
                 color_attachment_count: None,
                 color_blend_attachments: Some(&blend_attachments),
                 front_face: None,
+                polygon_mode: None,
             })
             .context("SkyboxPass: create pipeline")?;
 
