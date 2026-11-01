@@ -653,6 +653,8 @@ pub struct KeyframeAnimation {
     pub euler_xyz: Vec<crate::animation::Vec3Key>,
     /// 缩放轨道。
     pub scale: Vec<crate::animation::Vec3Key>,
+    /// 剪辑事件（#490）：播放头穿过事件时间时写进 `AnimationEventQueue`。
+    pub events: Vec<crate::animation::AnimationEvent>,
 }
 
 impl Default for KeyframeAnimation {
@@ -667,24 +669,37 @@ impl Default for KeyframeAnimation {
             position: Vec::new(),
             euler_xyz: Vec::new(),
             scale: Vec::new(),
+            events: Vec::new(),
         }
     }
 }
 
 impl KeyframeAnimation {
-    /// 有效时长：`duration > 0` 用它，否则取三条轨道里最晚的关键帧。
+    /// 有效时长：`duration > 0` 用它，否则取三条轨道 / 事件里最晚的时间。
+    ///
+    /// 只有事件的剪辑也必须有长度，否则播放头不会前进、事件永远不触发。
     pub fn clip_duration(&self) -> f32 {
         if self.duration > 0.0 && self.duration.is_finite() {
             return self.duration;
         }
+        let last_event = self
+            .events
+            .iter()
+            .map(|event| event.time)
+            .filter(|time| time.is_finite())
+            .fold(0.0f32, f32::max);
         crate::animation::max_key_time(&self.position)
             .max(crate::animation::max_key_time(&self.euler_xyz))
             .max(crate::animation::max_key_time(&self.scale))
+            .max(last_event)
     }
 
-    /// 三条轨道是否都为空（空剪辑不驱动任何通道）。
+    /// 三条轨道与事件是否都为空（空剪辑不驱动任何通道，也不占播放头）。
     pub fn is_empty(&self) -> bool {
-        self.position.is_empty() && self.euler_xyz.is_empty() && self.scale.is_empty()
+        self.position.is_empty()
+            && self.euler_xyz.is_empty()
+            && self.scale.is_empty()
+            && self.events.is_empty()
     }
 
     /// 采样 `local_time`（已按循环 / 端点处理过的时间）。

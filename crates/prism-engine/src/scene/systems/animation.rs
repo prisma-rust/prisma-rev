@@ -9,6 +9,9 @@
 //!   值（只动画 position 不会把旋转 / 缩放清零）。
 //! - 系统跑在 `Engine::update` 的调度里、`hierarchy_system` 之前，所以同一帧
 //!   里 `LocalToWorld` / 渲染提取 / 相机跟随看到的都是动画后的姿势。
+//! - 剪辑事件（#490）：播放头穿过 `AnimationEvent.time` 时写进
+//!   [`AnimationEventQueue`]；队列每帧重写，玩法系统在同一个调度里读取。
+//!   只处理正向播放；循环剪辑每圈各触发一次。
 //!
 //! 注意：`save_scene_state` 读的是 `LocalToWorld`，播到一半存档会存下**当前
 //! 姿势**而不是作者姿势。这与其他每帧改写 `LocalTransform` 的系统一致。
@@ -139,6 +142,73 @@ pub struct ClipPlayhead {
     pub finished: bool,
 }
 
+/// 本帧触发的一条动画事件（#490）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct FiredAnimationEvent {
+    /// 播放这个剪辑的实体。
+    pub entity: Entity,
+    /// 作者写的事件名。
+    pub name: String,
+    /// 事件在剪辑里的时间（秒）。
+    pub time: f32,
+}
+
+/// 动画事件队列：`keyframe_animation_system` **每帧重写**。
+///
+/// 玩法系统在 `Engine::update` 的调度里读这个资源（它在 `hierarchy_system`
+/// 之前运行）。没有事件 / 没有动画实体时是空的，不会保留上一帧的旧事件。
+#[derive(Debug, Clone, Default)]
+pub struct AnimationEventQueue {
+    pub events: Vec<FiredAnimationEvent>,
+}
+
+impl AnimationEventQueue {
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &FiredAnimationEvent> {
+        self.events.iter()
+    }
+}
+
+/// 把原始播放时间折算成 `[0, duration]` 内的剪辑本地时间。
+fn local_time_at(raw: f32, duration: f32, looped: bool) -> f32 {
+    if duration <= 0.0 || !duration.is_finite() || !raw.is_finite() {
+        0.0
+    } else if looped {
+        raw.rem_euclid(duration)
+    } else {
+        raw.clamp(0.0, duration)
+    }
+}
+
+/// 收集 `(from, to]` 内的事件；`include_from` 时把 `from` 本身也算上。
+fn collect_events(
+    clip: &KeyframeAnimation,
+    from: f32,
+    to: f32,
+    include_from: bool,
+    out: &mut Vec<(String, f32)>,
+) {
+    if !from.is_finite() || !to.is_finite() || to < from {
+        return;
+    }
+    for event in &clip.events {
+        if event.name.is_empty() || !event.time.is_finite() {
+            continue;
+        }
+        let in_range = if include_from {
+            event.time >= from && event.time <= to
+        } else {
+            event.time > from && event.time <= to
+        };
+        if in_range {
+            out.push((event.name.clone(), event.time));
+        }
+    }
+}
+
 /// 每帧推进所有 [`KeyframeAnimation`]，把采样结果写进实体的 `LocalTransform`。
 ///
 /// 空剪辑（三条轨道都没关键帧）不挂播放头，避免给纯静态实体留垃圾组件。
@@ -148,16 +218,19 @@ pub fn keyframe_animation_system(world: &mut World, dt: f32) {
         .map(|(entity, _)| entity)
         .collect();
 
+    let mut fired: Vec<FiredAnimationEvent> = Vec::new();
+
     for entity in entities {
         // 采样借用块：算完就把 `&World` 的借用放掉，后面才能写组件。
         let computed = world.get::<KeyframeAnimation>(entity).and_then(|clip| {
             if clip.is_empty() {
                 return None;
             }
-            let mut head = world
+            let previous_head = world
                 .get::<ClipPlayhead>(entity)
                 .copied()
                 .unwrap_or_default();
+            let mut head = previous_head;
             let duration = clip.clip_duration();
             let speed = if clip.speed.is_finite() {
                 clip.speed
@@ -175,19 +248,39 @@ pub fn keyframe_animation_system(world: &mut World, dt: f32) {
             }
             let raw = head.time + clip.phase;
             head.finished = duration > 0.0 && !clip.looped && raw >= duration;
-            let local = if duration <= 0.0 || !duration.is_finite() {
-                0.0
-            } else if clip.looped {
-                raw.rem_euclid(duration)
-            } else {
-                raw.clamp(0.0, duration)
-            };
-            Some((head, clip.sample(local)))
+            let local = local_time_at(raw, duration, clip.looped);
+
+            // #490：只处理正向播放；倒放 / 暂停不发射事件。
+            let mut events = Vec::new();
+            if clip.playing && speed >= 0.0 && duration > 0.0 && dt.is_finite() {
+                let previous_raw = previous_head.time + clip.phase;
+                let previous_local = local_time_at(previous_raw, duration, clip.looped);
+                let cycles = (raw / duration).floor() - (previous_raw / duration).floor();
+                if clip.looped && cycles >= 1.0 {
+                    // 跨过了一次（或多次）循环：先扫到本圈末尾，再从 0 扫到新的播放头。
+                    collect_events(clip, previous_local, duration, false, &mut events);
+                    collect_events(clip, 0.0, local, true, &mut events);
+                } else {
+                    // 刚起步时把 0 秒事件也算进来（否则第一个事件永远差一个 dt）。
+                    let include_start =
+                        previous_head.time == 0.0 && previous_raw <= 0.0 && clip.phase == 0.0;
+                    collect_events(clip, previous_local, local, include_start, &mut events);
+                }
+            }
+
+            Some((head, clip.sample(local), events))
         });
 
-        let Some((head, sample)) = computed else {
+        let Some((head, sample, events)) = computed else {
             continue;
         };
+        for event in events {
+            fired.push(FiredAnimationEvent {
+                entity,
+                name: event.0,
+                time: event.1,
+            });
+        }
         let Some(transform) = world.get_mut::<LocalTransform>(entity) else {
             // 没有 `LocalTransform` 的实体（理论上不该存在）不挂播放头。
             continue;
@@ -204,6 +297,9 @@ pub fn keyframe_animation_system(world: &mut World, dt: f32) {
         }
         world.insert(entity, head);
     }
+
+    // 每帧重写：没有动画实体时也会清空旧事件。
+    world.insert_resource(AnimationEventQueue { events: fired });
 }
 
 #[cfg(test)]
