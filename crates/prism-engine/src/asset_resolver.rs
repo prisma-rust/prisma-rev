@@ -30,7 +30,9 @@ use prism_render::managers::{MeshUploadInput, TextureFormat, TextureUploadInput}
 use crate::scene::components::{
     MaterialRef, MeshRef, MeshRenderer, SpriteRef, SpriteRenderer, Tilemap,
 };
-use crate::scene::runtime_components::{TilemapRef, UiImageRef};
+use crate::scene::runtime_components::{
+    MaterialSlots, MeshSubmesh, MeshSubmeshes, TilemapRef, UiImageRef,
+};
 use crate::scene::systems::render::MeshBounds;
 
 /// 把 RTEX 头的 `format` byte 与槽位颜色空间映射成渲染层 [`TextureFormat`]。
@@ -71,11 +73,20 @@ enum AssetSlot {
     UiImage,
 }
 
+/// 一个网格的 CPU 上传数据 + submesh 表（#520）。
+struct LoadedMesh {
+    input: MeshUploadInput,
+    submeshes: Vec<MeshSubmesh>,
+}
+
 /// 一个实体本帧要解析的资源（只包含仍然缺失的那几半）。
 struct PendingRequest {
     entity: Entity,
     mesh_path: Option<String>,
-    material_path: Option<String>,
+    /// 作者组件快照：多材质路径要等网格加载后按 submesh 数展开。
+    renderer: MeshRenderer,
+    /// 这一帧是否需要解析材质（`MaterialRef.generation == 0`）。
+    wants_material: bool,
     /// 精灵贴图 / 瓦片地图的 tileset / UI 背景图：三者都只需要一张贴图，
     /// 一个实体同一帧只会投递其中一个。
     sprite_path: Option<String>,
@@ -128,6 +139,12 @@ pub struct GpuAssetResolver {
     /// （[`Self::apply_results`]）之后连同句柄一起写进 [`MeshBounds`]，渲染提取
     /// 就能按主相机剔除（#491）。
     pending_bounds: HashMap<Entity, prism_render::culling::Aabb>,
+    /// 已投递、但句柄还没回写的 submesh 表（#520）。
+    pending_submeshes: HashMap<Entity, Vec<MeshSubmesh>>,
+    /// 每个 submesh 使用本次请求里第几个唯一材质（`None` = 默认材质）。
+    ///
+    /// 相同路径的 submesh 共享一次材质上传，回传的槽位用这张表展开。
+    pending_material_map: HashMap<Entity, Vec<Option<usize>>>,
 }
 
 /// 引用断裂只报一次（每个路径），并且是 `error` 而不是 `warn`。
@@ -167,6 +184,8 @@ impl GpuAssetResolver {
             pending_texture_slot: HashMap::new(),
             releases: Vec::new(),
             pending_bounds: HashMap::new(),
+            pending_submeshes: HashMap::new(),
+            pending_material_map: HashMap::new(),
         }
     }
 
@@ -226,7 +245,7 @@ impl GpuAssetResolver {
         if value.is_empty() {
             return;
         }
-        if let Some(previous) = self.resolved.insert((entity, slot), value) {
+        if let Some(previous) = self.resolved.insert((entity, slot), value.clone()) {
             if previous != value {
                 self.releases.push(previous);
             }
@@ -493,16 +512,24 @@ impl GpuAssetResolver {
                         .get::<MeshRef>(entity)
                         .is_some_and(|r| r.generation == 0)
                     && !self.failed_before(entity, AssetSlot::Mesh, &mr.mesh_path);
-                let wants_material = !mr.material_path.is_empty()
-                    && world
-                        .get::<MaterialRef>(entity)
-                        .is_some_and(|r| r.generation == 0)
-                    && !self.failed_before(entity, AssetSlot::Material, &mr.material_path);
+                // 多材质（#520）：只要还有没失败过的路径就继续尝试。失败缓存按
+                // 路径记，所以某个 submesh 的坏材质不会拖住其它材质。
+                let material_unresolved = world
+                    .get::<MaterialRef>(entity)
+                    .is_some_and(|r| r.generation == 0);
+                let wants_material = material_unresolved
+                    && ((!mr.material_path.is_empty()
+                        && !self.failed_before(entity, AssetSlot::Material, &mr.material_path))
+                        || mr.material_paths.iter().any(|path| {
+                            !path.is_empty()
+                                && !self.failed_before(entity, AssetSlot::Material, path)
+                        }));
                 if (wants_mesh || wants_material) && !self.enqueued.contains(&entity) {
                     out.push(PendingRequest {
                         entity,
                         mesh_path: wants_mesh.then(|| mr.mesh_path.clone()),
-                        material_path: wants_material.then(|| mr.material_path.clone()),
+                        renderer: mr.clone(),
+                        wants_material,
                         sprite_path: None,
                         tileset: false,
                         ui_image: false,
@@ -531,7 +558,8 @@ impl GpuAssetResolver {
                     out.push(PendingRequest {
                         entity,
                         mesh_path: None,
-                        material_path: None,
+                        renderer: MeshRenderer::default(),
+                        wants_material: false,
                         sprite_path: Some(sprite.sprite_path.clone()),
                         tileset: false,
                         ui_image: false,
@@ -560,7 +588,8 @@ impl GpuAssetResolver {
                     out.push(PendingRequest {
                         entity,
                         mesh_path: None,
-                        material_path: None,
+                        renderer: MeshRenderer::default(),
+                        wants_material: false,
                         sprite_path: Some(tilemap.tileset_path.clone()),
                         tileset: true,
                         ui_image: false,
@@ -590,7 +619,8 @@ impl GpuAssetResolver {
                     out.push(PendingRequest {
                         entity,
                         mesh_path: None,
-                        material_path: None,
+                        renderer: MeshRenderer::default(),
+                        wants_material: false,
                         sprite_path: Some(style.image.clone()),
                         tileset: false,
                         ui_image: true,
@@ -608,10 +638,14 @@ impl GpuAssetResolver {
 
         let mut reqs = Vec::with_capacity(pending.len());
         for item in pending {
-            let mesh = match item.mesh_path.as_deref() {
+            let loaded = match item.mesh_path.as_deref() {
                 Some(path) => {
                     let loaded = procedural
                         .and_then(|meshes| meshes.get(path))
+                        .map(|input| LoadedMesh {
+                            input,
+                            submeshes: Vec::new(),
+                        })
                         .or_else(|| self.load_mesh_inputs(path));
                     if loaded.is_none() {
                         self.record_failure(item.entity, AssetSlot::Mesh, path);
@@ -620,16 +654,68 @@ impl GpuAssetResolver {
                 }
                 None => None,
             };
-            let material = match item.material_path.as_deref() {
-                Some(path) => {
+            let (mesh, submeshes) = match loaded {
+                Some(loaded) => (Some(loaded.input), loaded.submeshes),
+                // 网格已经解析过、这帧只补材质：用运行时缓存的 submesh 表。
+                None => (
+                    None,
+                    world
+                        .get::<MeshSubmeshes>(item.entity)
+                        .map(|cached| cached.submeshes.clone())
+                        .unwrap_or_default(),
+                ),
+            };
+            if !submeshes.is_empty() {
+                self.pending_submeshes
+                    .insert(item.entity, submeshes.clone());
+            }
+
+            // 材质按 submesh 展开（#520）：相同路径只上传一次，回传后按
+            // `pending_material_map` 复制到每个 submesh。
+            let mut materials: Vec<Option<MaterialResolveData>> = Vec::new();
+            if item.wants_material {
+                let submesh_count = if submeshes.is_empty() {
+                    1
+                } else {
+                    submeshes.len()
+                };
+                let mut unique_paths: Vec<String> = Vec::new();
+                let mut material_map: Vec<Option<usize>> = Vec::with_capacity(submesh_count);
+                for submesh in 0..submesh_count {
+                    let material_index = submeshes
+                        .get(submesh)
+                        .and_then(|submesh| submesh.material_index);
+                    let path = item.renderer.material_path_for_submesh(
+                        submesh,
+                        submesh_count,
+                        material_index,
+                    );
+                    match path {
+                        Some(path)
+                            if !self.failed_before(item.entity, AssetSlot::Material, path) =>
+                        {
+                            let index = unique_paths
+                                .iter()
+                                .position(|known| known == path)
+                                .unwrap_or_else(|| {
+                                    unique_paths.push(path.to_string());
+                                    unique_paths.len() - 1
+                                });
+                            material_map.push(Some(index));
+                        }
+                        _ => material_map.push(None),
+                    }
+                }
+                for path in &unique_paths {
                     let loaded = self.load_material_data(path);
                     if loaded.is_none() {
                         self.record_failure(item.entity, AssetSlot::Material, path);
                     }
-                    loaded
+                    materials.push(loaded);
                 }
-                None => None,
-            };
+                self.pending_material_map.insert(item.entity, material_map);
+            }
+
             let texture = match item.sprite_path.as_deref() {
                 Some(path) => {
                     let loaded = self.load_texture_by_path(path);
@@ -666,7 +752,7 @@ impl GpuAssetResolver {
                 item.entity,
                 AssetResolveRequest {
                     mesh,
-                    material,
+                    materials,
                     texture,
                 },
             ));
@@ -714,21 +800,74 @@ impl GpuAssetResolver {
                     }
                 }
             }
-            if let Some(mr) = world.get_mut::<MaterialRef>(*entity) {
-                if let Some(slot) = result.material_slot {
-                    mr.material_slot = slot;
-                    mr.generation = 1;
+            if let Some(submeshes) = self.pending_submeshes.remove(entity) {
+                if result.mesh_handle.is_some() {
+                    if submeshes.is_empty() {
+                        world.remove::<MeshSubmeshes>(*entity);
+                    } else {
+                        world.insert(*entity, MeshSubmeshes { submeshes });
+                    }
                 }
             }
-            if let Some(slot) = result.material_slot {
-                self.record_resolved(
-                    *entity,
-                    AssetSlot::Material,
-                    AssetRelease {
-                        material_slot: Some(slot),
-                        ..AssetRelease::default()
-                    },
-                );
+            match self.pending_material_map.remove(entity) {
+                Some(material_map) => {
+                    let uploaded = if result.material_slots.is_empty() {
+                        result
+                            .material_slot
+                            .map(|slot| vec![Some(slot)])
+                            .unwrap_or_default()
+                    } else {
+                        result.material_slots.clone()
+                    };
+                    let slots: Vec<Option<u32>> = material_map
+                        .iter()
+                        .map(|index| index.and_then(|index| uploaded.get(index).copied().flatten()))
+                        .collect();
+                    let first = slots.iter().find_map(|slot| *slot);
+                    let mut unique: Vec<u32> = slots.iter().flatten().copied().collect();
+                    unique.sort_unstable();
+                    unique.dedup();
+
+                    if let Some(mr) = world.get_mut::<MaterialRef>(*entity) {
+                        if let Some(slot) = first {
+                            mr.material_slot = slot;
+                            mr.generation = 1;
+                        }
+                    }
+                    if !slots.is_empty() {
+                        world.insert(*entity, MaterialSlots { slots });
+                    }
+                    if first.is_some() {
+                        self.record_resolved(
+                            *entity,
+                            AssetSlot::Material,
+                            AssetRelease {
+                                material_slot: first,
+                                material_slots: unique,
+                                ..AssetRelease::default()
+                            },
+                        );
+                    }
+                }
+                // 没有经过 `prepare_requests` 的旧式结果 / 单材质路径：保持
+                // 旧行为，只写回第一个槽位。
+                None => {
+                    if let Some(slot) = result.material_slot {
+                        if let Some(mr) = world.get_mut::<MaterialRef>(*entity) {
+                            mr.material_slot = slot;
+                            mr.generation = 1;
+                        }
+                        self.record_resolved(
+                            *entity,
+                            AssetSlot::Material,
+                            AssetRelease {
+                                material_slot: Some(slot),
+                                material_slots: vec![slot],
+                                ..AssetRelease::default()
+                            },
+                        );
+                    }
+                }
             }
             if let (Some(slot), Some(size)) = (result.texture_slot, result.texture_size) {
                 let texture_slot = self
@@ -856,7 +995,13 @@ impl GpuAssetResolver {
     pub fn invalidate_path(&mut self, world: &mut World, path: &str) -> usize {
         let mut entities: Vec<Entity> = Vec::new();
         for (entity, renderer) in world.query::<MeshRenderer>() {
-            if renderer.mesh_path == path || renderer.material_path == path {
+            if renderer.mesh_path == path
+                || renderer.material_path == path
+                || renderer
+                    .material_paths
+                    .iter()
+                    .any(|material| material == path)
+            {
                 entities.push(entity);
             }
         }
@@ -920,6 +1065,8 @@ impl GpuAssetResolver {
         // 失败缓存（同一个坏路径不再重试）与排队标记都会挡住重新解析。
         self.enqueued.remove(&entity);
         self.pending_bounds.remove(&entity);
+        self.pending_submeshes.remove(&entity);
+        self.pending_material_map.remove(&entity);
         self.tileset_paths.remove(&entity);
         self.ui_image_paths.remove(&entity);
         self.failed.retain(|(owner, _), _| *owner != entity);
@@ -930,11 +1077,14 @@ impl GpuAssetResolver {
     // 内部 CPU 加载 helpers（纯数据，无渲染器依赖）
     // -----------------------------------------------------------------------
 
-    /// CPU 段：加载网格资源 + 解交织顶点 data → `MeshUploadInput`。
-    fn load_mesh_inputs(&mut self, path: &str) -> Option<MeshUploadInput> {
+    /// CPU 段：加载网格资源 + 解交织顶点 data → `MeshUploadInput` + submesh 表。
+    fn load_mesh_inputs(&mut self, path: &str) -> Option<LoadedMesh> {
         // 内置基础网格（编辑器 3D Object 预设）：不读 `.pak`、不需要 cook。
         if prism_render::primitives::is_builtin(path) {
-            return prism_render::primitives::builtin(path);
+            return prism_render::primitives::builtin(path).map(|input| LoadedMesh {
+                input,
+                submeshes: Vec::new(),
+            });
         }
 
         let id = self.resource_manager.id_by_path(path).or_else(|| {
@@ -955,6 +1105,7 @@ impl GpuAssetResolver {
 
         // RMES 的顶点区是分段布局（见 `deinterleave_rmes`），不是每顶点交错。
         deinterleave_rmes(path, &mesh.info)
+            .map(|(input, submeshes)| LoadedMesh { input, submeshes })
     }
 
     /// CPU 段：加载材质资源 → 18 个 PBR 标量 + 5 张纹理像素
@@ -1098,7 +1249,10 @@ impl Default for GpuAssetResolver {
 ///
 /// `stride_bytes` 只表示「每顶点合计多少字节」，拿它当 interleaved 行宽会把
 /// 第二个顶点之后的 positions 读进 normals / uv 的内存里。
-fn deinterleave_rmes(path: &str, info: &prism_asset::formats::RmesInfo) -> Option<MeshUploadInput> {
+fn deinterleave_rmes(
+    path: &str,
+    info: &prism_asset::formats::RmesInfo,
+) -> Option<(MeshUploadInput, Vec<MeshSubmesh>)> {
     let stride = info.stride_bytes as usize;
     if stride == 0 || stride % 4 != 0 {
         log::warn!("load_mesh_inputs: bad stride {stride} for '{path}'");
@@ -1173,14 +1327,27 @@ fn deinterleave_rmes(path: &str, info: &prism_asset::formats::RmesInfo) -> Optio
         ));
     }
 
-    Some(MeshUploadInput {
-        positions,
-        normals,
-        colors: vec![],
-        uvs,
-        tangents,
-        indices,
-    })
+    let submeshes = info
+        .submeshes
+        .iter()
+        .map(|submesh| MeshSubmesh {
+            index_start: submesh.index_start,
+            index_count: submesh.index_count,
+            material_index: submesh.material_index,
+        })
+        .collect();
+
+    Some((
+        MeshUploadInput {
+            positions,
+            normals,
+            colors: vec![],
+            uvs,
+            tangents,
+            indices,
+        },
+        submeshes,
+    ))
 }
 
 #[cfg(test)]
@@ -1268,6 +1435,7 @@ mod tests {
             &[(
                 entity,
                 AssetResolveResult {
+                    material_slots: Vec::new(),
                     mesh_handle: None,
                     material_slot: None,
                     texture_slot: Some(slot),
@@ -1297,6 +1465,7 @@ mod tests {
             &[(
                 entity,
                 AssetResolveResult {
+                    material_slots: Vec::new(),
                     mesh_handle: None,
                     material_slot: None,
                     texture_slot: Some(21),
@@ -1313,6 +1482,7 @@ mod tests {
             &[(
                 entity,
                 AssetResolveResult {
+                    material_slots: Vec::new(),
                     mesh_handle: None,
                     material_slot: None,
                     texture_slot: Some(21),
@@ -1353,6 +1523,7 @@ mod tests {
             &[(
                 mesh_entity,
                 AssetResolveResult {
+                    material_slots: Vec::new(),
                     mesh_handle: Some(mesh_handle),
                     material_slot: Some(4),
                     texture_slot: None,
@@ -1436,6 +1607,7 @@ mod tests {
             &[(
                 entity,
                 AssetResolveResult {
+                    material_slots: Vec::new(),
                     mesh_handle: None,
                     material_slot: None,
                     texture_slot: Some(7),
@@ -1481,6 +1653,7 @@ mod tests {
             &[(
                 entity,
                 AssetResolveResult {
+                    material_slots: Vec::new(),
                     mesh_handle: None,
                     material_slot: None,
                     texture_slot: Some(3),
@@ -1521,6 +1694,7 @@ mod tests {
             &[(
                 entity,
                 AssetResolveResult {
+                    material_slots: Vec::new(),
                     mesh_handle: None,
                     material_slot: None,
                     texture_slot: Some(5),
@@ -1555,6 +1729,7 @@ mod tests {
             &[(
                 entity,
                 AssetResolveResult {
+                    material_slots: Vec::new(),
                     mesh_handle: None,
                     material_slot: None,
                     texture_slot: Some(1),
@@ -1586,7 +1761,7 @@ mod tests {
         let first = resolver.prepare_requests(&world);
         assert_eq!(first.len(), 1, "网格路径仍需解析一次");
         assert!(
-            first[0].1.material.is_none(),
+            first[0].1.materials.is_empty(),
             "空材质路径不应产生材质解析请求"
         );
 
@@ -1597,6 +1772,7 @@ mod tests {
             &[(
                 entity,
                 AssetResolveResult {
+                    material_slots: Vec::new(),
                     mesh_handle: None,
                     material_slot: None,
                     texture_slot: None,
@@ -1648,6 +1824,7 @@ mod tests {
             &[(
                 entity,
                 AssetResolveResult {
+                    material_slots: Vec::new(),
                     mesh_handle: Some(MeshHandle::default()),
                     material_slot: None,
                     texture_slot: None,
@@ -1682,6 +1859,7 @@ mod tests {
             &[(
                 entity,
                 AssetResolveResult {
+                    material_slots: Vec::new(),
                     mesh_handle: Some(MeshHandle::default()),
                     material_slot: None,
                     texture_slot: None,
@@ -1732,6 +1910,7 @@ mod tests {
             stride_bytes: (float_stride * 4) as u32,
             vertex_data,
             index_data: indices.iter().flat_map(|i| i.to_le_bytes()).collect(),
+            submeshes: Vec::new(),
         }
     }
 
@@ -1745,7 +1924,9 @@ mod tests {
             &[0, 1, 0],
         );
 
-        let mesh = deinterleave_rmes("test/planar.rmes", &info).expect("valid RMES must decode");
+        let mesh = deinterleave_rmes("test/planar.rmes", &info)
+            .expect("valid RMES must decode")
+            .0;
 
         assert_eq!(mesh.positions, vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]);
         assert_eq!(mesh.normals, vec![[0.0, 0.0, 1.0], [0.0, 1.0, 0.0]]);
@@ -1763,7 +1944,9 @@ mod tests {
             &[0, 1, 1],
         );
 
-        let mesh = deinterleave_rmes("test/uv-only.rmes", &info).expect("valid RMES must decode");
+        let mesh = deinterleave_rmes("test/uv-only.rmes", &info)
+            .expect("valid RMES must decode")
+            .0;
 
         assert_eq!(mesh.positions, vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]);
         assert_eq!(mesh.normals, vec![[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]]);
@@ -1774,11 +1957,62 @@ mod tests {
     fn planar_rmes_positions_only_falls_back_to_a_fixed_normal() {
         let info = planar_mesh(&[[7.0, 8.0, 9.0], [10.0, 11.0, 12.0]], &[], &[], &[0, 1, 0]);
 
-        let mesh = deinterleave_rmes("test/pos-only.rmes", &info).expect("valid RMES must decode");
+        let mesh = deinterleave_rmes("test/pos-only.rmes", &info)
+            .expect("valid RMES must decode")
+            .0;
 
         assert_eq!(mesh.positions, vec![[7.0, 8.0, 9.0], [10.0, 11.0, 12.0]]);
         assert_eq!(mesh.normals, vec![[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]]);
         assert_eq!(mesh.uvs, vec![[0.0, 0.0], [0.0, 0.0]]);
+    }
+
+    #[test]
+    fn rmes_v2_submeshes_reach_the_runtime_component() {
+        // 手写一个 RMES v2：3 个顶点、6 个索引、两个 submesh。
+        let mut blob = Vec::new();
+        blob.extend_from_slice(b"RMES");
+        blob.push(2);
+        blob.extend_from_slice(&3u32.to_le_bytes());
+        blob.extend_from_slice(&6u32.to_le_bytes());
+        blob.extend_from_slice(&0u32.to_le_bytes()); // uv channels
+        blob.extend_from_slice(&12u32.to_le_bytes()); // stride bytes
+        blob.extend_from_slice(&33u32.to_le_bytes()); // positions offset
+        blob.extend_from_slice(&0u32.to_le_bytes()); // normals offset
+        blob.extend_from_slice(&0u32.to_le_bytes()); // uv0 offset
+        for position in [[0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]] {
+            for value in position {
+                blob.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        for index in [0u32, 1, 2, 0, 2, 1] {
+            blob.extend_from_slice(&index.to_le_bytes());
+        }
+        blob.extend_from_slice(&2u32.to_le_bytes());
+        for (start, count, material) in [(0u32, 3u32, 0u32), (3, 3, u32::MAX)] {
+            blob.extend_from_slice(&start.to_le_bytes());
+            blob.extend_from_slice(&count.to_le_bytes());
+            blob.extend_from_slice(&material.to_le_bytes());
+        }
+
+        let info = prism_asset::formats::decode_rmes(&blob).expect("RMES v2 must decode");
+        assert_eq!(info.submeshes.len(), 2);
+        let (_mesh, submeshes) =
+            deinterleave_rmes("test/submeshes.rmes", &info).expect("valid RMES must decode");
+        assert_eq!(
+            submeshes,
+            vec![
+                MeshSubmesh {
+                    index_start: 0,
+                    index_count: 3,
+                    material_index: Some(0),
+                },
+                MeshSubmesh {
+                    index_start: 3,
+                    index_count: 3,
+                    material_index: None,
+                },
+            ]
+        );
     }
 
     #[test]
@@ -1874,6 +2108,7 @@ mod mesh_bounds_tests {
             &[(
                 entity,
                 prism_render::asset_bridge::AssetResolveResult {
+                    material_slots: Vec::new(),
                     mesh_handle: Some(handle),
                     material_slot: None,
                     texture_slot: None,
@@ -1898,6 +2133,7 @@ mod mesh_bounds_tests {
 #[cfg(test)]
 mod hot_reload_tests {
     use super::*;
+    use prism_render::managers::MeshHandle;
     use prism_scene::SceneAssetId;
 
     fn spawn_mesh(world: &mut World, path: &str, generation: u32) -> Entity {
@@ -1977,6 +2213,7 @@ mod hot_reload_tests {
             &[(
                 entity,
                 prism_render::asset_bridge::AssetResolveResult {
+                    material_slots: Vec::new(),
                     mesh_handle: None,
                     material_slot: None,
                     texture_slot: None,
@@ -1999,5 +2236,89 @@ mod hot_reload_tests {
             "hot reload must clear the failed-path cache"
         );
         assert_eq!(world.get::<MeshRef>(entity).unwrap().generation, 0);
+    }
+
+    #[test]
+    fn multiple_material_paths_map_to_submesh_slots() {
+        let mut world = World::new();
+        let entity = world.spawn();
+        world.insert(
+            entity,
+            MeshRenderer {
+                mesh_path: "models/multi.gltf".into(),
+                material_paths: vec!["materials/a.mat".into(), "materials/b.mat".into()],
+                ..MeshRenderer::default()
+            },
+        );
+        // 网格已解析（这帧只补材质），submesh 表来自运行时缓存。
+        world.insert(
+            entity,
+            MeshRef {
+                asset_id: SceneAssetId::generate(),
+                render_handle: MeshHandle::default(),
+                generation: 1,
+            },
+        );
+        world.insert(
+            entity,
+            MaterialRef {
+                asset_id: SceneAssetId::generate(),
+                material_slot: 0,
+                generation: 0,
+            },
+        );
+        world.insert(
+            entity,
+            MeshSubmeshes {
+                submeshes: vec![
+                    MeshSubmesh {
+                        index_start: 0,
+                        index_count: 3,
+                        material_index: Some(0),
+                    },
+                    MeshSubmesh {
+                        index_start: 3,
+                        index_count: 3,
+                        material_index: Some(1),
+                    },
+                    MeshSubmesh {
+                        index_start: 6,
+                        index_count: 3,
+                        material_index: Some(2),
+                    },
+                ],
+            },
+        );
+
+        // 两个路径都不在包里，但请求仍然按唯一路径展开（上传阶段会失败）。
+        let mut resolver = GpuAssetResolver::new();
+        let requests = resolver.prepare_requests(&world);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].1.materials.len(),
+            2,
+            "a/b 两个唯一材质只请求两次，第三个 submesh 用默认材质"
+        );
+
+        resolver.apply_results(
+            &mut world,
+            &[(
+                entity,
+                prism_render::asset_bridge::AssetResolveResult {
+                    material_slots: vec![Some(11), Some(12)],
+                    material_slot: Some(11),
+                    ..Default::default()
+                },
+            )],
+        );
+
+        let slots = world.get::<MaterialSlots>(entity).expect("slot table");
+        assert_eq!(slots.slots, vec![Some(11), Some(12), None]);
+        assert_eq!(
+            world.get::<MaterialRef>(entity).unwrap().material_slot,
+            11,
+            "第一个材质仍写回旧字段，兼容只读它的代码"
+        );
+        assert_eq!(world.get::<MaterialRef>(entity).unwrap().generation, 1);
     }
 }

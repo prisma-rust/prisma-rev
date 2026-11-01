@@ -211,7 +211,14 @@ impl Default for ActiveInHierarchy {
 #[serde(default)]
 pub struct MeshRenderer {
     pub mesh_path: String,
+    /// 单材质路径（兼容旧场景；`material_paths` 为空时使用）。
     pub material_path: String,
+    /// 每个 submesh 一个材质路径（#520）。
+    ///
+    /// 长度通常等于网格的 submesh 数；为空时回退到 [`Self::material_path`]。
+    /// 长度不足时按 submesh 的源材质索引（glTF `material.index()`）取，
+    /// 再退到 `material_path`。空字符串表示该 submesh 使用默认材质。
+    pub material_paths: Vec<String>,
     /// 阴影投射模式 = `Renderer.shadowCastingMode`。
     ///
     /// 决定该物体是否写阴影贴图、是否出现在相机主通道（`ShadowsOnly` 只投影）。
@@ -241,6 +248,7 @@ impl Default for MeshRenderer {
         Self {
             mesh_path: String::new(),
             material_path: String::new(),
+            material_paths: Vec::new(),
             shadow_casting_mode: ShadowCastingMode::default(),
             cull_mode: CullMode::default(),
             render_queue: RenderQueue::default(),
@@ -258,7 +266,51 @@ impl MeshRenderer {
         !self.mesh_path.is_empty()
     }
     pub fn has_material(&self) -> bool {
-        !self.material_path.is_empty()
+        !self.material_path.is_empty() || self.material_paths.iter().any(|path| !path.is_empty())
+    }
+
+    /// 第 `submesh` 个 submesh 应该用哪个材质路径（#520）。
+    ///
+    /// 解析顺序：
+    /// 1. `material_paths` 与 submesh 数一一对应时，直接用同下标；
+    /// 2. 否则如果知道源文件里的材质索引（glTF），按材质索引取；
+    /// 3. 再退到同下标（短列表时最后一个之外的项由调用方决定默认）；
+    /// 4. 最后回退到单数字段 [`Self::material_path`]。
+    pub fn material_path_for_submesh(
+        &self,
+        submesh: usize,
+        submesh_count: usize,
+        material_index: Option<u32>,
+    ) -> Option<&str> {
+        if !self.material_paths.is_empty() {
+            if self.material_paths.len() == submesh_count {
+                if let Some(path) = self
+                    .material_paths
+                    .get(submesh)
+                    .filter(|path| !path.is_empty())
+                {
+                    return Some(path.as_str());
+                }
+            }
+            if let Some(index) = material_index {
+                if let Some(path) = self
+                    .material_paths
+                    .get(index as usize)
+                    .filter(|path| !path.is_empty())
+                {
+                    return Some(path.as_str());
+                }
+            }
+            if let Some(path) = self
+                .material_paths
+                .get(submesh)
+                .filter(|path| !path.is_empty())
+            {
+                return Some(path.as_str());
+            }
+        }
+
+        (!self.material_path.is_empty()).then_some(self.material_path.as_str())
     }
     /// 是否真的需要开启混合：用 `One` / `Zero` 表示「不混合」，
     /// 所以默认值代表不透明。

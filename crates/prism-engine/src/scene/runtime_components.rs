@@ -29,6 +29,34 @@ pub struct MaterialRef {
     pub generation: u32,
 }
 
+/// 一个网格里的 submesh 索引区间（#520）。
+///
+/// 由 `.pak` 里的 RMES v2 submesh 表还原。运行时由渲染提取系统按这些区间
+/// 把一个实体拆成多个 [`DrawItem`](prism_render::DrawItem)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeshSubmesh {
+    pub index_start: u32,
+    pub index_count: u32,
+    /// 源文件（glTF）的材质索引；只用于把 `material_paths` 映射到 submesh。
+    pub material_index: Option<u32>,
+}
+
+/// 运行时：网格的 submesh 表。作者组件 `MeshRenderer` 不保存它，
+/// 因为区间属于被 cook 的网格资产，而不是场景里的某个实例。
+#[derive(Debug, Clone, Default)]
+pub struct MeshSubmeshes {
+    pub submeshes: Vec<MeshSubmesh>,
+}
+
+/// 运行时：每个 submesh 解析后的材质 SSBO 槽（`None` = 默认材质）。
+///
+/// `MaterialRef::material_slot` 仍然保存第一个材质，兼容只读这个字段的旧代码；
+/// 多材质绘制读取这里的逐 submesh 槽位。
+#[derive(Debug, Clone, Default)]
+pub struct MaterialSlots {
+    pub slots: Vec<Option<u32>>,
+}
+
 /// GPU texture reference for a 2D [`SpriteRenderer`](prism_scene::components::SpriteRenderer).
 ///
 /// Same role as [`MeshRef`] for meshes: the scene only stores the authoring

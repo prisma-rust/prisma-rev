@@ -148,6 +148,8 @@ pub fn draw_items_signature(items: &[DrawItem]) -> u64 {
         item.cast_shadow.hash(&mut hasher);
         item.visible_in_main_pass.hash(&mut hasher);
         item.cast_shadow_two_sided.hash(&mut hasher);
+        item.index_start.hash(&mut hasher);
+        item.index_count.hash(&mut hasher);
     }
     hasher.finish()
 }
@@ -171,6 +173,8 @@ mod tests {
             cast_shadow_two_sided: false,
             state: Default::default(),
             world_bounds: None,
+            index_start: 0,
+            index_count: None,
         }
     }
 

@@ -17,7 +17,7 @@ use crate::db::AssetRecord;
 use prism_asset::core::{AssetId, AssetType};
 // RTEX format bytes are part of the wire format; the single source of truth
 // lives in `prism-asset::formats` (shared with the runtime decoder).
-use prism_asset::formats::RTEX_FORMAT_RGBA8;
+use prism_asset::formats::{RMES_VERSION, RTEX_FORMAT_RGBA8};
 use prism_asset::package::PackageBuilder;
 use std::collections::HashMap;
 use thiserror::Error;
@@ -511,6 +511,122 @@ const RMES_MAGIC: &[u8; 4] = b"RMES";
 /// RMXI intermediate 网格 magic.
 const RMXI_MAGIC: &[u8; 4] = b"RMXI";
 
+/// 从 RMXI 头/长度推导出的布局。
+struct RmxiLayout {
+    version: u8,
+    vert_count: u32,
+    idx_count: u32,
+    uv_channels: u32,
+    has_normals: bool,
+    vert_data_start: usize,
+    vert_data_size: usize,
+    idx_data_size: usize,
+    submeshes: Vec<prism_asset::formats::RmesSubmesh>,
+}
+
+/// 读取 RMXI v2 的 submesh 表。
+fn read_submesh_table(
+    data: &[u8],
+    offset: usize,
+    idx_count: u32,
+) -> Option<Vec<prism_asset::formats::RmesSubmesh>> {
+    let count = u32::from_le_bytes(data.get(offset..offset + 4)?.try_into().ok()?) as usize;
+    let table_start = offset.checked_add(4)?;
+    let table_end = table_start.checked_add(count.checked_mul(12)?)?;
+    if table_end != data.len() {
+        return None;
+    }
+    let mut submeshes = Vec::with_capacity(count);
+    for i in 0..count {
+        let base = table_start + i * 12;
+        let index_start = u32::from_le_bytes(data[base..base + 4].try_into().ok()?);
+        let index_count = u32::from_le_bytes(data[base + 4..base + 8].try_into().ok()?);
+        let material_index = u32::from_le_bytes(data[base + 8..base + 12].try_into().ok()?);
+        let end = index_start.checked_add(index_count)?;
+        if index_count == 0 || end > idx_count {
+            return None;
+        }
+        submeshes.push(prism_asset::formats::RmesSubmesh {
+            index_start,
+            index_count,
+            material_index: (material_index != u32::MAX).then_some(material_index),
+        });
+    }
+    Some(submeshes)
+}
+
+/// 解析 RMXI 头并确定 `[positions][normals?][uv0][indices][submeshes?]` 布局。
+///
+/// RMXI v1 没有 submesh 表；v2 在 index block 后追加
+/// `[count:u32][index_start:u32][index_count:u32][material_index:u32]...`。
+/// 没有显式的 `has_normals` 位，所以 v2 用「候选 base + 表长度 == 文件长度」
+/// 来判定，避免把 submesh 表误当成法线数据。
+fn rmxi_layout(data: &[u8]) -> Option<RmxiLayout> {
+    if data.len() < 17 || &data[..4] != RMXI_MAGIC {
+        return None;
+    }
+    let version = data[4];
+    if version != 1 && version != 2 {
+        return None;
+    }
+    let vert_count = u32::from_le_bytes(data[5..9].try_into().ok()?);
+    let idx_count = u32::from_le_bytes(data[9..13].try_into().ok()?);
+    let uv_channels = u32::from_le_bytes(data[13..17].try_into().ok()?);
+
+    let pos_size = (vert_count as usize).checked_mul(3 * 4)?;
+    let nrm_size = (vert_count as usize).checked_mul(3 * 4)?;
+    let uv_size = (uv_channels as usize)
+        .checked_mul(vert_count as usize)?
+        .checked_mul(2 * 4)?;
+    let idx_size = (idx_count as usize).checked_mul(4)?;
+    let base_without_normals = 17usize
+        .checked_add(pos_size)?
+        .checked_add(uv_size)?
+        .checked_add(idx_size)?;
+    let base_with_normals = base_without_normals.checked_add(nrm_size)?;
+
+    let (has_normals, submeshes) = if version >= 2 {
+        let mut found = None;
+        for has_normals in [false, true] {
+            let base = if has_normals {
+                base_with_normals
+            } else {
+                base_without_normals
+            };
+            if data.len() < base + 4 {
+                continue;
+            }
+            if let Some(submeshes) = read_submesh_table(data, base, idx_count) {
+                found = Some((has_normals, submeshes));
+                break;
+            }
+        }
+        found?
+    } else if data.len() == base_without_normals {
+        (false, Vec::new())
+    } else if data.len() == base_with_normals {
+        (true, Vec::new())
+    } else {
+        return None;
+    };
+
+    let nrm_floats = if has_normals { 3 } else { 0 };
+    let stride_floats = 3 + nrm_floats + uv_channels as usize * 2;
+    let vert_data_size = (vert_count as usize).checked_mul(stride_floats * 4)?;
+
+    Some(RmxiLayout {
+        version,
+        vert_count,
+        idx_count,
+        uv_channels,
+        has_normals,
+        vert_data_start: 17,
+        vert_data_size,
+        idx_data_size: idx_size,
+        submeshes,
+    })
+}
+
 /// Cooks 网格 data by validating the intermediate 格式 and packing into a
 /// runtime-ready 二进制
 ///
@@ -518,59 +634,52 @@ const RMXI_MAGIC: &[u8; 4] = b"RMXI";
 /// [rmes_magic:4][version:1][vert_count:4][idx_count:4][uv_count:4]
 /// [stride:4][positions_offset:4][normals_offset:4][uv0_offset:4]
 /// [vertex_data][index_data]
+/// [submesh_count:4][index_start:4][index_count:4][material_index:4]...
 /// ```
 pub struct MeshCooker;
 
 impl MeshCooker {
     fn parse_intermediate(data: &[u8]) -> Option<(u32, u32, u32, u32)> {
-        if data.len() < 17 || &data[..4] != RMXI_MAGIC {
-            return None;
-        }
-        let _version = data[4];
-        let vert_count = u32::from_le_bytes(data[5..9].try_into().ok()?);
-        let idx_count = u32::from_le_bytes(data[9..13].try_into().ok()?);
-        let uv_channels = u32::from_le_bytes(data[13..17].try_into().ok()?);
-        Some((vert_count, idx_count, uv_channels, _version as u32))
+        let layout = rmxi_layout(data)?;
+        Some((
+            layout.vert_count,
+            layout.idx_count,
+            layout.uv_channels,
+            layout.version as u32,
+        ))
     }
 
-    fn write_rmes(
-        vert_count: u32,
-        idx_count: u32,
-        uv_channels: u32,
-        intermediate: &[u8],
-    ) -> Vec<u8> {
-        let pos_data_size = vert_count as usize * 3 * 4;
-        let idx_data_size = idx_count as usize * 4;
-        let uv_data_size = uv_channels as usize * vert_count as usize * 2 * 4;
+    fn write_rmes(intermediate: &[u8]) -> Option<Vec<u8>> {
+        let layout = rmxi_layout(intermediate)?;
+        let vert_count = layout.vert_count;
+        let idx_count = layout.idx_count;
+        let uv_channels = layout.uv_channels;
 
-        // Detect whether normals are present by checking the actual data 大小
-        // RMXI: header(17) + positions + [normals] + uv + indices
-        let expected_with_normals =
-            17 + pos_data_size + vert_count as usize * 3 * 4 + uv_data_size + idx_data_size;
-        let has_normals = intermediate.len() >= expected_with_normals;
-
-        let nrm_floats: u32 = if has_normals { 3 } else { 0 };
+        let nrm_floats: u32 = if layout.has_normals { 3 } else { 0 };
         let stride = 3 + nrm_floats + uv_channels * 2; // floats per vertex
-        let vert_data_size = vert_count as usize * stride as usize * 4;
         let header_size = 33usize;
+        let vert_data_size = layout.vert_data_size;
+        let idx_data_size = layout.idx_data_size;
 
-        let mut buf = Vec::with_capacity(header_size + vert_data_size + idx_data_size);
+        let mut buf = Vec::with_capacity(
+            header_size + vert_data_size + idx_data_size + 4 + layout.submeshes.len() * 12,
+        );
 
         buf.extend_from_slice(RMES_MAGIC);
-        buf.push(1); // version
+        buf.push(RMES_VERSION);
         buf.extend_from_slice(&vert_count.to_le_bytes());
         buf.extend_from_slice(&idx_count.to_le_bytes());
         buf.extend_from_slice(&uv_channels.to_le_bytes());
         buf.extend_from_slice(&(stride * 4).to_le_bytes()); // stride in bytes
 
         let pos_off = header_size as u32;
-        let nrm_off = if has_normals {
+        let nrm_off = if layout.has_normals {
             pos_off + vert_count * 3 * 4
         } else {
             0
         };
         let uv0_off = if uv_channels > 0 {
-            if has_normals {
+            if layout.has_normals {
                 nrm_off + vert_count * 3 * 4
             } else {
                 pos_off + vert_count * 3 * 4
@@ -583,18 +692,23 @@ impl MeshCooker {
         buf.extend_from_slice(&nrm_off.to_le_bytes());
         buf.extend_from_slice(&uv0_off.to_le_bytes());
 
-        // 复制 vertex/index data from intermediate (after 17-byte header).
-        let vert_end = 17 + vert_data_size;
-        if vert_end <= intermediate.len() {
-            buf.extend_from_slice(&intermediate[17..vert_end]);
+        let vert_start = layout.vert_data_start;
+        let vert_end = vert_start.checked_add(vert_data_size)?;
+        let idx_end = vert_end.checked_add(idx_data_size)?;
+        if idx_end > intermediate.len() {
+            return None;
         }
-        let idx_start = vert_end;
-        let idx_end = idx_start + idx_data_size;
-        if idx_end <= intermediate.len() {
-            buf.extend_from_slice(&intermediate[idx_start..idx_end]);
+        buf.extend_from_slice(&intermediate[vert_start..vert_end]);
+        buf.extend_from_slice(&intermediate[vert_end..idx_end]);
+
+        buf.extend_from_slice(&(layout.submeshes.len() as u32).to_le_bytes());
+        for submesh in &layout.submeshes {
+            buf.extend_from_slice(&submesh.index_start.to_le_bytes());
+            buf.extend_from_slice(&submesh.index_count.to_le_bytes());
+            buf.extend_from_slice(&submesh.material_index.unwrap_or(u32::MAX).to_le_bytes());
         }
 
-        buf
+        Some(buf)
     }
 }
 
@@ -608,7 +722,7 @@ impl Cooker for MeshCooker {
     }
 
     fn cook(&self, ctx: &CookContext) -> Result<CookResult, CookError> {
-        let (vert_count, idx_count, uv_channels, _ver) =
+        let (vert_count, idx_count, _uv_channels, _ver) =
             Self::parse_intermediate(ctx.imported_data).ok_or_else(|| {
                 CookError::CookFailed("Invalid mesh intermediate: missing RMXI header".into())
             })?;
@@ -619,7 +733,9 @@ impl Cooker for MeshCooker {
             ));
         }
 
-        let cooked_data = Self::write_rmes(vert_count, idx_count, uv_channels, ctx.imported_data);
+        let cooked_data = Self::write_rmes(ctx.imported_data).ok_or_else(|| {
+            CookError::CookFailed("Invalid mesh intermediate: truncated data".into())
+        })?;
 
         Ok(CookResult {
             cooked_data,
@@ -641,17 +757,20 @@ pub struct RmesInfo {
     pub stride_bytes: u32,
     pub vertex_data: Vec<u8>,
     pub index_data: Vec<u8>,
+    /// RMES v2 submesh table（v1 为空）。
+    pub submeshes: Vec<prism_asset::formats::RmesSubmesh>,
 }
 
 /// 解码 a cooked RMES blob 后 into structured vertex/index data.
 ///
 /// This is the inverse of [`MeshCooker::write_rmes`]. Returns `None` if the
-/// data is malformed.
+/// data is malformed. v1（没有 submesh 表）仍然可读。
 pub fn decode_rmes(data: &[u8]) -> Option<RmesInfo> {
     if data.len() < 33 || &data[..4] != RMES_MAGIC {
         return None;
     }
-    if data[4] != 1 {
+    let version = data[4];
+    if version != 1 && version != RMES_VERSION {
         return None; // unknown version
     }
     let vert_count = u32::from_le_bytes(data[5..9].try_into().ok()?);
@@ -662,17 +781,23 @@ pub fn decode_rmes(data: &[u8]) -> Option<RmesInfo> {
     let _nrm_offset = u32::from_le_bytes(data[25..29].try_into().ok()?);
     let _uv0_offset = u32::from_le_bytes(data[29..33].try_into().ok()?);
 
-    let vert_data_size = vert_count as usize * stride_bytes;
-    let idx_data_size = idx_count as usize * 4;
+    let vert_data_size = (vert_count as usize).checked_mul(stride_bytes)?;
+    let idx_data_size = (idx_count as usize).checked_mul(4)?;
     let header_size = 33usize;
-
-    if data.len() < header_size + vert_data_size + idx_data_size {
+    let index_end = header_size
+        .checked_add(vert_data_size)?
+        .checked_add(idx_data_size)?;
+    if index_end > data.len() {
         return None;
     }
 
     let vertex_data = data[header_size..header_size + vert_data_size].to_vec();
-    let index_data =
-        data[header_size + vert_data_size..header_size + vert_data_size + idx_data_size].to_vec();
+    let index_data = data[header_size + vert_data_size..index_end].to_vec();
+    let submeshes = if version >= 2 {
+        read_submesh_table(data, index_end, idx_count)?
+    } else {
+        Vec::new()
+    };
 
     Some(RmesInfo {
         vert_count,
@@ -681,6 +806,7 @@ pub fn decode_rmes(data: &[u8]) -> Option<RmesInfo> {
         stride_bytes: stride_bytes as u32,
         vertex_data,
         index_data,
+        submeshes,
     })
 }
 
@@ -691,34 +817,22 @@ pub fn decode_rmes(data: &[u8]) -> Option<RmesInfo> {
 pub type RmxiInfo = (u32, u32, u32, Vec<u8>, Vec<u8>);
 
 pub fn parse_rmxi_info(data: &[u8]) -> Option<RmxiInfo> {
-    if data.len() < 17 || &data[..4] != RMXI_MAGIC {
+    let layout = rmxi_layout(data)?;
+    let vert_end = layout.vert_data_start.checked_add(layout.vert_data_size)?;
+    let idx_end = vert_end.checked_add(layout.idx_data_size)?;
+    if idx_end > data.len() {
         return None;
     }
-    let vert_count = u32::from_le_bytes(data[5..9].try_into().ok()?);
-    let idx_count = u32::from_le_bytes(data[9..13].try_into().ok()?);
-    let uv_channels = u32::from_le_bytes(data[13..17].try_into().ok()?);
+    let vert_data = data[layout.vert_data_start..vert_end].to_vec();
+    let idx_data = data[vert_end..idx_end].to_vec();
 
-    let pos_data_size = vert_count as usize * 3 * 4;
-    let idx_data_size = idx_count as usize * 4;
-    let uv_data_size = uv_channels as usize * vert_count as usize * 2 * 4;
-
-    // Detect normals presence from data 大小
-    let expected_with_normals =
-        17 + pos_data_size + vert_count as usize * 3 * 4 + uv_data_size + idx_data_size;
-    let has_normals = data.len() >= expected_with_normals;
-
-    let nrm_floats: usize = if has_normals { 3 } else { 0 };
-    let stride_floats = 3 + nrm_floats + uv_channels as usize * 2;
-    let vert_data_size = vert_count as usize * stride_floats * 4;
-
-    if data.len() < 17 + vert_data_size + idx_data_size {
-        return None;
-    }
-
-    let vert_data = data[17..17 + vert_data_size].to_vec();
-    let idx_data = data[17 + vert_data_size..17 + vert_data_size + idx_data_size].to_vec();
-
-    Some((vert_count, idx_count, uv_channels, vert_data, idx_data))
+    Some((
+        layout.vert_count,
+        layout.idx_count,
+        layout.uv_channels,
+        vert_data,
+        idx_data,
+    ))
 }
 
 // ---------------------------------------------------------------------------

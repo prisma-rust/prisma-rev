@@ -908,6 +908,8 @@ mod tests {
             cast_shadow_two_sided: false,
             state: Default::default(),
             world_bounds: bounds,
+            index_start: 0,
+            index_count: None,
         }
     }
 

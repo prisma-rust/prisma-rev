@@ -500,14 +500,16 @@ const MESH_INTERMEDIATE_MAGIC: &[u8; 4] = b"RMXI";
 /// 世界空间的网格资产（节点 TRS 已经乘进顶点，法线用逆转置矩阵变换）。
 ///
 /// 一个 primitive 缺法线 / UV 时整份网格就不带该属性（不拿零值冒充）；
-/// 非索引 primitive 会补一条顺序索引。材质/图片暂时不落成资产（见 #520 的后续步骤），
-/// 所以整个网格仍然使用 `MeshRenderer.material_path` 上的那一个材质。
+/// 非索引 primitive 会补一条顺序索引。每个 primitive 的索引区间与源材质索引写进
+/// RMXI v2 的 submesh 表；运行时按 `MeshRenderer.material_paths` 逐 submesh 绘制。
+/// 材质/图片本身暂时不落成资产（见 #520 的后续步骤）。
 ///
 /// Intermediate 格式
 /// ```text
 /// [magic:4][version:1][vert_count:4][idx_count:4][uv_count:4]
 /// [positions: f32*3*vert_count][normals: f32*3*vert_count or 空
 /// [uv0: f32*2*vert_count or empty][indices: u32*idx_count]
+/// v2 only: [submesh_count:4][index_start:4][index_count:4][material_index:4]...
 /// ```
 pub struct GltfImporter;
 
@@ -520,21 +522,30 @@ fn write_mesh_intermediate(
     normals: Option<&[[f32; 3]]>,
     uv0: Option<&[[f32; 2]]>,
     indices: &[u32],
+    submeshes: &[SubmeshInfo],
 ) -> Vec<u8> {
     let verts = positions.len() as u32;
     let idxs = indices.len() as u32;
     let uv_channels: u32 = if uv0.is_some() { 1 } else { 0 };
 
     // Estimate 容量
+    let table_len = if submeshes.is_empty() {
+        0
+    } else {
+        4 + submeshes.len() * 12
+    };
     let cap = 4 + 1 + 4 + 4 + 4
             + verts as usize * 3 * 4   // positions
             + normals.map_or(0, |n| n.len() * 3 * 4)
             + uv0.map_or(0, |u| u.len() * 2 * 4)
-            + idxs as usize * 4;
+            + idxs as usize * 4
+            + table_len;
     let mut buf = Vec::with_capacity(cap);
 
     buf.extend_from_slice(MESH_INTERMEDIATE_MAGIC);
-    buf.push(1); // version
+    // v2: index block 后追加 submesh 表（#520）。没有 submesh 的导入器
+    // （OBJ / 手工网格）继续写 v1，cooker 两种都接受。
+    buf.push(if submeshes.is_empty() { 1 } else { 2 });
     buf.extend_from_slice(&verts.to_le_bytes());
     buf.extend_from_slice(&idxs.to_le_bytes());
     buf.extend_from_slice(&uv_channels.to_le_bytes());
@@ -559,6 +570,19 @@ fn write_mesh_intermediate(
     }
     for idx in indices {
         buf.extend_from_slice(&idx.to_le_bytes());
+    }
+    if !submeshes.is_empty() {
+        buf.extend_from_slice(&(submeshes.len() as u32).to_le_bytes());
+        for submesh in submeshes {
+            buf.extend_from_slice(&submesh.index_start.to_le_bytes());
+            buf.extend_from_slice(&submesh.index_count.to_le_bytes());
+            buf.extend_from_slice(
+                &submesh
+                    .material_index
+                    .map_or(u32::MAX, |index| index as u32)
+                    .to_le_bytes(),
+            );
+        }
     }
     buf
 }
@@ -962,8 +986,13 @@ impl Importer for GltfImporter {
 
         let normals = mesh.all_normals.then_some(mesh.normals.as_slice());
         let texcoords = mesh.all_uv0.then_some(mesh.uv0.as_slice());
-        let output_data =
-            write_mesh_intermediate(&mesh.positions, normals, texcoords, &mesh.indices);
+        let output_data = write_mesh_intermediate(
+            &mesh.positions,
+            normals,
+            texcoords,
+            &mesh.indices,
+            &mesh.submeshes,
+        );
 
         let metadata = serde_json::json!({
             "original_name": src
@@ -1257,7 +1286,7 @@ impl Importer for ObjImporter {
         let normals = mesh.all_normals.then_some(mesh.normals.as_slice());
         let texcoords = mesh.all_uv0.then_some(mesh.uv0.as_slice());
         let output_data =
-            write_mesh_intermediate(&mesh.positions, normals, texcoords, &mesh.indices);
+            write_mesh_intermediate(&mesh.positions, normals, texcoords, &mesh.indices, &[]);
 
         let metadata = serde_json::json!({
             "original_name": src

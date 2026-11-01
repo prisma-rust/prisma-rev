@@ -1656,10 +1656,14 @@ impl RenderPassNode for ForwardPass {
                 );
 
                 if let Some(ib) = uploaded.index_buffer {
+                    let index_count = item.index_count.unwrap_or(uploaded.index_count);
+                    if index_count == 0 {
+                        continue;
+                    }
                     ctx.device
                         .cmd_bind_index_buffer(ctx.cmd, ib, 0, vk::IndexType::UINT32);
                     ctx.device
-                        .cmd_draw_indexed(ctx.cmd, uploaded.index_count, 1, 0, 0, 0);
+                        .cmd_draw_indexed(ctx.cmd, index_count, 1, item.index_start, 0, 0);
                 } else {
                     ctx.device.cmd_draw(ctx.cmd, uploaded.vertex_count, 1, 0, 0);
                 }

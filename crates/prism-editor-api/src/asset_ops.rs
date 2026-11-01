@@ -321,17 +321,19 @@ impl Renamer {
 /// 新增带路径的组件字段时要同步补进来 —— `asset_path_fields_cover_string_paths_in_schema`
 /// 会用 `prism-scene` 的注册表挡住漏加（不覆盖 `env_map` / `volume` / `prefab`
 /// 这类不以 `_path` 结尾的名字，所以别只靠测试）。
-const ASSET_PATH_FIELDS: [&str; 10] = [
-    "mesh_path",     // MeshRenderer
-    "material_path", // MeshRenderer
-    "sprite_path",   // SpriteRenderer
-    "hdr_path",      // Skybox
-    "sound_path",    // AudioSource
-    "heightmap",     // Terrain（不以 _path 结尾，必须显式登记）
-    "env_map",       // EnvironmentLighting
-    "volume",        // GiConfig
-    "prefab",        // PrefabInstance
-    "font",          // UI Text（工程自带字体，#583）
+const ASSET_PATH_FIELDS: [&str; 12] = [
+    "mesh_path",      // MeshRenderer
+    "material_path",  // MeshRenderer
+    "material_paths", // MeshRenderer（Vec<String>，多 submesh 材质）
+    "sprite_path",    // SpriteRenderer
+    "tileset_path",   // Tilemap
+    "hdr_path",       // Skybox
+    "sound_path",     // AudioSource
+    "heightmap",      // Terrain（不以 _path 结尾，必须显式登记）
+    "env_map",        // EnvironmentLighting
+    "volume",         // GiConfig
+    "prefab",         // PrefabInstance
+    "font",           // UI Text（工程自带字体，#583）
 ];
 
 /// 作者 JSON 的字段名是否表示资产路径。
@@ -671,6 +673,7 @@ fn slash_path(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn temp_root(tag: &str) -> PathBuf {
         let mut dir = std::env::temp_dir();
@@ -835,6 +838,38 @@ mod tests {
         }
         assert!(!is_asset_path_field("content"));
         assert!(!is_asset_path_field("name"));
+    }
+
+    #[test]
+    fn rename_material_updates_every_material_paths_entry() {
+        let root = temp_root("rename_material_paths");
+        fs::create_dir_all(root.join("assets/materials")).unwrap();
+        fs::write(root.join("assets/materials/a.mat"), b"x").unwrap();
+        fs::write(root.join("assets/materials/b.mat"), b"x").unwrap();
+        let doc = serde_json::json!({
+            "version": 3,
+            "entities": [{
+                "id": 0,
+                "name": "Entity",
+                "parent": null,
+                "transform": {"position": [0, 0, 0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},
+                "components": {
+                    "prism_engine::scene::MeshRenderer": {
+                        "mesh_path": "../materials/a.mat",
+                        "material_paths": ["../materials/a.mat", "../materials/b.mat"]
+                    }
+                }
+            }]
+        });
+        write_doc(&root.join("assets/scenes/demo.scene.json"), &doc).unwrap();
+
+        let result = rename_asset(&root, "assets/materials/a.mat", "assets/materials/c.mat")
+            .expect("rename material");
+        assert!(result.references_updated >= 2, "{result:?}");
+        let text = fs::read_to_string(root.join("assets/scenes/demo.scene.json")).unwrap();
+        assert!(!text.contains("materials/a.mat"));
+        assert_eq!(text.matches("../materials/c.mat").count(), 2);
+        fs::remove_dir_all(&root).ok();
     }
 
     #[test]

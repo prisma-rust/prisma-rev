@@ -189,6 +189,20 @@ fn decode_rmes_handles_vertex_streams_without_normals_or_uvs() {
 }
 
 #[test]
+fn decode_rmes_accepts_v2_and_ignores_the_submesh_table() {
+    let positions = [[0.0, 0.0, 0.0]];
+    let mut blob = rmes_blob(&positions, None, &[], &[0u32]);
+    blob[4] = 2;
+    // v2 表：一个 submesh，覆盖全部索引。
+    blob.extend_from_slice(&1u32.to_le_bytes());
+    blob.extend_from_slice(&0u32.to_le_bytes());
+    blob.extend_from_slice(&1u32.to_le_bytes());
+    blob.extend_from_slice(&u32::MAX.to_le_bytes());
+    let input = decode_rmes(&blob).expect("RMES v2 must decode");
+    assert_eq!(input.indices, vec![0]);
+}
+
+#[test]
 fn decode_rmes_rejects_a_truncated_index_block() {
     let positions = [[0.0, 0.0, 0.0]];
     let mut blob = rmes_blob(&positions, None, &[], &[0u32]);

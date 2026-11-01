@@ -106,44 +106,75 @@ pub fn scene_render_system_into_with_frustum(
 ) {
     out.clear();
     let bounds = world.get_resource::<MeshBounds>();
-    out.extend(
-        world
-            .query2::<LocalToWorld, MeshRef>()
-            .filter(|(e, _, _)| crate::scene::systems::hierarchy::is_active_in_hierarchy(world, *e))
-            .filter(|(_, wt, mr)| match frustum {
-                Some(frustum) => bounds
-                    .and_then(|bounds| bounds.get(mr.render_handle))
-                    .and_then(|local| local.transformed(&wt.0.to_cols_array_2d()))
-                    .map(|world_bounds| frustum.intersects_aabb(&world_bounds))
-                    .unwrap_or(true),
-                None => true,
-            })
-            .map(|(entity, wt, mr)| {
-                // `MeshRenderer.shadow_casting_mode` / `cull_mode`（
-                // `shadowCastingMode` / `CullMode`）。没有该组件的运行时实体按
-                // 默认值处理（`On` / `Back`）。
-                let renderer = world.get::<MeshRenderer>(entity);
-                let mode = renderer
-                    .map(|renderer| renderer.shadow_casting_mode)
-                    .unwrap_or_default();
-                let model = wt.0.to_cols_array_2d();
-                let world_bounds = bounds
-                    .and_then(|bounds| bounds.get(mr.render_handle))
-                    .and_then(|local| local.transformed(&model));
-                DrawItem {
+    for (entity, wt, mr) in world.query2::<LocalToWorld, MeshRef>() {
+        if !crate::scene::systems::hierarchy::is_active_in_hierarchy(world, entity) {
+            continue;
+        }
+        let model = wt.0.to_cols_array_2d();
+        let world_bounds = bounds
+            .and_then(|bounds| bounds.get(mr.render_handle))
+            .and_then(|local| local.transformed(&model));
+        if let Some(frustum) = frustum {
+            if let Some(world_bounds) = world_bounds {
+                if !frustum.intersects_aabb(&world_bounds) {
+                    continue;
+                }
+            }
+        }
+
+        // `MeshRenderer.shadow_casting_mode` / `cull_mode`（
+        // `shadowCastingMode` / `CullMode`）。没有该组件的运行时实体按
+        // 默认值处理（`On` / `Back`）。
+        let renderer = world.get::<MeshRenderer>(entity);
+        let mode = renderer
+            .map(|renderer| renderer.shadow_casting_mode)
+            .unwrap_or_default();
+        let state = draw_state(renderer);
+        let material_ref = world.get::<MaterialRef>(entity);
+        let material_slots = world.get::<MaterialSlots>(entity);
+        let submeshes = world.get::<MeshSubmeshes>(entity);
+
+        // 有 submesh 表时按区间拆成多个 DrawItem（#520）；否则保持旧行为：
+        // 一个实体一次绘制，覆盖整个索引缓冲。
+        let has_submeshes = submeshes.is_some_and(|submeshes| !submeshes.submeshes.is_empty());
+        if has_submeshes {
+            for (index, submesh) in submeshes.unwrap().submeshes.iter().enumerate() {
+                let material = match material_slots {
+                    Some(slots) => slots.slots.get(index).copied().flatten(),
+                    None => material_ref.map(|material| material.material_slot),
+                };
+                out.push(DrawItem {
                     mesh: mr.render_handle,
                     model,
-                    material: world
-                        .get::<MaterialRef>(entity)
-                        .map(|material| material.material_slot),
+                    material,
                     cast_shadow: mode.casts_shadows(),
                     visible_in_main_pass: mode.visible_in_main_pass(),
                     cast_shadow_two_sided: mode.casts_two_sided_shadows(),
-                    state: draw_state(renderer),
+                    state,
                     world_bounds,
-                }
-            }),
-    );
+                    index_start: submesh.index_start,
+                    index_count: Some(submesh.index_count),
+                });
+            }
+        } else {
+            let material = match material_slots {
+                Some(slots) => slots.slots.first().copied().flatten(),
+                None => material_ref.map(|material| material.material_slot),
+            };
+            out.push(DrawItem {
+                mesh: mr.render_handle,
+                model,
+                material,
+                cast_shadow: mode.casts_shadows(),
+                visible_in_main_pass: mode.visible_in_main_pass(),
+                cast_shadow_two_sided: mode.casts_two_sided_shadows(),
+                state,
+                world_bounds,
+                index_start: 0,
+                index_count: None,
+            });
+        }
+    }
 }
 
 /// 按**光源视锥**剔除阴影投射者（#526）。
