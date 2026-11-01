@@ -271,6 +271,11 @@ pub struct GraphRenderer {
     /// on the 渲染 线程 when the 引擎 sends UI 命令
     #[cfg(feature = "ui")]
     ui_overlay: Option<crate::ui_overlay::UiOverlay>,
+    /// Offscreen counterpart of [`Self::ui_overlay`]. It differs only in the
+    /// render-pass final layout (`COLOR_ATTACHMENT_OPTIMAL` instead of
+    /// `PRESENT_SRC_KHR`), so the two paths need separate caches (#597).
+    #[cfg(feature = "ui")]
+    ui_overlay_offscreen: Option<crate::ui_overlay::UiOverlay>,
     /// True when no 表面 is available (headless / CI / server 众数
     is_headless: bool,
     /// Offscreen 目标 for headless 众数 — owned device-local 图像 +
@@ -578,6 +583,8 @@ impl GraphRenderer {
             external_overlay: None,
             #[cfg(feature = "ui")]
             ui_overlay: None,
+            #[cfg(feature = "ui")]
+            ui_overlay_offscreen: None,
             is_headless: false,
             offscreen: None,
             headless_fence: vk::Fence::null(),
@@ -920,6 +927,8 @@ impl GraphRenderer {
             external_overlay: None,
             #[cfg(feature = "ui")]
             ui_overlay: None,
+            #[cfg(feature = "ui")]
+            ui_overlay_offscreen: None,
             is_headless: true,
             pending_screenshot: None,
             screenshot: None,
@@ -1577,8 +1586,13 @@ impl GraphRenderer {
         }
         // UI 叠加按 image view 缓存 framebuffer，必须先于旧视图销毁释放。
         #[cfg(feature = "ui")]
-        if let Some(gpu) = self.ui_overlay.as_mut() {
-            gpu.on_swapchain_views_changed();
+        {
+            if let Some(gpu) = self.ui_overlay.as_mut() {
+                gpu.on_swapchain_views_changed();
+            }
+            if let Some(gpu) = self.ui_overlay_offscreen.as_mut() {
+                gpu.on_swapchain_views_changed();
+            }
         }
 
         let context = self.runtime.context.clone();
@@ -1910,10 +1924,10 @@ impl GraphRenderer {
         // --- ECS UI 叠加 (quads + fontdue glyph text) ---
         //
         // Recorded between the 渲染 图 output and the external overlay
-        // (or the explicit PRESENT 屏障). Its render pass owns the
-        // COLOR_ATTACHMENT_OPTIMAL → PRESENT_SRC_KHR 过渡; when an overlay 也
-        // records 之后, an explicit 屏障 converts 后 to
-        // COLOR_ATTACHMENT_OPTIMAL for the overlay pass.
+        // (or the explicit PRESENT 屏障). For the swapchain path its render
+        // pass owns COLOR_ATTACHMENT_OPTIMAL → PRESENT_SRC_KHR; for the
+        // offscreen path it stays in COLOR_ATTACHMENT_OPTIMAL so the host can
+        // sample the image after `offscreen_present_for_sampling` (#597).
         //
         // 图 末尾 pass（RtPreview）final = PRESENT_SRC_KHR，所以 swapchain
         // image 在 graph 后已是展示布局；UI/overlay render pass 期望
@@ -1978,6 +1992,74 @@ impl GraphRenderer {
                                 ui_overlay.unwrap(),
                             )
                             .context("ui overlay record");
+                    }
+                } else if let Some((image, view, target_extent, color_format)) =
+                    self.offscreen.as_ref().map(|target| {
+                        (
+                            target.image(),
+                            target.image_view(),
+                            target.extent(),
+                            target.format(),
+                        )
+                    })
+                {
+                    // Headless / editor viewport: no swapchain, so the UI pass
+                    // must end in COLOR_ATTACHMENT_OPTIMAL and use its own
+                    // UiOverlay instance (different final layout).
+                    if self.ui_overlay_offscreen.is_none() {
+                        let gpu = crate::ui_overlay::UiOverlay::with_color_format_and_final_layout(
+                            &self.runtime.context,
+                            self.runtime.command_pool,
+                            color_format,
+                            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                        )
+                        .context("create offscreen ui overlay")?;
+                        self.ui_overlay_offscreen = Some(gpu);
+                    }
+                    if let Some(gpu) = self.ui_overlay_offscreen.as_mut() {
+                        gpu.set_color_format(color_format)
+                            .context("offscreen ui overlay color format")?;
+                        // The graph already leaves the target in
+                        // COLOR_ATTACHMENT_OPTIMAL; this barrier only makes
+                        // its color writes visible to the UI pass.
+                        let barrier = vk::ImageMemoryBarrier::default()
+                            .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                            .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                            .image(image)
+                            .subresource_range(vk::ImageSubresourceRange {
+                                aspect_mask: vk::ImageAspectFlags::COLOR,
+                                base_mip_level: 0,
+                                level_count: 1,
+                                base_array_layer: 0,
+                                layer_count: 1,
+                            })
+                            .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                            .dst_access_mask(
+                                vk::AccessFlags::COLOR_ATTACHMENT_READ
+                                    | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                            );
+                        unsafe {
+                            device.cmd_pipeline_barrier(
+                                cmd,
+                                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                                vk::DependencyFlags::empty(),
+                                &[],
+                                &[],
+                                std::slice::from_ref(&barrier),
+                            );
+                        }
+                        record = gpu
+                            .record(
+                                &self.runtime.context,
+                                cmd,
+                                target_extent,
+                                view,
+                                ui_overlay.unwrap(),
+                            )
+                            .context("offscreen ui overlay record");
                     }
                 }
             }
