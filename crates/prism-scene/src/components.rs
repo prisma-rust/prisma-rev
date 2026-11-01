@@ -876,6 +876,12 @@ pub struct ParticleSystem {
     ///
     /// `[1, 0]` 收缩到消失，`[0.5, 2]` 逐渐变大；非有限值按 1 处理，结果不会为负。
     pub size_over_lifetime: [f32; 2],
+    /// 出生 / 死亡时的**世界空间速度偏移**（单位 / 秒），按寿命线性插值后
+    /// 叠加到位移上（不写入粒子速度，因此不会反过来影响重力 / 阻尼）。
+    ///
+    /// `[[0, 0, 0], [0, 0, 0]]` = 不变。可用来做风、上升气流、横向飘移；
+    /// 非有限分量按 0 处理。
+    pub velocity_over_lifetime: [[f32; 3]; 2],
     /// 恒定加速度（世界单位 / 秒²），`[0, -9.81, 0]` 是重力。
     pub gravity: [f32; 3],
     /// 速度阻尼（每秒衰减比例，`0` = 无阻尼，`1` = 一秒内速度归零）。
@@ -904,6 +910,7 @@ impl Default for ParticleSystem {
             end_color: [1.0, 0.25, 0.05, 0.0],
             color_stops: Vec::new(),
             size_over_lifetime: [1.0, 1.0],
+            velocity_over_lifetime: [[0.0; 3]; 2],
             gravity: [0.0, 1.2, 0.0],
             drag: 0.6,
             shape: ParticleShape::Cone,

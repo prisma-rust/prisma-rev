@@ -10,9 +10,9 @@
 //!   GPU（compute + indirect draw）留 Phase 2；
 //! - 粒子在**世界空间**积分，发射器移动不会拖走已飞出的粒子；初速度方向按
 //!   发射器当前的旋转换算；
-//! - 出生时按 `start_speed` / `start_size` / `lifetime` 的区间各取一个随机值，
-//!   颜色在 `start_color → end_color` 之间按年龄线性插值（提取时算，不在模拟里
-//!   存，这样改作者数据立刻生效）；
+//! - 出生时按 `start_speed` / `start_size` / `lifetime` 的区间各取一个随机值；
+//!   颜色 / 尺寸 / 速度偏移都按年龄在作者曲线上求值（提取或积分时算，不在模拟里
+//!   存曲线状态，这样改作者数据立刻生效）；
 //! - 随机源是每个发射器独立的 `xorshift32`（种子 = 实体 id），所以同一场景
 //!   每次加载的粒子分布一致——比 `rand` 依赖更轻，也让单测可复现；
 //! - `dt` 上限 0.1s：编辑器卡一下不会让粒子瞬移穿过整个场景。
@@ -261,7 +261,10 @@ fn step(
         particle.age += dt;
         particle.velocity += gravity * dt;
         particle.velocity *= damping;
-        particle.position += particle.velocity * dt;
+        // 速度曲线只改变**位移**，不写回 `velocity`：否则会与重力 / 阻尼叠加，
+        // 让“风速”变成永久加速度。
+        let drift = particle_velocity_offset(system, particle);
+        particle.position += (particle.velocity + drift) * dt;
     }
     emitter.particles.retain(|p| p.age < p.lifetime);
 
@@ -393,6 +396,16 @@ pub fn particle_size(system: &ParticleSystem, particle: &Particle) -> f32 {
     let end = if end.is_finite() { end } else { 1.0 };
     let scale = start + (end - start) * t;
     (particle.size * scale).max(0.0)
+}
+
+/// 粒子当前的世界空间速度偏移（`velocity_over_lifetime` 在寿命上的线性插值）。
+///
+/// 非有限值按 0 处理；结果只用于位移，不写回 [`Particle::velocity`]。
+pub fn particle_velocity_offset(system: &ParticleSystem, particle: &Particle) -> glam::Vec3 {
+    let start = sanitize_vec3(system.velocity_over_lifetime[0]);
+    let end = sanitize_vec3(system.velocity_over_lifetime[1]);
+    let t = age_fraction(particle);
+    start + (end - start) * t
 }
 
 /// 提取所有可见发射器的粒子为 billboard 绘制项，按到相机的距离**远到近**排序。

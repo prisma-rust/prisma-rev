@@ -451,6 +451,64 @@ fn size_over_lifetime_scales_the_birth_size() {
 }
 
 #[test]
+fn velocity_over_lifetime_adds_a_linear_drift_without_touching_velocity() {
+    let mut world = World::new();
+    let system = ParticleSystem {
+        emission_rate: 0.0,
+        burst: 0,
+        velocity_over_lifetime: [[1.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
+        ..fire()
+    };
+    let entity = spawn_emitter(&mut world, system, [0.0; 3]);
+    world.insert(
+        entity,
+        ParticleEmitter {
+            particles: vec![Particle {
+                position: glam::Vec3::ZERO,
+                velocity: glam::Vec3::ZERO,
+                age: 0.0,
+                lifetime: 1.0,
+                size: 1.0,
+            }],
+            ..ParticleEmitter::seeded(entity)
+        },
+    );
+
+    // t=0.1：偏移 = 1 + (3-1)*0.1 = 1.2 → x += 0.12
+    particle_system(&mut world, 0.1);
+    let first = particles_of(&world, entity)[0].position.x;
+    assert!((first - 0.12).abs() < 1e-5, "{first}");
+    assert_eq!(
+        particles_of(&world, entity)[0].velocity,
+        glam::Vec3::ZERO,
+        "速度曲线只叠加位移，不写回速度"
+    );
+
+    // t=0.2：偏移 = 1.4 → x += 0.14
+    particle_system(&mut world, 0.1);
+    let second = particles_of(&world, entity)[0].position.x;
+    assert!((second - 0.26).abs() < 1e-5, "{second}");
+}
+
+#[test]
+fn velocity_offset_lerps_and_sanitizes_non_finite_components() {
+    let system = ParticleSystem {
+        velocity_over_lifetime: [[0.0, 1.0, 0.0], [f32::NAN, 5.0, f32::INFINITY]],
+        ..fire()
+    };
+    let offset = particle_velocity_offset(&system, &particle_at(0.5, 1.0, 0.5));
+    assert_eq!(offset, glam::Vec3::new(0.0, 3.0, 0.0));
+
+    // 默认曲线 = 不动。
+    let default = ParticleSystem::default().velocity_over_lifetime;
+    assert_eq!(default, [[0.0; 3]; 2]);
+    assert_eq!(
+        particle_velocity_offset(&ParticleSystem::default(), &particle_at(0.5, 1.0, 0.5)),
+        glam::Vec3::ZERO
+    );
+}
+
+#[test]
 fn scene_particles_use_the_size_curve() {
     let mut world = World::new();
     let system = ParticleSystem {

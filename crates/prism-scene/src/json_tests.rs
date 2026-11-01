@@ -386,6 +386,7 @@ fn a_particle_system_survives_cook_and_decode() {
                         "start_size": [0.1, 0.2],
                         "start_color": [1.0, 0.6, 0.2, 1.0],
                         "end_color": [0.6, 0.1, 0.0, 0.0],
+                        "velocity_over_lifetime": [[0.0, 1.0, 0.0], [2.0, 0.0, -1.0]],
                         "gravity": [0.0, 1.0, 0.0],
                         "drag": 0.3,
                         "shape": "Cone",
@@ -418,6 +419,10 @@ fn a_particle_system_survives_cook_and_decode() {
     assert_eq!(system.lifetime, [0.4, 0.9]);
     assert_eq!(system.shape, crate::components::ParticleShape::Cone);
     assert_eq!(system.start_color, [1.0, 0.6, 0.2, 1.0]);
+    assert_eq!(
+        system.velocity_over_lifetime,
+        [[0.0, 1.0, 0.0], [2.0, 0.0, -1.0]]
+    );
     assert_eq!(system.particle_cap(), 64);
 }
 
