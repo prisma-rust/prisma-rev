@@ -1637,7 +1637,7 @@ fn proxies(workspace: &Workspace) -> Vec<(usize, TransformJson)> {
         .collect()
 }
 
-fn pick(
+pub(crate) fn pick(
     workspace: &Workspace,
     point: (f32, f32),
     size: egui::Vec2,

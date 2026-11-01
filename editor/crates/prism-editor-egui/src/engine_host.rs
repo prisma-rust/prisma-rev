@@ -230,6 +230,11 @@ impl EngineHost {
         &self.entities
     }
 
+    /// 离屏渲染目标尺寸（Game view 的「绘图区像素」，与面板逻辑像素不同）。
+    pub fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
     pub fn renderer(&self) -> &GraphRenderer {
         &self.renderer
     }
