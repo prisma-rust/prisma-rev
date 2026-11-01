@@ -1255,3 +1255,208 @@ fn default_registry_routes_obj_to_the_obj_importer() {
     assert!(ObjImporter.can_import(path));
     assert!(!ObjImporter.can_import(Path::new("model.gltf")));
 }
+
+/// 造一个带骨架 + 蒙皮 + 一段动画的最小 GLB（#560）。
+///
+/// 节点树：`0`（根）→ `1`（关节）→ `2`（关节），`3` 是挂网格的节点（skin 0）。
+/// `skin.joints` 故意写成 `[2, 1]`（子在前），用来验证导入器会重排成拓扑序
+/// 并把顶点的 JOINTS_0 一起重映射。
+fn skinned_glb() -> Vec<u8> {
+    let positions: Vec<u8> = [
+        0.0f32, 0.0, 0.0, //
+        1.0, 0.0, 0.0, //
+        0.0, 1.0, 0.0,
+    ]
+    .iter()
+    .flat_map(|value| value.to_le_bytes())
+    .collect();
+    let indices: Vec<u8> = [0u16, 1, 2]
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
+    // JOINTS_0：顶点 0/1 挂 node1（本地索引 1），顶点 2 挂 node2（本地索引 0）。
+    let joints: Vec<u8> = [1u16, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
+    let weights: Vec<u8> = [
+        1.0f32, 0.0, 0.0, 0.0, //
+        1.0, 0.0, 0.0, 0.0, //
+        0.5, 0.5, 0.0, 0.0,
+    ]
+    .iter()
+    .flat_map(|value| value.to_le_bytes())
+    .collect();
+    // inverse bind 按 `skin.joints` 的顺序给出，即 [node2(knee), node1(hip)]：
+    // knee 在 (0, 1, 0)，所以它的 inverse bind 平移列是 (0, -1, 0)。
+    let inverse_binds: Vec<u8> = [
+        1.0f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 1.0,
+        // hip 在原点：单位矩阵。
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ]
+    .iter()
+    .flat_map(|value| value.to_le_bytes())
+    .collect();
+    let times: Vec<u8> = [0.0f32, 1.0]
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
+    let translations: Vec<u8> = [0.0f32, 0.0, 0.0, 0.0, 2.0, 0.0]
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
+
+    let mut bin = Vec::new();
+    let mut views: Vec<serde_json::Value> = Vec::new();
+    let push = |bin: &mut Vec<u8>, bytes: &[u8], views: &mut Vec<serde_json::Value>| -> usize {
+        let offset = bin.len();
+        bin.extend_from_slice(bytes);
+        let pad = (4 - (bin.len() % 4)) % 4;
+        bin.extend(std::iter::repeat_n(0u8, pad));
+        views.push(
+            serde_json::json!({ "buffer": 0, "byteOffset": offset, "byteLength": bytes.len() }),
+        );
+        views.len() - 1
+    };
+    let pos_view = push(&mut bin, &positions, &mut views);
+    let idx_view = push(&mut bin, &indices, &mut views);
+    let joints_view = push(&mut bin, &joints, &mut views);
+    let weights_view = push(&mut bin, &weights, &mut views);
+    let ibm_view = push(&mut bin, &inverse_binds, &mut views);
+    let times_view = push(&mut bin, &times, &mut views);
+    let translations_view = push(&mut bin, &translations, &mut views);
+
+    let json = serde_json::json!({
+        "asset": { "version": "2.0", "generator": "prisma-test" },
+        "scene": 0,
+        "scenes": [{ "nodes": [0, 3] }],
+        "nodes": [
+            { "name": "root", "children": [1] },
+            { "name": "hip", "children": [2] },
+            { "name": "knee" },
+            { "name": "body", "mesh": 0, "skin": 0 }
+        ],
+        "meshes": [{ "primitives": [{
+            "attributes": { "POSITION": 0, "JOINTS_0": 2, "WEIGHTS_0": 3 },
+            "indices": 1
+        }] }],
+        "skins": [{
+            "joints": [2, 1],
+            "inverseBindMatrices": 4
+        }],
+        "animations": [{
+            "name": "walk",
+            "channels": [{ "sampler": 0, "target": { "node": 2, "path": "translation" } }],
+            "samplers": [{ "input": 5, "output": 6, "interpolation": "LINEAR" }]
+        }],
+        "bufferViews": views,
+        "buffers": [{ "byteLength": bin.len() }],
+        "accessors": [
+            accessor(pos_view, 5126, 3, "VEC3"),
+            accessor(idx_view, 5123, 3, "SCALAR"),
+            accessor(joints_view, 5123, 3, "VEC4"),
+            accessor(weights_view, 5126, 3, "VEC4"),
+            accessor(ibm_view, 5126, 2, "MAT4"),
+            accessor(times_view, 5126, 2, "SCALAR"),
+            accessor(translations_view, 5126, 2, "VEC3")
+        ]
+    });
+
+    pack_glb(json, &bin)
+}
+
+#[test]
+fn gltf_side_assets_cook_rskel_rskin_and_ranim() {
+    use prism_asset::formats_skinned::{decode_ranim, decode_rskel, decode_rskin};
+
+    // 合成骨架：子关节在前、顶点挂到各自的关节上、一段平移动画（#560）。
+    let glb = skinned_glb();
+    let path = std::env::temp_dir().join("prisma_skinned_import.glb");
+    std::fs::write(&path, &glb).unwrap();
+    let side = GltfImporter::side_assets(&path, "models/hero.glb").unwrap();
+    std::fs::remove_file(&path).ok();
+
+    let skeleton_path = side.skeleton_path.clone().expect(".rskel path");
+    let mesh_path = side.skinned_mesh_path.clone().expect(".rskin path");
+    assert_eq!(side.clip_paths.len(), 1, "one clip in the file");
+
+    let find = |path: &str| -> Vec<u8> {
+        side.assets
+            .iter()
+            .find(|asset| asset.path == path)
+            .unwrap_or_else(|| panic!("missing side asset {path}"))
+            .cooked_data
+            .clone()
+    };
+
+    let skeleton = decode_rskel(&find(&skeleton_path)).expect(".rskel decodes");
+    assert_eq!(skeleton.joint_count(), 2);
+    assert!(
+        skeleton.is_topologically_sorted(),
+        "parents must come first"
+    );
+    let hip = skeleton.joint_index("hip").expect("hip joint");
+    let knee = skeleton.joint_index("knee").expect("knee joint");
+    assert_eq!(skeleton.joints[hip].parent, None);
+    assert_eq!(skeleton.joints[knee].parent, Some(hip as u16));
+    // 参考姿态来自 inverse bind：knee 相对 hip 是 +1m。
+    let reference = skeleton.joints[knee].reference_local.translation;
+    assert!((reference[1] - 1.0).abs() < 1e-4, "got {reference:?}");
+
+    let mesh = decode_rskin(&find(&mesh_path)).expect(".rskin decodes");
+    assert_eq!(mesh.vertex_count, 3);
+    assert_eq!(mesh.joint_count, 2);
+    // JOINTS_0 里的本地索引已经被重映射到拓扑序后的全局下标：
+    // 顶点 0/1 的第一个影响是 node1(hip) → 全局 0，顶点 2 是 node2(knee) → 全局 1。
+    // 权重为 0 的备用槽也会一起重映射（保持在范围内，着色时不起作用）。
+    assert_eq!(mesh.joints[0][0], 0);
+    assert_eq!(mesh.weights[0], [1.0, 0.0, 0.0, 0.0]);
+    assert_eq!(mesh.joints[2][0], 1);
+    assert_eq!(mesh.weights[2], [0.5, 0.5, 0.0, 0.0]);
+    assert!(mesh.weights_are_normalized(), "cooker normalises weights");
+    assert!(mesh.joint_indices_are_in_range());
+    assert_eq!(mesh.indices, vec![0, 1, 2]);
+
+    let clip = decode_ranim(&find(&side.clip_paths[0])).expect(".ranim decodes");
+    assert_eq!(clip.name, "walk");
+    assert!((clip.duration - 1.0).abs() < 1e-4);
+    assert_eq!(clip.tracks.len(), 1);
+    assert_eq!(clip.tracks[0].joint, u32::from(knee as u16));
+    assert_eq!(clip.tracks[0].positions.len(), 2);
+    assert!((clip.tracks[0].positions[1].value[1] - 2.0).abs() < 1e-4);
+}
+
+#[test]
+fn an_unskinned_gltf_emits_no_skinning_assets() {
+    let (positions, indices) = triangle_bytes(1.0);
+    let mut bin = Vec::new();
+    bin.extend_from_slice(&positions);
+    let idx_offset = bin.len();
+    bin.extend_from_slice(&indices);
+
+    let json = serde_json::json!({
+        "asset": { "version": "2.0" },
+        "scene": 0,
+        "scenes": [{ "nodes": [0] }],
+        "nodes": [{ "mesh": 0 }],
+        "meshes": [{ "primitives": [{ "attributes": { "POSITION": 0 }, "indices": 1 }] }],
+        "bufferViews": [
+            { "buffer": 0, "byteOffset": 0, "byteLength": positions.len() },
+            { "buffer": 0, "byteOffset": idx_offset, "byteLength": indices.len() }
+        ],
+        "buffers": [{ "byteLength": bin.len() }],
+        "accessors": [
+            accessor(0, 5126, 3, "VEC3"),
+            accessor(1, 5123, 3, "SCALAR")
+        ]
+    });
+
+    let path = std::env::temp_dir().join("prisma_plain_mesh.glb");
+    std::fs::write(&path, pack_glb(json, &bin)).unwrap();
+    let side = GltfImporter::side_assets(&path, "models/plain.glb").unwrap();
+    std::fs::remove_file(&path).ok();
+
+    assert!(side.skeleton_path.is_none());
+    assert!(side.skinned_mesh_path.is_none());
+    assert!(side.clip_paths.is_empty());
+}

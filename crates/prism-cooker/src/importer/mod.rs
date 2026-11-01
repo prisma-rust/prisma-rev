@@ -21,6 +21,8 @@
     clippy::cargo
 )]
 
+mod skinned;
+
 use crate::db::{AssetDatabase, AssetRecord, ImportCache};
 use prism_asset::core::{AssetId, AssetType};
 use std::collections::HashMap;
@@ -536,6 +538,12 @@ pub struct GltfSideAssets {
     pub submesh_material_paths: Vec<String>,
     /// Cooked side assets to stage at their declared paths.
     pub assets: Vec<ImportedSideAsset>,
+    /// `.rskel` path when the source file carries a skeleton (#560).
+    pub skeleton_path: Option<String>,
+    /// `.rskin` path when the source file carries skin weights (#560).
+    pub skinned_mesh_path: Option<String>,
+    /// One `.ranim` path per glTF animation, in source order (#560).
+    pub clip_paths: Vec<String>,
 }
 
 /// 把一套已经拆好的顶点属性写成 RMXI 中间格式。
@@ -623,6 +631,19 @@ impl GltfImporter {
             has_skins: document.skins().next().is_some(),
             ..Default::default()
         };
+
+        // 蒙皮骨骼 + 动画先算出来：顶点流里的 JOINTS_0 需要「skin 本地索引 →
+        // 全局骨架索引」的重映射表（#560）。
+        let skin_result = skinned::read_skinning(&document, &buffers);
+        if !skin_result.skinning.is_empty() {
+            tracing::info!(
+                "glTF: {} joint(s), {} clip(s)",
+                skin_result.skinning.joint_count(),
+                skin_result.clips.len()
+            );
+        }
+        mesh.skinning = skin_result.skinning;
+        mesh.clips = skin_result.clips;
 
         // 材质 / 图片先落 metadata（#520）：多材质渲染和贴图资产落库要改
         // `.scene.json` 与 DrawItem，这一版只把源文件里的信息完整保留下来。
@@ -724,9 +745,10 @@ impl GltfImporter {
             ));
         }
         if mesh.primitive_count == 0 {
+            // 没有节点信息时无法绑定 skin：顶点保持未蒙皮（网格照常可渲染）。
             for gltf_mesh in document.meshes() {
                 for primitive in gltf_mesh.primitives() {
-                    push_primitive(&primitive, &IDENTITY, &buffers, &mut mesh);
+                    push_primitive(&primitive, &IDENTITY, &buffers, None, &mut mesh);
                 }
             }
         }
@@ -734,6 +756,18 @@ impl GltfImporter {
             return Err(ImportError::ImportFailed(
                 "No triangle primitives found in glTF".into(),
             ));
+        }
+
+        if mesh.positions.is_empty() {
+            return Err(ImportError::ImportFailed(
+                "glTF mesh has no vertices".into(),
+            ));
+        }
+        // 有任何一个 primitive 缺 JOINTS_0/WEIGHTS_0：整份网格不带蒙皮，
+        // 免得半蒙皮的数据把整条骨架拖歪。
+        if !mesh.all_skin_attrs || mesh.joints.len() != mesh.positions.len() {
+            mesh.joints.clear();
+            mesh.weights.clear();
         }
 
         Ok(mesh)
@@ -867,10 +901,77 @@ impl GltfImporter {
             assets.push(cook_gltf_material(&material, &plan.default_path)?);
         }
 
+        // 蒙皮 / 动画（#560）：与材质一样按「主资产路径 + 后缀」派生，
+        // 保证同一个源文件每次 cook 都落到同样的路径。
+        let mut skeleton_path = None;
+        let mut skinned_mesh_path = None;
+        let mut clip_paths = Vec::new();
+        if !mesh.skinning.is_empty() {
+            let joint_count = mesh.skinning.joint_count() as u32;
+            let skel_path = format!("{mesh_pak_path}.skinning/skeleton.rskel");
+            match crate::cooker::skinned::encode_rskel(&mesh.skinning.skeleton) {
+                Some(bytes) => {
+                    assets.push(ImportedSideAsset {
+                        path: skel_path.clone(),
+                        cooked_data: bytes,
+                    });
+                    skeleton_path = Some(skel_path);
+                }
+                None => tracing::warn!(
+                    "glTF skeleton for '{mesh_pak_path}' could not be encoded; skipping .rskel"
+                ),
+            }
+
+            if mesh.joints.len() == mesh.positions.len() && !mesh.joints.is_empty() {
+                let rskin_path = format!("{mesh_pak_path}.skinning/mesh.rskin");
+                match skinned::skinned_mesh_info(&mesh, joint_count) {
+                    Some(info) => match crate::cooker::skinned::encode_rskin(&info) {
+                        Some(bytes) => {
+                            assets.push(ImportedSideAsset {
+                                path: rskin_path.clone(),
+                                cooked_data: bytes,
+                            });
+                            skinned_mesh_path = Some(rskin_path);
+                        }
+                        None => tracing::warn!(
+                            "glTF skinned mesh for '{mesh_pak_path}' could not be encoded; skipping .rskin"
+                        ),
+                    },
+                    None => tracing::warn!(
+                        "glTF skinned mesh for '{mesh_pak_path}' has no usable joint/weight data; skipping .rskin"
+                    ),
+                }
+            } else if !mesh.skinning.is_empty() {
+                tracing::warn!(
+                    "glTF '{mesh_pak_path}' has a skeleton but no complete JOINTS_0/WEIGHTS_0 stream; no .rskin"
+                );
+            }
+
+            for (index, clip) in mesh.clips.iter().enumerate() {
+                let name = sanitize_asset_name(Some(&clip.name), "clip");
+                let clip_path = format!("{mesh_pak_path}.skinning/clips/{index}_{name}.ranim");
+                match crate::cooker::skinned::encode_ranim(clip) {
+                    Some(bytes) => {
+                        assets.push(ImportedSideAsset {
+                            path: clip_path.clone(),
+                            cooked_data: bytes,
+                        });
+                        clip_paths.push(clip_path);
+                    }
+                    None => {
+                        tracing::warn!("glTF clip '{}' could not be encoded; skipped", clip.name)
+                    }
+                }
+            }
+        }
+
         Ok(GltfSideAssets {
             material_paths: plan.material_paths,
             submesh_material_paths: plan.submesh_material_paths,
             assets,
+            skeleton_path,
+            skinned_mesh_path,
+            clip_paths,
         })
     }
 }
@@ -1122,6 +1223,16 @@ struct MeshData {
     /// Decoded RGBA8 pixels for each image, in glTF image order. Empty entries
     /// mean the decoder could not produce RGBA8 (unsupported format).
     image_pixels: Vec<Vec<u8>>,
+    /// 每顶点 4 个骨骼下标（已重映射到全局骨架），#560。
+    joints: Vec<[u16; 4]>,
+    /// 每顶点 4 个权重（原始值，cooker 负责归一化），#560。
+    weights: Vec<[f32; 4]>,
+    /// 每个 primitive 都带 JOINTS_0/WEIGHTS_0 时才为 true。
+    all_skin_attrs: bool,
+    /// 骨架 + 每个 skin 的 joint 重映射（没有 skin 时为空），#560。
+    skinning: skinned::GltfSkinning,
+    /// glTF 里的动画剪辑（已重映射到全局骨架），#560。
+    clips: Vec<prism_asset::formats_skinned::AnimClipInfo>,
 }
 
 /// 合并网格里的一个 submesh：index 区间 + 它使用的材质。
@@ -1181,6 +1292,11 @@ impl Default for MeshData {
             materials: Vec::new(),
             images: Vec::new(),
             image_pixels: Vec::new(),
+            joints: Vec::new(),
+            weights: Vec::new(),
+            all_skin_attrs: true,
+            skinning: skinned::GltfSkinning::default(),
+            clips: Vec::new(),
         }
     }
 }
@@ -1266,8 +1382,10 @@ fn collect_node(
     out.node_count += 1;
     let world = matrix_mul(parent, &node.transform().matrix());
     if let Some(mesh) = node.mesh() {
+        // `node.skin()` 只作用于这个节点自己的网格；子节点各带各的 skin。
+        let skin = node.skin();
         for primitive in mesh.primitives() {
-            push_primitive(&primitive, &world, buffers, out);
+            push_primitive(&primitive, &world, buffers, skin.as_ref(), out);
         }
     }
     for child in node.children() {
@@ -1279,6 +1397,7 @@ fn push_primitive(
     primitive: &gltf::Primitive,
     world: &Mat4,
     buffers: &[gltf::buffer::Data],
+    skin: Option<&gltf::Skin>,
     out: &mut MeshData,
 ) {
     // 只烤三角形；线/点之类先跳过并计数（不在这一版的支持范围内）。
@@ -1338,6 +1457,42 @@ fn push_primitive(
         None => {
             out.all_uv0 = false;
             out.uv0.resize(out.uv0.len() + positions.len(), [0.0, 0.0]);
+        }
+    }
+
+    // JOINTS_0 / WEIGHTS_0（#560）：只有整份网格都有蒙皮时才保留。
+    if out.all_skin_attrs {
+        let remap =
+            skin.and_then(|skin| out.skinning.remap(skin.index()).map(|remap| (skin, remap)));
+        match (remap, reader.read_joints(0), reader.read_weights(0)) {
+            (Some((_skin, remap)), Some(joints), Some(weights)) => {
+                let joints: Vec<[u16; 4]> = joints.into_u16().collect();
+                let weights: Vec<[f32; 4]> = weights.into_f32().collect();
+                if joints.len() == positions.len() && weights.len() == positions.len() {
+                    out.joints.extend(joints.iter().map(|joint| {
+                        let mut mapped = [0u16; 4];
+                        for (slot, index) in joint.iter().enumerate() {
+                            // skin 之外的下标一律夹到 0：坏数据不该让整份网格失效。
+                            mapped[slot] = remap.get(*index as usize).copied().unwrap_or(0);
+                        }
+                        mapped
+                    }));
+                    out.weights.extend(weights);
+                } else {
+                    out.all_skin_attrs = false;
+                    out.joints
+                        .resize(out.joints.len() + positions.len(), [0; 4]);
+                    out.weights
+                        .resize(out.weights.len() + positions.len(), [0.0; 4]);
+                }
+            }
+            _ => {
+                out.all_skin_attrs = false;
+                out.joints
+                    .resize(out.joints.len() + positions.len(), [0; 4]);
+                out.weights
+                    .resize(out.weights.len() + positions.len(), [0.0; 4]);
+            }
         }
     }
 

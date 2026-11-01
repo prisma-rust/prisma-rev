@@ -580,3 +580,57 @@ fn a_terrain_survives_cook_and_decode() {
     assert_eq!(terrain.height_scale, 1.5);
     assert_eq!(terrain.resolution, 0, "0 = 跟随高度图大小");
 }
+
+#[test]
+fn skinned_components_survive_cook_and_decode() {
+    // 骨架与蒙皮渲染器只有路径 + 一个 `Vec<String>`（#560）。
+    let mut registry = ComponentRegistry::new();
+    register_builtin_components(&mut registry);
+    let scene = SceneJson::parse(
+        r#"{
+            "version": 3,
+            "entities": [{
+                "id": 0,
+                "name": "Hero",
+                "components": {
+                    "prism_engine::scene::SkeletonRoot": {
+                        "skeleton_path": "models/hero.glb.skinning/skeleton.rskel",
+                        "default_clip_path": "models/hero.glb.skinning/clips/0_walk.ranim"
+                    },
+                    "prism_engine::scene::SkinnedMeshRenderer": {
+                        "skinned_mesh_path": "models/hero.glb.skinning/mesh.rskin",
+                        "material_paths": ["a.mat.json", "b.mat.json"],
+                        "material_path": "fallback.mat.json"
+                    }
+                }
+            }]
+        }"#,
+    )
+    .unwrap();
+
+    let bytes = crate::encode_scene(&scene, &registry).expect("scene with skinning must cook");
+    let decoded = crate::decode_scene(&bytes, &registry).expect("cooked scene must decode");
+
+    let mut world = prism_ecs::World::new();
+    let entity = world.spawn();
+    for component in &decoded.entities[0].components {
+        assert!(registry.apply_object(&mut world, entity, component));
+    }
+    let skeleton = world
+        .get::<crate::components::SkeletonRoot>(entity)
+        .expect("skeleton root must apply to the world");
+    assert_eq!(
+        skeleton.skeleton_path,
+        "models/hero.glb.skinning/skeleton.rskel"
+    );
+    assert!(skeleton.has_skeleton());
+    let renderer = world
+        .get::<crate::components::SkinnedMeshRenderer>(entity)
+        .expect("skinned renderer must apply to the world");
+    assert_eq!(
+        renderer.skinned_mesh_path,
+        "models/hero.glb.skinning/mesh.rskin"
+    );
+    assert_eq!(renderer.material_paths.len(), 2);
+    assert_eq!(renderer.material_path, "fallback.mat.json");
+}
