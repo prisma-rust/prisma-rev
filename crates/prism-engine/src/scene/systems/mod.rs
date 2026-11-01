@@ -15,5 +15,6 @@ pub mod camera;
 pub mod hierarchy;
 pub mod lights;
 pub mod particles;
+pub mod particles2d;
 pub mod render;
 pub mod terrain;

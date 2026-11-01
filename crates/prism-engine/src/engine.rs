@@ -644,6 +644,13 @@ fn default_schedule() -> Schedule {
         crate::scene::systems::particles::particle_system(world, dt);
     });
 
+    // ── 2D 粒子模拟 ─────────────────────────────────────────
+    // 世界 XY 平面的 CPU 粒子（#594）。和 3D 粒子并排，理由相同：与 ECS /
+    // 场景格式一致，提取阶段读到的已经是本帧推进后的粒子。
+    s.add_system("fx::particles2d", |world, dt| {
+        crate::scene::systems::particles2d::particle_emitter_2d_system(world, dt);
+    });
+
     // ── UI 布局 ─────────────────────────────────────────────
     // 每帧重新计算所有 UI 元素的屏幕空间矩形。
     s.add_system("ui::layout", |world, _dt| {
