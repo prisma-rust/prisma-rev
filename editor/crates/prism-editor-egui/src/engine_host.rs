@@ -284,7 +284,8 @@ impl EngineHost {
                 &self.packet.draw_items,
                 &self.packet.sprite_items,
                 &self.packet.particle_items,
-            ));
+            ))
+            .with_gpu_history(self.renderer.gpu_history().samples());
         report.write_json(path)?;
         Ok(())
     }

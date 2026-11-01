@@ -345,6 +345,7 @@ pub fn render_thread_main(
                     &packet.sprite_items,
                     &packet.particle_items,
                 ),
+                renderer.gpu_history().to_vec(),
             );
         }
 
