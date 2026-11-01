@@ -217,6 +217,10 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
 - **检查器**：单选 + 多选（公共组件批量改字段，一次撤销；多选时最后点击 /
   右键的对象是 Active，批量 Transform 显示它的值，#507）；预制体区块（Revert /
   Sync All / Save as Prefab…）；组件卡头的复制 / 移除；Add Component 分类菜单；
+  **列表字段可编辑（#418）**：`Vec<T>` 每项一行，带 `▲` / `▼` / `✕`，底部
+  `+ Add` 按元素 schema 生成默认值（`Vec3` → `[0,0,0]`，嵌套 struct → 各字段默认值）；
+  定长数组不提供增删；元素内部仍然用它们真正的控件，路径是 `字段[i]`（`LineRenderer.points`
+  这类字段因此不必再手改 JSON）。`Option<T>` 用勾选框控制存在与否，嵌套 struct 可折叠展开。
 - **Project（资产）**：后退 / 前进 / 面包屑、目录浏览、类型过滤、搜索、重命名 /
   复制 / 删除 / 复制路径 / 实例化预制体；**目录行**和文件一样可以选中（单击选中、
   双击进入），右键有 Open / Rename / New Subfolder / Copy Path / Show in Explorer /
