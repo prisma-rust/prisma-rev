@@ -906,3 +906,135 @@ fn shader_importer_respects_settings_overrides() {
 
     std::fs::remove_file(&path).ok();
 }
+
+// -------------------------------------------------------------------
+// OBJ 导入器（#520）
+// -------------------------------------------------------------------
+
+fn import_obj(name: &str, source: &str) -> Result<ImportResult, ImportError> {
+    let path = std::env::temp_dir().join(name);
+    std::fs::write(&path, source).unwrap();
+    let ctx = ImportContext {
+        source_path: path.clone(),
+        source_hash: xxhash_rust::xxh3::xxh3_64(source.as_bytes()),
+        settings: serde_json::Value::Null,
+        db: Arc::new(AssetDatabase::new()),
+    };
+    let result = ObjImporter.import(&ctx);
+    std::fs::remove_file(&path).ok();
+    result
+}
+
+#[test]
+fn obj_importer_triangulates_a_quad_and_keeps_uvs_and_normals() {
+    let result = import_obj(
+        "test_quad.obj",
+        "\
+# a quad with shared normal/uv streams
+v 0 0 0
+v 1 0 0
+v 1 1 0
+v 0 1 0
+vt 0 0
+vt 1 0
+vt 1 1
+vt 0 1
+vn 0 0 1
+f 1/1/1 2/2/1 3/3/1 4/4/1
+",
+    )
+    .unwrap();
+
+    assert_eq!(result.asset_type, AssetType::Mesh);
+    let (verts, idxs) = rmxi_counts(&result.output_data);
+    assert_eq!((verts, idxs), (4, 6), "quad → 4 vertices, 2 triangles");
+    assert_eq!(rmxi_position(&result.output_data, 0), [0.0, 0.0, 0.0]);
+    assert_eq!(rmxi_position(&result.output_data, 2), [1.0, 1.0, 0.0]);
+
+    let meta = result.metadata.unwrap();
+    assert_eq!(meta["source_format"], "obj");
+    assert_eq!(meta["vertex_count"], 4);
+    assert_eq!(meta["index_count"], 6);
+    assert_eq!(meta["has_normals"], true);
+    assert_eq!(meta["has_texcoords"], true);
+    assert_eq!(meta["material_count"], 0);
+}
+
+#[test]
+fn obj_importer_supports_negative_indices_without_uvs() {
+    let result = import_obj(
+        "test_negative.obj",
+        "\
+v 0 0 0
+v 1 0 0
+v 0 1 0
+vn 0 0 1
+f -3//1 -2//1 -1//1
+",
+    )
+    .unwrap();
+
+    let (verts, idxs) = rmxi_counts(&result.output_data);
+    assert_eq!((verts, idxs), (3, 3));
+    let meta = result.metadata.unwrap();
+    assert_eq!(meta["has_normals"], true);
+    assert_eq!(meta["has_texcoords"], false);
+}
+
+#[test]
+fn obj_importer_deduplicates_shared_vertices() {
+    let result = import_obj(
+        "test_shared.obj",
+        "\
+v 0 0 0
+v 1 0 0
+v 1 1 0
+v 0 1 0
+vn 0 0 1
+f 1//1 2//1 3//1
+f 1//1 3//1 4//1
+",
+    )
+    .unwrap();
+
+    let (verts, idxs) = rmxi_counts(&result.output_data);
+    // 四个位置各出现一次；两个三角形共享 1 和 3。
+    assert_eq!((verts, idxs), (4, 6));
+}
+
+#[test]
+fn obj_importer_rejects_files_without_faces_and_out_of_range_indices() {
+    let empty = import_obj("test_empty.obj", "v 0 0 0\nv 1 0 0\nv 0 1 0\n").unwrap_err();
+    assert!(
+        matches!(&empty, ImportError::ImportFailed(message) if message.contains("no faces")),
+        "{empty:?}"
+    );
+
+    let out_of_range = import_obj(
+        "test_out_of_range.obj",
+        "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 4\n",
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&out_of_range, ImportError::ImportFailed(message) if message.contains("out of range")),
+        "{out_of_range:?}"
+    );
+
+    let nan = import_obj("test_nan.obj", "v NaN 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n").unwrap_err();
+    assert!(
+        matches!(&nan, ImportError::ImportFailed(message) if message.contains("not finite")),
+        "{nan:?}"
+    );
+}
+
+#[test]
+fn default_registry_routes_obj_to_the_obj_importer() {
+    let registry = default_importer_registry();
+    let path = Path::new("model.OBJ");
+    let importer = registry
+        .find_for_path(path)
+        .expect("OBJ should have an importer");
+    assert_eq!(importer.name(), "obj-importer");
+    assert!(ObjImporter.can_import(path));
+    assert!(!ObjImporter.can_import(Path::new("model.gltf")));
+}
