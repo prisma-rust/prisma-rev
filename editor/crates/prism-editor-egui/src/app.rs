@@ -2300,6 +2300,28 @@ impl EditorApp {
                 }
                 Err(error) => json!({ "ok": false, "error": error }),
             },
+            "quit.confirm" | "quit_confirm" => {
+                // 和菜单 Exit / 点窗口 × 一样：有未保存文档时弹三选一，不强制退出。
+                let dirty: Vec<String> = self
+                    .workspace
+                    .docs
+                    .iter()
+                    .filter(|document| document.dirty)
+                    .map(|document| document.path.clone().unwrap_or_else(|| document.title()))
+                    .collect();
+                self.request_quit(ctx);
+                json!({
+                    "ok": true,
+                    "closing": dirty.is_empty(),
+                    "pending": (!dirty.is_empty()).then_some("unsaved"),
+                    "dirty_documents": dirty,
+                })
+            }
+            "quit.cancel" | "quit_cancel" => {
+                // 自动化 / 测试可以撤销一次 quit.confirm 留在桌面上的确认框。
+                self.state.pending_close = None;
+                json!({ "ok": true })
+            }
             "quit" => {
                 // 自动化路径（MCP / 脚本）要求确定性地退出，跳过未保存确认。
                 self.force_quit = true;
