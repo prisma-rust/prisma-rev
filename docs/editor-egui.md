@@ -228,6 +228,12 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
   字体。字体是普通资产：`AssetType::Font`、原样进 `.pak`、重命名时引用会被改写，
   运行时由 `GpuAssetResolver::prepare_ui_fonts` 读出字节注册进 UI 图集
   （多字体共用一张 R8 图集，仍然只有一次 draw call，#583）。
+- **UI 按钮（#528）**：给 `Node + Style` 元素再加 `prism_engine::ui::Button`
+  （Add Component 里就是 `Button`）就得到可点按钮：`normal` / `hover` / `pressed` /
+  `disabled` 四色由输入系统自动切换，`interactable = false` 只显示禁用色、不响应点击。
+  点击语义与 Unity `Clickable` 一致：在元素内按下并**在同一元素内松开**才置
+  `clicked`；点击后该按钮获得键盘焦点，`Enter` / `Space` 同样提交。`Interaction`
+  现在是可序列化组件，场景 / 预制体可以直接保存。
 - **Game 视图分辨率 / 宽高比**：视口左上角下拉。默认读取工程
   `assets/settings.ini [window]` 的 `width`/`height`（例如 1600×900），
   按该分辨率离屏渲染并等比 letterbox，所以编辑器构图和打包产物一致。

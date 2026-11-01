@@ -441,6 +441,7 @@ impl Engine {
             cursor_pos: [pos[0] as f32, pos[1] as f32],
             left_clicked: input_manager.mouse_just_pressed(crate::input::MouseButton::Left),
             left_held: input_manager.mouse_held(crate::input::MouseButton::Left),
+            left_released: input_manager.mouse_just_released(crate::input::MouseButton::Left),
             pressed_keys: input_manager.pressed_keys().to_vec(),
         });
 

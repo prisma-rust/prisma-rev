@@ -38,7 +38,7 @@ mod particles;
 mod render;
 
 pub use components::*;
-pub use input::{ui_input_system, UiInputState};
+pub use input::{ui_input_system, UiFocus, UiInputState, UiPressState};
 pub use layout::{assign_draw_order, ui_layout_system, ScreenSize};
 pub use panel_base::PanelBase;
 pub use particles::{Particle2D, ParticleSystem2D, SpawnKind};
