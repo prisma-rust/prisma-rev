@@ -8,7 +8,7 @@ use prism_editor_core::settings::{
     matching_fields, SettingsCache, PROFILE_CHOICES, TARGET_CHOICES,
 };
 use prism_editor_core::{
-    format_bytes, AssetKind, AssetPreview, Locale, LogLevel, LogSource, Preferences,
+    format_bytes, AssetKind, AssetPreview, EntityJson, Locale, LogLevel, LogSource, Preferences,
     ProjectSettings, SceneDoc, Workspace, THEME_PRESETS,
 };
 use serde_json::{json, Value};
@@ -238,6 +238,36 @@ impl Default for OfflineToolsState {
     }
 }
 
+/// 层级搜索的匹配方式（Unity 的 `SearchMode`）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HierarchySearchMode {
+    /// 按实体名字子串匹配（默认）。
+    #[default]
+    Name,
+    /// 按组件类型短名匹配，例如 `PointLight` / `camera`。
+    Component,
+}
+
+impl HierarchySearchMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Name => "Name",
+            Self::Component => "Type",
+        }
+    }
+
+    fn matches(self, entity: &EntityJson, filter: &str) -> bool {
+        match self {
+            Self::Name => entity.display_name().to_lowercase().contains(filter),
+            Self::Component => entity.components.keys().any(|component| {
+                // schema 里存的是完整 Rust 路径；用户搜的是短名。
+                let short = component.rsplit("::").next().unwrap_or(component);
+                short.to_lowercase().contains(filter)
+            }),
+        }
+    }
+}
+
 /// egui 侧的临时 UI 状态（不进文档、不进撤销栈）。
 #[derive(Default)]
 pub struct UiState {
@@ -248,6 +278,10 @@ pub struct UiState {
     /// 下一帧自动解锁、回落到文档选择。
     pub inspector_lock: Option<Vec<u32>>,
     pub hierarchy_search: String,
+    /// 层级搜索按名字还是按组件类型匹配（#417）。
+    pub hierarchy_search_mode: HierarchySearchMode,
+    /// 层级 Shift 区间选择的锚点（按实体下标；与资产面板的 `asset_anchor` 同理）。
+    pub hierarchy_anchor: Option<usize>,
     pub asset_search: String,
     /// 历史面板的排序：`true` = 最新在上（引擎的 `m_ShowLatestFirst`）。
     pub history_latest_first: bool,
@@ -567,13 +601,17 @@ enum TreeAction {
 /// 层级搜索命中项及其祖先（`path_of` 已包含自身）。
 ///
 /// 搜索必须能看见折叠父级下的对象，否则会出现「明明有这个实体却搜不到」。
-fn search_matches(doc: &SceneDoc, filter: &str) -> std::collections::HashSet<usize> {
+fn search_matches(
+    doc: &SceneDoc,
+    filter: &str,
+    mode: HierarchySearchMode,
+) -> std::collections::HashSet<usize> {
     let mut keep = std::collections::HashSet::new();
     if filter.is_empty() {
         return keep;
     }
     for (index, entity) in doc.entities.iter().enumerate() {
-        if entity.display_name().to_lowercase().contains(filter) {
+        if mode.matches(entity, filter) {
             keep.extend(doc.path_of(index));
         }
     }
@@ -585,9 +623,23 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
     ui.horizontal(|ui| {
         ui.add(
             egui::TextEdit::singleline(&mut state.hierarchy_search)
-                .hint_text("Search")
+                .hint_text(
+                    if state.hierarchy_search_mode == HierarchySearchMode::Component {
+                        "Search type"
+                    } else {
+                        "Search"
+                    },
+                )
                 .desired_width(110.0),
         );
+        egui::ComboBox::from_id_salt("hierarchy-search-mode")
+            .width(56.0)
+            .selected_text(state.hierarchy_search_mode.label())
+            .show_ui(ui, |ui| {
+                for mode in [HierarchySearchMode::Name, HierarchySearchMode::Component] {
+                    ui.selectable_value(&mut state.hierarchy_search_mode, mode, mode.label());
+                }
+            });
         let presets: Vec<(String, String)> = workspace
             .presets
             .iter()
@@ -615,7 +667,11 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
     let filter = state.hierarchy_search.to_lowercase();
     let searching = !filter.is_empty();
     // 命中项 + 祖先：折叠父级下的对象也要能被搜到（会展开祖先并显示路径）。
-    let search = search_matches(&workspace.document().doc, &filter);
+    let search = search_matches(
+        &workspace.document().doc,
+        &filter,
+        state.hierarchy_search_mode,
+    );
     if searching {
         let ids: Vec<u32> = {
             let doc = &workspace.document().doc;
@@ -628,6 +684,12 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
     }
     let expanded = workspace.expanded.clone();
     let rows = workspace.document().doc.visible_rows(&expanded);
+    // Shift 区间选择按**当前可见行**的顺序走：折叠子树与搜索过滤掉的实体不能混进来。
+    let visible_rows: Vec<usize> = rows
+        .iter()
+        .filter(|(index, _)| !searching || search.contains(index))
+        .map(|(index, _)| *index)
+        .collect();
     // 引用断掉的实体（文件被删 / 改名 / 拼错）：行尾标一个警告图标。
     // 每帧只算一次——`resolve_reference` 要扫资产表，放在行循环里是 O(实体 × 资产)（#467）。
     let broken: std::collections::HashSet<usize> = {
@@ -656,7 +718,7 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
         .auto_shrink([false, false])
         .show(ui, |ui| {
             let area_rect = ui.max_rect();
-            for (index, _id) in rows {
+            for &(index, _id) in &rows {
                 let doc = &workspace.document().doc;
                 let Some(entity) = doc.entities.get(index) else {
                     continue;
@@ -1065,8 +1127,28 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
 
     if let Some(action) = action {
         match action {
-            TreeAction::Select(index, extend) => workspace.select(index, extend),
+            TreeAction::Select(index, extend) => {
+                if extend {
+                    let anchor = state
+                        .hierarchy_anchor
+                        .filter(|anchor| visible_rows.contains(anchor))
+                        .or_else(|| workspace.primary_selection());
+                    match anchor {
+                        Some(anchor) => {
+                            workspace.select_visible_range(&visible_rows, anchor, index);
+                        }
+                        None => {
+                            workspace.select(index, false);
+                            state.hierarchy_anchor = Some(index);
+                        }
+                    }
+                } else {
+                    workspace.select(index, false);
+                    state.hierarchy_anchor = Some(index);
+                }
+            }
             TreeAction::Toggle(index) => {
+                state.hierarchy_anchor = Some(index);
                 if workspace.selection.contains(&index) {
                     let remaining: Vec<usize> = workspace
                         .selection
@@ -6367,13 +6449,32 @@ mod hierarchy_search_tests {
         let child = doc.add_named_child(Some(parent), "Rod");
         doc.add_named_child(None, "Water");
 
-        let keep = search_matches(&doc, "rod");
+        let keep = search_matches(&doc, "rod", HierarchySearchMode::Name);
         assert!(keep.contains(&child));
         assert!(keep.contains(&parent), "collapsed parent must stay visible");
         assert_eq!(keep.len(), 2);
 
-        assert!(search_matches(&doc, "").is_empty());
-        assert!(search_matches(&doc, "missing").is_empty());
+        assert!(search_matches(&doc, "", HierarchySearchMode::Name).is_empty());
+        assert!(search_matches(&doc, "missing", HierarchySearchMode::Name).is_empty());
+    }
+
+    #[test]
+    fn component_search_matches_the_short_type_name_and_keeps_ancestors() {
+        let mut doc = SceneDoc::default();
+        let parent = doc.add_named_child(None, "Lamp");
+        let _child = doc.add_named_child(Some(parent), "Bulb");
+        doc.entities[parent].components.insert(
+            "prism_engine::scene::PointLight".to_string(),
+            serde_json::json!({ "intensity": 2.0 }),
+        );
+
+        let keep = search_matches(&doc, "pointlight", HierarchySearchMode::Component);
+        assert!(keep.contains(&parent));
+        assert_eq!(keep.len(), 1, "祖先链只补命中项的祖先，不扩子孙");
+
+        // 名字搜索不把组件名当命中；类型搜索也不按实体名匹配。
+        assert!(search_matches(&doc, "pointlight", HierarchySearchMode::Name).is_empty());
+        assert!(search_matches(&doc, "lamp", HierarchySearchMode::Component).is_empty());
     }
 }
 
