@@ -104,6 +104,7 @@ pub fn asset_kind(path: &str) -> crate::assets::AssetKind {
         "rscn" => AssetKind::Scene,
         "wav" | "ogg" | "mp3" | "flac" => AssetKind::Audio,
         "pak" => AssetKind::Package,
+        "ttf" | "otf" | "ttc" => AssetKind::Font,
         "material" | "mat" => AssetKind::Material,
         "json" | "toml" | "ron" | "yaml" | "yml" | "bin" | "slang" | "glsl" | "txt" => {
             AssetKind::Data

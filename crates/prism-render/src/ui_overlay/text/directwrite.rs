@@ -269,7 +269,9 @@ impl DirectWriteRasterizer {
 }
 
 impl TextRasterizer for DirectWriteRasterizer {
-    fn line_metrics(&self, font_size: f32) -> Option<LineMetrics> {
+    fn line_metrics(&self, _font: Option<&str>, font_size: f32) -> Option<LineMetrics> {
+        // DirectWrite 后端没有工程字体注册表（`register_font` 用 trait 默认实现
+        // 返回 false），所有文本都走系统字体（#583）。
         let scale = self.scale(font_size);
         let ascent = self.metrics.ascent as f32 * scale;
         let descent = self.metrics.descent as f32 * scale;
@@ -281,7 +283,7 @@ impl TextRasterizer for DirectWriteRasterizer {
         })
     }
 
-    fn rasterize(&mut self, ch: char, font_size: f32) -> Option<GlyphBitmap> {
+    fn rasterize(&mut self, _font: Option<&str>, ch: char, font_size: f32) -> Option<GlyphBitmap> {
         match self.try_rasterize(ch, font_size) {
             Ok(glyph) => Some(glyph),
             Err(err) => {

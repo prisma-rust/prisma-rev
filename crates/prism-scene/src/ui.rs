@@ -229,6 +229,11 @@ pub struct Text {
     pub font_size: f32,
     pub color: [f32; 4],
     pub alignment: TextAlign,
+    /// 工程自带字体（`assets/fonts/*.ttf|otf|ttc` 的相对路径，空 = 系统默认字体，#583）。
+    ///
+    /// 字体文件是普通资产：cooker 识别为 `AssetType::Font` 原样进 `.pak`，
+    /// 运行时经 `ResourceManager` 读出字节交给 UI 光栅器。
+    pub font: String,
 }
 
 impl Default for Text {
@@ -238,6 +243,7 @@ impl Default for Text {
             font_size: 16.0,
             color: [1.0; 4],
             alignment: TextAlign::Center,
+            font: String::new(),
         }
     }
 }
@@ -302,6 +308,22 @@ mod tests {
             style.visible,
             "omitting `visible` must not hide the element"
         );
+    }
+
+    #[test]
+    fn text_font_defaults_to_the_system_font_and_round_trips() {
+        // #583：旧文档没有 `font` → 空字符串 = 系统默认字体。
+        let text: Text = serde_json::from_str(r#"{"content":"hi","font_size":20}"#).unwrap();
+        assert!(text.font.is_empty());
+
+        let authored: Text = serde_json::from_str(
+            r#"{"content":"hi","font_size":20,"font":"assets/fonts/hud.ttf"}"#,
+        )
+        .unwrap();
+        assert_eq!(authored.font, "assets/fonts/hud.ttf");
+        let json = serde_json::to_string(&authored).unwrap();
+        let back: Text = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.font, "assets/fonts/hud.ttf");
     }
 
     #[test]

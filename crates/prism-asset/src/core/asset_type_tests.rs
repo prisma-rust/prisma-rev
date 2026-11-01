@@ -48,6 +48,23 @@ fn known_extensions_map_correctly() {
 }
 
 #[test]
+fn font_extensions_are_fonts_not_binary() {
+    // #583：字体必须能被 cooker / pack 识别，否则不会进 `.pak`。
+    for extension in ["ttf", "TTF", "otf", "ttc"] {
+        assert_eq!(
+            AssetType::from_extension(extension),
+            AssetType::Font,
+            "{extension}"
+        );
+    }
+    assert_eq!(AssetType::Font.label(), "font");
+    assert_eq!(
+        AssetType::from_u32(AssetType::Font.to_u32()),
+        AssetType::Font
+    );
+}
+
+#[test]
 fn asset_ref_serde() {
     let r = AssetRef::new(crate::AssetId::generate(), AssetType::Texture);
     let json = serde_json::to_string(&r).unwrap();

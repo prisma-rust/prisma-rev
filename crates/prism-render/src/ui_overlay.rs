@@ -22,6 +22,8 @@ pub struct UiTextInput {
     pub font_size: f32,
     pub color: [f32; 4],
     pub alignment: UiTextAlign,
+    /// 工程自带字体的资产路径；`None` = 系统默认字体（#583）。
+    pub font: Option<String>,
 }
 
 /// 文本对齐（在 record 时按整串测量宽度决定首字符 x）。

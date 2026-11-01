@@ -1162,6 +1162,14 @@ impl App {
             return;
         };
 
+        // 工程自带字体（#583）：主线程读字节，渲染线程把它注册进 UI 图集。
+        let fonts = self.asset_resolver.prepare_ui_fonts(engine.world());
+        for (name, bytes) in fonts {
+            shared.send_renderer_message(Box::new(move |renderer| {
+                renderer.register_ui_font(name, bytes);
+            }));
+        }
+
         // CPU 段：扫描待解析实体并产出上传请求（纯数据，不碰渲染器）。
         let reqs = self.asset_resolver.prepare_requests(engine.world_mut());
         if !reqs.is_empty() {

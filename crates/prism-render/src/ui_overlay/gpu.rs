@@ -67,8 +67,12 @@ struct GlyphAtlas {
     view: vk::ImageView,
     sampler: vk::Sampler,
     rasterizer: Option<Box<dyn TextRasterizer>>,
-    /// (char, font_size 量化到 0.5px) → 字形
-    glyphs: HashMap<(char, u32), CachedGlyph>,
+    /// 工程字体路径 → 字体 id（0 保留给系统默认字体，#583）。
+    font_ids: HashMap<String, u32>,
+    /// id → 字体路径；`None` = 系统默认字体。
+    font_names: Vec<Option<String>>,
+    /// (字体 id, 字符, font_size 量化到 0.5px) → 字形
+    glyphs: HashMap<(u32, char, u32), CachedGlyph>,
     /// 行打包游标
     x: u32,
     y: u32,
@@ -147,7 +151,7 @@ impl GlyphAtlas {
 
         let rasterizer = text::create();
         if let Some(backend) = rasterizer.as_deref() {
-            if let Some(m) = backend.line_metrics(16.0) {
+            if let Some(m) = backend.line_metrics(None, 16.0) {
                 log::debug!(
                     "ui overlay: 文本度量 @16px —— ascent {:.1} / descent {:.1} / line height {:.1}",
                     m.ascent,
@@ -163,6 +167,8 @@ impl GlyphAtlas {
             view,
             sampler,
             rasterizer,
+            font_ids: HashMap::new(),
+            font_names: vec![None],
             glyphs: HashMap::new(),
             x: 1,
             y: 0,
@@ -174,12 +180,43 @@ impl GlyphAtlas {
     }
 
     /// 单行文本的基线相对矩形顶边的偏移（来自后端的行度量）。
-    fn baseline_offset(&self, font_size: f32) -> f32 {
+    fn baseline_offset(&self, font: Option<&str>, font_size: f32) -> f32 {
         let metrics = self
             .rasterizer
             .as_deref()
-            .and_then(|backend| backend.line_metrics(font_size));
+            .and_then(|backend| backend.line_metrics(font, font_size));
         baseline_offset(metrics, font_size)
+    }
+
+    /// 字体路径 → 稳定 id（未注册过的路径也会分到 id，光栅器再回落到默认字体）。
+    ///
+    /// id 而不是 `String` 作图集键：`emit_text` 每个字形都要查缓存，不能每帧为
+    /// 每个字符分配一条路径字符串。
+    fn font_id(&mut self, font: Option<&str>) -> u32 {
+        let Some(name) = font else {
+            return 0;
+        };
+        if let Some(id) = self.font_ids.get(name) {
+            return *id;
+        }
+        let id = self.font_names.len() as u32;
+        self.font_ids.insert(name.to_string(), id);
+        self.font_names.push(Some(name.to_string()));
+        id
+    }
+
+    /// 注册工程自带字体；同一路径重复注册会覆盖并丢掉该字体的旧字形（#583）。
+    fn register_font(&mut self, name: &str, bytes: Vec<u8>) -> bool {
+        let Some(backend) = self.rasterizer.as_mut() else {
+            return false;
+        };
+        if !backend.register_font(name, bytes) {
+            return false;
+        }
+        if let Some(id) = self.font_ids.get(name).copied() {
+            self.glyphs.retain(|key, _| key.0 != id);
+        }
+        true
     }
 
     fn create_image(context: &VulkanContext) -> Result<(vk::Image, vk::DeviceMemory)> {
@@ -248,10 +285,16 @@ impl GlyphAtlas {
     }
 
     /// 取字形（光栅化 + 打包，缓存）。空格等空白字形不占图集。
-    fn glyph(&mut self, ch: char, font_size: f32) -> Option<&CachedGlyph> {
-        let key = (ch, (font_size * 2.0).round() as u32);
+    fn glyph(&mut self, font: Option<&str>, ch: char, font_size: f32) -> Option<&CachedGlyph> {
+        let font_id = self.font_id(font);
+        let key = (font_id, ch, (font_size * 2.0).round() as u32);
         if !self.glyphs.contains_key(&key) {
-            let glyph = self.rasterizer.as_mut()?.rasterize(ch, font_size)?;
+            // 名字要克隆出来：`rasterizer` 是可变的，`font_names` 的借用不能跨过去。
+            let name = self.font_names[font_id as usize].clone();
+            let glyph = self
+                .rasterizer
+                .as_mut()?
+                .rasterize(name.as_deref(), ch, font_size)?;
             let rect = if glyph.width > 0 && glyph.height > 0 {
                 self.pack(&glyph.pixels, glyph.width, glyph.height)
             } else {
@@ -961,6 +1004,15 @@ impl UiOverlay {
         }
     }
 
+    /// 注册一个工程自带字体（`assets/fonts/*.ttf|otf` 的原始字节，#583）。
+    ///
+    /// 名字就是 `Text.font` 里写的资产路径；解析失败返回 `false`，文本会回落到
+    /// 系统默认字体。可以随时调用（图集是 host-visible 的，新字形下次绘制时才
+    /// 打包）。
+    pub fn register_font(&mut self, name: &str, bytes: Vec<u8>) -> bool {
+        self.atlas.register_font(name, bytes)
+    }
+
     /// 把一个文本命令展开成逐字形四边形（像素 → NDC，字形带图集 uv）。
     fn emit_text(&mut self, vertices: &mut Vec<UiVertex>, t: &UiTextInput, w: f32, h: f32) {
         let [left, top, rect_w, rect_h] = t.rect;
@@ -971,10 +1023,12 @@ impl UiOverlay {
             return;
         }
 
+        let font = t.font.as_deref();
+
         // 1. 测量整串宽度（advance 求和）。
         let mut total = 0.0f32;
         for ch in t.content.chars() {
-            if let Some(g) = self.atlas.glyph(ch, t.font_size) {
+            if let Some(g) = self.atlas.glyph(font, ch, t.font_size) {
                 total += g.advance;
             }
         }
@@ -990,11 +1044,11 @@ impl UiOverlay {
         };
 
         // 3. 逐字形发射四边形。基线来自后端行度量（ascent），拿不到时退回 0.8×字号。
-        let baseline = top + self.atlas.baseline_offset(t.font_size);
+        let baseline = top + self.atlas.baseline_offset(font, t.font_size);
         let [r, g, b, a] = t.color;
         let mut cursor_x = start_x;
         for ch in t.content.chars() {
-            let Some(glyph) = self.atlas.glyph(ch, t.font_size) else {
+            let Some(glyph) = self.atlas.glyph(font, ch, t.font_size) else {
                 continue;
             };
             if let Some([gx, gy, gw, gh]) = glyph.rect {

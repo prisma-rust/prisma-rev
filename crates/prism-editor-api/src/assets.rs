@@ -152,6 +152,7 @@ pub fn asset_kind(path: &str) -> &'static str {
         "rscn" | "scene" => "scene",
         "pak" => "package",
         "json" | "toml" | "txt" | "md" | "bin" => "data",
+        "ttf" | "otf" | "ttc" => "font",
         _ => "other",
     }
 }

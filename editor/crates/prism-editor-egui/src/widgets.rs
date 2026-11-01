@@ -100,7 +100,10 @@ pub fn component_card_with_assets(
 /// 多选走 `set_field_multi`），所以这里不关心实体。
 /// 资产字段的扩展名过滤（引擎的 object field 只列可接受的类型）。
 fn asset_filter(name: &str) -> Option<&'static [&'static str]> {
-    if name.contains("mesh") {
+    if name == "font" || name.ends_with("_font") {
+        // #583：UI 文本可以用工程自带字体。
+        Some(&["ttf", "otf", "ttc"])
+    } else if name.contains("mesh") {
         Some(&["obj", "gltf", "glb", "fbx", "mesh"])
     } else if name.contains("sprite") || name.contains("texture") || name.ends_with("_tex") {
         Some(&["png", "jpg", "jpeg", "ktx2", "dds"])
@@ -161,6 +164,8 @@ mod tests {
         assert!(asset_matches("mesh_path", "assets/ship.GLTF"));
         assert!(!asset_matches("mesh_path", "assets/ship.png"));
         assert!(asset_matches("sprite_path", "assets/hero.png"));
+        assert!(asset_matches("font", "assets/fonts/hud.ttf"));
+        assert!(!asset_matches("font", "assets/hero.png"));
         assert!(asset_matches("environment_path", "assets/sunset.exr"));
         assert!(asset_matches("custom_path", "assets/data.bin"));
         assert!(asset_matches("label", "anything.bin"));

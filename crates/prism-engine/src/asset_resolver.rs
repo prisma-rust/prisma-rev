@@ -89,6 +89,12 @@ pub struct GpuAssetResolver {
     /// 最近一次解析的精灵路径。项目只改 `sprite_path`，这里发现不一致就重新解析，
     /// 不再要求调用方手动把 `SpriteRef::generation` 清零。
     sprite_paths: HashMap<Entity, String>,
+    /// 已经交给渲染器的工程字体路径（#583）。
+    ///
+    /// 字体是整份文件注册进 UI 图集，不像贴图那样每实体一份；同一个路径只读一次。
+    fonts_loaded: HashSet<String>,
+    /// 读过但失败的字体路径：不再每帧重试（与 [`Self::failed`] 同理）。
+    fonts_failed: HashSet<String>,
     /// 已投递、但句柄还没回写的网格局部包围盒（`entity → AABB`）。
     ///
     /// CPU 段已经在手里有顶点位置，所以包围盒在上传请求发出前就算好；句柄回来
@@ -126,8 +132,58 @@ impl GpuAssetResolver {
             enqueued: HashSet::new(),
             failed: HashMap::new(),
             sprite_paths: HashMap::new(),
+            fonts_loaded: HashSet::new(),
+            fonts_failed: HashSet::new(),
             pending_bounds: HashMap::new(),
         }
+    }
+
+    /// 收集场景里用到的工程自带字体并读出字节（#583）。
+    ///
+    /// 返回**本次新读出来**的 `(资产路径, 字体字节)`；调用方把它交给
+    /// `GraphRenderer::register_ui_font`。已经交过的路径不会重复返回，读失败
+    /// 的路径也不再每帧重试（与网格 / 贴图的失败缓存同一策略）。
+    ///
+    /// 字体走 `.pak` 的路径清单（`AssetType::Font`），所以打包产物和编辑器里
+    /// 看到的是同一份文件。
+    pub fn prepare_ui_fonts(&mut self, world: &World) -> Vec<(String, Vec<u8>)> {
+        let mut paths: Vec<String> = Vec::new();
+        for (_, text) in world.query::<crate::ui::components::Text>() {
+            let path = text.font.trim();
+            if path.is_empty()
+                || self.fonts_loaded.contains(path)
+                || self.fonts_failed.contains(path)
+                || paths.iter().any(|known| known == path)
+            {
+                continue;
+            }
+            paths.push(path.to_string());
+        }
+
+        let mut out = Vec::new();
+        for path in paths {
+            let Some(id) = self.resource_manager.id_by_path(&path) else {
+                report_missing_reference(&path, "font");
+                self.fonts_failed.insert(path);
+                continue;
+            };
+            match self.resource_manager.load_with_deps_raw(id) {
+                Ok(bytes) if !bytes.is_empty() => {
+                    log::info!("ui fonts: loaded {} ({} bytes)", path, bytes.len());
+                    self.fonts_loaded.insert(path.clone());
+                    out.push((path, bytes));
+                }
+                Ok(_) => {
+                    log::warn!("ui fonts: '{path}' is empty — ignoring it");
+                    self.fonts_failed.insert(path);
+                }
+                Err(error) => {
+                    log::warn!("ui fonts: load '{path}' failed: {error}");
+                    self.fonts_failed.insert(path);
+                }
+            }
+        }
+        out
     }
 
     /// 该实体的这个槽位是否已经因同一个路径失败过。
@@ -755,6 +811,69 @@ mod tests {
     use crate::scene::components::{LocalToWorld, SceneAssetId};
     use prism_render::asset_bridge::AssetResolveResult;
     use prism_render::managers::MeshHandle;
+
+    /// 造一个只含指定 `(path, type, bytes)` 的 `.pak` + 路径清单（#583 测试用）。
+    fn tiny_pak(entries: &[(&str, prism_asset::core::AssetType, &[u8])]) -> (Vec<u8>, String) {
+        use prism_asset::core::id::AssetIdGenerator;
+        use prism_asset::package::PackageBuilder;
+
+        let mut builder = PackageBuilder::new();
+        let mut ids = AssetIdGenerator::new(1, 0);
+        let mut manifest = Vec::new();
+        for (path, asset_type, bytes) in entries {
+            let id = ids.next();
+            builder.add_asset(id, *asset_type, bytes.to_vec(), &[]);
+            manifest.push(format!(
+                "{{\"id\":\"0x{:016x}\",\"path\":\"{path}\"}}",
+                id.into_raw()
+            ));
+        }
+        let pak = builder.build().expect("build pak");
+        let manifest = format!("{{\"assets\":[{}]}}", manifest.join(","));
+        (pak, manifest)
+    }
+
+    #[test]
+    fn project_fonts_are_loaded_once_by_path() {
+        // #583：`Text.font` 指向的字体从 `.pak` 读出字节，交给渲染器注册。
+        let (pak, manifest) = tiny_pak(&[(
+            "fonts/hud.ttf",
+            prism_asset::core::AssetType::Font,
+            b"not-a-real-ttf",
+        )]);
+        let mut resolver = GpuAssetResolver::new();
+        resolver
+            .load_resource_package_bytes(&pak, Some(&manifest))
+            .expect("load pak");
+
+        let mut world = World::new();
+        let entity = world.spawn();
+        world.insert(
+            entity,
+            crate::ui::components::Text {
+                content: "HUD".into(),
+                font: "fonts/hud.ttf".into(),
+                ..Default::default()
+            },
+        );
+
+        let fonts = resolver.prepare_ui_fonts(&world);
+        assert_eq!(fonts.len(), 1);
+        assert_eq!(fonts[0].0, "fonts/hud.ttf");
+        assert_eq!(fonts[0].1, b"not-a-real-ttf");
+
+        // 同一个路径不再重复读；没有 font 的文本不产生请求。
+        assert!(resolver.prepare_ui_fonts(&world).is_empty());
+        world
+            .get_mut::<crate::ui::components::Text>(entity)
+            .unwrap()
+            .font = "fonts/nope.ttf".into();
+        assert!(
+            resolver.prepare_ui_fonts(&world).is_empty(),
+            "缺失的字体只报一次，不返回字节"
+        );
+        assert!(resolver.prepare_ui_fonts(&world).is_empty());
+    }
 
     fn spawn_renderer(world: &mut World, mesh_path: &str, material_path: &str) -> Entity {
         let entity = world.spawn();

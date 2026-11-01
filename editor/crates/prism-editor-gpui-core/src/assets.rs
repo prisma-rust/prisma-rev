@@ -20,6 +20,8 @@ pub enum AssetKind {
     Material,
     Data,
     Audio,
+    /// 工程自带字体（`.ttf` / `.otf` / `.ttc`，#583）。
+    Font,
     Other,
 }
 
@@ -35,6 +37,7 @@ impl AssetKind {
             AssetKind::Material => "材质",
             AssetKind::Data => "数据",
             AssetKind::Audio => "音频",
+            AssetKind::Font => "字体",
             AssetKind::Other => "其他",
         }
     }
@@ -50,6 +53,7 @@ impl AssetKind {
             "material" => AssetKind::Material,
             "data" => AssetKind::Data,
             "audio" => AssetKind::Audio,
+            "font" => AssetKind::Font,
             _ => AssetKind::Other,
         }
     }
@@ -62,7 +66,7 @@ impl AssetKind {
         )
     }
 
-    pub fn all() -> [AssetKind; 10] {
+    pub fn all() -> [AssetKind; 11] {
         [
             AssetKind::Model,
             AssetKind::Texture,
@@ -73,6 +77,7 @@ impl AssetKind {
             AssetKind::Material,
             AssetKind::Data,
             AssetKind::Audio,
+            AssetKind::Font,
             AssetKind::Other,
         ]
     }
@@ -85,7 +90,7 @@ impl AssetKind {
 pub fn is_asset_path_field(component: &str, field: &str) -> bool {
     let leaf = field.rsplit('.').next().unwrap_or(field);
     leaf.ends_with("_path")
-        || matches!(leaf, "env_map" | "volume" | "prefab")
+        || matches!(leaf, "env_map" | "volume" | "prefab" | "font")
         || (component.ends_with("PrefabInstance") && leaf == "prefab")
 }
 

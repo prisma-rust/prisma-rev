@@ -223,6 +223,11 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
   游戏进程要同样的报告时设 `PRISMREV_RENDER_GRAPH_REPORT=<path>`。
 - **分辨率倍率**：渲染图面板里的 `Viewport res`（0.5×–1.5×）只缩放离屏目标，
   不改变 UI 的 points 布局，给高 DPI 屏 / 弱 GPU 一个折中。
+- **工程自带字体（UI 文本）**：把 `.ttf` / `.otf` / `.ttc` 放进 `assets/fonts/`，
+  在 `Text` 组件的 `font` 字段（检查器里有资产选择器）填相对路径即可；空 = 系统默认
+  字体。字体是普通资产：`AssetType::Font`、原样进 `.pak`、重命名时引用会被改写，
+  运行时由 `GpuAssetResolver::prepare_ui_fonts` 读出字节注册进 UI 图集
+  （多字体共用一张 R8 图集，仍然只有一次 draw call，#583）。
 - **Game 视图分辨率 / 宽高比**：视口左上角下拉。默认读取工程
   `assets/settings.ini [window]` 的 `width`/`height`（例如 1600×900），
   按该分辨率离屏渲染并等比 letterbox，所以编辑器构图和打包产物一致。

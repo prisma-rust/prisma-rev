@@ -321,7 +321,7 @@ impl Renamer {
 /// 新增带路径的组件字段时要同步补进来 —— `asset_path_fields_cover_string_paths_in_schema`
 /// 会用 `prism-scene` 的注册表挡住漏加（不覆盖 `env_map` / `volume` / `prefab`
 /// 这类不以 `_path` 结尾的名字，所以别只靠测试）。
-const ASSET_PATH_FIELDS: [&str; 9] = [
+const ASSET_PATH_FIELDS: [&str; 10] = [
     "mesh_path",     // MeshRenderer
     "material_path", // MeshRenderer
     "sprite_path",   // SpriteRenderer
@@ -331,6 +331,7 @@ const ASSET_PATH_FIELDS: [&str; 9] = [
     "env_map",       // EnvironmentLighting
     "volume",        // GiConfig
     "prefab",        // PrefabInstance
+    "font",          // UI Text（工程自带字体，#583）
 ];
 
 /// 作者 JSON 的字段名是否表示资产路径。
@@ -778,14 +779,20 @@ mod tests {
                 },
                 "components": {
                     "prism_engine::scene::MeshRenderer": { "mesh_path": "assets/valley.hdr" },
-                    "prism_engine::ui::Text": { "content": "assets/valley.hdr" }
+                    "prism_engine::ui::Text": {
+                        "content": "assets/valley.hdr",
+                        "font": "assets/valley.hdr"
+                    }
                 }
             }]
         });
         write_doc(&root.join("assets/scenes/demo.scene.json"), &doc).unwrap();
 
         let result = rename_asset(&root, "assets/valley.hdr", "assets/sky.hdr").unwrap();
-        assert_eq!(result.references_updated, 1, "只有 mesh_path 是引用");
+        assert_eq!(
+            result.references_updated, 2,
+            "mesh_path 与 Text.font 是引用，Text.content 不是"
+        );
 
         let text = std::fs::read_to_string(root.join("assets/scenes/demo.scene.json")).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -797,6 +804,10 @@ mod tests {
         assert_eq!(
             components["prism_engine::ui::Text"]["content"],
             "assets/valley.hdr"
+        );
+        assert_eq!(
+            components["prism_engine::ui::Text"]["font"], "assets/sky.hdr",
+            "字体是资产引用，重命名必须改写"
         );
         assert_eq!(value["entities"][0]["name"], "assets/valley.hdr");
         std::fs::remove_dir_all(&root).ok();
@@ -819,7 +830,7 @@ mod tests {
         }
 
         // 不以 `_path` 结尾的引用字段靠显式登记，这里断言它们没被删掉。
-        for name in ["env_map", "volume", "prefab"] {
+        for name in ["env_map", "volume", "prefab", "font"] {
             assert!(is_asset_path_field(name), "{name} 必须继续登记");
         }
         assert!(!is_asset_path_field("content"));

@@ -616,9 +616,10 @@ AssetIdGenerator           → 编辑器侧持久化 ID 发生器
 **`AssetType`**（`type.rs`）—— `#[repr(u32)]` 枚举，运行时通过 u32 判别：
 ```
 Binary(0) / Texture(1) / Mesh(2) / Material(3) / Shader(4) /
-Prefab(5) / Scene(6) / Audio(7) / Unknown(0xFF)
+Prefab(5) / Scene(6) / Audio(7) / Font(8) / Unknown(0xFF)
 ```
-- `from_extension()` 由扩展名推断类型
+- `from_extension()` 由扩展名推断类型（字体：`ttf` / `otf` / `ttc`）
+- `Font` 原样进包，不做 cook：运行时读出字节交给 UI 文本光栅器（`Text.font`，#583）
 - `AssetRef { id, asset_type }`——可序列化的轻量跨资产引用
 
 **`Handle<T>`**（`handle.rs`）——代沟计数句柄，`u64` 大小：

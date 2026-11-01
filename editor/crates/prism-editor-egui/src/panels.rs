@@ -70,6 +70,7 @@ fn asset_kind_icon(kind: AssetKind) -> &'static str {
         AssetKind::Package => icons::ARCHIVE_BOX,
         AssetKind::Material => icons::PALETTE,
         AssetKind::Audio => icons::MUSIC_NOTES,
+        AssetKind::Font => icons::TEXT_AA,
         AssetKind::Data => icons::FILE_TEXT,
         AssetKind::Other => icons::FILE,
     }
