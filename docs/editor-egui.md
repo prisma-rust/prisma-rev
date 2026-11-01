@@ -67,6 +67,15 @@ instance / device 并返回 `AshRenderState`，因此可以做到引擎的模型
   （约 1.5 s）+ 管线创建，留到第一次切 tab 才建就表现为「切 tab 卡半天」；
 - Play 时 Game view 每帧 `tick()` + 重渲染；Scene view 仍是编辑态。
 
+**松散资产热重载（#495）**：Preferences 的
+`Rebuild scene pack when loose assets change`（默认开）每 1s 扫描 `assets/` 下
+**未打包**的作者资产（贴图 / 模型 / HDR / 字体 / 材质 / `scenes.json`…），排除
+`.pak` / `.pak.meta.json` / `.rscn` / `.spv` 与编辑器自己保存的 `.scene.json` /
+`.prefab.json`。检测到变化后等 800ms 安静期（连续保存 / 大文件分块写入不会连打多次），
+再触发一次现有的 `Build Scene Pack`；打完包由 `.pak` 轮询链路重开包并
+`invalidate_assets`，**Play 中也能直接看到新资源**，不用退出再进。构建期间不排队新任务，
+构建结束会重新对齐快照。
+
 **Play 态的视觉提示（#500）**：播放中整窗四周有一圈绿色描边、暂停时变琥珀色；
 状态栏的 `PLAYING` / `PAUSED` 带同色底纹。检查器顶部在这期间显示横幅
 `Play mode — changes made now are discarded when Play stops.` —— 运行期的编辑仍写进

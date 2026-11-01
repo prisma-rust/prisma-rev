@@ -307,7 +307,14 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   热重载（`generation` 归零）、组件被删、实体销毁、路径改写时把槽位 / 句柄交回
   `GraphRenderer::release_assets`（纹理按 bindless 槽、网格按 `MeshHandle`、材质按
   SSBO 槽反查后销毁），所以反复重载不会持续吃显存。
-- 仍未覆盖：松散资产（未进包的文件）仍然需要重新 cook 才会进包。
+- 编辑器侧的松散资产热重载（#495）：Preferences 的
+  `Rebuild scene pack when loose assets change`（默认开）每 1s 扫描 `assets/` 下
+  未打包的作者资产（排除 `.pak` / `.rscn` / `.spv` 与 `.scene.json` / `.prefab.json`），
+  静默 800ms 后触发一次 `Build Scene Pack`，之后由 `.pak` 轮询链路自动重载 ——
+  Play 中改贴图 / HDR / 网格不用退出。实现：`editor/.../src/loose_assets.rs`
+  （扫描 + debounce 有单测），接入 `EditorApp::poll_loose_assets`。
+- 仍未覆盖：`.pak` 之外的资产类型（音频总线、MM DB 等）如果将来有独立 cook 步骤，
+  需要在同一入口补触发；玩家侧仍只有 `.pak` 轮询。
   - 缩放是**最近邻**，像素画放大不糊；内容是窗口那一帧，不重渲染。
 - 实现方式：`execute` 在图像回到 `PRESENT_SRC_KHR` 后插入
   `vkCmdCopyImageToBuffer`（`PRESENT_SRC → TRANSFER_SRC → PRESENT_SRC`），
