@@ -253,6 +253,14 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
 `ui.snapshot` / `ui.click` / `ui.set` / `quit`。`logs` 读 Console 的同一份缓冲（`since`
 增量、`limit` 条数），自动化因此能拿到引擎日志、工程模块的 `project:` 日志和 panic 栈。
 
+模态对话框也走节点树（#618）：`ui.snapshot` 的 `dialogs` 列出当前打开的对话框
+（`delete-entities` / `delete-document` / `delete-assets` / `save-conflict` / `close` /
+`confirm` / `prompt`）及按钮 id，`pending_dialog` 给出最上面那个；`ui.click` 接受
+`dialog:<id>:<button>`（如 `dialog:delete-entities:delete` /
+`dialog:close:discard`）。`ui.set` 对 `dialog:prompt` 写入输入值，再用
+`dialog:prompt:ok` 提交。命令只是挂起确认框时，回执会带 `pending_dialog`，
+不会出现「`ok: true` 但什么都没发生」。
+
 `input` 给 Play 注入键鼠（`key=space` / `mouse=left` / `click=true`，`state=press|release`）。
 事件**每帧只消费一个**：`just_pressed` 只在这一帧的 tick 里可见，下一帧就会被
 `InputManager::begin_frame` 清掉，一次塞两个等于没按。fishing 的完整一竿就是这么跑的：

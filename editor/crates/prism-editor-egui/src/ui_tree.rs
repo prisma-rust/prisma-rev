@@ -16,6 +16,8 @@
 //! | `asset:<path>` | 资产面板条目 | ✅ | — |
 //! | `field:<entity>:<component>:<path>` | 检查器字段 | — | ✅ |
 //! | `resolution:<WxH>` / `resolution:fit:<WxH>` / `resolution:match` | Game 视图预览分辨率 / 宽高比（#463/#585） | ✅ | — |
+//! | `dialog:<kind>` | 模态对话框（`delete-entities` / `close` / …） | — | — |
+//! | `dialog:<kind>:<button>` | 模态对话框按钮（`delete` / `cancel` / `save` / …） | ✅ | — |
 
 use std::collections::BTreeMap;
 
@@ -40,6 +42,8 @@ pub struct SnapshotInput<'a> {
     pub logs: &'a [String],
     /// Scene / Game 视口里的物体（世界 → 视口像素投影已完成）。
     pub viewports: &'a [ViewObjects],
+    /// 当前打开的模态对话框（#618）。
+    pub dialogs: &'a [Dialog],
 }
 
 /// 视口里的一个物体：世界坐标 + 投影后的视口像素坐标。
@@ -71,6 +75,96 @@ pub struct ViewObjects {
     /// 面板 tab 名：`sceneView` / `gameView`。
     pub tab: &'static str,
     pub objects: Vec<ViewObject>,
+}
+
+/// 控制通道能看到的一个模态对话框（#618）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Dialog {
+    /// 稳定 id，例如 `delete-entities` / `close` / `save-conflict`。
+    pub id: String,
+    pub title: String,
+    pub message: String,
+    /// 按钮：`(action, label)`；节点 id 是 `dialog:<id>:<action>`。
+    pub buttons: Vec<(String, String)>,
+    /// 输入框类对话框的当前值（其他对话框为 `None`）。
+    pub value: Option<String>,
+}
+
+impl Dialog {
+    pub fn new(
+        id: impl Into<String>,
+        title: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            title: title.into(),
+            message: message.into(),
+            buttons: Vec::new(),
+            value: None,
+        }
+    }
+
+    pub fn button(mut self, action: &str, label: &str) -> Self {
+        self.buttons.push((action.to_string(), label.to_string()));
+        self
+    }
+
+    pub fn value(mut self, value: impl Into<String>) -> Self {
+        self.value = Some(value.into());
+        self
+    }
+
+    pub fn node(&self) -> String {
+        format!("dialog:{}", self.id)
+    }
+
+    pub fn button_node(&self, action: &str) -> String {
+        format!("dialog:{}:{action}", self.id)
+    }
+}
+
+/// `dialog:<id>:<action>` → `(id, action)`；`dialog:<id>` 返回 `None`。
+pub fn parse_dialog_node(node: &str) -> Option<(&str, Option<&str>)> {
+    let rest = node.strip_prefix("dialog:")?;
+    match rest.split_once(':') {
+        Some((id, action)) if !id.is_empty() && !action.is_empty() => Some((id, Some(action))),
+        Some(_) => None,
+        None if !rest.is_empty() => Some((rest, None)),
+        None => None,
+    }
+}
+
+fn dialogs_json(dialogs: &[Dialog]) -> Value {
+    Value::Array(
+        dialogs
+            .iter()
+            .map(|dialog| {
+                let buttons: Vec<Value> = dialog
+                    .buttons
+                    .iter()
+                    .map(|(action, label)| {
+                        json!({
+                            "id": dialog.button_node(action),
+                            "action": action,
+                            "label": label,
+                        })
+                    })
+                    .collect();
+                let mut node = json!({
+                    "id": dialog.node(),
+                    "role": "dialog",
+                    "title": dialog.title,
+                    "message": dialog.message,
+                    "buttons": buttons,
+                });
+                if let Some(value) = &dialog.value {
+                    node["value"] = json!(value);
+                }
+                node
+            })
+            .collect(),
+    )
 }
 
 /// 视口物体的节点 id（场景实体）。
@@ -144,6 +238,13 @@ pub fn snapshot(input: &SnapshotInput<'_>) -> Value {
             "space": input.gizmo_space,
         },
     });
+
+    root["dialogs"] = dialogs_json(input.dialogs);
+    root["pending_dialog"] = input
+        .dialogs
+        .first()
+        .map(|dialog| json!(dialog.node()))
+        .unwrap_or(Value::Null);
 
     let mut dock = Vec::new();
     for (leaf, active, tabs) in input.leaves {
@@ -446,6 +547,7 @@ mod tests {
             leaves: &leaves,
             logs: &logs,
             viewports: &[],
+            dialogs: &[],
         };
         let value = snapshot(&input);
         assert_eq!(value["gizmo"]["tool"], "Move");
@@ -470,6 +572,52 @@ mod tests {
         assert_eq!(parse_view_object_node("view:sceneView"), None);
         assert_eq!(parse_view_object_node("view::entity:1"), None);
         assert_eq!(parse_view_object_node("view:sceneView:created:1"), None);
+    }
+
+    #[test]
+    fn snapshot_exposes_modal_dialogs_and_buttons() {
+        let workspace = Workspace::sample();
+        let rects = BTreeMap::new();
+        let leaves = Vec::new();
+        let logs = Vec::new();
+        let dialogs = vec![Dialog::new(
+            "delete-entities",
+            "Delete",
+            "Delete 5 selected entities and their children?",
+        )
+        .button("delete", "Delete")
+        .button("cancel", "Cancel")];
+        let input = SnapshotInput {
+            workspace: &workspace,
+            playing: false,
+            paused: false,
+            status: "ready",
+            frames: 1,
+            fps: 60.0,
+            gizmo_tool: None,
+            gizmo_space: "World",
+            rects: &rects,
+            leaves: &leaves,
+            logs: &logs,
+            viewports: &[],
+            dialogs: &dialogs,
+        };
+        let value = snapshot(&input);
+        assert_eq!(value["pending_dialog"], "dialog:delete-entities");
+        assert_eq!(value["dialogs"][0]["role"], "dialog");
+        assert_eq!(
+            value["dialogs"][0]["buttons"][0]["id"],
+            "dialog:delete-entities:delete"
+        );
+        assert_eq!(
+            parse_dialog_node("dialog:delete-entities:delete"),
+            Some(("delete-entities", Some("delete")))
+        );
+        assert_eq!(
+            parse_dialog_node("dialog:delete-entities"),
+            Some(("delete-entities", None))
+        );
+        assert_eq!(parse_dialog_node("delete-entities:delete"), None);
     }
 
     #[test]
@@ -511,6 +659,7 @@ mod tests {
             leaves: &leaves,
             logs: &logs,
             viewports: &viewports,
+            dialogs: &[],
         };
         let value = snapshot(&input);
         let node = value["dock"]
