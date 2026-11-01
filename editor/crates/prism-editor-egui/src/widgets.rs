@@ -25,6 +25,17 @@ pub enum CardAction {
     /// 在检查器顺序里上移 / 下移一个组件（#512）。
     MoveUp(String),
     MoveDown(String),
+    /// 把组件当前值存成命名预设（#418）。
+    SavePreset {
+        component: String,
+        name: String,
+        value: Value,
+    },
+    /// 把命名预设写回组件（整份组件 = 一个撤销步）。
+    ApplyPreset {
+        component: String,
+        name: String,
+    },
 }
 
 /// 一个组件卡片：标题栏 + 字段列表 + 复制/删除按钮。
@@ -40,6 +51,7 @@ pub fn component_card_with_assets(
     set: &mut dyn FnMut(&str, Value),
     assets: &[String],
     doc_dir: &str,
+    presets: &[String],
 ) {
     egui::Frame::group(ui.style())
         .inner_margin(egui::Margin::symmetric(6, 4))
@@ -113,6 +125,45 @@ pub fn component_card_with_assets(
                             }
                             ui.close();
                         }
+                        ui.separator();
+                        // 组件预设（#418）：保存当前值 / 套用已有预设。
+                        ui.menu_button("Presets", |ui| {
+                            ui.menu_button("Save Preset…", |ui| {
+                                let id = egui::Id::new(("preset-name", component.name.as_str()));
+                                let mut name = ui
+                                    .data(|data| data.get_temp::<String>(id))
+                                    .unwrap_or_default();
+                                if ui.text_edit_singleline(&mut name).changed() {
+                                    ui.data_mut(|data| data.insert_temp(id, name.clone()));
+                                }
+                                let trimmed = name.trim().to_string();
+                                if ui
+                                    .add_enabled(!trimmed.is_empty(), egui::Button::new("Save"))
+                                    .clicked()
+                                {
+                                    actions.push(CardAction::SavePreset {
+                                        component: component.name.clone(),
+                                        name: trimmed,
+                                        value: value.clone(),
+                                    });
+                                    ui.data_mut(|data| data.remove::<String>(id));
+                                    ui.close();
+                                }
+                            });
+                            if presets.is_empty() {
+                                ui.label(egui::RichText::new("no presets").weak().size(10.0));
+                            } else {
+                                for preset in presets {
+                                    if ui.button(preset).clicked() {
+                                        actions.push(CardAction::ApplyPreset {
+                                            component: component.name.clone(),
+                                            name: preset.clone(),
+                                        });
+                                        ui.close();
+                                    }
+                                }
+                            }
+                        });
                         if ui.button("Remove Component").clicked() {
                             actions.push(CardAction::Remove(component.name.clone()));
                             ui.close();
@@ -428,6 +479,7 @@ mod tests {
                     &mut |path, value| writes.push((path.to_owned(), value)),
                     &[],
                     "assets",
+                    &["hero".to_string()],
                 );
             });
         });

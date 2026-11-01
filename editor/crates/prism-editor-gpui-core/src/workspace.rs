@@ -21,6 +21,7 @@ use crate::viewport_math::{
     quat_normalize, quat_rotate, world_bounds, world_position, world_rotation, world_scale,
     GizmoSpace,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::io;
@@ -475,12 +476,25 @@ impl SelectMode {
     }
 }
 
+/// 组件预设（#418）：把某个组件当前的值存下来，之后一键套到别的实体上。
+///
+/// 存在 `Workspace` 里并随编辑器状态（`target/editor-egui/state.json`）持久化；
+/// `component` 是完整的反射名（`prism_engine::scene::Camera`），同名预设后写覆盖前写。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ComponentPreset {
+    pub component: String,
+    pub name: String,
+    pub value: Value,
+}
+
 #[derive(Debug, Clone)]
 pub struct Workspace {
     pub docs: Vec<Document>,
     active: usize,
     pub schema: Schema,
     pub presets: Vec<EntityPreset>,
+    /// 组件预设（#418）。
+    pub component_presets: Vec<ComponentPreset>,
     pub templates: Vec<TemplateDoc>,
     pub assets: Vec<AssetInfo>,
     pub tree: AssetTree,
@@ -613,6 +627,7 @@ impl Workspace {
             active: 0,
             schema: Schema::default(),
             presets: Vec::new(),
+            component_presets: Vec::new(),
             templates: Vec::new(),
             assets: Vec::new(),
             tree: AssetTree::default(),
@@ -2932,6 +2947,44 @@ impl Workspace {
         document.dirty = true;
     }
 
+    /// 某个组件的预设名（按保存顺序）。
+    pub fn component_preset_names(&self, component: &str) -> Vec<String> {
+        self.component_presets
+            .iter()
+            .filter(|preset| preset.component == component)
+            .map(|preset| preset.name.clone())
+            .collect()
+    }
+
+    /// 取一个组件预设的值。
+    pub fn component_preset_value(&self, component: &str, name: &str) -> Option<Value> {
+        self.component_presets
+            .iter()
+            .find(|preset| preset.component == component && preset.name == name)
+            .map(|preset| preset.value.clone())
+    }
+
+    /// 保存 / 覆盖一个组件预设（同名后写覆盖前写）。
+    pub fn save_component_preset(&mut self, component: &str, name: &str, value: Value) {
+        let name = name.trim();
+        if component.is_empty() || name.is_empty() {
+            return;
+        }
+        if let Some(preset) = self
+            .component_presets
+            .iter_mut()
+            .find(|preset| preset.component == component && preset.name == name)
+        {
+            preset.value = value;
+            return;
+        }
+        self.component_presets.push(ComponentPreset {
+            component: component.to_string(),
+            name: name.to_string(),
+            value,
+        });
+    }
+
     /// 绕 gizmo 轴旋转实体（旋转 gizmo）；按实体合并撤销。
     pub fn rotate_entity(&mut self, entity_id: u32, axis: usize, delta_radians: f32) {
         if !delta_radians.is_finite() || delta_radians.abs() < 1e-6 {
@@ -5032,6 +5085,32 @@ mod tests {
         let before = camera;
         camera.align_to_axis(9, 1.0);
         assert_eq!(camera, before);
+    }
+
+    #[test]
+    fn component_presets_replace_by_name_and_keep_values() {
+        // #418：同名后写覆盖前写；不同组件互不影响；空名字不落库。
+        let mut workspace = Workspace::sample();
+        workspace.save_component_preset("a::B", "hero", serde_json::json!({"x": 1}));
+        workspace.save_component_preset("a::C", "hero", serde_json::json!({"y": 2}));
+        workspace.save_component_preset("a::B", "hero", serde_json::json!({"x": 3}));
+
+        assert_eq!(
+            workspace.component_preset_names("a::B"),
+            vec!["hero".to_string()]
+        );
+        assert_eq!(
+            workspace.component_preset_value("a::B", "hero"),
+            Some(serde_json::json!({"x": 3}))
+        );
+        assert_eq!(
+            workspace.component_preset_value("a::C", "hero"),
+            Some(serde_json::json!({"y": 2}))
+        );
+        assert_eq!(workspace.component_preset_value("a::B", "missing"), None);
+
+        workspace.save_component_preset("a::B", "   ", serde_json::json!({}));
+        assert_eq!(workspace.component_preset_names("a::B").len(), 1);
     }
 
     #[test]

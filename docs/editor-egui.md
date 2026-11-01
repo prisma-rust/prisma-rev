@@ -256,6 +256,11 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
   `+ Add` 按元素 schema 生成默认值（`Vec3` → `[0,0,0]`，嵌套 struct → 各字段默认值）；
   定长数组不提供增删；元素内部仍然用它们真正的控件，路径是 `字段[i]`（`LineRenderer.points`
   这类字段因此不必再手改 JSON）。`Option<T>` 用勾选框控制存在与否，嵌套 struct 可折叠展开。
+  **组件预设（#418）**：组件卡头的 `…` → `Presets` 可以把当前组件值存成命名预设
+  （同名覆盖），之后对任意实体套用（整份组件 = 一个撤销步）。预设随编辑器状态
+  （`target/editor-egui/state.json`）持久化，按完整反射名分组；`Reset` 仍恢复 schema
+  默认值。组件右键菜单还有 Copy / Paste Values / Move Up / Down / Remove，字段右键可
+  Copy / Paste Value 与 Copy Property Path；检查器右上角的锁按**实体 id** 钉住内容。
   **组件卡头的 `…` 菜单**：Copy Component / Paste Values / Move Up·Down / Reset（写回
   schema 的 `defaultJson`，一次撤销步）/ Remove；**字段右键**：Copy Value / Paste Value
   （只有同形状的值可粘贴，不做类型强转）/ Copy Property Path。面板顶部的锁图标是

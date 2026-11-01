@@ -97,6 +97,9 @@ pub struct EditorState {
     /// 被最大化的面板 tab（`#[serde(default)]`：旧存档 = 正常布局）。
     #[serde(default)]
     pub maximized: Option<String>,
+    /// 组件预设（#418）；旧存档没有时是空表。
+    #[serde(default)]
+    pub component_presets: Vec<crate::workspace::ComponentPreset>,
 }
 
 fn default_locale() -> String {
@@ -134,6 +137,7 @@ impl EditorState {
                 render: None,
             },
             maximized: workspace.maximized_tab.clone(),
+            component_presets: workspace.component_presets.clone(),
         }
     }
 
@@ -206,6 +210,7 @@ impl EditorState {
                 .any(|t| t == tab)
         });
         workspace.maximized_tab = maximized;
+        workspace.component_presets = self.component_presets.clone();
 
         *preferences = self.preferences.clone();
         preferences.max_log_lines = preferences.max_log_lines.clamp(500.0, 20_000.0);
@@ -253,6 +258,31 @@ mod tests {
 
     fn workspace() -> Workspace {
         Workspace::sample()
+    }
+
+    #[test]
+    fn component_presets_survive_a_state_round_trip() {
+        // #418：预设放在编辑器状态里，重开编辑器后还在。
+        let mut source = Workspace::sample();
+        source.save_component_preset(
+            "prism_engine::scene::Camera",
+            "wide",
+            serde_json::json!({"fov_y_degrees": 90.0}),
+        );
+        let state = EditorState::capture(&source, &Preferences::default());
+        let restored = EditorState::from_json_str(&state.to_json_string());
+
+        let mut target = Workspace::sample();
+        let mut prefs = Preferences::default();
+        restored.apply(&mut target, &mut prefs);
+        assert_eq!(
+            target.component_preset_names("prism_engine::scene::Camera"),
+            vec!["wide".to_string()]
+        );
+        assert_eq!(
+            target.component_preset_value("prism_engine::scene::Camera", "wide"),
+            Some(serde_json::json!({"fov_y_degrees": 90.0}))
+        );
     }
 
     #[test]
