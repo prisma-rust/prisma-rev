@@ -323,15 +323,56 @@ fn step(
     }
 }
 
-/// 粒子当前颜色：`start_color → end_color` 按年龄线性插值。
+/// 粒子在生命周期上的进度（`0` = 出生，`1` = 死亡）。
 ///
-/// `t` 超出 `[0, 1]` 时钳到端点，所以颜色永远在作者给的两个值之间。
-pub fn particle_color(system: &ParticleSystem, particle: &Particle) -> [f32; 4] {
-    let t = if particle.lifetime > 0.0 {
+/// 寿命为 0 / 非有限值时按 `1`（已经死亡），避免除零产生 NaN。
+fn age_fraction(particle: &Particle) -> f32 {
+    if particle.lifetime.is_finite() && particle.lifetime > 0.0 {
         (particle.age / particle.lifetime).clamp(0.0, 1.0)
     } else {
         1.0
-    };
+    }
+}
+
+/// 在多段颜色渐变上取色；`stops` 为空时返回 `None`（调用方退回两色插值）。
+///
+/// 停靠点在 `[0, 1]` 上均匀分布，相邻两点之间线性插值；`t` 超出范围时钳到端点。
+/// 只有一个停靠点时整条生命周期都是这个颜色。
+pub fn sample_gradient(stops: &[[f32; 4]], t: f32) -> Option<[f32; 4]> {
+    match stops.len() {
+        0 => None,
+        1 => Some(stops[0]),
+        len => {
+            let t = if t.is_finite() {
+                t.clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            let scaled = t * (len - 1) as f32;
+            let index = (scaled.floor() as usize).min(len - 2);
+            let local = scaled - index as f32;
+            let a = stops[index];
+            let b = stops[index + 1];
+            let lerp = |a: f32, b: f32| a + (b - a) * local;
+            Some([
+                lerp(a[0], b[0]),
+                lerp(a[1], b[1]),
+                lerp(a[2], b[2]),
+                lerp(a[3], b[3]),
+            ])
+        }
+    }
+}
+
+/// 粒子当前颜色。
+///
+/// `color_stops` 非空时按生命周期在多段渐变上取色；否则退回
+/// `start_color → end_color` 的两色线性插值（旧行为）。
+pub fn particle_color(system: &ParticleSystem, particle: &Particle) -> [f32; 4] {
+    let t = age_fraction(particle);
+    if let Some(color) = sample_gradient(&system.color_stops, t) {
+        return color;
+    }
     let lerp = |a: f32, b: f32| a + (b - a) * t;
     [
         lerp(system.start_color[0], system.end_color[0]),
@@ -339,6 +380,19 @@ pub fn particle_color(system: &ParticleSystem, particle: &Particle) -> [f32; 4] 
         lerp(system.start_color[2], system.end_color[2]),
         lerp(system.start_color[3], system.end_color[3]),
     ]
+}
+
+/// 粒子当前尺寸：出生尺寸 × `size_over_lifetime` 在生命周期上的插值。
+///
+/// 倍率非有限值时按 `1` 处理；结果钳到非负，避免 billboard 尺寸变成负 / NaN。
+pub fn particle_size(system: &ParticleSystem, particle: &Particle) -> f32 {
+    let t = age_fraction(particle);
+    let start = system.size_over_lifetime[0];
+    let end = system.size_over_lifetime[1];
+    let start = if start.is_finite() { start } else { 1.0 };
+    let end = if end.is_finite() { end } else { 1.0 };
+    let scale = start + (end - start) * t;
+    (particle.size * scale).max(0.0)
 }
 
 /// 提取所有可见发射器的粒子为 billboard 绘制项，按到相机的距离**远到近**排序。
@@ -364,7 +418,7 @@ pub fn scene_particles_into(
                 .iter()
                 .map(|particle| prism_render::ParticleDrawItem {
                     center: particle.position.to_array(),
-                    size: particle.size,
+                    size: particle_size(system, particle),
                     color: particle_color(system, particle),
                 }),
         );

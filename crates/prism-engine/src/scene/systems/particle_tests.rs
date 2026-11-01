@@ -352,3 +352,119 @@ fn a_huge_dt_is_clamped_to_the_maximum_step() {
     // 新粒子是在积分之后出生的，所以这一帧的年龄还是 0。
     assert_eq!(particles[0].age, 0.0);
 }
+
+fn particle_at(age: f32, lifetime: f32, size: f32) -> Particle {
+    Particle {
+        position: glam::Vec3::ZERO,
+        velocity: glam::Vec3::ZERO,
+        age,
+        lifetime,
+        size,
+    }
+}
+
+#[test]
+fn gradient_samples_every_stop_uniformly() {
+    let stops = [
+        [1.0, 0.0, 0.0, 1.0],
+        [0.0, 1.0, 0.0, 1.0],
+        [0.0, 0.0, 1.0, 1.0],
+    ];
+    assert_eq!(sample_gradient(&stops, 0.0), Some([1.0, 0.0, 0.0, 1.0]));
+    assert_eq!(sample_gradient(&stops, 0.5), Some([0.0, 1.0, 0.0, 1.0]));
+    assert_eq!(sample_gradient(&stops, 1.0), Some([0.0, 0.0, 1.0, 1.0]));
+
+    // 两个停靠点之间线性插值：t = 0.25 → scaled 0.5 → 红绿各半。
+    let quarter = sample_gradient(&stops, 0.25).unwrap();
+    for (actual, expected) in quarter.iter().zip([0.5, 0.5, 0.0, 1.0]) {
+        assert!((actual - expected).abs() < 1e-5, "{quarter:?}");
+    }
+
+    // 超出范围钳到端点；非有限值按死亡处理。
+    assert_eq!(sample_gradient(&stops, -2.0), Some(stops[0]));
+    assert_eq!(sample_gradient(&stops, 9.0), Some(stops[2]));
+    assert_eq!(sample_gradient(&stops, f32::NAN), Some(stops[2]));
+}
+
+#[test]
+fn a_single_stop_is_a_constant_and_no_stops_means_legacy_lerp() {
+    let single = [[0.2, 0.4, 0.6, 0.8]];
+    assert_eq!(sample_gradient(&single, 0.0), Some(single[0]));
+    assert_eq!(sample_gradient(&single, 1.0), Some(single[0]));
+    assert_eq!(sample_gradient(&[], 0.5), None);
+
+    let system = ParticleSystem {
+        start_color: [1.0, 0.0, 0.0, 1.0],
+        end_color: [0.0, 0.0, 1.0, 1.0],
+        color_stops: Vec::new(),
+        ..fire()
+    };
+    let color = particle_color(&system, &particle_at(0.5, 1.0, 0.5));
+    for (actual, expected) in color.iter().zip([0.5, 0.0, 0.5, 1.0]) {
+        assert!((actual - expected).abs() < 1e-5, "{color:?}");
+    }
+}
+
+#[test]
+fn color_stops_override_the_two_colour_lerp() {
+    let system = ParticleSystem {
+        start_color: [1.0, 1.0, 1.0, 1.0],
+        end_color: [0.0, 0.0, 0.0, 1.0],
+        color_stops: vec![
+            [1.0, 0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 1.0],
+        ],
+        ..fire()
+    };
+    let color = particle_color(&system, &particle_at(0.5, 1.0, 0.5));
+    assert_eq!(color, [0.0, 1.0, 0.0, 1.0], "t=0.5 落在中间停靠点");
+}
+
+#[test]
+fn size_over_lifetime_scales_the_birth_size() {
+    let shrink = ParticleSystem {
+        size_over_lifetime: [1.0, 0.0],
+        ..fire()
+    };
+    assert!((particle_size(&shrink, &particle_at(0.5, 1.0, 0.5)) - 0.25).abs() < 1e-5);
+    assert!((particle_size(&shrink, &particle_at(1.0, 1.0, 0.5))).abs() < 1e-5);
+
+    let grow = ParticleSystem {
+        size_over_lifetime: [0.5, 2.0],
+        ..fire()
+    };
+    assert!((particle_size(&grow, &particle_at(0.0, 1.0, 0.5)) - 0.25).abs() < 1e-5);
+    assert!((particle_size(&grow, &particle_at(1.0, 1.0, 0.5)) - 1.0).abs() < 1e-5);
+
+    // 非有限倍率按 1；负倍率钳到 0，绝不产生负尺寸 / NaN。
+    let broken = ParticleSystem {
+        size_over_lifetime: [f32::NAN, f32::INFINITY],
+        ..fire()
+    };
+    assert!((particle_size(&broken, &particle_at(0.5, 1.0, 0.5)) - 0.5).abs() < 1e-5);
+    let negative = ParticleSystem {
+        size_over_lifetime: [-1.0, -1.0],
+        ..fire()
+    };
+    assert_eq!(particle_size(&negative, &particle_at(0.5, 1.0, 0.5)), 0.0);
+}
+
+#[test]
+fn scene_particles_use_the_size_curve() {
+    let mut world = World::new();
+    let system = ParticleSystem {
+        size_over_lifetime: [1.0, 0.0],
+        ..fire()
+    };
+    let entity = spawn_emitter(&mut world, system, [0.0, 0.0, 0.0]);
+    run(&mut world, 0.02);
+    let mut out = Vec::new();
+    scene_particles_into(&world, glam::Vec3::ZERO, &mut out);
+    assert!(!out.is_empty(), "至少应该有一个粒子");
+    assert!(
+        out.iter().all(|item| item.size <= 0.5 && item.size >= 0.0),
+        "尺寸必须被曲线缩到 [0, 出生尺寸]"
+    );
+    let _ = entity;
+}
