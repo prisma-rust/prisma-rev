@@ -2,7 +2,7 @@
 //!
 //! PrismaRev 资源管道的导入器框架
 //!
-//! 导入器将源文件（`.png`、`.gltf`、`.wav` 等）转换为中间数据，
+//! 导入器将源文件（`.png`、`.gltf`、`.obj`、`.wav` 等）转换为中间数据，
 //! 随后由烹饪器转换为运行时格式。
 //!
 //! 导入管线如下：
@@ -511,61 +511,65 @@ const MESH_INTERMEDIATE_MAGIC: &[u8; 4] = b"RMXI";
 /// ```
 pub struct GltfImporter;
 
-impl GltfImporter {
-    fn write_intermediate(
-        positions: &[[f32; 3]],
-        normals: Option<&[[f32; 3]]>,
-        uv0: Option<&[[f32; 2]]>,
-        indices: &[u32],
-    ) -> Vec<u8> {
-        let verts = positions.len() as u32;
-        let idxs = indices.len() as u32;
-        let uv_channels: u32 = if uv0.is_some() { 1 } else { 0 };
+/// 把一套已经拆好的顶点属性写成 RMXI 中间格式。
+///
+/// glTF 与 OBJ 导入器共用；`normals` / `uv0` 为 `None` 时该属性整份省略
+/// （cooker 会补默认值），不会写零值冒充。
+fn write_mesh_intermediate(
+    positions: &[[f32; 3]],
+    normals: Option<&[[f32; 3]]>,
+    uv0: Option<&[[f32; 2]]>,
+    indices: &[u32],
+) -> Vec<u8> {
+    let verts = positions.len() as u32;
+    let idxs = indices.len() as u32;
+    let uv_channels: u32 = if uv0.is_some() { 1 } else { 0 };
 
-        // Estimate 容量
-        let cap = 4 + 1 + 4 + 4 + 4
+    // Estimate 容量
+    let cap = 4 + 1 + 4 + 4 + 4
             + verts as usize * 3 * 4   // positions
             + normals.map_or(0, |n| n.len() * 3 * 4)
             + uv0.map_or(0, |u| u.len() * 2 * 4)
             + idxs as usize * 4;
-        let mut buf = Vec::with_capacity(cap);
+    let mut buf = Vec::with_capacity(cap);
 
-        buf.extend_from_slice(MESH_INTERMEDIATE_MAGIC);
-        buf.push(1); // version
-        buf.extend_from_slice(&verts.to_le_bytes());
-        buf.extend_from_slice(&idxs.to_le_bytes());
-        buf.extend_from_slice(&uv_channels.to_le_bytes());
+    buf.extend_from_slice(MESH_INTERMEDIATE_MAGIC);
+    buf.push(1); // version
+    buf.extend_from_slice(&verts.to_le_bytes());
+    buf.extend_from_slice(&idxs.to_le_bytes());
+    buf.extend_from_slice(&uv_channels.to_le_bytes());
 
-        for pos in positions {
-            buf.extend_from_slice(&pos[0].to_le_bytes());
-            buf.extend_from_slice(&pos[1].to_le_bytes());
-            buf.extend_from_slice(&pos[2].to_le_bytes());
-        }
-        if let Some(n) = normals {
-            for nrm in n {
-                buf.extend_from_slice(&nrm[0].to_le_bytes());
-                buf.extend_from_slice(&nrm[1].to_le_bytes());
-                buf.extend_from_slice(&nrm[2].to_le_bytes());
-            }
-        }
-        if let Some(uv) = uv0 {
-            for t in uv {
-                buf.extend_from_slice(&t[0].to_le_bytes());
-                buf.extend_from_slice(&t[1].to_le_bytes());
-            }
-        }
-        for idx in indices {
-            buf.extend_from_slice(&idx.to_le_bytes());
-        }
-        buf
+    for pos in positions {
+        buf.extend_from_slice(&pos[0].to_le_bytes());
+        buf.extend_from_slice(&pos[1].to_le_bytes());
+        buf.extend_from_slice(&pos[2].to_le_bytes());
     }
+    if let Some(n) = normals {
+        for nrm in n {
+            buf.extend_from_slice(&nrm[0].to_le_bytes());
+            buf.extend_from_slice(&nrm[1].to_le_bytes());
+            buf.extend_from_slice(&nrm[2].to_le_bytes());
+        }
+    }
+    if let Some(uv) = uv0 {
+        for t in uv {
+            buf.extend_from_slice(&t[0].to_le_bytes());
+            buf.extend_from_slice(&t[1].to_le_bytes());
+        }
+    }
+    for idx in indices {
+        buf.extend_from_slice(&idx.to_le_bytes());
+    }
+    buf
+}
 
+impl GltfImporter {
     #[allow(clippy::type_complexity)]
-    fn read_gltf(path: &Path) -> Result<GltfMesh, ImportError> {
+    fn read_gltf(path: &Path) -> Result<MeshData, ImportError> {
         let (document, buffers, _images) = gltf::import(path)
             .map_err(|e| ImportError::ImportFailed(format!("glTF parse failed: {e}")))?;
 
-        let mut mesh = GltfMesh {
+        let mut mesh = MeshData {
             material_count: document.materials().count(),
             has_skins: document.skins().next().is_some(),
             ..Default::default()
@@ -625,7 +629,7 @@ impl GltfImporter {
 
 /// 累积结果：整棵场景树烘焙成一个世界空间的三角形网格。
 #[derive(Debug)]
-struct GltfMesh {
+struct MeshData {
     positions: Vec<[f32; 3]>,
     normals: Vec<[f32; 3]>,
     uv0: Vec<[f32; 2]>,
@@ -639,7 +643,7 @@ struct GltfMesh {
     has_skins: bool,
 }
 
-impl Default for GltfMesh {
+impl Default for MeshData {
     fn default() -> Self {
         Self {
             positions: Vec::new(),
@@ -732,7 +736,7 @@ fn collect_node(
     node: &gltf::Node,
     parent: &Mat4,
     buffers: &[gltf::buffer::Data],
-    out: &mut GltfMesh,
+    out: &mut MeshData,
 ) {
     out.node_count += 1;
     let world = matrix_mul(parent, &node.transform().matrix());
@@ -750,7 +754,7 @@ fn push_primitive(
     primitive: &gltf::Primitive,
     world: &Mat4,
     buffers: &[gltf::buffer::Data],
-    out: &mut GltfMesh,
+    out: &mut MeshData,
 ) {
     // 只烤三角形；线/点之类先跳过并计数（不在这一版的支持范围内）。
     if primitive.mode() != gltf::mesh::Mode::Triangles {
@@ -850,13 +854,303 @@ impl Importer for GltfImporter {
         let normals = mesh.all_normals.then_some(mesh.normals.as_slice());
         let texcoords = mesh.all_uv0.then_some(mesh.uv0.as_slice());
         let output_data =
-            Self::write_intermediate(&mesh.positions, normals, texcoords, &mesh.indices);
+            write_mesh_intermediate(&mesh.positions, normals, texcoords, &mesh.indices);
 
         let metadata = serde_json::json!({
             "original_name": src
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("unknown"),
+            "vertex_count": mesh.positions.len(),
+            "index_count": mesh.indices.len(),
+            "has_normals": normals.is_some(),
+            "has_texcoords": texcoords.is_some(),
+            "primitive_count": mesh.primitive_count,
+            "node_count": mesh.node_count,
+            "material_count": mesh.material_count,
+            "has_skins": mesh.has_skins,
+            "intermediate_size": output_data.len(),
+        });
+
+        Ok(ImportResult {
+            asset_type: AssetType::Mesh,
+            dependencies: Vec::new(),
+            output_data,
+            metadata: Some(metadata),
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OBJ 网格 Importer
+// ---------------------------------------------------------------------------
+
+/// 导入 Wavefront `.obj`。
+///
+/// 支持 `v` / `vt` / `vn` / `f`，面索引的三种写法（`v`、`v/vt`、`v//vn`、
+/// `v/vt/vn`）以及**负索引**；多边形按扇形三角化。顶点按
+/// `(position, uv, normal)` 三元组去重，因此共享边的三角形只存一份顶点。
+///
+/// 与 glTF 导入器一致：只要有一个面缺 UV / 法线，整份网格就不导出该属性
+/// （不拿零值冒充）；`usemtl` / `o` / `g` / `s` 目前只做统计或忽略。
+pub struct ObjImporter;
+
+impl ObjImporter {
+    fn read_obj(path: &Path) -> Result<MeshData, ImportError> {
+        let text = std::fs::read_to_string(path)?;
+        let mut positions: Vec<[f32; 3]> = Vec::new();
+        let mut texcoords: Vec<[f32; 2]> = Vec::new();
+        let mut normals: Vec<[f32; 3]> = Vec::new();
+
+        let mut vertex_positions: Vec<[f32; 3]> = Vec::new();
+        let mut vertex_uvs: Vec<Option<[f32; 2]>> = Vec::new();
+        let mut vertex_normals: Vec<Option<[f32; 3]>> = Vec::new();
+        let mut indices: Vec<u32> = Vec::new();
+        let mut dedup: HashMap<(usize, Option<usize>, Option<usize>), u32> = HashMap::new();
+
+        let mut all_normals = true;
+        let mut all_uv0 = true;
+        let mut face_count = 0usize;
+        let mut materials = std::collections::HashSet::new();
+
+        for (line_no, raw) in text.lines().enumerate() {
+            let line = raw.split('#').next().unwrap_or("").trim();
+            if line.is_empty() {
+                continue;
+            }
+            let mut fields = line.split_whitespace();
+            let Some(kind) = fields.next() else {
+                continue;
+            };
+            match kind {
+                "v" => {
+                    let x = parse_obj_float(fields.next(), line_no, "vertex x")?;
+                    let y = parse_obj_float(fields.next(), line_no, "vertex y")?;
+                    let z = parse_obj_float(fields.next(), line_no, "vertex z")?;
+                    positions.push([x, y, z]);
+                }
+                "vt" => {
+                    let u = parse_obj_float(fields.next(), line_no, "texcoord u")?;
+                    let v = fields
+                        .next()
+                        .map(|value| parse_obj_float(Some(value), line_no, "texcoord v"))
+                        .transpose()?
+                        .unwrap_or(0.0);
+                    texcoords.push([u, v]);
+                }
+                "vn" => {
+                    let x = parse_obj_float(fields.next(), line_no, "normal x")?;
+                    let y = parse_obj_float(fields.next(), line_no, "normal y")?;
+                    let z = parse_obj_float(fields.next(), line_no, "normal z")?;
+                    normals.push([x, y, z]);
+                }
+                "f" => {
+                    let face: Vec<(usize, Option<usize>, Option<usize>)> = fields
+                        .map(|token| {
+                            parse_obj_face_ref(
+                                token,
+                                positions.len(),
+                                texcoords.len(),
+                                normals.len(),
+                                line_no,
+                            )
+                        })
+                        .collect::<Result<_, _>>()?;
+                    if face.len() < 3 {
+                        return Err(ImportError::ImportFailed(format!(
+                            "OBJ line {}: face needs at least 3 vertices",
+                            line_no + 1
+                        )));
+                    }
+                    for triangle in 1..face.len() - 1 {
+                        for &(position, uv, normal) in
+                            [&face[0], &face[triangle], &face[triangle + 1]]
+                        {
+                            if uv.is_none() {
+                                all_uv0 = false;
+                            }
+                            if normal.is_none() {
+                                all_normals = false;
+                            }
+                            let key = (position, uv, normal);
+                            let index = match dedup.get(&key) {
+                                Some(&index) => index,
+                                None => {
+                                    let index = vertex_positions.len() as u32;
+                                    dedup.insert(key, index);
+                                    vertex_positions.push(positions[position]);
+                                    vertex_uvs.push(uv.map(|i| texcoords[i]));
+                                    vertex_normals.push(normal.map(|i| normals[i]));
+                                    index
+                                }
+                            };
+                            indices.push(index);
+                        }
+                    }
+                    face_count += 1;
+                }
+                "usemtl" => {
+                    if let Some(name) = fields.next() {
+                        materials.insert(name.to_string());
+                    }
+                }
+                // `o` / `g` / `s` / `mtllib` / 注释等：OBJ 的节点与材质分组
+                // 目前不进入中间格式，忽略即可。
+                _ => {}
+            }
+        }
+
+        if face_count == 0 {
+            return Err(ImportError::ImportFailed(
+                "OBJ contains no faces (`f` lines)".into(),
+            ));
+        }
+
+        // `all_*` 为真时每个顶点都有该属性；`unwrap` 前的长度/内容由构造过程保证。
+        let out_normals = if all_normals {
+            vertex_normals
+                .iter()
+                .map(|normal| normal.unwrap_or([0.0, 0.0, 1.0]))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let out_uvs = if all_uv0 {
+            vertex_uvs
+                .iter()
+                .map(|uv| uv.unwrap_or([0.0, 0.0]))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        Ok(MeshData {
+            positions: vertex_positions,
+            normals: out_normals,
+            uv0: out_uvs,
+            indices,
+            all_normals,
+            all_uv0,
+            primitive_count: 1,
+            node_count: 1,
+            material_count: materials.len(),
+            has_skins: false,
+        })
+    }
+}
+
+fn parse_obj_float(value: Option<&str>, line: usize, what: &str) -> Result<f32, ImportError> {
+    let Some(value) = value else {
+        return Err(ImportError::ImportFailed(format!(
+            "OBJ line {}: missing {what}",
+            line + 1
+        )));
+    };
+    value
+        .parse::<f32>()
+        .map_err(|_| {
+            ImportError::ImportFailed(format!("OBJ line {}: invalid {what} `{value}`", line + 1))
+        })
+        .and_then(|parsed| {
+            if parsed.is_finite() {
+                Ok(parsed)
+            } else {
+                Err(ImportError::ImportFailed(format!(
+                    "OBJ line {}: {what} `{value}` is not finite",
+                    line + 1
+                )))
+            }
+        })
+}
+
+/// 解析一个 1-based（或负 = 相对当前末尾）OBJ 索引。
+fn parse_obj_index(value: &str, len: usize, what: &str, line: usize) -> Result<usize, ImportError> {
+    let raw: i64 = value.parse().map_err(|_| {
+        ImportError::ImportFailed(format!(
+            "OBJ line {}: invalid {what} index `{value}`",
+            line + 1
+        ))
+    })?;
+    let index = match raw {
+        0 => {
+            return Err(ImportError::ImportFailed(format!(
+                "OBJ line {}: {what} index 0 is not valid (OBJ is 1-based)",
+                line + 1
+            )))
+        }
+        value if value > 0 => value - 1,
+        value => len as i64 + value,
+    };
+    if index < 0 || index as usize >= len {
+        return Err(ImportError::ImportFailed(format!(
+            "OBJ line {}: {what} index `{value}` is out of range (have {len})",
+            line + 1
+        )));
+    }
+    Ok(index as usize)
+}
+
+fn parse_obj_face_ref(
+    token: &str,
+    positions: usize,
+    texcoords: usize,
+    normals: usize,
+    line: usize,
+) -> Result<(usize, Option<usize>, Option<usize>), ImportError> {
+    let mut parts = token.split('/');
+    let position = parse_obj_index(
+        parts.next().unwrap_or_default(),
+        positions,
+        "position",
+        line,
+    )?;
+    let uv = match parts.next() {
+        None | Some("") => None,
+        Some(value) => Some(parse_obj_index(value, texcoords, "texcoord", line)?),
+    };
+    let normal = match parts.next() {
+        None | Some("") => None,
+        Some(value) => Some(parse_obj_index(value, normals, "normal", line)?),
+    };
+    if parts.next().is_some() {
+        return Err(ImportError::ImportFailed(format!(
+            "OBJ line {}: face reference `{token}` has too many components",
+            line + 1
+        )));
+    }
+    Ok((position, uv, normal))
+}
+
+impl Importer for ObjImporter {
+    fn name(&self) -> &'static str {
+        "obj-importer"
+    }
+
+    fn version(&self) -> u32 {
+        1
+    }
+
+    fn can_import(&self, path: &Path) -> bool {
+        path.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("obj"))
+    }
+
+    fn import(&self, ctx: &ImportContext) -> Result<ImportResult, ImportError> {
+        let src = &ctx.source_path;
+        let mesh = Self::read_obj(src)?;
+
+        let normals = mesh.all_normals.then_some(mesh.normals.as_slice());
+        let texcoords = mesh.all_uv0.then_some(mesh.uv0.as_slice());
+        let output_data =
+            write_mesh_intermediate(&mesh.positions, normals, texcoords, &mesh.indices);
+
+        let metadata = serde_json::json!({
+            "original_name": src
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown"),
+            "source_format": "obj",
             "vertex_count": mesh.positions.len(),
             "index_count": mesh.indices.len(),
             "has_normals": normals.is_some(),
@@ -1306,6 +1600,7 @@ pub fn default_importer_registry() -> ImporterRegistry {
     let mut reg = ImporterRegistry::new();
     reg.register(Box::new(TextureImporter));
     reg.register(Box::new(GltfImporter));
+    reg.register(Box::new(ObjImporter));
     reg.register(Box::new(MaterialImporter));
     reg.register(Box::new(ShaderImporter));
     reg.register(Box::new(JsonImporter));
