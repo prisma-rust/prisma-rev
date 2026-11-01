@@ -2,6 +2,7 @@
 pub mod core;
 #[cfg(feature = "core")]
 pub mod formats;
+pub mod formats_skinned;
 #[cfg(feature = "package")]
 pub mod package;
 #[cfg(feature = "runtime")]

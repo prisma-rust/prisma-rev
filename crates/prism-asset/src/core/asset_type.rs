@@ -27,6 +27,12 @@ pub enum AssetType {
     Audio = 7,
     /// 字体文件（ttf / otf / ttc），原样进包，运行时交给 UI 文本光栅器（#583）。
     Font = 8,
+    /// 骨骼层级 + reference pose + inverse bind（`.rskel`，#560）。
+    Skeleton = 9,
+    /// 带 4 骨权重与 submesh 的蒙皮网格（`.rskin`，#560）。
+    SkinnedMesh = 10,
+    /// 骨骼动画剪辑（`.ranim`，#560）。
+    AnimClip = 11,
     /// 回退 for unrecognised formats.
     Unknown = 0xFF,
 }
@@ -49,6 +55,9 @@ impl AssetType {
             AssetType::Scene => "scene",
             AssetType::Audio => "audio",
             AssetType::Font => "font",
+            AssetType::Skeleton => "skeleton",
+            AssetType::SkinnedMesh => "skinned-mesh",
+            AssetType::AnimClip => "anim-clip",
             AssetType::Unknown => "unknown",
         }
     }
@@ -65,6 +74,9 @@ impl AssetType {
             6 => AssetType::Scene,
             7 => AssetType::Audio,
             8 => AssetType::Font,
+            9 => AssetType::Skeleton,
+            10 => AssetType::SkinnedMesh,
+            11 => AssetType::AnimClip,
             _ => AssetType::Unknown,
         }
     }
@@ -84,6 +96,9 @@ impl AssetType {
             "rtex" => AssetType::Texture,
             "rmes" => AssetType::Mesh,
             "rmat" => AssetType::Material,
+            "rskel" => AssetType::Skeleton,
+            "rskin" => AssetType::SkinnedMesh,
+            "ranim" => AssetType::AnimClip,
             // Textures / images
             "png" | "jpg" | "jpeg" | "tga" | "bmp" | "hdr" | "exr" | "ktx" | "ktx2" | "dds" => {
                 AssetType::Texture

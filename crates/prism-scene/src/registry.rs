@@ -512,6 +512,7 @@ pub fn register_builtin_components(registry: &mut ComponentRegistry) {
     // ── UI 组件 ──
     #[cfg(feature = "group-ui")]
     {
+        registry.register_reflect_serde::<Layout>("prism_engine::ui::Layout");
         registry.register_reflect_serde::<Node>("prism_engine::ui::Node");
         registry.register_reflect_serde::<Style>("prism_engine::ui::Style");
         // `ComputedLayout` 是布局系统的输出（`rect` 每帧被重写），由

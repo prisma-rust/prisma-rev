@@ -42,6 +42,8 @@ cargo run -p prism-editor-mcp -- --project projects/fishing
 | `entity_get` | 按 `id` 或名字取实体 |
 | `field_set` | **反射写入**一个字段（`a.b` / `list[0].x` 都支持） |
 | `component_add` / `component_remove` | 挂 / 摘组件（默认值来自 schema） |
+| `asset_inspect` | 检查已 cook 的资源（`RSKL`/`RSKN`/`RANI`/`RMES`/`RTEX`/`RMAT`）：计数、摘要、校验问题 |
+| `asset_validate` | 只跑校验（权重和、joint 越界、索引/子网格区间、关键帧时间与顺序），`ok=true` 表示通过 |
 | `game_run` / `game_stop` / `game_logs` | 起停游戏、读日志尾部 |
 | `screenshot` | 起游戏 → 抓图 → 结束，返回 PNG 路径 |
 

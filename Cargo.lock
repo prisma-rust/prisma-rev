@@ -2731,6 +2731,8 @@ name = "prism-editor-api"
 version = "0.1.0"
 dependencies = [
  "log",
+ "prism-asset",
+ "prism-cooker",
  "prism-reflect",
  "prism-scene",
  "serde",

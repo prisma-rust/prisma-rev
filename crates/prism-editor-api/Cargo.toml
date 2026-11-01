@@ -7,7 +7,11 @@ description = "PrismaRev web 编辑器的数据/文件后端：场景读写 + �
 
 [dependencies]
 prism-scene = { path = "../prism-scene" }
+prism-asset = { path = "../prism-asset" }
 prism-reflect = { path = "../prism-reflect" }
 log = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+prism-cooker = { path = "../prism-cooker" }
