@@ -25,6 +25,29 @@ pub const ENV_KEY: &str = "PRISMREV_RENDER_GRAPH_REPORT";
 /// 每多少帧刷新一次报告（≈1 秒 @60fps；图结构变化不频繁）。
 pub const REFRESH_INTERVAL_FRAMES: u64 = 60;
 
+/// 管理器侧的实时资源统计（#518 Phase 2）。
+///
+/// 与 `resources` 不同：那是渲染图自己分配的目标；这里数的是纹理 / 网格 / 材质的
+/// **驻留量**（整个渲染器生命周期内累积，热重载后会回落）。字节数是估算值：
+/// 纹理只算 base mip（未乘 mip 链），网格按标准顶点布局 + 4 字节索引。
+#[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportStats {
+    pub textures: usize,
+    pub texture_bytes: u64,
+    pub meshes: usize,
+    pub mesh_bytes: u64,
+    pub materials: usize,
+    pub material_bytes: u64,
+}
+
+impl ReportStats {
+    /// 三类资源合计的估算字节数。
+    pub fn total_bytes(&self) -> u64 {
+        self.texture_bytes + self.mesh_bytes + self.material_bytes
+    }
+}
+
 /// `RenderGraphSnapshot` 的 JSON 形状。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -42,6 +65,9 @@ pub struct RenderGraphReport {
     /// 上一帧的总 GPU 时间（ms，#518）。设备不支持时间戳时为 `None`。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gpu_total_ms: Option<f32>,
+    /// 纹理 / 网格 / 材质的实时驻留统计（#518 Phase 2）；旧报告没有该字段。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stats: Option<ReportStats>,
 }
 
 /// 报告里的渲染设置子集（与编辑器 `RenderSettingsData` 对齐）。
@@ -228,7 +254,14 @@ impl RenderGraphReport {
             gpu_total_ms: timings
                 .map(|timings| timings.total_ms)
                 .filter(|total| *total > 0.0),
+            stats: None,
         }
+    }
+
+    /// 附带管理器侧的资源统计（#518 Phase 2）。
+    pub fn with_stats(mut self, stats: ReportStats) -> Self {
+        self.stats = Some(stats);
+        self
     }
 
     /// 原子写入 JSON（临时文件 + rename）。
@@ -286,7 +319,7 @@ impl ReportWriter {
         settings: ReportSettings,
         frame: u64,
     ) {
-        self.maybe_write_with_timings(snapshot, settings, frame, None);
+        self.maybe_write_with_timings(snapshot, settings, frame, None, None);
     }
 
     /// 同 [`Self::maybe_write`]，附带 per-pass GPU 时间（#518）。
@@ -296,6 +329,7 @@ impl ReportWriter {
         settings: ReportSettings,
         frame: u64,
         timings: Option<&crate::gpu_timer::GpuTimings>,
+        stats: Option<ReportStats>,
     ) {
         let Some(path) = self.path.as_deref() else {
             return;
@@ -309,8 +343,11 @@ impl ReportWriter {
         }
         self.last_frame = Some(frame);
 
-        let report =
+        let mut report =
             RenderGraphReport::from_snapshot_with_timings(snapshot, settings, frame, timings);
+        if let Some(stats) = stats {
+            report = report.with_stats(stats);
+        }
         if let Err(error) = report.write_json(path) {
             log::warn!(
                 "render graph report write failed ({}): {error}",
@@ -390,6 +427,30 @@ mod tests {
         assert_eq!(report.settings.render_mode, "raster");
         let json = serde_json::to_value(&report).unwrap();
         assert_eq!(json["passes"][0]["kind"], "forward");
+    }
+
+    #[test]
+    fn resource_stats_are_optional_and_serialize_in_camel_case() {
+        let plain = RenderGraphReport::from_snapshot(&snapshot(), ReportSettings::default(), 1);
+        assert!(plain.stats.is_none());
+        let json = serde_json::to_value(&plain).unwrap();
+        assert!(json.get("stats").is_none(), "旧报告不该凭空多出 stats");
+
+        let stats = ReportStats {
+            textures: 3,
+            texture_bytes: 1024,
+            meshes: 2,
+            mesh_bytes: 2048,
+            materials: 4,
+            material_bytes: 384,
+        };
+        assert_eq!(stats.total_bytes(), 3456);
+        let report = RenderGraphReport::from_snapshot(&snapshot(), ReportSettings::default(), 1)
+            .with_stats(stats);
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["stats"]["textures"], 3);
+        assert_eq!(json["stats"]["textureBytes"], 1024);
+        assert_eq!(json["stats"]["materialBytes"], 384);
     }
 
     #[test]

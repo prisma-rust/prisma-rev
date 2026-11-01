@@ -108,6 +108,20 @@ impl RenderMeshManager {
         self.meshes.is_empty()
     }
 
+    /// 驻留网格数与估算字节数（标准顶点布局 + 4 字节索引；#518 Phase 2）。
+    pub fn stats(&self) -> (usize, u64) {
+        let vertex_size = std::mem::size_of::<crate::mesh::Vertex>() as u64;
+        let bytes = self
+            .meshes
+            .values()
+            .map(|uploaded| {
+                let mesh = &uploaded.mesh;
+                mesh.vertex_count as u64 * vertex_size + mesh.index_count as u64 * 4
+            })
+            .sum();
+        (self.meshes.len(), bytes)
+    }
+
     /// Translate 输入 into the legacy interleaved 顶点 布局 then
     /// upload 顶点 + (optional) 索引 buffers through a staging 缓冲区
     /// Returns the handle the 渲染器 uses to look the 网格 上 later.

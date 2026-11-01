@@ -562,6 +562,16 @@ impl RenderTextureManager {
     pub fn is_empty(&self) -> bool {
         self.textures.is_empty()
     }
+
+    /// 驻留纹理数与估算字节数（base mip，未乘 mip 链；#518 Phase 2）。
+    pub fn stats(&self) -> (usize, u64) {
+        let bytes = self
+            .textures
+            .values()
+            .map(|texture| texture.width as u64 * texture.height as u64 * 4)
+            .sum();
+        (self.textures.len(), bytes)
+    }
 }
 
 impl Drop for RenderTextureManager {

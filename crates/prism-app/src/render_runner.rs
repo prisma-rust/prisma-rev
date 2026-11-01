@@ -338,6 +338,7 @@ pub fn render_thread_main(
                 packet.settings.to_report_settings(),
                 frame_count,
                 Some(renderer.gpu_timings()),
+                Some(renderer.render_stats()),
             );
         }
 
