@@ -278,7 +278,13 @@ impl EngineHost {
                 self.settings.to_report_settings(),
                 frame,
                 Some(self.renderer.gpu_timings()),
-            );
+            )
+            .with_stats(self.renderer.render_stats())
+            .with_draw_calls(self.renderer.draw_call_report(
+                &self.packet.draw_items,
+                &self.packet.sprite_items,
+                &self.packet.particle_items,
+            ));
         report.write_json(path)?;
         Ok(())
     }

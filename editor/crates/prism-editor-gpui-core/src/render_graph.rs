@@ -24,6 +24,32 @@ pub struct RenderGraphReport {
     /// 纹理 / 网格 / 材质的驻留统计（#518 Phase 2）；旧报告没有该字段。
     #[serde(default)]
     pub stats: Option<ReportStats>,
+    /// 本帧的 draw call 列表（#518 Phase 2）；旧报告没有该字段。
+    #[serde(default)]
+    pub draw_calls: Vec<ReportDrawCall>,
+}
+
+/// 一条 draw call（#518 Phase 2 的数据层）。
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportDrawCall {
+    #[serde(default)]
+    pub pass: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub instances: usize,
+    #[serde(default)]
+    pub triangles: u64,
+    #[serde(default)]
+    pub visible: bool,
+}
+
+impl ReportDrawCall {
+    /// 面板一行：`pass · label`。
+    pub fn summary(&self) -> String {
+        format!("{} · {}", self.pass, self.label)
+    }
 }
 
 /// 管理器侧的实时资源统计（#518 Phase 2）。
@@ -146,6 +172,32 @@ pub fn report_path(root: Option<&Path>) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn draw_calls_are_optional_and_summarized() {
+        let legacy: RenderGraphReport =
+            serde_json::from_str(r#"{"generatedAtMs":1,"frame":1,"passes":[],"resources":[]}"#)
+                .unwrap();
+        assert!(legacy.draw_calls.is_empty());
+
+        let parsed: RenderGraphReport = serde_json::from_str(
+            r#"{"generatedAtMs":1,"frame":2,"passes":[],"resources":[],
+                "drawCalls":[
+                  {"pass":"forward","label":"mesh #0 · material 2","instances":1,
+                   "triangles":12,"visible":true},
+                  {"pass":"sprite","label":"SrcAlpha / OneMinusSrcAlpha","instances":4,
+                   "triangles":8,"visible":false}
+                ]}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.draw_calls.len(), 2);
+        assert_eq!(
+            parsed.draw_calls[0].summary(),
+            "forward · mesh #0 · material 2"
+        );
+        assert_eq!(parsed.draw_calls[1].instances, 4);
+        assert!(!parsed.draw_calls[1].visible);
+    }
 
     #[test]
     fn resource_stats_are_optional_and_have_rows() {
