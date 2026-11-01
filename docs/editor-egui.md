@@ -156,6 +156,10 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
 - **方向 gizmo（#416）**：Scene 视图右上角 6 个世界轴手柄（背向相机的更淡），
   点一下把相机对齐到该轴；`OrbitCamera::align_to_axis` 直接解出 yaw / pitch，
   正交视图同样可用。
+- **多选 gizmo 与枢轴模式（#416）**：Move / Rotate / Scale 拖动作用于**整个选择集**
+  （每次拖动仍是一个撤销步）。工具栏 `Pivot` 开关关闭时是 **Center** 模式：gizmo 落在
+  选择集中心，旋转 / 缩放会带动整组位置（绕中心公转 / 按轴心比例推开）；打开后是
+  **Pivot** 模式：gizmo 落在活动对象自己的轴心上，每个对象只改自身变换。
 - **View… 菜单（#416）**：Scene 视图工具栏里可调编辑器相机 FOV（20–110°）与
   `near` / `far`，并分别开关**相机图标 / 光源图标**。FOV 与裁剪面同时写进引擎相机和
   拾取射线（`CameraFrame::fov_y_degrees`），gizmo、点选与画面不会错位；

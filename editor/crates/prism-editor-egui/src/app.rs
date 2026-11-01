@@ -3452,6 +3452,23 @@ impl EditorApp {
                 self.workspace.toggle_gizmo_space();
                 self.mark_scene_dirty();
             }
+            let pivot = self.workspace.pivot_mode
+                == prism_editor_core::workspace::PivotMode::Pivot;
+            if ui
+                .selectable_label(pivot, "Pivot")
+                .on_hover_text(
+                    "Rotate / scale each object around its own pivot \
+                     (off = selection centre, group transforms)",
+                )
+                .clicked()
+            {
+                self.workspace.pivot_mode = if pivot {
+                    prism_editor_core::workspace::PivotMode::Center
+                } else {
+                    prism_editor_core::workspace::PivotMode::Pivot
+                };
+                self.mark_scene_dirty();
+            }
             let snap = self.workspace.snap;
             if ui
                 .selectable_label(snap.enabled, "Snap (Ctrl)")

@@ -401,9 +401,11 @@ impl GizmoTool {
 }
 
 struct GizmoDrag {
-    entity: u32,
+    /// 本次拖动作用的整组实体（#416：多选时批量变换）。
+    targets: Vec<u32>,
     axis: usize,
-    scale_axis: usize,
+    /// 每个实体的 `(id, 本地缩放轴, 起始缩放)`，缩放在各自轴心上应用。
+    scale_targets: Vec<(u32, usize, f32)>,
     screen_dir: [f32; 2],
     px_per_unit: f32,
     /// 旋转拖动：上一帧的光标角度（屏幕空间）。
@@ -686,7 +688,7 @@ impl ViewportState {
         rect: Rect,
         local: (f32, f32),
     ) -> Option<(usize, [f32; 2], f32)> {
-        let center = workspace.selection_center_world()?;
+        let center = workspace.gizmo_center_world()?;
         let basis = workspace.gizmo_basis();
         let world_length = vm::gizmo_world_length(&workspace.camera, rect.height());
         match self.tool {
@@ -730,7 +732,7 @@ impl ViewportState {
         rect: Rect,
         local: (f32, f32),
     ) -> bool {
-        let Some(center) = workspace.selection_center_world() else {
+        let Some(center) = workspace.gizmo_center_world() else {
             return false;
         };
         let Some(entity) = workspace
@@ -745,11 +747,21 @@ impl ViewportState {
         else {
             return false;
         };
-        let scale_axis = workspace.gizmo_scale_axis(entity, axis);
+        // 整组实体 + 每个实体的本地缩放轴 / 起始缩放（#416：多选批量变换）。
+        let targets: Vec<u32> = workspace.selection_entity_ids();
+        let scale_targets: Vec<(u32, usize, f32)> = targets
+            .iter()
+            .filter_map(|entity_id| {
+                let index = workspace.document().doc.index_of_id(*entity_id)?;
+                let scale_axis = workspace.gizmo_scale_axis(*entity_id, axis);
+                let start = workspace.document().doc.entities[index].transform.scale[scale_axis];
+                Some((*entity_id, scale_axis, start))
+            })
+            .collect();
         let start_scale = workspace.document().doc.entities
             [workspace.document().doc.index_of_id(entity).unwrap_or(0)]
         .transform
-        .scale[scale_axis];
+        .scale[workspace.gizmo_scale_axis(entity, axis)];
         let angle_center = vm::ring_screen_radius_oriented(
             frame,
             center,
@@ -775,9 +787,9 @@ impl ViewportState {
             GizmoTool::Translate | GizmoTool::Rotate => 0.0,
         };
         self.gizmo = Some(GizmoDrag {
-            entity,
+            targets,
             axis,
-            scale_axis,
+            scale_targets,
             screen_dir: dir,
             px_per_unit,
             last_angle: vm::screen_angle(local, angle_center),
@@ -807,7 +819,7 @@ impl ViewportState {
         let Some(drag) = self.gizmo.as_mut() else {
             return false;
         };
-        let (axis, entity) = (drag.axis, drag.entity);
+        let axis = drag.axis;
         let snap = workspace.snap;
         let snapping = snap_active(snap.enabled, ctrl);
         let mut changed = false;
@@ -827,14 +839,14 @@ impl ViewportState {
                     if apply.abs() > 1e-6 {
                         let basis = workspace.gizmo_basis();
                         let world = basis[axis].map(|component| component * apply);
-                        workspace.translate_entity_world(entity, world);
+                        workspace.translate_entities_world(&drag.targets, world);
                         drag.applied += apply;
                         changed = true;
                     }
                 }
             }
             GizmoTool::Rotate => {
-                let center = workspace.selection_center_world().unwrap_or([0.0; 3]);
+                let center = workspace.gizmo_center_world().unwrap_or([0.0; 3]);
                 let world_length = vm::gizmo_world_length(&workspace.camera, rect.height());
                 let angle_center = vm::ring_screen_radius_oriented(
                     frame,
@@ -859,7 +871,7 @@ impl ViewportState {
                     };
                     let apply = desired - drag.applied;
                     if apply.abs() > 1e-4 {
-                        workspace.rotate_entity(entity, axis, -apply);
+                        workspace.rotate_entities(&drag.targets, axis, -apply);
                         drag.applied = desired;
                         changed = true;
                     }
@@ -877,7 +889,8 @@ impl ViewportState {
                     raw
                 };
                 if (next - drag.applied).abs() > 1e-4 {
-                    workspace.set_scale_axis(entity, drag.scale_axis, next);
+                    let ratio = next / drag.start_scale.max(1e-4);
+                    workspace.scale_entities_gizmo(&drag.scale_targets, axis, ratio);
                     drag.applied = next;
                     changed = true;
                 }
@@ -1885,7 +1898,7 @@ impl ViewportState {
         workspace: &Workspace,
         frame: &vm::CameraFrame,
     ) {
-        let Some(center) = workspace.selection_center_world() else {
+        let Some(center) = workspace.gizmo_center_world() else {
             return;
         };
         let world_length = vm::gizmo_world_length(&workspace.camera, rect.height());
