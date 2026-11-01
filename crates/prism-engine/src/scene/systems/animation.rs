@@ -36,7 +36,7 @@ pub struct SpriteAnimationState {
 
 /// 每帧推进所有精灵动画。
 ///
-/// 帧数优先级：`SpriteAnimation.frames`（>0）→ 纹理宽度 / 单帧宽度
+/// 帧数优先级：`SpriteAnimation.frames`（>0）→ 本行列数 − `frame_start`
 /// → 1（无法确定时静止在第一帧）。
 pub fn sprite_animation_system(world: &mut World, dt: f32) {
     let dt = if dt.is_finite() { dt.max(0.0) } else { 0.0 };
@@ -50,14 +50,17 @@ pub fn sprite_animation_system(world: &mut World, dt: f32) {
         let Some(animation) = world.get::<SpriteAnimation>(entity).cloned() else {
             continue;
         };
-        let total = {
+        let (total, columns) = {
             let Some(sprite) = world.get::<SpriteRenderer>(entity) else {
                 continue;
             };
             let Some(sprite_ref) = world.get::<SpriteRef>(entity) else {
                 continue;
             };
-            total_frames(&animation, sprite, sprite_ref.size)
+            (
+                animation_frame_count(&animation, sprite, sprite_ref.size),
+                sprite.sheet_columns_or(sprite_ref.size),
+            )
         };
         if total <= 1 {
             continue;
@@ -97,25 +100,31 @@ pub fn sprite_animation_system(world: &mut World, dt: f32) {
 
         world.insert(entity, state);
         if let Some(sprite) = world.get_mut::<SpriteRenderer>(entity) {
-            sprite.frame_index = index;
+            // 行内绝对帧号；夹在本行最后一列，避免动画越界滚到下一行。
+            sprite.frame_index = animation
+                .frame_start
+                .saturating_add(index)
+                .min(columns.saturating_sub(1));
         }
     }
 }
 
-/// 动画总帧数（至少 1）。
-fn total_frames(animation: &SpriteAnimation, sprite: &SpriteRenderer, texture: [u32; 2]) -> u32 {
+/// 本次动画播放的帧数（至少 1）。
+///
+/// `frames > 0` 时是作者指定长度；否则从 `frame_start` 播到本行末尾（#584）。
+fn animation_frame_count(
+    animation: &SpriteAnimation,
+    sprite: &SpriteRenderer,
+    texture: [u32; 2],
+) -> u32 {
+    let available = sprite
+        .sheet_columns_or(texture)
+        .saturating_sub(animation.frame_start)
+        .max(1);
     if animation.frames > 0 {
-        return animation.frames;
+        return animation.frames.min(available);
     }
-    let frame_width = if sprite.frame_size[0] > 0 {
-        sprite.frame_size[0]
-    } else {
-        texture[0]
-    };
-    if frame_width == 0 {
-        return 1;
-    }
-    (texture[0] / frame_width).max(1)
+    available
 }
 
 /// 一个实体的关键帧播放头（秒）。运行时组件，不写进场景。

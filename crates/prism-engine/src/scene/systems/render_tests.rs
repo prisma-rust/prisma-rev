@@ -399,6 +399,50 @@ fn sprite_sheet_frame_selects_horizontal_uv_slice() {
 }
 
 #[test]
+fn sprite_sheet_rows_select_the_vertical_uv_slice() {
+    // #584：8x4 图集（128x64 / 每帧 32x32），选第 2 行、行内第 2 列。
+    let mut world = World::new();
+    spawn_sprite(
+        &mut world,
+        glam::Vec3::ZERO,
+        SpriteRenderer {
+            sprite_path: "sheet.png".into(),
+            frame_size: [32, 32],
+            sheet_row: 1,
+            frame_index: 1,
+            ..SpriteRenderer::default()
+        },
+        [128, 64],
+        0,
+    );
+
+    let items = scene_sprite_system(&world);
+    assert_eq!(items[0].uv_rect, [0.25, 0.5, 0.5, 1.0]);
+}
+
+#[test]
+fn explicit_sheet_columns_override_the_texture_derivation() {
+    // 纹理按 32px 宽能切 4 列，但作者显式声明 2 列：frame_index=2 应进入第 2 行。
+    let mut world = World::new();
+    spawn_sprite(
+        &mut world,
+        glam::Vec3::ZERO,
+        SpriteRenderer {
+            sprite_path: "sheet.png".into(),
+            frame_size: [32, 32],
+            sheet_columns: 2,
+            frame_index: 2,
+            ..SpriteRenderer::default()
+        },
+        [128, 64],
+        0,
+    );
+
+    let items = scene_sprite_system(&world);
+    assert_eq!(items[0].uv_rect, [0.0, 0.5, 0.25, 1.0]);
+}
+
+#[test]
 fn sprite_flip_swaps_uv_edges() {
     let mut world = World::new();
     spawn_sprite(

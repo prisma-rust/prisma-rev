@@ -290,7 +290,13 @@ pub struct SpriteRenderer {
     pub sprite_path: String,
     /// 精灵表单帧像素尺寸；`[0, 0]` 表示整张纹理就是一帧。
     pub frame_size: [u32; 2],
-    /// 当前帧索引（精灵表按横向排列）。
+    /// 图集每行的列数；`0` = 由「纹理宽度 / 单帧宽度」推导（#584）。
+    ///
+    /// 多行图集里一行通常是一个动作 / 一个角色。
+    pub sheet_columns: u32,
+    /// 图集行号（0 = 第一行）；超出范围时夹到最后一行（#584）。
+    pub sheet_row: u32,
+    /// 当前帧索引（在本行内从左到右；超过列数才继续到下一行）。
     pub frame_index: u32,
     /// 每世界单位像素数 = `Sprite.pixelsPerUnit`。
     pub pixels_per_unit: f32,
@@ -314,6 +320,8 @@ impl Default for SpriteRenderer {
         Self {
             sprite_path: String::new(),
             frame_size: [0, 0],
+            sheet_columns: 0,
+            sheet_row: 0,
             frame_index: 0,
             pixels_per_unit: 100.0,
             pivot: [0.5, 0.5],
@@ -341,6 +349,21 @@ impl SpriteRenderer {
         }
     }
 
+    /// 图集列数：显式 `sheet_columns` 优先，否则按纹理宽度 / 单帧宽度推导。
+    pub fn sheet_columns_or(&self, texture_size: [u32; 2]) -> u32 {
+        if self.sheet_columns > 0 {
+            return self.sheet_columns.max(1);
+        }
+        let frame = self.frame_size_or(texture_size);
+        (texture_size[0] / frame[0].max(1)).max(1)
+    }
+
+    /// 图集行数（至少 1）。
+    pub fn sheet_rows(&self, texture_size: [u32; 2]) -> u32 {
+        let frame = self.frame_size_or(texture_size);
+        (texture_size[1] / frame[1].max(1)).max(1)
+    }
+
     /// 单帧在世界空间的尺寸（单位/世界）。`pixels_per_unit` 非法时回落到 100。
     pub fn world_size(&self, texture_size: [u32; 2]) -> [f32; 2] {
         let ppu = if self.pixels_per_unit.is_finite() && self.pixels_per_unit > 0.0 {
@@ -358,14 +381,16 @@ impl SpriteRenderer {
 /// 只描述「怎么播」；当前帧写回 [`SpriteRenderer::frame_index`]，由引擎的
 /// `sprite_animation_system` 每帧推进（播放进度不进场景，见该系统的说明）。
 ///
-/// 精灵表约定：帧按**横向**排列，单帧像素尺寸由
-/// [`SpriteRenderer::frame_size`] 给出。
+/// 精灵表约定：单帧像素尺寸由 [`SpriteRenderer::frame_size`] 给出；一行内
+/// 从左到右播放，行由 [`SpriteRenderer::sheet_row`] 选择（多行图集，#584）。
 #[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
 #[reflect(name = "prism_engine::scene::SpriteAnimation")]
 #[serde(default)]
 pub struct SpriteAnimation {
-    /// 总帧数；`0` = 由「纹理宽度 / 单帧宽度」推导。
+    /// 总帧数；`0` = 由本行的列数推导（#584）。
     pub frames: u32,
+    /// 本行内的起始帧（`0` = 从第一列开始）；用于同一行里切多个动作。
+    pub frame_start: u32,
     /// 每秒帧数。
     pub fps: f32,
     /// 是否循环；`false` 时停在最后一帧。
@@ -380,6 +405,7 @@ impl Default for SpriteAnimation {
     fn default() -> Self {
         Self {
             frames: 0,
+            frame_start: 0,
             fps: 12.0,
             looped: true,
             playing: true,

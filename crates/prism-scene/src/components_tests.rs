@@ -259,6 +259,8 @@ fn sprite_json_round_trips_and_fills_missing_fields() {
     let sprite = SpriteRenderer {
         sprite_path: "sprites/boat.png".into(),
         frame_size: [32, 16],
+        sheet_columns: 4,
+        sheet_row: 1,
         frame_index: 3,
         pixels_per_unit: 16.0,
         pivot: [0.0, 1.0],
@@ -272,6 +274,8 @@ fn sprite_json_round_trips_and_fills_missing_fields() {
     let back: SpriteRenderer = serde_json::from_str(&json).unwrap();
     assert_eq!(back.sprite_path, "sprites/boat.png");
     assert_eq!(back.frame_size, [32, 16]);
+    assert_eq!(back.sheet_columns, 4);
+    assert_eq!(back.sheet_row, 1);
     assert_eq!(back.frame_index, 3);
     assert!(approx(back.pixels_per_unit, 16.0));
     assert_eq!(back.pivot, [0.0, 1.0]);
@@ -284,6 +288,8 @@ fn sprite_json_round_trips_and_fills_missing_fields() {
     assert_eq!(legacy.sprite_path, "a.png");
     assert!(approx(legacy.pixels_per_unit, 100.0));
     assert_eq!(legacy.frame_size, [0, 0]);
+    assert_eq!(legacy.sheet_columns, 0, "老文档按单行图集处理");
+    assert_eq!(legacy.sheet_row, 0);
 }
 
 #[test]
