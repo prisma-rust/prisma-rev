@@ -217,6 +217,12 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
   游戏进程要同样的报告时设 `PRISMREV_RENDER_GRAPH_REPORT=<path>`。
 - **分辨率倍率**：渲染图面板里的 `Viewport res`（0.5×–1.5×）只缩放离屏目标，
   不改变 UI 的 points 布局，给高 DPI 屏 / 弱 GPU 一个折中。
+- **Game 视图分辨率 / 宽高比**：视口左上角下拉。默认读取工程
+  `assets/settings.ini [window]` 的 `width`/`height`（例如 1600×900），
+  按该分辨率离屏渲染并等比 letterbox，所以编辑器构图和打包产物一致。
+  还可以选固定分辨率（1920×1080 等）或「只锁比例」的 `16:9 (fit)` /
+  `4:3 (fit)` 等；`Match Window` 保留旧的跟面板缩放行为。控制通道用
+  `resolution:1600x900` / `resolution:fit:16x9` / `resolution:match`。
 - **多选拖拽**：拖多选中的任一行且落在行的中间区 = `reparent_selection` 整组改父级。
 - **资产选择器**：检查器的路径字段右侧有 `⋯` 按钮，按字段名过滤扩展名
   （`mesh_path` → 模型、`sprite_path` → 贴图、`hdr_path`/`env_map` → HDR…），

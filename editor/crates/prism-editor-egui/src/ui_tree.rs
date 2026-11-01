@@ -15,7 +15,7 @@
 //! | `entity:<id>` | 层级树实体 | ✅ | — |
 //! | `asset:<path>` | 资产面板条目 | ✅ | — |
 //! | `field:<entity>:<component>:<path>` | 检查器字段 | — | ✅ |
-//! | `resolution:<WxH>` / `resolution:match` | Game 视图预览分辨率（#463） | ✅ | — |
+//! | `resolution:<WxH>` / `resolution:fit:<WxH>` / `resolution:match` | Game 视图预览分辨率 / 宽高比（#463/#585） | ✅ | — |
 
 use std::collections::BTreeMap;
 
@@ -103,7 +103,7 @@ pub fn parse_view_object_node(node: &str) -> Option<&str> {
 }
 
 /// 把一个视口的物体转成快照里的 `objects` 数组。
-fn view_objects_json(tab: &str, objects: &[ViewObject]) -> Value {
+fn view_objects_json(_tab: &str, objects: &[ViewObject]) -> Value {
     Value::Array(
         objects
             .iter()

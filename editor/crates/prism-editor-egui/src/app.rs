@@ -24,7 +24,7 @@ use crate::logging;
 use crate::panels::{self, UiState};
 use crate::project_module::ModuleState;
 use crate::theme;
-use crate::viewport::{ImageBridge, ViewportState};
+use crate::viewport::{GameResolution, ImageBridge, ViewportState};
 use egui_phosphor::regular as icons;
 
 /// 面板 tab 的高度（与 Web `.dock-tabs` 的 28px 对齐，这里按 egui 行高收到 26）。
@@ -572,6 +572,12 @@ impl EditorApp {
                 // 自己的 `assets/settings.ini [render]`，否则曝光 / 色调映射和产物不一致。
                 if kind == ViewKind::Game {
                     apply_project_render_defaults(&mut view.host, self.project_root.as_deref());
+                    view.project_resolution =
+                        project_window_resolution(self.project_root.as_deref());
+                    // 默认按工程声明的窗口分辨率渲染，而不是面板的任意比例（#585）。
+                    if let Some((width, height)) = view.project_resolution {
+                        view.target = GameResolution::Fixed { width, height };
+                    }
                 }
                 view.host.set_show_skybox(self.workspace.show_skybox);
                 // 分析（渲染图）面板读这个文件；Scene view 出帧时自己写（#451）。
@@ -1125,10 +1131,21 @@ impl EditorApp {
             return Ok("open search".to_string());
         }
         if let Some(rest) = node.strip_prefix("resolution:") {
-            // Game 视图的预览分辨率（#463）：`match` 或 `1920x1080`。
-            use crate::viewport::GameResolution;
+            // Game 视图的预览分辨率（#463）：`match` / `fit:16x9` / `1920x1080`。
             let target = if rest == "match" {
                 GameResolution::MatchWindow
+            } else if let Some(ratio) = rest.strip_prefix("fit:") {
+                let (width, height) = ratio
+                    .split_once('x')
+                    .ok_or_else(|| format!("bad aspect '{ratio}' (want fit:16x9)"))?;
+                GameResolution::Aspect {
+                    width: width
+                        .parse()
+                        .map_err(|_| format!("bad aspect width '{width}'"))?,
+                    height: height
+                        .parse()
+                        .map_err(|_| format!("bad aspect height '{height}'"))?,
+                }
             } else {
                 let (width, height) = rest
                     .split_once('x')
@@ -1150,7 +1167,7 @@ impl EditorApp {
             return Ok(format!("game resolution {}", target.label()));
         }
         Err(format!(
-            "unsupported node '{node}' (command:… / panel:… / doc:… / entity:… / asset:… / search:open / resolution:<WxH>|match)"
+            "unsupported node '{node}' (command:… / panel:… / doc:… / entity:… / asset:… / search:open / resolution:<WxH>|fit:<WxH>|match)"
         ))
     }
 
@@ -4866,6 +4883,27 @@ mod tests {
         workspace.select(0, false);
         assert_ne!(selection_hash(&workspace), selection_before);
     }
+
+    #[test]
+    fn game_view_reads_the_project_window_resolution() {
+        let root = std::env::temp_dir().join(format!(
+            "prisma-editor-window-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("assets")).unwrap();
+        std::fs::write(
+            root.join("assets/settings.ini"),
+            "[window]\nwidth = 1600\nheight = 900\n",
+        )
+        .unwrap();
+        assert_eq!(project_window_resolution(Some(&root)), Some((1600, 900)));
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(project_window_resolution(None), None);
+    }
 }
 
 /// `position[1]` → (`position`, 1)；没有下标就是 (`position`, 0)。
@@ -4933,6 +4971,18 @@ fn initial_view_settings(
             ..Default::default()
         },
     }
+}
+
+/// 工程在 `assets/settings.ini [window]` 里声明的目标分辨率（#585）。
+///
+/// 文件不存在或尺寸为 0 时返回 `None`，Game 视图保持旧的 `Match Window` 行为。
+fn project_window_resolution(project_root: Option<&Path>) -> Option<(u32, u32)> {
+    let root = project_root?;
+    let path = root.join("assets").join("settings.ini");
+    let text = std::fs::read_to_string(path).ok()?;
+    let config = prism_engine::config::AppConfig::from_ini(&text);
+    (config.window.width > 0 && config.window.height > 0)
+        .then_some((config.window.width, config.window.height))
 }
 
 fn apply_project_render_defaults(
