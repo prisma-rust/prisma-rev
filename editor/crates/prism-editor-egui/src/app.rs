@@ -1180,16 +1180,8 @@ impl EditorApp {
                 }))
             }
             "gameView" => {
-                let (width, height) = self
-                    .game_view
-                    .as_ref()
-                    .ok_or_else(|| "game view is not open".to_string())?
-                    .host
-                    .size();
-                // 面板是逻辑像素，引擎绘图区是离屏像素：按比例折算。
-                let scale_x = width as f32 / rect.width().max(1.0);
-                let scale_y = height as f32 / rect.height().max(1.0);
-                let cursor = (local.0 * scale_x, local.1 * scale_y);
+                // 面板是逻辑像素，引擎绘图区是离屏像素：按 letterbox 后的图像区域折算。
+                let cursor = self.game_graphic_cursor(local)?;
                 self.pending_input
                     .push_back(InjectedInput::Cursor(cursor.0, cursor.1));
                 self.pending_input.push_back(InjectedInput::Mouse(
@@ -1212,6 +1204,361 @@ impl EditorApp {
     }
 
     /// `ui.click` 的节点分派：走和界面完全相同的代码路径。
+    /// Scene 视口的面板矩形（控制通道的绝对坐标用）。
+    fn scene_rect(&self) -> Result<egui::Rect, String> {
+        self.panel_rects
+            .get("sceneView")
+            .copied()
+            .ok_or_else(|| "scene view was not laid out yet".to_string())
+    }
+
+    /// `node`/`offset` 或 `tab`+`x`/`y` → `(面板, 视口局部坐标, 锚点)`（#643）。
+    ///
+    /// 物体节点的锚点是它的 `screen_rect` 中心，面板节点是左上角。
+    fn viewport_point(
+        &self,
+        args: &serde_json::Value,
+    ) -> Result<(String, (f32, f32), &'static str), String> {
+        if let Some(node) = args.get("node").and_then(serde_json::Value::as_str) {
+            let offset = args
+                .get("offset")
+                .and_then(parse_offset)
+                .unwrap_or([0.0, 0.0]);
+            if let Some(tab) = node.strip_prefix("panel:") {
+                if !self.panel_rects.contains_key(tab) {
+                    return Err(format!("panel '{tab}' was not laid out yet"));
+                }
+                return Ok((tab.to_string(), (offset[0], offset[1]), "top-left"));
+            }
+            let tab = crate::ui_tree::parse_view_object_node(node)
+                .ok_or_else(|| format!("'{node}' is not a viewport object node"))?;
+            let objects = self.viewport_objects();
+            let view = objects
+                .iter()
+                .find(|view| view.tab == tab)
+                .ok_or_else(|| format!("viewport '{tab}' is not open"))?;
+            let object = view
+                .objects
+                .iter()
+                .find(|object| object.node == node)
+                .ok_or_else(|| format!("'{node}' is not in view '{tab}'"))?;
+            let screen = object
+                .screen
+                .ok_or_else(|| format!("'{node}' is behind the camera"))?;
+            return Ok((
+                tab.to_string(),
+                (screen[0] + offset[0], screen[1] + offset[1]),
+                "center",
+            ));
+        }
+        let tab = args
+            .get("tab")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("sceneView")
+            .to_string();
+        let x = args.get("x").and_then(serde_json::Value::as_f64);
+        let y = args.get("y").and_then(serde_json::Value::as_f64);
+        match (x, y) {
+            (Some(x), Some(y)) => Ok((tab, (x as f32, y as f32), "top-left")),
+            _ => Err("need node+offset or x/y".to_string()),
+        }
+    }
+
+    /// 视口局部像素 → Game 绘图区像素（含 letterbox 与离屏尺寸，#463/#585）。
+    fn game_graphic_cursor(&self, local: (f32, f32)) -> Result<(f32, f32), String> {
+        let rect = self
+            .panel_rects
+            .get("gameView")
+            .copied()
+            .ok_or_else(|| "game view was not laid out yet".to_string())?;
+        let view = self
+            .game_view
+            .as_ref()
+            .ok_or_else(|| "game view is not open".to_string())?;
+        let extent = view.host.size();
+        let image = crate::viewport::letterbox(rect, extent);
+        let position = egui::pos2(rect.min.x + local.0, rect.min.y + local.1);
+        let cursor = crate::viewport::game_cursor(image, position, extent);
+        Ok((cursor[0], cursor[1]))
+    }
+
+    /// `ui.move`：把指针移到视口里某点，报告该点下的目标（#643）。
+    fn ui_view_move(&mut self, args: &serde_json::Value) -> Result<serde_json::Value, String> {
+        let (tab, local, anchor) = self.viewport_point(args)?;
+        match tab.as_str() {
+            "sceneView" => {
+                let rect = self.scene_rect()?;
+                if local.0 < 0.0
+                    || local.1 < 0.0
+                    || local.0 > rect.width()
+                    || local.1 > rect.height()
+                {
+                    return Err(format!(
+                        "({:.1},{:.1}) is outside the scene view ({}x{})",
+                        local.0,
+                        local.1,
+                        rect.width(),
+                        rect.height()
+                    ));
+                }
+                let frame = prism_editor_core::viewport_math::camera_frame(&self.workspace.camera);
+                let hit = {
+                    let host = self.scene_view.as_ref().map(|view| &view.host);
+                    crate::viewport::pick(&self.workspace, host, local, rect.size(), &frame)
+                };
+                let hit_node = hit.map(|index| {
+                    crate::ui_tree::view_object_node(
+                        "sceneView",
+                        self.workspace.document().doc.entities[index]
+                            .id
+                            .unwrap_or(index as u32),
+                    )
+                });
+                let gizmo_axis = self
+                    .scene_view
+                    .as_ref()
+                    .and_then(|view| view.gizmo_hit_at(&self.workspace, &frame, rect, local))
+                    .map(|(axis, _, _)| axis);
+                Ok(json!({
+                    "at": [local.0, local.1],
+                    "anchor": anchor,
+                    "hit": hit_node,
+                    "gizmo_axis": gizmo_axis,
+                }))
+            }
+            "gameView" => {
+                let cursor = self.game_graphic_cursor(local)?;
+                self.pending_input
+                    .push_back(InjectedInput::Cursor(cursor.0, cursor.1));
+                Ok(json!({
+                    "at": [local.0, local.1],
+                    "anchor": anchor,
+                    "cursor": [cursor.0, cursor.1],
+                    "queued": 1,
+                }))
+            }
+            other => Err(format!("'{other}' is not a viewport panel")),
+        }
+    }
+
+    /// `ui.wheel`：Scene 视图缩放到光标（#511），Game 视图把滚轮转给玩法（#643）。
+    fn ui_view_wheel(&mut self, args: &serde_json::Value) -> Result<serde_json::Value, String> {
+        let (tab, local, anchor) = self.viewport_point(args)?;
+        let delta = args
+            .get("delta")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(120.0) as f32;
+        if !delta.is_finite() {
+            return Err("delta must be finite".to_string());
+        }
+        match tab.as_str() {
+            "sceneView" => {
+                let rect = self.scene_rect()?;
+                let frame = prism_editor_core::viewport_math::camera_frame(&self.workspace.camera);
+                let (origin, direction) = prism_editor_core::viewport_math::ray_from_screen(
+                    local.0,
+                    local.1,
+                    &frame,
+                    rect.width(),
+                    rect.height(),
+                );
+                let distance = self.workspace.camera.distance;
+                let anchor_point = [
+                    origin[0] + direction[0] * distance,
+                    origin[1] + direction[1] * distance,
+                    origin[2] + direction[2] * distance,
+                ];
+                self.workspace
+                    .camera
+                    .zoom_towards(delta, Some(anchor_point));
+                if let Some(view) = self.scene_view.as_mut() {
+                    view.mark_dirty();
+                }
+                Ok(json!({
+                    "at": [local.0, local.1],
+                    "anchor": anchor,
+                    "delta": delta,
+                    "distance": self.workspace.camera.distance,
+                    "action": "zoom",
+                }))
+            }
+            "gameView" => {
+                let cursor = self.game_graphic_cursor(local)?;
+                self.pending_input
+                    .push_back(InjectedInput::Cursor(cursor.0, cursor.1));
+                self.pending_input
+                    .push_back(InjectedInput::Scroll(delta as f64));
+                Ok(json!({
+                    "at": [local.0, local.1],
+                    "anchor": anchor,
+                    "delta": delta,
+                    "cursor": [cursor.0, cursor.1],
+                    "queued": 2,
+                    "action": "scroll",
+                }))
+            }
+            other => Err(format!("'{other}' is not a viewport panel")),
+        }
+    }
+
+    /// 取 `from` / `to` 的对象形式；两者必须落在同一个视口（#643）。
+    fn drag_point(
+        &self,
+        args: &serde_json::Value,
+        key: &str,
+    ) -> Result<(String, (f32, f32), &'static str), String> {
+        let value = args
+            .get(key)
+            .filter(|value| value.is_object())
+            .ok_or_else(|| format!("drag needs '{key}' as {{node,offset}} or {{x,y}}"))?;
+        self.viewport_point(value)
+    }
+
+    /// `ui.drag`：在视口里拖一次（gizmo / 框选 / 轨道 / 玩法指针，见 #643）。
+    fn ui_view_drag(&mut self, args: &serde_json::Value) -> Result<serde_json::Value, String> {
+        let (from_tab, from, _) = self.drag_point(args, "from")?;
+        let (to_tab, to, _) = self.drag_point(args, "to")?;
+        if from_tab != to_tab {
+            return Err(format!(
+                "from/to must be in the same view ('{from_tab}' vs '{to_tab}')"
+            ));
+        }
+        let steps = args
+            .get("steps")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(8)
+            .clamp(1, 120) as u32;
+        match from_tab.as_str() {
+            "sceneView" => self.drag_scene(from, to, steps, args),
+            "gameView" => self.drag_game(from, to, steps),
+            other => Err(format!("'{other}' is not a viewport panel")),
+        }
+    }
+
+    fn drag_scene(
+        &mut self,
+        from: (f32, f32),
+        to: (f32, f32),
+        steps: u32,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let rect = self.scene_rect()?;
+        for (name, point) in [("from", from), ("to", to)] {
+            if point.0 < 0.0 || point.1 < 0.0 || point.0 > rect.width() || point.1 > rect.height() {
+                return Err(format!(
+                    "{name} ({:.1},{:.1}) is outside the scene view ({}x{})",
+                    point.0,
+                    point.1,
+                    rect.width(),
+                    rect.height()
+                ));
+            }
+        }
+        let frame = prism_editor_core::viewport_math::camera_frame(&self.workspace.camera);
+        let orbit = args.get("mode").and_then(serde_json::Value::as_str) == Some("orbit")
+            || args.get("orbit").and_then(serde_json::Value::as_bool) == Some(true);
+        let ctrl = args.get("ctrl").and_then(serde_json::Value::as_bool) == Some(true);
+        let Some(view) = self.scene_view.as_mut() else {
+            return Err("scene view is not open".to_string());
+        };
+        if !orbit && view.begin_gizmo_drag(&mut self.workspace, &frame, rect, from) {
+            let mut changed = false;
+            let mut previous = from;
+            for current in crate::viewport::drag_samples(from, to, steps) {
+                changed |= view.gizmo_drag_step(
+                    &mut self.workspace,
+                    &frame,
+                    rect,
+                    current,
+                    (current.0 - previous.0, current.1 - previous.1),
+                    ctrl,
+                );
+                previous = current;
+            }
+            view.finish_gizmo_drag(&mut self.workspace);
+            return Ok(json!({
+                "from": [from.0, from.1],
+                "to": [to.0, to.1],
+                "anchor": "top-left",
+                "steps": steps,
+                "changed": changed,
+                "action": "gizmo",
+            }));
+        }
+        if orbit {
+            self.workspace.camera.orbit(to.0 - from.0, to.1 - from.1);
+            view.mark_dirty();
+            return Ok(json!({
+                "from": [from.0, from.1],
+                "to": [to.0, to.1],
+                "anchor": "top-left",
+                "steps": steps,
+                "action": "orbit",
+            }));
+        }
+        let hits = prism_editor_core::viewport_math::box_select(
+            prism_editor_core::viewport_math::local_box(from, to, (0.0, 0.0)),
+            &frame,
+            rect.width(),
+            rect.height(),
+            &crate::viewport::proxy_transforms(&self.workspace),
+        );
+        let nodes: Vec<String> = hits
+            .iter()
+            .map(|index| {
+                crate::ui_tree::view_object_node(
+                    "sceneView",
+                    self.workspace.document().doc.entities[*index]
+                        .id
+                        .unwrap_or(*index as u32),
+                )
+            })
+            .collect();
+        self.workspace.select_many(&hits, false);
+        Ok(json!({
+            "from": [from.0, from.1],
+            "to": [to.0, to.1],
+            "anchor": "top-left",
+            "steps": steps,
+            "selected": nodes,
+            "count": hits.len(),
+            "action": "box-select",
+        }))
+    }
+
+    fn drag_game(
+        &mut self,
+        from: (f32, f32),
+        to: (f32, f32),
+        steps: u32,
+    ) -> Result<serde_json::Value, String> {
+        let start = self.game_graphic_cursor(from)?;
+        let end = self.game_graphic_cursor(to)?;
+        self.pending_input
+            .push_back(InjectedInput::Cursor(start.0, start.1));
+        self.pending_input.push_back(InjectedInput::Mouse(
+            prism_engine::input::MouseButton::Left,
+            true,
+        ));
+        for cursor in crate::viewport::drag_samples(start, end, steps) {
+            self.pending_input
+                .push_back(InjectedInput::Cursor(cursor.0, cursor.1));
+        }
+        self.pending_input.push_back(InjectedInput::Mouse(
+            prism_engine::input::MouseButton::Left,
+            false,
+        ));
+        Ok(json!({
+            "from": [from.0, from.1],
+            "to": [to.0, to.1],
+            "anchor": "top-left",
+            "cursor": [[start.0, start.1], [end.0, end.1]],
+            "steps": steps,
+            "queued": steps + 3,
+            "action": "game-pointer",
+        }))
+    }
+
     fn ui_click(&mut self, node: &str) -> Result<String, String> {
         if let Some(name) = node.strip_prefix("command:") {
             let command = crate::ui_tree::command_by_name(name)
@@ -1806,6 +2153,27 @@ impl EditorApp {
                     Err(error) => json!({ "ok": false, "node": node, "error": error }),
                 }
             }
+            "ui.move" | "ui_move" | "ui.hover" => match self.ui_view_move(args) {
+                Ok(mut value) => {
+                    value["ok"] = json!(true);
+                    value
+                }
+                Err(error) => json!({ "ok": false, "error": error }),
+            },
+            "ui.wheel" | "ui_wheel" => match self.ui_view_wheel(args) {
+                Ok(mut value) => {
+                    value["ok"] = json!(true);
+                    value
+                }
+                Err(error) => json!({ "ok": false, "error": error }),
+            },
+            "ui.drag" | "ui_drag" => match self.ui_view_drag(args) {
+                Ok(mut value) => {
+                    value["ok"] = json!(true);
+                    value
+                }
+                Err(error) => json!({ "ok": false, "error": error }),
+            },
             "quit" => {
                 // 自动化路径（MCP / 脚本）要求确定性地退出，跳过未保存确认。
                 self.force_quit = true;
@@ -5292,6 +5660,8 @@ enum InjectedInput {
     Mouse(prism_engine::input::MouseButton, bool),
     /// 把光标挪到引擎绘图区像素坐标（`ui.click` 的 Game view 分支用）。
     Cursor(f32, f32),
+    /// 滚轮增量（`ui.wheel` 的 Game view 分支用）。
+    Scroll(f64),
 }
 
 impl InjectedInput {
@@ -5315,6 +5685,7 @@ impl InjectedInput {
                 },
             ),
             Self::Cursor(x, y) => input.set_mouse_position([x as f64, y as f64]),
+            Self::Scroll(delta) => input.handle_scroll(delta),
         }
     }
 }

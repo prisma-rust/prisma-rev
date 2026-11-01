@@ -98,7 +98,7 @@ pub fn viewport_extent(width: f32, height: f32, ppp: f32, scale: f32) -> (u32, u
 /// [`viewport_extent`] 会把每个维度夹到 4096，而 2560 points × DPR 2 就已经
 /// 5120 了。直接乘会让 `InputSnapshot::cursor` 跑出 `screen` 之外，
 /// 按光标做瞄准 / UI 命中的 gameplay 代码会整体偏移（#405）。
-fn game_cursor(rect: Rect, position: egui::Pos2, extent: (u32, u32)) -> [f32; 2] {
+pub(crate) fn game_cursor(rect: Rect, position: egui::Pos2, extent: (u32, u32)) -> [f32; 2] {
     let width = rect.width().max(1.0);
     let height = rect.height().max(1.0);
     [
@@ -226,6 +226,20 @@ pub fn game_resolution_presets(project: Option<(u32, u32)>) -> Vec<GameResolutio
         }
     }
     out
+}
+
+/// 把一次拖动拆成 `steps` 个采样点（不含起点），供控制通道的 `ui.drag` 使用。
+///
+/// 与真实拖动一样按增量推进：每步的位移是相邻采样点之差，所以吸附、旋转角度
+/// 这类依赖「一步一步累积」的逻辑在脚本里也能复现（#643）。
+pub(crate) fn drag_samples(from: (f32, f32), to: (f32, f32), steps: u32) -> Vec<(f32, f32)> {
+    let steps = steps.max(1);
+    (1..=steps)
+        .map(|step| {
+            let t = step as f32 / steps as f32;
+            (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t)
+        })
+        .collect()
 }
 
 /// 把 `extent` 的图等比放进 `outer`，居中留黑边（Unity Game 视图的 letterbox）。
@@ -541,6 +555,217 @@ impl ViewportState {
         Ok(())
     }
 
+    /// 光标下的 gizmo 轴（`(轴, 屏幕方向, 每世界单位像素)`）；没有命中返回 `None`。
+    ///
+    /// 旋转环返回固定的 `(1,0) / 60` —— 角度由光标绕环心的角度算出，不用这组数。
+    pub(crate) fn gizmo_hit_at(
+        &self,
+        workspace: &Workspace,
+        frame: &vm::CameraFrame,
+        rect: Rect,
+        local: (f32, f32),
+    ) -> Option<(usize, [f32; 2], f32)> {
+        let center = workspace.selection_center_world()?;
+        let basis = workspace.gizmo_basis();
+        let world_length = vm::gizmo_world_length(&workspace.camera, rect.height());
+        match self.tool {
+            GizmoTool::Rotate => vm::pick_rotation_axis_oriented(
+                local,
+                frame,
+                center,
+                basis,
+                world_length,
+                rect.width(),
+                rect.height(),
+            )
+            .map(|axis| (axis, [1.0f32, 0.0], 60.0)),
+            GizmoTool::Translate | GizmoTool::Scale => vm::pick_gizmo_axis_oriented(
+                local,
+                frame,
+                center,
+                basis,
+                world_length,
+                rect.width(),
+                rect.height(),
+            ),
+        }
+    }
+
+    /// 结束当前 gizmo 拖动（与 `show()` 里的松开路径一致，#643）。
+    pub(crate) fn finish_gizmo_drag(&mut self, workspace: &mut Workspace) {
+        if self.gizmo.take().is_some() {
+            workspace.end_interaction();
+        }
+    }
+
+    /// 起点是否命中 gizmo 轴；命中就开始一次 gizmo 拖动（#643）。
+    ///
+    /// 与 `show()` 里的真实拖动共用同一段逻辑，控制通道的 `ui.drag` 因此走的是
+    /// 用户手势本身，而不是另写一套变换。
+    pub(crate) fn begin_gizmo_drag(
+        &mut self,
+        workspace: &mut Workspace,
+        frame: &vm::CameraFrame,
+        rect: Rect,
+        local: (f32, f32),
+    ) -> bool {
+        let Some(center) = workspace.selection_center_world() else {
+            return false;
+        };
+        let Some(entity) = workspace
+            .primary_selection()
+            .and_then(|index| workspace.document().doc.id_of_index(index))
+        else {
+            return false;
+        };
+        let world_length = vm::gizmo_world_length(&workspace.camera, rect.height());
+        let basis = workspace.gizmo_basis();
+        let Some((axis, dir, px_per_unit)) = self.gizmo_hit_at(workspace, frame, rect, local)
+        else {
+            return false;
+        };
+        let scale_axis = workspace.gizmo_scale_axis(entity, axis);
+        let start_scale = workspace.document().doc.entities
+            [workspace.document().doc.index_of_id(entity).unwrap_or(0)]
+        .transform
+        .scale[scale_axis];
+        let angle_center = vm::ring_screen_radius_oriented(
+            frame,
+            center,
+            basis,
+            axis,
+            world_length,
+            rect.width(),
+            rect.height(),
+        )
+        .map(|(cx, cy, _)| (cx, cy))
+        .unwrap_or((rect.width() * 0.5, rect.height() * 0.5));
+        // 吸附要按绝对值取整，所以记下起点沿轴的投影；
+        // 缩放拖动的 `applied` 从起始倍数开始，其它两种从 0 开始。
+        let start_axis_value = {
+            let index = workspace.document().doc.index_of_id(entity).unwrap_or(0);
+            let position = vm::world_position(&workspace.document().doc, index);
+            position[0] * basis[axis][0]
+                + position[1] * basis[axis][1]
+                + position[2] * basis[axis][2]
+        };
+        let applied = match self.tool {
+            GizmoTool::Scale => start_scale,
+            GizmoTool::Translate | GizmoTool::Rotate => 0.0,
+        };
+        self.gizmo = Some(GizmoDrag {
+            entity,
+            axis,
+            scale_axis,
+            screen_dir: dir,
+            px_per_unit,
+            last_angle: vm::screen_angle(local, angle_center),
+            start_scale,
+            start_axis_value,
+            accum: 0.0,
+            applied,
+        });
+        // 一次拖动 = 一个撤销步：交互期间忽略 800ms 合并窗口，
+        // 中途停顿不会把同一次拖动拆成两步。
+        workspace.begin_interaction();
+        self.box_start = None;
+        true
+    }
+
+    /// 应用一次 gizmo 拖动增量；返回是否真的改动了文档（#643）。
+    pub(crate) fn gizmo_drag_step(
+        &mut self,
+        workspace: &mut Workspace,
+        frame: &vm::CameraFrame,
+        rect: Rect,
+        local: (f32, f32),
+        delta: (f32, f32),
+        ctrl: bool,
+    ) -> bool {
+        let tool = self.tool;
+        let Some(drag) = self.gizmo.as_mut() else {
+            return false;
+        };
+        let (axis, entity) = (drag.axis, drag.entity);
+        let snap = workspace.snap;
+        let snapping = snap_active(snap.enabled, ctrl);
+        let mut changed = false;
+        match tool {
+            GizmoTool::Translate => {
+                let step = (delta.0 * drag.screen_dir[0] + delta.1 * drag.screen_dir[1])
+                    / drag.px_per_unit.max(4.0);
+                if step.abs() > f32::EPSILON {
+                    drag.accum += step;
+                    let apply = drag_translate_step(
+                        snap,
+                        snapping,
+                        drag.start_axis_value,
+                        drag.accum,
+                        drag.applied,
+                    );
+                    if apply.abs() > 1e-6 {
+                        let basis = workspace.gizmo_basis();
+                        let world = basis[axis].map(|component| component * apply);
+                        workspace.translate_entity_world(entity, world);
+                        drag.applied += apply;
+                        changed = true;
+                    }
+                }
+            }
+            GizmoTool::Rotate => {
+                let center = workspace.selection_center_world().unwrap_or([0.0; 3]);
+                let world_length = vm::gizmo_world_length(&workspace.camera, rect.height());
+                let angle_center = vm::ring_screen_radius_oriented(
+                    frame,
+                    center,
+                    workspace.gizmo_basis(),
+                    axis,
+                    world_length,
+                    rect.width(),
+                    rect.height(),
+                )
+                .map(|(cx, cy, _)| (cx, cy))
+                .unwrap_or((rect.width() * 0.5, rect.height() * 0.5));
+                let angle = vm::screen_angle(local, angle_center);
+                let delta_angle = vm::wrap_angle(angle - drag.last_angle);
+                drag.last_angle = angle;
+                if delta_angle.abs() > 1e-4 {
+                    drag.accum += delta_angle;
+                    let desired = if snapping {
+                        snap.snapped_radians(drag.accum)
+                    } else {
+                        drag.accum
+                    };
+                    let apply = desired - drag.applied;
+                    if apply.abs() > 1e-4 {
+                        workspace.rotate_entity(entity, axis, -apply);
+                        drag.applied = desired;
+                        changed = true;
+                    }
+                }
+            }
+            GizmoTool::Scale => {
+                let step = (delta.0 * drag.screen_dir[0] + delta.1 * drag.screen_dir[1])
+                    / drag.px_per_unit.max(4.0)
+                    * 1.5;
+                drag.accum += step;
+                let raw = (drag.start_scale + drag.accum).max(0.01);
+                let next = if snapping {
+                    snap.snapped_scale(raw)
+                } else {
+                    raw
+                };
+                if (next - drag.applied).abs() > 1e-4 {
+                    workspace.set_scale_axis(entity, drag.scale_axis, next);
+                    drag.applied = next;
+                    changed = true;
+                }
+            }
+        }
+        self.dirty = true;
+        changed
+    }
+
     /// 面板主体：分配矩形、按需出帧、采样纹理、处理轨道 / 拾取 / gizmo。
     pub fn show(
         &mut self,
@@ -828,90 +1053,10 @@ impl ViewportState {
         {
             if let Some(pos) = response.interact_pointer_pos() {
                 let local = local_of(pos);
-                let center = workspace.selection_center_world();
-                if let (Some(center), Some(entity)) = (
-                    center,
-                    workspace
-                        .primary_selection()
-                        .and_then(|index| workspace.document().doc.id_of_index(index)),
-                ) {
-                    let world_length = vm::gizmo_world_length(&workspace.camera, rect.height());
-                    let basis = workspace.gizmo_basis();
-                    let hit = match self.tool {
-                        GizmoTool::Rotate => vm::pick_rotation_axis_oriented(
-                            local,
-                            &frame,
-                            center,
-                            basis,
-                            world_length,
-                            rect.width(),
-                            rect.height(),
-                        )
-                        .map(|axis| {
-                            let dir = [1.0f32, 0.0];
-                            (axis, dir, 60.0)
-                        }),
-                        GizmoTool::Translate | GizmoTool::Scale => vm::pick_gizmo_axis_oriented(
-                            local,
-                            &frame,
-                            center,
-                            basis,
-                            world_length,
-                            rect.width(),
-                            rect.height(),
-                        ),
-                    };
-                    if let Some((axis, dir, px_per_unit)) = hit {
-                        let scale_axis = workspace.gizmo_scale_axis(entity, axis);
-                        let start_scale = workspace.document().doc.entities
-                            [workspace.document().doc.index_of_id(entity).unwrap_or(0)]
-                        .transform
-                        .scale[scale_axis];
-                        let angle_center = vm::ring_screen_radius_oriented(
-                            &frame,
-                            center,
-                            basis,
-                            axis,
-                            world_length,
-                            rect.width(),
-                            rect.height(),
-                        )
-                        .map(|(cx, cy, _)| (cx, cy))
-                        .unwrap_or((rect.width() * 0.5, rect.height() * 0.5));
-                        // 吸附要按绝对值取整，所以记下起点沿轴的投影；
-                        // 缩放拖动的 `applied` 从起始倍数开始，其它两种从 0 开始。
-                        let start_axis_value = {
-                            let index = workspace.document().doc.index_of_id(entity).unwrap_or(0);
-                            let position = vm::world_position(&workspace.document().doc, index);
-                            position[0] * basis[axis][0]
-                                + position[1] * basis[axis][1]
-                                + position[2] * basis[axis][2]
-                        };
-                        let applied = match self.tool {
-                            GizmoTool::Scale => start_scale,
-                            GizmoTool::Translate | GizmoTool::Rotate => 0.0,
-                        };
-                        self.gizmo = Some(GizmoDrag {
-                            entity,
-                            axis,
-                            scale_axis,
-                            screen_dir: dir,
-                            px_per_unit,
-                            last_angle: vm::screen_angle(local, angle_center),
-                            start_scale,
-                            start_axis_value,
-                            accum: 0.0,
-                            applied,
-                        });
-                        // 一次拖动 = 一个撤销步：交互期间忽略 800ms 合并窗口，
-                        // 中途停顿不会把同一次拖动拆成两步。
-                        workspace.begin_interaction();
-                        self.box_start = None;
-                    } else if !alt && response.dragged_by(egui::PointerButton::Primary) {
-                        self.box_start = Some(pos);
-                        self.box_current = Some(pos);
-                    }
-                } else if !alt && response.dragged_by(egui::PointerButton::Primary) {
+                if !self.begin_gizmo_drag(workspace, &frame, rect, local)
+                    && !alt
+                    && response.dragged_by(egui::PointerButton::Primary)
+                {
                     self.box_start = Some(pos);
                     self.box_current = Some(pos);
                 }
@@ -920,93 +1065,23 @@ impl ViewportState {
 
         let pointer_delta = ui.input(|i| i.pointer.delta());
         let ctrl = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
-        let tool = self.tool;
         if response.dragged_by(egui::PointerButton::Primary)
             && !(self.kind() == ViewKind::Scene && alt)
         {
-            let delta = pointer_delta;
-            if let Some(drag) = self.gizmo.as_mut() {
-                let (axis, entity) = (drag.axis, drag.entity);
-                let snap = workspace.snap;
-                let snapping = snap_active(snap.enabled, ctrl);
-                match tool {
-                    GizmoTool::Translate => {
-                        let step = (delta.x * drag.screen_dir[0] + delta.y * drag.screen_dir[1])
-                            / drag.px_per_unit.max(4.0);
-                        if step.abs() > f32::EPSILON {
-                            drag.accum += step;
-                            let apply = drag_translate_step(
-                                snap,
-                                snapping,
-                                drag.start_axis_value,
-                                drag.accum,
-                                drag.applied,
-                            );
-                            if apply.abs() > 1e-6 {
-                                let basis = workspace.gizmo_basis();
-                                let world = basis[axis].map(|component| component * apply);
-                                workspace.translate_entity_world(entity, world);
-                                drag.applied += apply;
-                                document_changed = true;
-                            }
-                        }
+            if let Some(pos) = response.interact_pointer_pos() {
+                let local = local_of(pos);
+                if self.gizmo.is_some() {
+                    if self.gizmo_drag_step(
+                        workspace,
+                        &frame,
+                        rect,
+                        local,
+                        (pointer_delta.x, pointer_delta.y),
+                        ctrl,
+                    ) {
+                        document_changed = true;
                     }
-                    GizmoTool::Rotate => {
-                        if let Some(pos) = response.interact_pointer_pos() {
-                            let center = workspace.selection_center_world().unwrap_or([0.0; 3]);
-                            let world_length =
-                                vm::gizmo_world_length(&workspace.camera, rect.height());
-                            let angle_center = vm::ring_screen_radius_oriented(
-                                &frame,
-                                center,
-                                workspace.gizmo_basis(),
-                                axis,
-                                world_length,
-                                rect.width(),
-                                rect.height(),
-                            )
-                            .map(|(cx, cy, _)| (cx, cy))
-                            .unwrap_or((rect.width() * 0.5, rect.height() * 0.5));
-                            let angle = vm::screen_angle(local_of(pos), angle_center);
-                            let delta_angle = vm::wrap_angle(angle - drag.last_angle);
-                            drag.last_angle = angle;
-                            if delta_angle.abs() > 1e-4 {
-                                drag.accum += delta_angle;
-                                let desired = if snapping {
-                                    snap.snapped_radians(drag.accum)
-                                } else {
-                                    drag.accum
-                                };
-                                let apply = desired - drag.applied;
-                                if apply.abs() > 1e-4 {
-                                    workspace.rotate_entity(entity, axis, -apply);
-                                    drag.applied = desired;
-                                    document_changed = true;
-                                }
-                            }
-                        }
-                    }
-                    GizmoTool::Scale => {
-                        let step = (delta.x * drag.screen_dir[0] + delta.y * drag.screen_dir[1])
-                            / drag.px_per_unit.max(4.0)
-                            * 1.5;
-                        drag.accum += step;
-                        let raw = (drag.start_scale + drag.accum).max(0.01);
-                        let next = if snapping {
-                            snap.snapped_scale(raw)
-                        } else {
-                            raw
-                        };
-                        if (next - drag.applied).abs() > 1e-4 {
-                            workspace.set_scale_axis(entity, drag.scale_axis, next);
-                            drag.applied = next;
-                            document_changed = true;
-                        }
-                    }
-                }
-                self.dirty = true;
-            } else if let Some(start) = self.box_start {
-                if let Some(pos) = response.interact_pointer_pos() {
+                } else if let Some(start) = self.box_start {
                     self.box_current = Some(pos);
                     painter.rect_stroke(
                         egui::Rect::from_two_pos(start, pos),
@@ -1813,7 +1888,7 @@ fn proxies(
 }
 
 /// 框选 / 描边仍用单位立方体代理（#600 只改了单击拾取）。
-fn proxy_transforms(workspace: &Workspace) -> Vec<(usize, TransformJson)> {
+pub(crate) fn proxy_transforms(workspace: &Workspace) -> Vec<(usize, TransformJson)> {
     proxies(workspace, None)
         .into_iter()
         .map(|(index, transform, _)| (index, transform))
@@ -2034,6 +2109,27 @@ mod tests {
 
         // 退化尺寸不 panic，原样返回。
         assert_eq!(letterbox(outer, (0, 0)), outer);
+    }
+
+    #[test]
+    fn drag_samples_walk_from_the_start_to_the_end() {
+        let samples = drag_samples((10.0, 20.0), (50.0, 100.0), 4);
+        assert_eq!(
+            samples,
+            vec![(20.0, 40.0), (30.0, 60.0), (40.0, 80.0), (50.0, 100.0)]
+        );
+        // 每步增量之和就是总位移（拖动逻辑按增量累积）。
+        let mut previous = (10.0f32, 20.0f32);
+        let mut total = (0.0f32, 0.0f32);
+        for sample in &drag_samples((10.0, 20.0), (50.0, 100.0), 8) {
+            total.0 += sample.0 - previous.0;
+            total.1 += sample.1 - previous.1;
+            previous = *sample;
+        }
+        assert!((total.0 - 40.0).abs() < 1e-4);
+        assert!((total.1 - 80.0).abs() < 1e-4);
+        // 退化输入（0 步）仍然给出终点，脚本不会静默什么都不做。
+        assert_eq!(drag_samples((0.0, 0.0), (5.0, 5.0), 0), vec![(5.0, 5.0)]);
     }
 
     #[test]

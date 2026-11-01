@@ -88,7 +88,7 @@ MCP 工具        → 读端口文件 → TCP 一行 JSON 请求 / 一行 JSON �
 | `editor_launch` | `command?` `wait_ms?` | 起 `editor/target/{release,debug}/prism-editor-egui`（没构建过退回 `cargo run`），等控制通道就绪 |
 | `editor_status` | — | 帧数、当前场景、选中实体、Play / 暂停、未保存标记、项目根 |
 | `editor_capture` | `target`(`window`/`scene`/`game`) `path?` `size?` | 抓整窗（UI + 视口）或某个视口的引擎离屏图，返回 PNG 路径 |
-| `editor_ui` | `action`(`snapshot`/`click`/`set`) `node?` `value?` | UI 节点树：快照 / 按节点点击 / 按节点设值 |
+| `editor_ui` | `action`(`snapshot`/`click`/`move`/`wheel`/`drag`/`set`) `node?` `offset?` `from?` `to?` `value?` | UI 节点树：快照 / 按节点点击 / 视口指针移动、滚轮、拖动 / 按节点设值 |
 | `editor_play` | `action`(`play`/`stop`/`pause`) | 控制 Play（Play 会触发工程模块编译 + 加载） |
 | `editor_logs` | `since?` `limit?` | 读 Console 缓冲：引擎日志 + 工程模块 `project:` 日志 + panic 调用栈 |
 | `editor_input` | `key?` `mouse?` `state?` `click?` | 给 Play 注入输入（每帧一个事件），`click=true` 点一下左键 |

@@ -105,7 +105,7 @@ deviating from those conventions is a bug. (`README.md` is the human-facing over
   - **内置截图 + 本地控制通道**：启动时监听 `127.0.0.1:0` 并把端口写到
     `<项目根>/target/editor-egui/control.port`（`control.rs`，一行 JSON：`ping` /
     `status` / `logs` / `input` / `play` / `stop` / `pause` / `capture` / `ui.snapshot` /
-    `ui.click` / `ui.set` / `quit`）；`crates/prism-editor-mcp` 的 `editor_launch` /
+    `ui.click` / `ui.move` / `ui.wheel` / `ui.drag` / `ui.set` / `quit`）；`crates/prism-editor-mcp` 的 `editor_launch` /
     `editor_status` / `editor_capture` / `editor_quit` 通过它驱动。整窗截图走 Windows
     `PrintWindow`（**必须在工作线程**，UI 线程同步调用会自己给自己发消息而死锁）；
     视口截图走 `copy_offscreen_to_readback` + `readback_pixels`（`PRESENT_SRC_KHR`

@@ -152,12 +152,22 @@ pub fn definitions() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "editor_ui",
-            description: "编辑器 UI 节点树：action=snapshot 返回整棵界面树（面板 / 文档 / 层级实体 / 资产 / 检查器字段 / 命令表）；action=click 按节点 id 点击（command:Save / panel:hierarchy / doc:0 / entity:3 / asset:assets/x.prefab.json）；action=set 给检查器字段赋值（field:<entity>:<component>:<path>）。",
+            description: "编辑器 UI 节点树与指针：action=snapshot 返回整棵界面树（面板 / 文档 / 层级实体 / 资产 / 检查器字段 / 视口物体 / 模态对话框 / 命令表）；action=click 按节点 id 点击（command:Save / panel:hierarchy / doc:0 / entity:3 / asset:assets/x.prefab.json / view:scene:entity:2 / dialog:close:discard）；action=move 报告视口某点下的目标；action=wheel 在视口里滚动（Scene 缩放 / Game 滚轮）；action=drag 在视口里拖动（gizmo / 框选 / 轨道 / 玩法指针）；action=set 给检查器字段或对话框输入框赋值。",
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "action": { "type": "string", "enum": ["snapshot", "click", "set"], "default": "snapshot" },
-                    "node": { "type": "string", "description": "click / set 时的节点 id（见 snapshot 返回）" },
+                    "action": { "type": "string", "enum": ["snapshot", "click", "move", "wheel", "drag", "set"], "default": "snapshot" },
+                    "node": { "type": "string", "description": "click / set / move / wheel 时的节点 id（见 snapshot 返回）" },
+                    "offset": { "description": "move / wheel 时相对节点锚点的像素偏移 [dx,dy]" },
+                    "tab": { "type": "string", "description": "没有 node 时用 tab + x/y（sceneView / gameView）" },
+                    "x": { "type": "number", "description": "视口局部 X（没有 node 时）" },
+                    "y": { "type": "number", "description": "视口局部 Y（没有 node 时）" },
+                    "delta": { "type": "number", "description": "wheel 的滚轮增量（默认 120）" },
+                    "from": { "description": "drag 起点：{node,offset} 或 {x,y}" },
+                    "to": { "description": "drag 终点：{node,offset} 或 {x,y}" },
+                    "steps": { "type": "integer", "description": "drag 的采样步数（默认 8）" },
+                    "mode": { "type": "string", "enum": ["orbit"], "description": "drag 时强制轨道相机" },
+                    "ctrl": { "type": "boolean", "description": "drag 时按住 Ctrl（gizmo 吸附反转）" },
                     "value": { "description": "set 时的值（JSON：数字 / 字符串 / bool / 数组）" }
                 }
             }),
@@ -244,6 +254,21 @@ fn input(root: &Path, args: &Value) -> Result<String, String> {
     Ok(reply.to_string())
 }
 
+/// `editor_ui` 的指针参数：只转发调用方真正给出的键，避免把 `null` 塞给控制通道。
+fn pointer_args(args: &Value) -> Value {
+    let mut body = serde_json::Map::new();
+    for key in [
+        "node", "offset", "tab", "x", "y", "delta", "from", "to", "steps", "mode", "ctrl",
+    ] {
+        if let Some(value) = args.get(key) {
+            if !value.is_null() {
+                body.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+    Value::Object(body)
+}
+
 fn ui(root: &Path, args: &Value) -> Result<String, String> {
     let action = args
         .get("action")
@@ -258,6 +283,14 @@ fn ui(root: &Path, args: &Value) -> Result<String, String> {
                 .ok_or("click 需要 node")?;
             ("ui.click", json!({ "node": node }))
         }
+        "move" => ("ui.move", pointer_args(args)),
+        "wheel" => ("ui.wheel", pointer_args(args)),
+        "drag" => {
+            if args.get("from").is_none() || args.get("to").is_none() {
+                return Err("drag 需要 from / to".to_string());
+            }
+            ("ui.drag", pointer_args(args))
+        }
         "set" => {
             let node = args
                 .get("node")
@@ -268,7 +301,11 @@ fn ui(root: &Path, args: &Value) -> Result<String, String> {
                 json!({ "node": node, "value": args.get("value").cloned().unwrap_or(Value::Null) }),
             )
         }
-        other => return Err(format!("未知 action '{other}'（snapshot / click / set）")),
+        other => {
+            return Err(format!(
+                "未知 action '{other}'（snapshot / click / move / wheel / drag / set）"
+            ))
+        }
     };
     body["cmd"] = json!(cmd);
     let response = request(root, body)?;
