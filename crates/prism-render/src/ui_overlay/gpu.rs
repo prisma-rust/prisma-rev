@@ -1042,6 +1042,9 @@ fn emit_quad(
     let [x1, y1] = p1;
     let [u0, v0] = uv0;
     let [u1, v1] = uv1;
+    // UI 颜色是作者写的 sRGB 值（#592）；渲染目标是线性 / sRGB 交换链，
+    // 这里先解码到线性，最终由硬件（或 egui 的 sRGB 交换链）统一编码一次。
+    let color = srgb_rgba_to_linear(color);
     for &(px, py, u, v, sx, sy) in &[
         (x0, y0, u0, v0, -1.0, -1.0),
         (x1, y0, u1, v0, 1.0, -1.0),
@@ -1155,6 +1158,26 @@ fn find_memory_type(
     panic!("no suitable memory type found");
 }
 
+/// sRGB 分量 → 线性。UI 的 `[1, 0.502, 0.125]` 应当出图就是 `#FF8020`，
+/// 而不是被交换链再编码一次变成更亮的颜色（#592）。
+fn srgb_channel_to_linear(value: f32) -> f32 {
+    let value = value.clamp(0.0, 1.0);
+    if value <= 0.04045 {
+        value / 12.92
+    } else {
+        ((value + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn srgb_rgba_to_linear(color: [f32; 4]) -> [f32; 4] {
+    [
+        srgb_channel_to_linear(color[0]),
+        srgb_channel_to_linear(color[1]),
+        srgb_channel_to_linear(color[2]),
+        color[3].clamp(0.0, 1.0),
+    ]
+}
+
 /// 像素 y（左上角原点、向下增长）→ Vulkan NDC y（`-1` = 屏幕顶，`+1` = 屏幕底）。
 ///
 /// 相机投影里的 `p[1][1] = -inv_tan` 就是按这个约定翻的，所以 UI 这里**不能再翻**：
@@ -1166,7 +1189,23 @@ fn pixel_y_to_ndc(py: f32, h: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::pixel_y_to_ndc;
+    use super::{pixel_y_to_ndc, srgb_rgba_to_linear};
+
+    #[test]
+    fn srgb_ui_colors_are_decoded_to_linear() {
+        // #592：#FF8020 的 sRGB 分量是 1.0 / 0.502 / 0.125。
+        let linear = srgb_rgba_to_linear([1.0, 0.501_960_8, 0.125, 1.0]);
+        assert!((linear[0] - 1.0).abs() < 1e-6);
+        assert!((linear[1] - 0.215_860_6).abs() < 1e-4);
+        assert!((linear[2] - 0.014_349_9).abs() < 1e-5);
+        assert_eq!(linear[3], 1.0, "alpha 不参与 gamma 转换");
+        // 黑色 / 白色是固定点。
+        assert_eq!(
+            srgb_rgba_to_linear([0.0, 0.0, 0.0, 0.5]),
+            [0.0, 0.0, 0.0, 0.5]
+        );
+        assert_eq!(srgb_rgba_to_linear([1.0; 4]), [1.0; 4]);
+    }
 
     #[test]
     fn pixel_y_maps_screen_top_to_negative_one() {

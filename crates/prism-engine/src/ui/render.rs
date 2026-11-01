@@ -14,7 +14,7 @@ use prism_ecs::World;
 pub struct UiQuad {
     /// 屏幕空间矩形 `[left, top, width, height]`
     pub rect: [f32; 4],
-    /// RGBA 颜色 0..=1
+    /// RGBA 颜色 0..=1，按 **sRGB** 作者值解释（渲染前解码到线性，#592）。
     pub color: [f32; 4],
     /// 圆角半径（px）
     pub border_radius: f32,
@@ -45,6 +45,7 @@ pub struct UiTextCmd {
     pub rect: [f32; 4],
     pub content: String,
     pub font_size: f32,
+    /// RGBA sRGB 作者值（与 [`UiQuad::color`] 相同）。
     pub color: [f32; 4],
     pub alignment: TextAlign,
     /// 见 [`UiQuad::layer`]。

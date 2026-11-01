@@ -38,7 +38,7 @@ pub struct RenderConfig {
     pub render_mode: Option<String>,
     /// PBR isolate 位掩码（0 = 正常渲染）。
     pub debug_flags: Option<u32>,
-    /// 0 = Reinhard, 1 = ACES。
+    /// 0 = Reinhard, 1 = ACES, 2 = passthrough（2D / 像素画）。
     pub tonemap_mode: Option<u32>,
     /// 后处理抗锯齿：0 = 关（默认），1 = FXAA。
     pub aa_mode: Option<u32>,

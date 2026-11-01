@@ -62,10 +62,10 @@ impl DebugHud {
             RenderMode::Raster => "Raster",
             RenderMode::PathTrace => "PathTrace",
         };
-        let tonemap = if settings.tonemap_mode == 0 {
-            "Reinhard"
-        } else {
-            "ACES"
+        let tonemap = match settings.tonemap_mode {
+            0 => "Reinhard",
+            1 => "ACES",
+            _ => "Passthrough",
         };
         lines.push(format!(
             "{mode}  |  Tonemap: {tonemap}  |  PBR: {}",
