@@ -4309,6 +4309,7 @@ impl EditorApp {
                     &mut self.state.viewport_scale,
                     &mut paused,
                     &mut self.state.render_graph_call,
+                    &mut self.state.render_graph_budget_ms,
                 ) {
                     self.apply_render_settings(settings);
                 }

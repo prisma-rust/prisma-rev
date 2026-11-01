@@ -369,6 +369,8 @@ pub struct UiState {
     pub render_graph_frozen: Option<String>,
     /// Frame Debugger 当前选中的 draw call 下标（#518）。
     pub render_graph_call: Option<usize>,
+    /// 用户配置的整帧 GPU 预算（ms）；`None` = 默认 [`FRAME_BUDGET_MS`]（#518）。
+    pub render_graph_budget_ms: Option<f32>,
     /// Project 面板请求的音频试听动作（#508），由 `EditorApp` 在同一帧消费。
     pub pending_audio_preview: Option<AudioPreviewAction>,
     /// 当前正在试听的音频资产路径（`None` = 没在播）。
@@ -5027,6 +5029,7 @@ pub fn render_graph(
     viewport_scale: &mut f32,
     paused: &mut bool,
     selected_call: &mut Option<usize>,
+    frame_budget_ms: &mut Option<f32>,
 ) -> bool {
     let mut changed = false;
     ui.heading("Render Settings");
@@ -5151,6 +5154,33 @@ pub fn render_graph(
 
     ui.separator();
     ui.heading("Render Graph");
+    let mut budget = frame_budget_ms.unwrap_or(FRAME_BUDGET_MS);
+    ui.horizontal(|ui| {
+        ui.label("Frame budget");
+        if ui
+            .add(
+                egui::DragValue::new(&mut budget)
+                    .range(1.0..=50.0)
+                    .speed(0.1)
+                    .suffix(" ms"),
+            )
+            .changed()
+        {
+            *frame_budget_ms = Some(budget);
+        }
+        if frame_budget_ms.is_some() && ui.small_button("Auto").clicked() {
+            *frame_budget_ms = None;
+        }
+        ui.label(
+            RichText::new(if frame_budget_ms.is_some() {
+                "custom"
+            } else {
+                "auto 16.6 ms"
+            })
+            .weak()
+            .size(10.0),
+        );
+    });
     ui.horizontal(|ui| {
         let label = if *paused {
             "Resume live capture"
@@ -5185,8 +5215,8 @@ pub fn render_graph(
             );
             let parsed = prism_editor_core::render_graph::RenderGraphReport::parse(json);
             if let Some(parsed) = &parsed {
-                render_graph_timings(ui, parsed);
-                render_graph_history(ui, parsed);
+                render_graph_timings(ui, parsed, budget);
+                render_graph_history(ui, parsed, budget);
                 render_graph_stats(ui, parsed);
                 render_graph_draw_calls(ui, parsed, paused, selected_call);
             }
@@ -5378,10 +5408,15 @@ const FRAME_BUDGET_MS: f32 = 16.6;
 /// 实际计时的 pass；某个 pass 独占超过自己的份额就标红。pass 数为 0 时返回
 /// 0，调用方不会拿它做除法。
 fn per_pass_budget_ms(pass_count: usize) -> f32 {
-    if pass_count == 0 {
+    per_pass_budget_ms_with_total(pass_count, FRAME_BUDGET_MS)
+}
+
+/// 用户配置的整帧预算按实际计时 pass 均分（#518）。
+fn per_pass_budget_ms_with_total(pass_count: usize, frame_budget_ms: f32) -> f32 {
+    if pass_count == 0 || !frame_budget_ms.is_finite() || frame_budget_ms <= 0.0 {
         0.0
     } else {
-        FRAME_BUDGET_MS / pass_count as f32
+        frame_budget_ms / pass_count as f32
     }
 }
 
@@ -5389,7 +5424,11 @@ fn per_pass_budget_ms(pass_count: usize) -> f32 {
 ///
 /// 数据来自渲染器的时间戳查询（延迟一帧）。设备不支持时整段隐藏 —— 面板只显示
 /// 「没有 GPU 计时」，不会拿 CPU 墙钟冒充 GPU 时间。
-fn render_graph_timings(ui: &mut Ui, report: &prism_editor_core::render_graph::RenderGraphReport) {
+fn render_graph_timings(
+    ui: &mut Ui,
+    report: &prism_editor_core::render_graph::RenderGraphReport,
+    frame_budget_ms: f32,
+) {
     let Some(total) = report.gpu_total_ms() else {
         ui.label(
             RichText::new("No GPU timings (device does not report timestamps).")
@@ -5401,11 +5440,11 @@ fn render_graph_timings(ui: &mut Ui, report: &prism_editor_core::render_graph::R
 
     let passes = report.passes_by_cost();
     let measured = passes.iter().filter(|pass| pass.gpu_ms.is_some()).count();
-    let budget = per_pass_budget_ms(measured);
+    let budget = per_pass_budget_ms_with_total(measured, frame_budget_ms);
 
     ui.horizontal(|ui| {
         ui.label(RichText::new("GPU").strong());
-        let color = if total > FRAME_BUDGET_MS {
+        let color = if total > frame_budget_ms {
             Color32::from_rgb(232, 96, 96)
         } else {
             Color32::from_rgb(120, 200, 140)
@@ -5413,7 +5452,7 @@ fn render_graph_timings(ui: &mut Ui, report: &prism_editor_core::render_graph::R
         ui.label(RichText::new(format!("{total:.2} ms")).color(color));
         ui.label(
             RichText::new(format!(
-                "budget {FRAME_BUDGET_MS:.1} ms · {budget:.2} ms/pass"
+                "budget {frame_budget_ms:.1} ms · {budget:.2} ms/pass"
             ))
             .weak()
             .size(10.0),
@@ -5456,8 +5495,12 @@ fn render_graph_timings(ui: &mut Ui, report: &prism_editor_core::render_graph::R
 
 /// 最近 N 帧 GPU 总时间的 sparkline（#518 Phase 2 历史曲线）。
 ///
-/// 横轴等距（报告只存每帧采样，不存时间戳）；虚线位置是 [`FRAME_BUDGET_MS`]。
-fn render_graph_history(ui: &mut Ui, report: &prism_editor_core::render_graph::RenderGraphReport) {
+/// 横轴等距（报告只存每帧采样，不存时间戳）；虚线位置是当前 GPU 预算。
+fn render_graph_history(
+    ui: &mut Ui,
+    report: &prism_editor_core::render_graph::RenderGraphReport,
+    frame_budget_ms: f32,
+) {
     let samples = &report.gpu_history_ms;
     if samples.len() < 2 {
         return;
@@ -5481,11 +5524,11 @@ fn render_graph_history(ui: &mut Ui, report: &prism_editor_core::render_graph::R
     let max = samples
         .iter()
         .copied()
-        .fold(FRAME_BUDGET_MS * 1.25, f32::max)
+        .fold(frame_budget_ms * 1.25, f32::max)
         .max(1.0);
     let y_for = |ms: f32| rect.bottom() - (ms / max).clamp(0.0, 1.0) * rect.height();
 
-    let budget_y = y_for(FRAME_BUDGET_MS);
+    let budget_y = y_for(frame_budget_ms);
     painter.line_segment(
         [
             egui::pos2(rect.left(), budget_y),
@@ -6715,6 +6758,16 @@ mod window_smoke_tests {
         assert!((per_pass_budget_ms(1) - FRAME_BUDGET_MS).abs() < 1e-6);
         assert!((per_pass_budget_ms(4) - FRAME_BUDGET_MS / 4.0).abs() < 1e-6);
         assert!(per_pass_budget_ms(8) < per_pass_budget_ms(4));
+
+        // 用户自定义整帧预算（#518）：按当前计时 pass 数均分。
+        assert_eq!(per_pass_budget_ms_with_total(0, 8.0), 0.0);
+        assert!((per_pass_budget_ms_with_total(4, 8.0) - 2.0).abs() < 1e-6);
+        assert_eq!(
+            per_pass_budget_ms_with_total(4, 0.0),
+            0.0,
+            "非法预算不能产生 NaN/Inf 份额"
+        );
+        assert_eq!(per_pass_budget_ms_with_total(4, f32::NAN), 0.0);
     }
 
     #[test]
@@ -6749,6 +6802,7 @@ mod window_smoke_tests {
                 &mut viewport_scale,
                 &mut false,
                 &mut None,
+                &mut None,
             );
         });
         let report = r#"{"generatedAtMs":1,"frame":2,"passes":[],"resources":[],
@@ -6771,6 +6825,7 @@ mod window_smoke_tests {
                 &mut viewport_scale,
                 &mut true,
                 &mut Some(1),
+                &mut None,
             );
         });
         run_frame(|ui, _workspace, state| project_settings(ui, None, state));
