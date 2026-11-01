@@ -679,10 +679,17 @@ RTEX 的 mip 链由 Cooker 通过 2×2 box filter 生成（`TextureCooker::gener
   `CookSettings.streaming` 打开后，cooked 大小达到 `streaming_threshold_bytes`
   （默认 4 MiB，移动端 1 MiB）的资源自动带此标记。`prism-build-pipeline pack/build-scenes
   --stream-threshold <bytes>` 可对已 cook 目录按文件大小设置同一阈值。
+- **多包 / 分包（#509）**：`prism-build-pipeline pack <cooked-dir> --optional-dir <dir>`
+  （可重复，最长前缀优先）把指定子目录拆到 `optional/optional_<group>.pak`，其余进基础包
+  （默认 `assets/packed/game.pak`）。资产 ID 只由包内相对路径派生，所以拆包不会重编号；
+  基础包的 `.pak.meta.json` 用 `optional_paks` 列出每个可选包的 `group` / `pak` /
+  `asset_count`。运行时**自动挂载只扫描 `assets/` 顶层**，`assets/optional/` 里的包不会在
+  启动时常驻；需要时调用 `GpuAssetResolver::load_optional_packages()`（已挂过的包会跳过）。
 - **校验**：xxh3-64 覆盖 `header[4..44]`（version / asset_count / 各偏移与长度；`magic` 与
   `checksum` 自身除外）+ registry + deps + data。读取端在**解析 registry 之前**校验，
   篡改 `version` / `asset_count` 会直接得到 `ChecksumMismatch`（#89）。
-- **读取**：`PackageReader` 零拷贝访问（未压缩 asset 直接 memcpy）
+- **读取**：`PackageReader` 按 offset 从文件 `pread`（未压缩 asset 仍是拷贝），
+  打开时只读 header + registry + deps。
 
 ### 10.7 Cook Profile 系统（`prism-cooker`，src/cooker/profile.rs）
 
@@ -801,7 +808,10 @@ prism-scene::rscn::encode_scene
 - `prism-build-pipeline pack <cooked-dir>` 把已 cook 的目录打成 `.pak`，并写
   `.pak.meta.json` 路径清单；资产 ID 由**包内相对路径**派生（FNV-1a，
   [`AssetId::from_path`]），因此往目录里加文件不会重编号已有资源——材质数据的
-  `RMAT` 里烘的是贴图 `AssetId`，只有路径派生才能与包内 ID 对上（#530）；
+  `RMAT` 里烘的是贴图 `AssetId`，只有路径派生才能与包内 ID 对上（#530）。
+  `--optional-dir <dir>`（可重复）把该子目录拆到 `optional/optional_<group>.pak`，
+  运行时按需挂载（见 §10.6）；`--stream-threshold <bytes>` 仍按包内文件大小标记
+  `FLAG_STREAMED`（#509）；
 - 运行时只读 `.rscn` / `.pak`，不依赖 `prism-cooker`；
 - 开发期也可以从松散的 `.rscn` 文件加载，路径由 `SceneSource` 决定。
 

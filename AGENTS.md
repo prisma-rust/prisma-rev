@@ -282,6 +282,11 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   (writes `assets/cooked/default.rscn`; the old `prism-asset-cli` name is gone).
 - Pack already-cooked files: `cargo run -p prism-build-pipeline -- pack assets/cooked`
   (writes `assets/packed/game.pak` + `.pak.meta.json`; low-level escape hatch).
+  `--optional-dir <dir>` (repeatable, longest prefix wins) splits that subdirectory into
+  `optional/optional_<group>.pak` instead of the base package (#509); the base manifest
+  lists them under `optional_paks`, and the runtime only mounts them when
+  `GpuAssetResolver::load_optional_packages()` is called (`assets/optional/` is not part
+  of the startup scan). `build-scenes` accepts the same flag against the staged layout.
 - The `projects/prisma/`, `projects/prisma-sponza/`, `launcher/` and `editor/` standalone workspaces need their own `cargo build` / `cargo clippy`
   runs — a root-workspace build does **not** cover them.
 

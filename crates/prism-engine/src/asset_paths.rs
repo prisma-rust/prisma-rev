@@ -27,6 +27,12 @@ pub const ASSET_ROOT_ENV: &str = "PRISMREV_ASSET_ROOT";
 /// 资源子目录名，所有 `assets/...` 相对路径都挂在它下面。
 const ASSET_DIR_NAME: &str = "assets";
 
+/// 分包构建（#509）写出的可选包目录：`assets/optional/optional_*.pak`。
+///
+/// 自动挂载只扫描 `assets/` 顶层，因此这个目录里的包**不会**在启动时常驻；
+/// 需要时显式调用 `GpuAssetResolver::load_optional_packages`。
+pub const OPTIONAL_PAK_DIR_NAME: &str = "optional";
+
 static WARNED_MISSING_ROOT: AtomicBool = AtomicBool::new(false);
 
 /// 候选根目录，按优先级排序（见模块文档）。
@@ -140,6 +146,21 @@ pub fn pak_files_in(dir: &Path) -> Vec<PathBuf> {
 /// `assets/` 下的所有 `.pak`（[`pak_files_in`] 的定位版本）。
 pub fn pak_files() -> Vec<PathBuf> {
     asset_dir()
+        .map(|dir| pak_files_in(&dir))
+        .unwrap_or_default()
+}
+
+/// `assets/optional/`——分包构建（#509）的可选包目录。
+pub fn optional_pak_dir() -> Option<PathBuf> {
+    asset_dir().map(|dir| dir.join(OPTIONAL_PAK_DIR_NAME))
+}
+
+/// `assets/optional/` 下的所有 `.pak`，按文件名排序。
+///
+/// 这些包不在启动时自动挂载；需要它们的一方调用
+/// `GpuAssetResolver::load_optional_packages` 显式登记。
+pub fn optional_pak_files() -> Vec<PathBuf> {
+    optional_pak_dir()
         .map(|dir| pak_files_in(&dir))
         .unwrap_or_default()
 }

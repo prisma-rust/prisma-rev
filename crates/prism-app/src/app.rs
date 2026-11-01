@@ -636,6 +636,23 @@ impl App {
         Ok(entities)
     }
 
+    /// #509：按需挂载 `assets/optional/` 下的分包（`optional_*.pak`）。
+    ///
+    /// 启动时的自动挂载只扫描 `assets/` 顶层，所以分包里的资源不占常驻内存。
+    /// 进入需要它们的关卡 / 玩法时调用；已经挂过的包会跳过，重复调用安全。
+    /// 挂载后之前因为「路径不在包里」失败过的实体会重新解析（否则失败缓存会
+    /// 挡住它们）。返回**本次新挂载**的包数。
+    pub fn load_optional_packages(&mut self) -> usize {
+        let count = self.asset_resolver.load_optional_packages();
+        if count > 0 {
+            if let Some(engine) = self.engine.as_mut() {
+                self.asset_resolver
+                    .retry_failed_after_package_change(engine.world_mut());
+            }
+        }
+        count
+    }
+
     /// 换场后清掉只对「上一场」有意义的播放状态。
     ///
     /// 资源解析器按 `(实体, 槽位)` 记账（#495）；旧实体已经被卸载，这里让
