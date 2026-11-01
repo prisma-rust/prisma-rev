@@ -116,10 +116,13 @@ fn game_cursor(rect: Rect, position: egui::Pos2, extent: (u32, u32)) -> [f32; 2]
 pub enum GameResolution {
     #[default]
     MatchWindow,
-    Fixed {
-        width: u32,
-        height: u32,
-    },
+    /// 固定渲染分辨率（像素）。
+    Fixed { width: u32, height: u32 },
+    /// 固定宽高比，尺寸随面板缩放（#585）。
+    ///
+    /// 与 [`Fixed`](Self::Fixed) 的区别是分辨率不锁死：只保证
+    /// `width / height` 不变，适合「按 16:9 构图，但面板多大就渲染多大」。
+    Aspect { width: u32, height: u32 },
 }
 
 impl GameResolution {
@@ -127,6 +130,9 @@ impl GameResolution {
         match self {
             GameResolution::MatchWindow => "Match Window".to_string(),
             GameResolution::Fixed { width, height } => format!("{width}x{height}"),
+            GameResolution::Aspect { width, height } => {
+                format!("{width}:{height} (fit)")
+            }
         }
     }
 
@@ -137,6 +143,20 @@ impl GameResolution {
             // 与 `viewport_extent` 同一个上限：超过 4096 的离屏目标很多驱动直接失败。
             GameResolution::Fixed { width, height } => {
                 (width.clamp(1, 4096), height.clamp(1, 4096))
+            }
+            GameResolution::Aspect { width, height } => {
+                let ratio = width.max(1) as f32 / height.max(1) as f32;
+                let (panel_w, panel_h) =
+                    (panel_extent.0.max(1) as f32, panel_extent.1.max(1) as f32);
+                let (target_w, target_h) = if panel_w / panel_h > ratio {
+                    (panel_h * ratio, panel_h)
+                } else {
+                    (panel_w, panel_w / ratio)
+                };
+                (
+                    (target_w.round() as u32).clamp(1, 4096),
+                    (target_h.round() as u32).clamp(1, 4096),
+                )
             }
         }
     }
@@ -170,6 +190,43 @@ pub const GAME_RESOLUTION_PRESETS: &[GameResolution] = &[
         height: 1334,
     },
 ];
+
+/// 「只锁比例、不锁分辨率」的预设（#585）。
+pub const GAME_ASPECT_PRESETS: &[GameResolution] = &[
+    GameResolution::Aspect {
+        width: 16,
+        height: 9,
+    },
+    GameResolution::Aspect {
+        width: 16,
+        height: 10,
+    },
+    GameResolution::Aspect {
+        width: 4,
+        height: 3,
+    },
+    GameResolution::Aspect {
+        width: 21,
+        height: 9,
+    },
+];
+
+/// 工具栏下拉的完整列表：工程分辨率排在最前，其次比例预设，最后固定分辨率。
+///
+/// `project` 来自 `assets/settings.ini [window]`；没有工程文件时保持旧列表。
+pub fn game_resolution_presets(project: Option<(u32, u32)>) -> Vec<GameResolution> {
+    let mut out = vec![GameResolution::MatchWindow];
+    if let Some((width, height)) = project.filter(|(w, h)| *w > 0 && *h > 0) {
+        out.push(GameResolution::Fixed { width, height });
+    }
+    out.extend_from_slice(GAME_ASPECT_PRESETS);
+    for preset in GAME_RESOLUTION_PRESETS.iter().skip(1) {
+        if !out.contains(preset) {
+            out.push(*preset);
+        }
+    }
+    out
+}
 
 /// 把 `extent` 的图等比放进 `outer`，居中留黑边（Unity Game 视图的 letterbox）。
 ///
@@ -259,6 +316,8 @@ pub struct ViewportState {
     pub report_path: Option<std::path::PathBuf>,
     /// Game 视图的预览分辨率（Scene 视图忽略它）。
     pub target: GameResolution,
+    /// 工程 `assets/settings.ini [window]` 的分辨率，用于默认值与下拉预设（#585）。
+    pub project_resolution: Option<(u32, u32)>,
 }
 
 pub struct ViewportResponse {
@@ -296,6 +355,7 @@ impl ViewportState {
             forwarded_left_down: false,
             report_path: None,
             target: GameResolution::default(),
+            project_resolution: None,
         })
     }
 
@@ -710,9 +770,9 @@ impl ViewportState {
                 .selected_text(self.target.label())
                 .width(120.0)
                 .show_ui(&mut bar_ui, |ui| {
-                    for preset in GAME_RESOLUTION_PRESETS {
+                    for preset in game_resolution_presets(self.project_resolution) {
                         if ui
-                            .selectable_label(*preset == self.target, preset.label())
+                            .selectable_label(preset == self.target, preset.label())
                             .on_hover_text(match preset {
                                 GameResolution::MatchWindow => {
                                     "Render at the panel size (old behaviour)"
@@ -720,10 +780,13 @@ impl ViewportState {
                                 GameResolution::Fixed { .. } => {
                                     "Render off-screen at this resolution and letterbox it"
                                 }
+                                GameResolution::Aspect { .. } => {
+                                    "Keep this aspect ratio and fit it to the panel"
+                                }
                             })
                             .clicked()
                         {
-                            chosen = *preset;
+                            chosen = preset;
                         }
                     }
                 });
@@ -1023,7 +1086,7 @@ impl ViewportState {
                         &frame,
                         rect.width(),
                         rect.height(),
-                        &proxies(workspace),
+                        &proxy_transforms(workspace),
                     );
                     let modifiers = ui.input(|input| input.modifiers);
                     let mode = SelectMode::from_modifiers(
@@ -1178,7 +1241,7 @@ impl ViewportState {
         let accent = Color32::from_rgb(255, 154, 60);
         let helper = Color32::from_rgb(255, 154, 60).gamma_multiply(0.45);
 
-        for (index, transform) in proxies(workspace) {
+        for (index, transform, _) in proxies(workspace, None) {
             let is_selected = selected.contains(&index);
             let is_related = related.contains(&index);
             if !is_selected && !is_related {
@@ -1230,7 +1293,7 @@ impl ViewportState {
         let stroke = egui::Stroke::new(1.4_f32, Color32::from_rgb(90, 200, 255));
         let pivot_color = Color32::from_rgb(90, 200, 255);
 
-        for (index, transform) in proxies(workspace) {
+        for (index, transform, _) in proxies(workspace, None) {
             if !workspace.selection.contains(&index) {
                 continue;
             }
@@ -1749,6 +1812,14 @@ fn proxies(
         .collect()
 }
 
+/// 框选 / 描边仍用单位立方体代理（#600 只改了单击拾取）。
+fn proxy_transforms(workspace: &Workspace) -> Vec<(usize, TransformJson)> {
+    proxies(workspace, None)
+        .into_iter()
+        .map(|(index, transform, _)| (index, transform))
+        .collect()
+}
+
 pub(crate) fn pick(
     workspace: &Workspace,
     host: Option<&EngineHost>,
@@ -1907,6 +1978,43 @@ mod tests {
             .extent((1, 1)),
             (4096, 4096)
         );
+    }
+
+    #[test]
+    fn an_aspect_target_fits_the_panel_without_changing_its_ratio() {
+        // #585：16:9 面板宽高比 2:1 时，高度吃满、左右留黑边。
+        let target = GameResolution::Aspect {
+            width: 16,
+            height: 9,
+        };
+        assert_eq!(target.extent((1600, 800)), (1422, 800));
+        // 4:3 面板时宽度吃满、上下留黑边。
+        assert_eq!(target.extent((800, 800)), (800, 450));
+        // 面板本身就是 16:9 时它完全不改动尺寸。
+        assert_eq!(target.extent((1920, 1080)), (1920, 1080));
+    }
+
+    #[test]
+    fn presets_put_the_project_resolution_first() {
+        let presets = game_resolution_presets(Some((1600, 900)));
+        assert_eq!(presets[0], GameResolution::MatchWindow);
+        assert_eq!(
+            presets[1],
+            GameResolution::Fixed {
+                width: 1600,
+                height: 900
+            }
+        );
+        assert_eq!(
+            presets[2],
+            GameResolution::Aspect {
+                width: 16,
+                height: 9
+            }
+        );
+        assert!(game_resolution_presets(None)
+            .iter()
+            .all(|preset| !matches!(preset, GameResolution::Fixed { width: 1600, .. })));
     }
 
     #[test]
