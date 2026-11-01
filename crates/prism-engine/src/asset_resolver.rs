@@ -27,7 +27,10 @@ use prism_ecs::World;
 use prism_render::asset_bridge::{AssetResolveRequest, MaterialResolveData};
 use prism_render::managers::{MeshUploadInput, TextureFormat, TextureUploadInput};
 
-use crate::scene::components::{MaterialRef, MeshRef, MeshRenderer, SpriteRef, SpriteRenderer};
+use crate::scene::components::{
+    MaterialRef, MeshRef, MeshRenderer, SpriteRef, SpriteRenderer, Tilemap,
+};
+use crate::scene::runtime_components::TilemapRef;
 use crate::scene::systems::render::MeshBounds;
 
 /// 把 RTEX 头的 `format` byte 与槽位颜色空间映射成渲染层 [`TextureFormat`]。
@@ -62,6 +65,8 @@ enum AssetSlot {
     Mesh,
     Material,
     Sprite,
+    /// 瓦片地图的 tileset（#529）。
+    Tileset,
 }
 
 /// 一个实体本帧要解析的资源（只包含仍然缺失的那几半）。
@@ -69,7 +74,10 @@ struct PendingRequest {
     entity: Entity,
     mesh_path: Option<String>,
     material_path: Option<String>,
+    /// 精灵贴图或瓦片地图的 tileset：两者都只需要一张贴图，
+    /// 一个实体同一帧只会投递其中一个（tilemap 实体不要同时挂 `SpriteRenderer`）。
     sprite_path: Option<String>,
+    tileset: bool,
 }
 
 /// On-demand 资源 loader + GPU uploader + cache.
@@ -89,6 +97,8 @@ pub struct GpuAssetResolver {
     /// 最近一次解析的精灵路径。项目只改 `sprite_path`，这里发现不一致就重新解析，
     /// 不再要求调用方手动把 `SpriteRef::generation` 清零。
     sprite_paths: HashMap<Entity, String>,
+    /// 最近一次解析的 tileset 路径（#529），语义同 [`Self::sprite_paths`]。
+    tileset_paths: HashMap<Entity, String>,
     /// 已经交给渲染器的工程字体路径（#583）。
     ///
     /// 字体是整份文件注册进 UI 图集，不像贴图那样每实体一份；同一个路径只读一次。
@@ -132,6 +142,7 @@ impl GpuAssetResolver {
             enqueued: HashSet::new(),
             failed: HashMap::new(),
             sprite_paths: HashMap::new(),
+            tileset_paths: HashMap::new(),
             fonts_loaded: HashSet::new(),
             fonts_failed: HashSet::new(),
             pending_bounds: HashMap::new(),
@@ -294,7 +305,10 @@ impl GpuAssetResolver {
             self.failed.retain(|(entity, _), _| {
                 world.get::<MeshRenderer>(*entity).is_some()
                     || world.get::<SpriteRenderer>(*entity).is_some()
+                    || world.get::<Tilemap>(*entity).is_some()
             });
+            self.tileset_paths
+                .retain(|entity, _| world.get::<Tilemap>(*entity).is_some());
 
             let mut out = Vec::new();
             for (entity, mr) in world.query::<MeshRenderer>() {
@@ -319,6 +333,7 @@ impl GpuAssetResolver {
                         mesh_path: wants_mesh.then(|| mr.mesh_path.clone()),
                         material_path: wants_material.then(|| mr.material_path.clone()),
                         sprite_path: None,
+                        tileset: false,
                     });
                     self.enqueued.insert(entity);
                 }
@@ -346,9 +361,39 @@ impl GpuAssetResolver {
                         mesh_path: None,
                         material_path: None,
                         sprite_path: Some(sprite.sprite_path.clone()),
+                        tileset: false,
                     });
                     self.enqueued.insert(entity);
                     self.sprite_paths.insert(entity, sprite.sprite_path.clone());
+                }
+            }
+            // 瓦片地图：同样只有 tileset 一张贴图（#529）。
+            for (entity, tilemap) in world.query::<Tilemap>() {
+                if tilemap.tileset_path.is_empty() {
+                    continue;
+                }
+                let unresolved = world
+                    .get::<TilemapRef>(entity)
+                    .map(|r| r.generation == 0)
+                    .unwrap_or(true);
+                let path_changed = self
+                    .tileset_paths
+                    .get(&entity)
+                    .is_some_and(|last| last != &tilemap.tileset_path);
+                if (unresolved || path_changed)
+                    && !self.failed_before(entity, AssetSlot::Tileset, &tilemap.tileset_path)
+                    && !self.enqueued.contains(&entity)
+                {
+                    out.push(PendingRequest {
+                        entity,
+                        mesh_path: None,
+                        material_path: None,
+                        sprite_path: Some(tilemap.tileset_path.clone()),
+                        tileset: true,
+                    });
+                    self.enqueued.insert(entity);
+                    self.tileset_paths
+                        .insert(entity, tilemap.tileset_path.clone());
                 }
             }
             out
@@ -386,7 +431,12 @@ impl GpuAssetResolver {
                 Some(path) => {
                     let loaded = self.load_texture_by_path(path);
                     if loaded.is_none() {
-                        self.record_failure(item.entity, AssetSlot::Sprite, path);
+                        let slot = if item.tileset {
+                            AssetSlot::Tileset
+                        } else {
+                            AssetSlot::Sprite
+                        };
+                        self.record_failure(item.entity, slot, path);
                     }
                     loaded
                 }
@@ -460,6 +510,28 @@ impl GpuAssetResolver {
                 sprite.size = size;
                 sprite.generation = 1;
                 world.insert(*entity, sprite);
+
+                // 瓦片地图的 tileset 走同一个上传结果（#529）。
+                if world.get::<Tilemap>(*entity).is_some() {
+                    let tilemap = world
+                        .get::<TilemapRef>(*entity)
+                        .cloned()
+                        .unwrap_or_else(|| TilemapRef {
+                            asset_id: crate::scene::components::SceneAssetId::generate(),
+                            texture_slot: 0,
+                            size: [0, 0],
+                            generation: 0,
+                        });
+                    world.insert(
+                        *entity,
+                        TilemapRef {
+                            texture_slot: slot,
+                            size,
+                            generation: 1,
+                            ..tilemap
+                        },
+                    );
+                }
             }
             self.enqueued.remove(entity);
         }
@@ -488,6 +560,11 @@ impl GpuAssetResolver {
                 entities.push(entity);
             }
         }
+        for (entity, _) in world.query::<Tilemap>() {
+            if !entities.contains(&entity) {
+                entities.push(entity);
+            }
+        }
         let count = entities.len();
         for entity in entities {
             self.reset_entity_refs(world, entity);
@@ -508,6 +585,11 @@ impl GpuAssetResolver {
         }
         for (entity, sprite) in world.query::<SpriteRenderer>() {
             if sprite.sprite_path == path && !entities.contains(&entity) {
+                entities.push(entity);
+            }
+        }
+        for (entity, tilemap) in world.query::<Tilemap>() {
+            if tilemap.tileset_path == path && !entities.contains(&entity) {
                 entities.push(entity);
             }
         }
@@ -541,9 +623,16 @@ impl GpuAssetResolver {
                 changed = true;
             }
         }
+        if let Some(tileset) = world.get_mut::<TilemapRef>(entity) {
+            if tileset.generation != 0 {
+                tileset.generation = 0;
+                changed = true;
+            }
+        }
         // 失败缓存（同一个坏路径不再重试）与排队标记都会挡住重新解析。
         self.enqueued.remove(&entity);
         self.pending_bounds.remove(&entity);
+        self.tileset_paths.remove(&entity);
         self.failed.retain(|(owner, _), _| *owner != entity);
         changed
     }
@@ -947,6 +1036,49 @@ mod tests {
 
         // 已解析且路径没变：不再重复投递。
         assert!(resolver.prepare_requests(&world).is_empty());
+    }
+
+    #[test]
+    fn tilemap_tileset_is_staged_once_and_written_back() {
+        // #529：瓦片地图走和精灵同一条贴图解析路径，但句柄写进 `TilemapRef`。
+        use crate::scene::components::Tilemap;
+        use crate::scene::runtime_components::TilemapRef;
+
+        let mut world = World::new();
+        let entity = world.spawn();
+        world.insert(
+            entity,
+            Tilemap {
+                tileset_path: "sprites/tiles.png".to_string(),
+                tiles: vec![1, 0, 2],
+                ..Tilemap::default()
+            },
+        );
+        let mut resolver = GpuAssetResolver::new();
+
+        let first = resolver.prepare_requests(&world);
+        assert_eq!(first.len(), 1, "没有 TilemapRef 也要解析一次");
+        // 资源包为空 → 失败缓存，不会每帧重试。
+        assert!(resolver.prepare_requests(&world).is_empty());
+
+        resolver.apply_results(
+            &mut world,
+            &[(
+                entity,
+                AssetResolveResult {
+                    mesh_handle: None,
+                    material_slot: None,
+                    texture_slot: Some(3),
+                    texture_size: Some([64, 64]),
+                },
+            )],
+        );
+        let tileset = world
+            .get::<TilemapRef>(entity)
+            .expect("解析结果应写进 TilemapRef");
+        assert_eq!(tileset.texture_slot, 3);
+        assert_eq!(tileset.size, [64, 64]);
+        assert_eq!(tileset.generation, 1);
     }
 
     /// 改 `sprite_path` 就够：不再需要手动把 `generation` 清零。

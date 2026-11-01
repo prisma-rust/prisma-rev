@@ -142,7 +142,7 @@ pub fn scene_render_system_into_with_frustum(
 }
 
 /// 2D 绘制项的排序键：`(sorting_layer, order_in_layer, z, entity_id)`。
-type SortKey = (i32, i32, f32, u32);
+pub(crate) type SortKey = (i32, i32, f32, u32);
 
 /// 纯色绘制标记：`SpriteDrawItem.texture` 取此值时着色器不采样贴图。
 pub const SOLID_TEXTURE: u32 = u32::MAX;
@@ -179,10 +179,24 @@ pub fn scene_2d_system(world: &World) -> Vec<prism_render::SpriteDrawItem> {
 /// [`scene_2d_system`] into a caller-owned buffer (see
 /// [`scene_render_system_into`] for why).
 pub fn scene_2d_system_into(world: &World, out: &mut Vec<prism_render::SpriteDrawItem>) {
+    scene_2d_system_into_with_frustum(world, None, out);
+}
+
+/// [`scene_2d_system_into`] 加主相机视锥：瓦片地图逐格裁剪（#529）。
+///
+/// 精灵 / 折线 / 粒子不参与剔除（它们本来就只是少量实例）；瓦片格子可能上千，
+/// 裁掉屏幕外的行列能显著减少实例缓冲的写入。
+pub fn scene_2d_system_into_with_frustum(
+    world: &World,
+    frustum: Option<&prism_render::culling::Frustum>,
+    out: &mut Vec<prism_render::SpriteDrawItem>,
+) {
     let mut entries = sprite_entries(world);
     entries.extend(line_entries(world));
     // 2D 粒子是纯色四边形，和精灵共用同一条通道与排序（#594）。
     entries.extend(super::particles2d::particle_entries_2d(world));
+    // 瓦片地图：一个实体一整张网格（#529）。
+    entries.extend(super::tilemap::tilemap_entries(world, frustum));
     sort_draw_items_into(entries, out);
 }
 

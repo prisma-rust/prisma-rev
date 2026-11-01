@@ -223,7 +223,8 @@ pub fn extract_frame_packet_into_with_shadow(
     } else {
         None
     };
-    scene_view.sprite_items_into(&mut packet.sprite_items);
+    // 2D 也走同一份主相机视锥：瓦片地图逐格裁剪（#529）。
+    scene_view.sprite_items_with_frustum_into(frustum.as_ref(), &mut packet.sprite_items);
     // 3D 粒子：世界空间 billboard，按到眼睛的距离远到近排序（透明混合）。
     scene_view.particle_items_into(packet.scene.eye, &mut packet.particle_items);
 

@@ -304,6 +304,65 @@ fn sprite_json_round_trips_and_fills_missing_fields() {
 }
 
 #[test]
+fn tilemap_json_defaults_and_round_trips() {
+    // #529：旧文档没有 Tilemap，新字段全部走 serde 默认。
+    let map: Tilemap = serde_json::from_str(
+        r#"{"tileset_path":"sprites/tiles.png","columns":2,"tiles":[0,3,0,1]}"#,
+    )
+    .unwrap();
+    assert_eq!(map.tile_size, [16, 16], "默认瓦片 16x16");
+    assert_eq!(map.cell_size, [1.0, 1.0]);
+    assert_eq!(map.color, [1.0, 1.0, 1.0, 1.0]);
+    assert_eq!(map.sorting_layer, 0);
+    assert!(map.has_tiles());
+
+    let json = serde_json::to_string(&map).unwrap();
+    let back: Tilemap = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.tiles, vec![0, 3, 0, 1]);
+    assert_eq!(back.columns, 2);
+
+    assert_eq!(Tilemap::default().columns, 0, "默认单行");
+    assert!(!Tilemap::default().has_tiles(), "没有 tileset 路径不绘制");
+}
+
+#[test]
+fn tilemap_grid_and_uv_follow_the_tileset_layout() {
+    let mut map = Tilemap {
+        tiles: vec![1, 0, 2, 3, 0],
+        columns: 2,
+        tile_size: [16, 16],
+        ..Tilemap::default()
+    };
+    // 2 列 → 3 行（最后一行只有一格）。
+    assert_eq!(map.grid(), (2, 3));
+
+    map.columns = 0;
+    assert_eq!(map.grid(), (5, 1), "columns=0 排成一行");
+
+    // tileset 64x32 + 16x16 瓦片 = 4 列 2 行。
+    assert_eq!(map.tileset_grid([64, 32]), (4, 2));
+    assert_eq!(map.tile_uv(0, [64, 32]), [0.0, 0.0, 0.25, 0.5]);
+    assert_eq!(map.tile_uv(5, [64, 32]), [0.25, 0.5, 0.5, 1.0]);
+    // 超出 tileset 的索引夹到最后一块。
+    assert_eq!(map.tile_uv(99, [64, 32]), [0.75, 0.5, 1.0, 1.0]);
+
+    // 第 0 行在上：行号越大 y 越小。
+    assert_eq!(map.cell_center(0, 0, 2), [0.5, 1.5]);
+    assert_eq!(map.cell_center(1, 1, 2), [1.5, 0.5]);
+}
+
+#[test]
+fn tilemap_rejects_invalid_cell_sizes() {
+    let map = Tilemap {
+        tileset_path: "tiles.png".into(),
+        tiles: vec![1],
+        cell_size: [0.0, 1.0],
+        ..Tilemap::default()
+    };
+    assert!(!map.has_tiles(), "cell_size 为 0 不能绘制");
+}
+
+#[test]
 fn sprite_world_size_uses_frame_or_texture_and_ppu() {
     // 整张纹理 64x32，PPU 16 -> 4x2 世界单位。
     let whole = SpriteRenderer {

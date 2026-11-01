@@ -132,6 +132,15 @@ impl<'a> SceneReadView<'a> {
         super::systems::render::scene_2d_system_into(self.world, out)
     }
 
+    /// [`Self::sprite_items_into`] 加主相机视锥（瓦片地图逐格裁剪，#529）。
+    pub fn sprite_items_with_frustum_into(
+        &self,
+        frustum: Option<&prism_render::culling::Frustum>,
+        out: &mut Vec<prism_render::SpriteDrawItem>,
+    ) {
+        super::systems::render::scene_2d_system_into_with_frustum(self.world, frustum, out)
+    }
+
     /// 提取 3D 粒子 billboard（已按到 `eye` 的距离**远到近**排序）。
     pub fn particle_items_into(
         &self,

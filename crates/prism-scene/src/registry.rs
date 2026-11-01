@@ -475,6 +475,7 @@ pub fn register_builtin_components(registry: &mut ComponentRegistry) {
         registry.register_reflect_serde::<SpriteRenderer>("prism_engine::scene::SpriteRenderer");
         registry.register_reflect_serde::<LineRenderer>("prism_engine::scene::LineRenderer");
         registry.register_reflect_serde::<SpriteAnimation>("prism_engine::scene::SpriteAnimation");
+        registry.register_reflect_serde::<Tilemap>("prism_engine::scene::Tilemap");
     }
 
     // ── 本地变换 ──
