@@ -3,6 +3,7 @@
 //! `Active` 是层级面板眼睛按钮写入的组件，缺失视为激活；父级关闭要连带隐藏子树。
 
 use super::{convert_ui_draw_list_to_overlay, ui_render_system, UiDrawItem, UiDrawList};
+use crate::scene::runtime_components::Hidden;
 use crate::ui::components::*;
 use crate::ui::input::{ui_input_system, UiInputState};
 use crate::ui::{is_ui_active, ScreenSize};
@@ -269,6 +270,23 @@ fn deactivating_a_parent_hides_the_whole_subtree() {
     let draw_list = world.get_resource::<UiDrawList>().expect("draw list");
     assert!(draw_list.quads().count() == 0);
     assert!(draw_list.texts().count() == 0);
+}
+
+#[test]
+fn scene_visibility_hides_the_ui_subtree_without_deactivating_it() {
+    let mut world = world_with_screen();
+    let parent = spawn_quad(&mut world, [0.0, 0.0, 400.0, 300.0]);
+    let child = spawn_text(&mut world, [10.0, 10.0, 100.0, 50.0], "hidden");
+    HierarchyHelper::reparent(&mut world, child, Some(parent));
+
+    world.insert(parent, Hidden(true));
+
+    assert!(!is_ui_active(&world, parent));
+    assert!(!is_ui_active(&world, child), "隐藏父级必须连带 UI 子树");
+    assert!(
+        world.get::<Active>(parent).is_none_or(|active| active.0),
+        "Hidden 不改作者数据 Active"
+    );
 }
 
 #[test]

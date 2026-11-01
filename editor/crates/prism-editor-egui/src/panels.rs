@@ -584,6 +584,7 @@ enum TreeAction {
     Toggle(usize),
     ToggleExpand(usize),
     ToggleActive(usize),
+    ToggleHidden(usize),
     Delete(usize),
     Duplicate(usize),
     CommitRename(usize, String),
@@ -661,6 +662,20 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
                 }
             });
         }
+        let visibility_changed = !workspace.document().hidden_entities.is_empty() || workspace.isolate;
+        if visibility_changed && ui.button(format!("{} Show All", icons::EYE)).clicked() {
+            workspace.show_all_entities();
+        }
+        let isolate = ui.add_enabled(
+            workspace.isolate || !workspace.selection.is_empty(),
+            egui::Button::new(format!("{} Isolate", icons::TARGET)).selected(workspace.isolate),
+        );
+        if isolate
+            .on_hover_text("Only show the selected entities and their children")
+            .clicked()
+        {
+            workspace.set_isolate(!workspace.isolate);
+        }
     });
     ui.separator();
 
@@ -684,6 +699,9 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
     }
     let expanded = workspace.expanded.clone();
     let rows = workspace.document().doc.visible_rows(&expanded);
+    // #417：可见性是会话级状态，每帧算一次，行循环里只查集合。
+    let hidden_ids: std::collections::HashSet<u32> =
+        workspace.hidden_entity_ids().into_iter().collect();
     // Shift 区间选择按**当前可见行**的顺序走：折叠子树与搜索过滤掉的实体不能混进来。
     let visible_rows: Vec<usize> = rows
         .iter()
@@ -785,8 +803,14 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
                     .rev()
                     .skip(1)
                     .all(|ancestor| doc.entities.get(*ancestor).is_some_and(|e| e.active()));
-                let eye = if active { icons::EYE } else { icons::EYE_SLASH };
-                let response = flat_icon_dimmed(&mut row_ui, eye, active && !ancestor_active);
+                // Unity 式两列：电源 = Active（会停模拟），眼睛 = Scene 可见性
+                // （只影响渲染 / 拾取，不改文档、不停模拟，#417）。
+                let active_icon = icons::POWER;
+                let response = flat_icon_dimmed(
+                    &mut row_ui,
+                    active_icon,
+                    !active || (active && !ancestor_active),
+                );
                 let response = if active && !ancestor_active {
                     response.on_hover_text("Hidden by an inactive parent")
                 } else {
@@ -794,6 +818,25 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
                 };
                 if response.clicked() {
                     action = Some(TreeAction::ToggleActive(index));
+                }
+                let hidden = entity
+                    .id
+                    .is_some_and(|id| hidden_ids.contains(&id));
+                let visibility_icon = if hidden {
+                    icons::EYE_CLOSED
+                } else {
+                    icons::EYE
+                };
+                let visibility = flat_icon_dimmed(&mut row_ui, visibility_icon, hidden);
+                let visibility = if workspace.isolate && hidden {
+                    visibility.on_hover_text("Isolated — exit Isolate to show other objects")
+                } else if hidden {
+                    visibility.on_hover_text("Show in Scene view")
+                } else {
+                    visibility.on_hover_text("Hide in Scene view")
+                };
+                if visibility.clicked() && !(workspace.isolate && hidden) {
+                    action = Some(TreeAction::ToggleHidden(index));
                 }
                 if renaming {
                     if let Some((_, buffer)) = state.rename.as_mut() {
@@ -960,6 +1003,35 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
                 }
 
                 row.context_menu(|ui| {
+                    let hidden_now = hidden;
+                    let visibility_label = if hidden_now {
+                        "Show in Scene View"
+                    } else {
+                        "Hide in Scene View"
+                    };
+                    if ui.button(visibility_label).clicked() {
+                        if workspace.isolate && hidden_now {
+                            workspace.show_all_entities();
+                        } else {
+                            workspace.set_entity_hidden(index, !hidden_now);
+                        }
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            !workspace.selection.is_empty(),
+                            egui::Button::new("Isolate Selection"),
+                        )
+                        .clicked()
+                    {
+                        workspace.set_isolate(true);
+                        ui.close();
+                    }
+                    if ui.button("Show All").clicked() {
+                        workspace.show_all_entities();
+                        ui.close();
+                    }
+                    ui.separator();
                     if ui.button("Rename").clicked() {
                         action = Some(TreeAction::BeginRename(index, name.clone()));
                         ui.close();
@@ -1165,6 +1237,10 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
             TreeAction::ToggleActive(index) => {
                 let active = workspace.document().doc.entities[index].active();
                 workspace.set_active_entity(index, !active);
+            }
+            TreeAction::ToggleHidden(index) => {
+                let hidden = workspace.is_entity_hidden(index);
+                workspace.set_entity_hidden(index, !hidden);
             }
             TreeAction::Delete(index) => {
                 workspace.select(index, false);

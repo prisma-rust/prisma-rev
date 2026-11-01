@@ -2057,7 +2057,13 @@ fn proxies(
     host: Option<&EngineHost>,
 ) -> Vec<(usize, TransformJson, Option<vm::PickBounds>)> {
     let doc = &workspace.document().doc;
+    let hidden: std::collections::HashSet<u32> =
+        workspace.hidden_entity_ids().into_iter().collect();
     (0..doc.entities.len())
+        .filter(|index| {
+            !doc.id_of_index(*index)
+                .is_some_and(|id| hidden.contains(&id))
+        })
         .map(|index| {
             let bounds = sprite_bounds(doc, index, host).or_else(|| {
                 host.and_then(|host| host.mesh_bounds(index))
@@ -2164,6 +2170,17 @@ mod drop_hint_tests {
 mod tests {
     use super::*;
     use egui::{Pos2, Vec2};
+
+    #[test]
+    fn hidden_entities_are_not_pick_proxies() {
+        let mut workspace = Workspace::sample();
+        let before = proxies(&workspace, None).len();
+
+        workspace.set_entity_hidden(1, true); // Cube + Cube/Detail
+
+        let after = proxies(&workspace, None).len();
+        assert_eq!(after, before - 2, "隐藏的父级和子树都不参与点选");
+    }
 
     #[test]
     fn component_icon_filters_are_independent() {

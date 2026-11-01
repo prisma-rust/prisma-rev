@@ -348,6 +348,29 @@ fn a_hidden_child_does_not_hide_its_siblings_or_parent() {
 }
 
 #[test]
+fn scene_visibility_hides_rendering_without_disabling_the_entity() {
+    let mut world = World::new();
+    let entity = world.spawn();
+    world.insert(entity, Active(true));
+    world.insert(entity, Hidden(true));
+
+    active_hierarchy_system(&mut world);
+
+    assert!(
+        world.get::<ActiveInHierarchy>(entity).unwrap().0,
+        "ActiveInHierarchy 必须保持作者语义"
+    );
+    assert!(
+        !is_active_in_hierarchy(&world, entity),
+        "Hidden 只过滤渲染类系统"
+    );
+
+    world.remove::<Hidden>(entity);
+    active_hierarchy_system(&mut world);
+    assert!(is_active_in_hierarchy(&world, entity));
+}
+
+#[test]
 fn active_hierarchy_survives_a_parent_cycle() {
     let mut world = World::new();
     let a = world.spawn();

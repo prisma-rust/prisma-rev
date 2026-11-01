@@ -64,6 +64,14 @@ pub(crate) fn is_ui_active(world: &prism_ecs::World, entity: prism_ecs::Entity) 
         ) {
             return false;
         }
+        // Scene 视图的会话级隐藏（#417）同样要挡住 UI 绘制与命中；运行时没有
+        // 这个组件，所以游戏进程不受编辑器可见性影响。
+        if world
+            .get::<crate::scene::runtime_components::Hidden>(current)
+            .is_some_and(|hidden| hidden.0)
+        {
+            return false;
+        }
         match world.get::<prism_scene::components::Parent>(current) {
             Some(parent) => current = parent.0,
             None => return true,
