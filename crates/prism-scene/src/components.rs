@@ -1966,6 +1966,67 @@ impl Terrain {
 // Audio
 // ---------------------------------------------------------------------------
 
+/// 音频总线 = 分组音量（#508）。
+///
+/// `Master` 乘在**所有**总线上；其余总线各自再乘一层。项目代码可以在设置菜单里
+/// 调 `prism_app::App::set_audio_bus_volume`，不需要重建任何声部。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum AudioBus {
+    Master,
+    Music,
+    #[default]
+    Sfx,
+    Ambient,
+    Voice,
+}
+
+impl AudioBus {
+    pub const ALL: [Self; 5] = [
+        Self::Master,
+        Self::Music,
+        Self::Sfx,
+        Self::Ambient,
+        Self::Voice,
+    ];
+
+    pub fn index(self) -> usize {
+        match self {
+            Self::Master => 0,
+            Self::Music => 1,
+            Self::Sfx => 2,
+            Self::Ambient => 3,
+            Self::Voice => 4,
+        }
+    }
+}
+
+impl ReflectType for AudioBus {
+    fn field_type() -> FieldType {
+        FieldType::U8
+    }
+
+    fn enum_variants() -> Option<&'static [&'static str]> {
+        Some(&["Master", "Music", "Sfx", "Ambient", "Voice"])
+    }
+
+    fn to_value(&self) -> Value {
+        Value::U64(self.index() as u64)
+    }
+
+    fn from_value(value: Value) -> Result<Self, ReflectError> {
+        match value.as_u64()? {
+            0 => Ok(Self::Master),
+            1 => Ok(Self::Music),
+            2 => Ok(Self::Sfx),
+            3 => Ok(Self::Ambient),
+            4 => Ok(Self::Voice),
+            other => Err(ReflectError::BadData(format!(
+                "invalid AudioBus discriminant {other}"
+            ))),
+        }
+    }
+}
+
 /// 音频播放器 = `AudioSource`。
 ///
 /// 只承载**作者态**参数：片段路径 + 播放/衰减设置。真正的解码与混音在宿主层
@@ -1973,8 +2034,9 @@ impl Terrain {
 /// `AudioEngine::play`，与 `MeshRenderer` → `MeshRef` 的分层一致 —— 引擎/场景层
 /// 不持有任何音频句柄。
 ///
-/// 空间化只做**距离衰减**：`spatial_blend = 0` 时按 2D 播放（不衰减），`= 1` 时
-/// 完全按 [`AudioSource::volume_at`] 衰减；声像（左右声道）还没做。
+/// 空间化做**距离衰减 + 等功率声像**：`spatial_blend = 0` 时按 2D 播放（不衰减、
+/// 居中），`= 1` 时完全按 [`AudioSource::volume_at`] 衰减并按听者右向量声像。
+/// 声像在开始播放时烘焙（混音器只有 `set_volume`）。
 #[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
 #[reflect(name = "prism_engine::scene::AudioSource")]
 #[serde(default)]
@@ -1988,6 +2050,8 @@ pub struct AudioSource {
     pub looped: bool,
     /// 场景加载后自动播放；关掉后组件只是「装了个片段」，需要代码/编辑器手动触发。
     pub play_on_awake: bool,
+    /// 音量分组（#508）；`Master` 总线会再乘在所有分组上。
+    pub bus: AudioBus,
     /// 3D 空间化程度：`0.0` = 纯 2D（不衰减），`1.0` = 完全按距离衰减。
     pub spatial_blend: f32,
     /// 开始衰减的近距离（世界单位）。
@@ -2003,6 +2067,7 @@ impl Default for AudioSource {
             volume: 1.0,
             looped: false,
             play_on_awake: true,
+            bus: AudioBus::Sfx,
             spatial_blend: 0.0,
             min_distance: 1.0,
             max_distance: 50.0,
