@@ -309,6 +309,9 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   所有 `.pak`：重建包后自动 `on_pak_changed` → 重载路径清单 → `invalidate_assets`，
   实体下一帧重新解析，不用退出再进游戏（#495）。未设置 / `0` / 空串时完全关：
   不建线程、不 stat 文件（发布版默认如此）。
+- 运行时 `HotReloadWatcher` 用 **mtime + 长度** 判断 `.pak` 是否重建（只看 mtime 会漏掉
+  同一秒内重建、长度变了的包，Android / Termux 的 FUSE 时间戳粒度是 1 秒）；数据层端到端
+  由 `prism-asset` 的 `a_rebuilt_package_refreshes_loaded_assets` 覆盖。
 - 旧 GPU 资源会被真正回收（#495）：`GpuAssetResolver` 按 `(实体, 槽位)` 记账，
   热重载（`generation` 归零）、组件被删、实体销毁、路径改写时把槽位 / 句柄交回
   `GraphRenderer::release_assets`（纹理按 bindless 槽、网格按 `MeshHandle`、材质按
