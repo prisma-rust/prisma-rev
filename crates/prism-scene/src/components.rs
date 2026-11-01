@@ -503,10 +503,90 @@ impl KeyframeAnimation {
     }
 }
 
+/// 折线拐点的连接方式（#604）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum LineJoin {
+    /// 斜接：外角延伸到两条边相交处；超过 `miter_limit` 时退化成
+    /// [`Bevel`](Self::Bevel)，避免尖角拉出很长的刺。
+    #[default]
+    Miter,
+    /// 斜切：两段各自在拐点结束，用三角形补上缺口。
+    Bevel,
+}
+
+impl ReflectType for LineJoin {
+    fn field_type() -> FieldType {
+        FieldType::U8
+    }
+
+    fn enum_variants() -> Option<&'static [&'static str]> {
+        Some(&["Miter", "Bevel"])
+    }
+
+    fn to_value(&self) -> Value {
+        Value::U64(match self {
+            Self::Miter => 0,
+            Self::Bevel => 1,
+        })
+    }
+
+    fn from_value(value: Value) -> Result<Self, ReflectError> {
+        match value.as_u64()? {
+            0 => Ok(Self::Miter),
+            1 => Ok(Self::Bevel),
+            other => Err(ReflectError::BadData(format!(
+                "invalid LineJoin discriminant {other}"
+            ))),
+        }
+    }
+}
+
+/// 折线端点的收尾方式（#604）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum LineCap {
+    /// 平头：线段正好在端点结束。
+    #[default]
+    Butt,
+    /// 方头：沿线段方向多延伸半个线宽。
+    Square,
+    /// 圆头：以端点为圆心的半圆。
+    Round,
+}
+
+impl ReflectType for LineCap {
+    fn field_type() -> FieldType {
+        FieldType::U8
+    }
+
+    fn enum_variants() -> Option<&'static [&'static str]> {
+        Some(&["Butt", "Square", "Round"])
+    }
+
+    fn to_value(&self) -> Value {
+        Value::U64(match self {
+            Self::Butt => 0,
+            Self::Square => 1,
+            Self::Round => 2,
+        })
+    }
+
+    fn from_value(value: Value) -> Result<Self, ReflectError> {
+        match value.as_u64()? {
+            0 => Ok(Self::Butt),
+            1 => Ok(Self::Square),
+            2 => Ok(Self::Round),
+            other => Err(ReflectError::BadData(format!(
+                "invalid LineCap discriminant {other}"
+            ))),
+        }
+    }
+}
+
 /// 2D 折线渲染器 = `LineRenderer`（2D 子集）。
 ///
-/// 点是**世界空间**的（等价 `useWorldSpace = true`），引擎把折线展开成
-/// 面向相机的加宽四边形并入精灵通道，因此排序/混合与精灵完全一致。
+/// 点是**世界空间**的（等价 `useWorldSpace = true`），引擎把折线三角化成
+/// 一条**不重叠**的加宽笔触（拐点 join + 端点 cap）并入精灵通道，因此排序 /
+/// 混合与精灵完全一致，半透明折线也不会在拐点叠加两次（#604）。
 ///
 /// 线的颜色走精灵通道的 `texture == u32::MAX`（纯色）分支，不采样贴图。
 #[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
@@ -523,6 +603,12 @@ pub struct LineRenderer {
     pub sorting_layer: i32,
     /// 同层内顺序。
     pub order_in_layer: i32,
+    /// 拐点连接方式（默认斜接）。
+    pub join: LineJoin,
+    /// 端点收尾方式（默认平头）。
+    pub cap: LineCap,
+    /// 斜接长度上限（相对半宽的倍数）；`Miter` 超过它就退化成斜切。
+    pub miter_limit: f32,
 }
 
 impl Default for LineRenderer {
@@ -533,6 +619,9 @@ impl Default for LineRenderer {
             width: 0.1,
             sorting_layer: 0,
             order_in_layer: 0,
+            join: LineJoin::Miter,
+            cap: LineCap::Butt,
+            miter_limit: 4.0,
         }
     }
 }

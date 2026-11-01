@@ -13,11 +13,14 @@
 //
 // Push constants: SpritePush (64 bytes) = world-view-projection.
 //
-// Per-instance vertex data (one 96-byte record per sprite, instance rate):
-//   loc 0..2 : model matrix columns 0, 1 and 3 (float4 each)
-//   loc 3    : uv rect (u0, v0, u1, v1)
-//   loc 4    : color (linear RGBA, multiplied with the sampled texel)
-//   loc 5    : bindless texture index
+// Per-instance vertex data (one 96-byte record, instance rate):
+//   loc 0..3 : the four world-space quad corners, BL, BR, TR, TL (float3 each)
+//   loc 4    : uv rect (u0, v0, u1, v1)
+//   loc 5    : color (linear RGBA, multiplied with the sampled texel)
+//   loc 6    : bindless texture index
+//
+// Sprites expand their model matrix on the CPU; 2D lines hand over explicit
+// world-space triangles (a triangle is a quad whose last two corners coincide).
 //
 // Compile:
 //   slangc sprites.slang -profile spirv_1_4 -target spirv \
@@ -47,12 +50,13 @@ ConstantBuffer<SpritePush> pc;
 
 struct SpriteVertexIn
 {
-    [[vk::location(0)]] float4 m0;   // model column 0
-    [[vk::location(1)]] float4 m1;   // model column 1
-    [[vk::location(2)]] float4 m3;   // model column 3 (translation)
-    [[vk::location(3)]] float4 uvRect;
-    [[vk::location(4)]] float4 color;
-    [[vk::location(5)]] uint   textureIndex;
+    [[vk::location(0)]] float3 corner0; // bottom-left
+    [[vk::location(1)]] float3 corner1; // bottom-right
+    [[vk::location(2)]] float3 corner2; // top-right
+    [[vk::location(3)]] float3 corner3; // top-left
+    [[vk::location(4)]] float4 uvRect;
+    [[vk::location(5)]] float4 color;
+    [[vk::location(6)]] uint   textureIndex;
 };
 
 struct SpriteVaryings
@@ -63,34 +67,23 @@ struct SpriteVaryings
     uint   textureIndex : TEXCOORD1;
 };
 
-// Unit quad: two triangles, counter-clockwise in a +Y-up world.
-static const float2 QUAD_POS[6] = {
-    float2(-0.5, -0.5),
-    float2( 0.5, -0.5),
-    float2( 0.5,  0.5),
-    float2(-0.5, -0.5),
-    float2( 0.5,  0.5),
-    float2(-0.5,  0.5),
+// Unit quad as two triangles. `QUAD_CORNER` indexes the four corner records;
+// `QUAD_UV` is the matching (u, v) fraction of the sprite rect (texture rows
+// arrive top-to-bottom, so the quad's top edge maps to `v0`).
+static const uint QUAD_CORNER[6] = { 0u, 1u, 2u, 0u, 2u, 3u };
+static const float2 QUAD_UV[6] = {
+    float2(0.0, 1.0), float2(1.0, 1.0), float2(1.0, 0.0),
+    float2(0.0, 1.0), float2(1.0, 0.0), float2(0.0, 0.0),
 };
 
 [shader("vertex")]
 SpriteVaryings vertexMain(SpriteVertexIn in, uint vertexId : SV_VertexID)
 {
-    float2 corner = QUAD_POS[vertexId];
-
-    // The float4s are the model matrix's COLUMNS. Do not build a
-    // `float4x4` from them: Slang's 4-vector constructor fills ROWS, which
-    // transposes the matrix, moves the translation into the w row and makes
-    // the projection divide by a non-unit w (visible as perspective skew).
-    // 2D sprites only need columns 0, 1 and 3 (the z basis is always
-    // (0, 0, 1, 0) and depth is resolved by the CPU sort).
-    float3 world = in.m0.xyz * corner.x + in.m1.xyz * corner.y + in.m3.xyz;
+    float3 corners[4] = { in.corner0, in.corner1, in.corner2, in.corner3 };
+    float3 world = corners[QUAD_CORNER[vertexId]];
     float4 worldPos = float4(world, 1.0);
 
-    // Texture rows arrive top-to-bottom, world +Y points up: map the quad's
-    // top edge to the sprite rect's v0 so images are not flipped.
-    float2 t = float2(corner.x + 0.5, 0.5 - corner.y);
-    float2 uv = lerp(in.uvRect.xy, in.uvRect.zw, t);
+    float2 uv = lerp(in.uvRect.xy, in.uvRect.zw, QUAD_UV[vertexId]);
 
     SpriteVaryings out;
     out.clipPos = mul(pc.viewProj, worldPos);

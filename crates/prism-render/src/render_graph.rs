@@ -428,7 +428,17 @@ pub struct ParticleDrawItem {
 #[derive(Clone, Copy, Debug)]
 pub struct SpriteDrawItem {
     /// World matrix applied to the unit quad (includes size + pivot).
+    ///
+    /// Ignored when [`Self::corners`] is `Some`: line triangles provide their
+    /// world-space vertices explicitly (#604).
     pub model: [[f32; 4]; 4],
+    /// Explicit quad corners in world space, in the order
+    /// `[bottom-left, bottom-right, top-right, top-left]`.
+    ///
+    /// `None` for sprites (the vertex shader expands [`Self::model`]); lines
+    /// use it to draw non-overlapping triangles. A triangle is a quad whose
+    /// last two corners coincide.
+    pub corners: Option<[[f32; 3]; 4]>,
     /// UV rect `(u0, v0, u1, v1)` inside the sprite sheet.
     pub uv_rect: [f32; 4],
     /// Linear RGBA tint multiplied with the sampled texel.

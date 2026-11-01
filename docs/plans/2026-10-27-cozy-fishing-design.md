@@ -142,7 +142,8 @@ pub struct LineRenderer {
 }
 ```
 
-`LineRenderer` 在 CPU 侧展开为面向相机的四边形条带（2D 场景下即 XY 平面上的加宽折线），
+`LineRenderer` 在 CPU 侧三角化为**互不重叠**的笔触（2D 场景下即 XY 平面上的加宽折线，
+支持 miter/bevel 拐点与 butt/square/round 端点；#604），
 并入 `SpritePass` 的实例缓冲（同一 pipeline，白色 1×1 纹理）。避免新增 pass。
 
 ### 3.4 音频

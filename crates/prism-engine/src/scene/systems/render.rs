@@ -160,7 +160,8 @@ pub fn scene_sprite_system(world: &World) -> Vec<prism_render::SpriteDrawItem> {
     sort_draw_items(sprite_entries(world))
 }
 
-/// Collect all 2D line draw items (`LineRenderer`) expanded into quads.
+/// Collect all 2D line draw items (`LineRenderer`) as non-overlapping
+/// triangles (miter/bevel joins, butt/square/round caps — #604).
 pub fn scene_line_system(world: &World) -> Vec<prism_render::SpriteDrawItem> {
     sort_draw_items(line_entries(world))
 }
@@ -238,6 +239,7 @@ fn sprite_entries(world: &World) -> Vec<(SortKey, prism_render::SpriteDrawItem)>
                 key,
                 prism_render::SpriteDrawItem {
                     model: model.to_cols_array_2d(),
+                    corners: None,
                     uv_rect: sprite_uv_rect(sprite, sref.size),
                     color: sprite.color,
                     texture: sref.texture_slot,
@@ -266,30 +268,18 @@ fn line_entries(world: &World) -> Vec<(SortKey, prism_render::SpriteDrawItem)> {
             .get::<LocalToWorld>(entity)
             .map(|t| t.0.w_axis.z)
             .unwrap_or(0.0);
-        let key_base = (line.sorting_layer, line.order_in_layer, z, entity.id());
+        // 同一条折线的所有三角形共用排序键：`sort_by` 是稳定排序，三角形按
+        // 生成顺序绘制，而它们互不重叠，所以内部顺序不影响结果（#604）。
+        let key: SortKey = (line.sorting_layer, line.order_in_layer, z, entity.id());
+        let model = glam::Mat4::IDENTITY.to_cols_array_2d();
 
-        for (index, pair) in line.points.windows(2).enumerate() {
-            let (p0, p1) = (pair[0], pair[1]);
-            let a = glam::Vec2::new(p0[0], p0[1]);
-            let b = glam::Vec2::new(p1[0], p1[1]);
-            let dir = b - a;
-            let length = dir.length();
-            if length <= f32::EPSILON {
-                continue;
-            }
-            // Quad: m0 spans the segment, m1 spans the (doubled) half-width.
-            let normal = glam::Vec2::new(-dir.y, dir.x) / length * width;
-            let mid = (a + b) * 0.5;
-            let model = glam::Mat4::from_cols(
-                glam::Vec4::new(dir.x, dir.y, 0.0, 0.0),
-                glam::Vec4::new(normal.x, normal.y, 0.0, 0.0),
-                glam::Vec4::new(0.0, 0.0, 1.0, 0.0),
-                glam::Vec4::new(mid.x, mid.y, p0[2], 1.0),
-            );
+        for triangle in tessellate_line(&line.points, width, line.join, line.cap, line.miter_limit)
+        {
             out.push((
-                (key_base.0, key_base.1, z, key_base.3 + index as u32),
+                key,
                 prism_render::SpriteDrawItem {
-                    model: model.to_cols_array_2d(),
+                    model,
+                    corners: Some([triangle[0], triangle[1], triangle[2], triangle[2]]),
                     uv_rect: [0.0, 0.0, 1.0, 1.0],
                     color: line.color,
                     texture: SOLID_TEXTURE,
@@ -301,6 +291,162 @@ fn line_entries(world: &World) -> Vec<(SortKey, prism_render::SpriteDrawItem)> {
             ));
         }
     }
+    out
+}
+
+/// 把一条世界空间折线三角化成**互不重叠**的笔触（#604）。
+///
+/// 每段是一个四边形（两个三角形）。拐点处：
+///
+/// - 内侧两段共用同一个顶点（两条内侧偏移线的交点），所以内侧既没有缺口
+///   也不会叠加；
+/// - `Miter` 外侧也共用斜接点；超过 `miter_limit`（相对半宽）时退化成
+///   `Bevel`，外侧各段停在自己的偏移点，再用一个三角形补角。
+///
+/// 这样半透明折线的每一块像素只被混合一次。`cap` 只影响两个端点：
+/// `Butt` / `Square` / `Round`（8 段扇形）。
+///
+/// 输入里的连续重复点会先被去掉——零长度段没有方向，也画不出面积。
+pub(crate) fn tessellate_line(
+    points: &[[f32; 3]],
+    width: f32,
+    join: LineJoin,
+    cap: LineCap,
+    miter_limit: f32,
+) -> Vec<[[f32; 3]; 3]> {
+    use glam::Vec2;
+
+    let mut pts: Vec<(Vec2, f32)> = Vec::with_capacity(points.len());
+    for point in points {
+        let v = Vec2::new(point[0], point[1]);
+        if pts
+            .last()
+            .map_or(true, |(last, _)| last.distance_squared(v) > 1e-10)
+        {
+            pts.push((v, point[2]));
+        }
+    }
+    if pts.len() < 2 {
+        return Vec::new();
+    }
+
+    let half = (width * 0.5).max(1e-5);
+    let miter_limit = if miter_limit.is_finite() && miter_limit >= 1.0 {
+        miter_limit
+    } else {
+        4.0
+    };
+    let n = pts.len();
+    let dirs: Vec<Vec2> = pts
+        .windows(2)
+        .map(|pair| (pair[1].0 - pair[0].0).normalize())
+        .collect();
+    // 左法线，长度 = 半个线宽。
+    let normals: Vec<Vec2> = dirs
+        .iter()
+        .map(|dir| Vec2::new(-dir.y, dir.x) * half)
+        .collect();
+
+    // `start[i]` = 第 i 段起点两侧的 (左, 右)；`end[i]` = 第 i 段终点两侧。
+    let mut start: Vec<(Vec2, Vec2)> = vec![(Vec2::ZERO, Vec2::ZERO); n];
+    let mut end: Vec<(Vec2, Vec2)> = vec![(Vec2::ZERO, Vec2::ZERO); n];
+    let mut bevels: Vec<(Vec2, Vec2, Vec2)> = Vec::new();
+
+    // 端点：方头沿线段方向外扩半个线宽，圆头由后面的扇形补上。
+    let shift = |dir: Vec2| match cap {
+        LineCap::Square => dir * half,
+        _ => Vec2::ZERO,
+    };
+    start[0] = (
+        pts[0].0 + normals[0] - shift(dirs[0]),
+        pts[0].0 - normals[0] - shift(dirs[0]),
+    );
+    end[n - 2] = (
+        pts[n - 1].0 + normals[n - 2] + shift(dirs[n - 2]),
+        pts[n - 1].0 - normals[n - 2] + shift(dirs[n - 2]),
+    );
+
+    for i in 1..n - 1 {
+        let point = pts[i].0;
+        let (n0, n1) = (normals[i - 1], normals[i]);
+        let cross = dirs[i - 1].perp_dot(dirs[i]);
+        // `n` 是左法线：右转（cross < 0）时外侧在左边。
+        let outer_sign = if cross < 0.0 { 1.0 } else { -1.0 };
+        let sum = n0.normalize_or_zero() + n1.normalize_or_zero();
+        // 折返接近 180° 时两条偏移线几乎平行，斜接点跑到无穷远。
+        let cos_half = (sum * 0.5).length();
+        let bisector = sum.normalize_or_zero();
+        let miter = if cos_half > 1e-3 && bisector != Vec2::ZERO {
+            half / cos_half
+        } else {
+            f32::INFINITY
+        };
+
+        if join == LineJoin::Miter && miter <= half * miter_limit {
+            let offset = bisector * miter * outer_sign;
+            start[i] = (point + offset, point - offset);
+            end[i - 1] = start[i];
+            continue;
+        }
+
+        // 斜切：内侧共用斜接点，外侧各段停在自己的偏移点。
+        let inner = point - bisector * miter * outer_sign;
+        let outer_prev = point + n0 * outer_sign;
+        let outer_next = point + n1 * outer_sign;
+        if outer_sign > 0.0 {
+            end[i - 1] = (outer_prev, inner);
+            start[i] = (outer_next, inner);
+        } else {
+            end[i - 1] = (inner, outer_prev);
+            start[i] = (inner, outer_next);
+        }
+        bevels.push((point, outer_prev, outer_next));
+    }
+
+    let z_at = |index: usize| pts[index].1;
+    let mut out: Vec<[[f32; 3]; 3]> = Vec::new();
+    let point3 = |v: Vec2, z: f32| [v.x, v.y, z];
+
+    for index in 0..n - 1 {
+        let (left0, right0) = start[index];
+        let (left1, right1) = end[index];
+        let z = z_at(index);
+        out.push([point3(left0, z), point3(right0, z), point3(right1, z)]);
+        out.push([point3(left0, z), point3(right1, z), point3(left1, z)]);
+    }
+
+    for (point, outer_prev, outer_next) in bevels {
+        let z = z_at(0);
+        out.push([
+            point3(point, z),
+            point3(outer_prev, z),
+            point3(outer_next, z),
+        ]);
+    }
+
+    if cap == LineCap::Round {
+        const CAP_SEGMENTS: usize = 8;
+        let rotate = |v: Vec2, angle: f32| {
+            let (sin, cos) = angle.sin_cos();
+            Vec2::new(v.x * cos - v.y * sin, v.x * sin + v.y * cos)
+        };
+        // 起点向 -dir 扫、终点向 +dir 扫：+90° 从 n 转到 -dir，-90° 转到 +dir。
+        for (index, sign) in [(0usize, 1.0f32), (n - 1, -1.0)] {
+            let point = pts[index].0;
+            let z = z_at(index);
+            let normal = normals[index.min(n - 2)];
+            for step in 0..CAP_SEGMENTS {
+                let a0 = std::f32::consts::PI * step as f32 / CAP_SEGMENTS as f32;
+                let a1 = std::f32::consts::PI * (step + 1) as f32 / CAP_SEGMENTS as f32;
+                out.push([
+                    point3(point, z),
+                    point3(point + rotate(normal, a0 * sign), z),
+                    point3(point + rotate(normal, a1 * sign), z),
+                ]);
+            }
+        }
+    }
+
     out
 }
 
