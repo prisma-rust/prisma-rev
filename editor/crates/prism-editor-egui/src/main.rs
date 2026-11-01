@@ -19,6 +19,7 @@ mod palette;
 mod panels;
 mod project_module;
 mod screenshot;
+mod selection_history;
 mod theme;
 mod ui_tree;
 mod viewport;
