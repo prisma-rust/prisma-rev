@@ -45,6 +45,22 @@ pub struct SpriteRef {
     pub generation: u32,
 }
 
+/// GPU texture reference for a 2D [`Tilemap`](prism_scene::components::Tilemap) tileset.
+///
+/// Same role as [`SpriteRef`]: the scene stores `tileset_path`, the resolver uploads
+/// it and writes the bindless slot here (#529).
+#[derive(Debug, Clone, Copy)]
+pub struct TilemapRef {
+    /// Stable asset id (hot-reload / debugging).
+    pub asset_id: SceneAssetId,
+    /// Bindless SRV slot of the tileset texture.
+    pub texture_slot: u32,
+    /// Pixel size of the uploaded tileset.
+    pub size: [u32; 2],
+    /// `0` = not resolved yet; bumped on hot-reload.
+    pub generation: u32,
+}
+
 /// `.scene.json` v3+ 里每个实体的稳定 id。
 ///
 /// ECS [`Entity`](prism_ecs::Entity) 句柄每次加载都会重新分配，跨会话（存档恢复、

@@ -18,3 +18,4 @@ pub mod particles;
 pub mod particles2d;
 pub mod render;
 pub mod terrain;
+pub mod tilemap;

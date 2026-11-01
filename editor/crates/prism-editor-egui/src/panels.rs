@@ -248,6 +248,8 @@ pub struct UiState {
     pub history_latest_first: bool,
     /// 视口渲染分辨率倍率（高 DPI 屏上可降到 0.5 省 GPU）。
     pub viewport_scale: f32,
+    /// 瓦片地图格子编辑器的调色板大小（左键循环 `0..=palette`，#529）。
+    pub tilemap_palette: u32,
     pub log_levels: Vec<LogLevel>,
     pub log_sources: Vec<LogSource>,
     pub log_search: String,
@@ -487,6 +489,7 @@ impl UiState {
             asset_folder: "assets".to_string(),
             asset_history: vec!["assets".to_string()],
             asset_history_pos: 0,
+            tilemap_palette: 8,
             ..Default::default()
         }
     }
@@ -1568,6 +1571,163 @@ fn transform_rows(
     let _ = state;
 }
 
+/// 瓦片地图组件名（`prism-scene` 的反射名）。
+const TILEMAP_COMPONENT: &str = "prism_engine::scene::Tilemap";
+
+/// 左键循环的下一个瓦片索引：`0 → 1 → … → palette → 0`。
+fn next_tile(current: u32, palette: u32) -> u32 {
+    let palette = palette.max(1);
+    if current >= palette {
+        0
+    } else {
+        current + 1
+    }
+}
+
+fn tilemap_tiles(value: &serde_json::Value) -> Vec<u32> {
+    value
+        .get("tiles")
+        .and_then(|tiles| tiles.as_array())
+        .map(|tiles| {
+            tiles
+                .iter()
+                .filter_map(|tile| tile.as_u64())
+                .map(|tile| tile as u32)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn tilemap_columns(value: &serde_json::Value) -> usize {
+    value
+        .get("columns")
+        .and_then(|columns| columns.as_u64())
+        .unwrap_or(0) as usize
+}
+
+fn write_tiles(workspace: &mut Workspace, entity_id: u32, tiles: &[u32]) {
+    workspace.set_field(
+        entity_id,
+        TILEMAP_COMPONENT,
+        "tiles",
+        serde_json::json!(tiles),
+    );
+}
+
+/// 瓦片地图网格编辑器（#529）。
+///
+/// Phase 1 是「单层 + 数值索引」：`Palette` 决定左键循环范围，右键清空单格。
+/// 调色板预览 / 刷子 / 矩形填充 / 规则瓦片属于 Phase 2，这里不做。
+fn tilemap_editor(
+    ui: &mut Ui,
+    workspace: &mut Workspace,
+    state: &mut UiState,
+    entity_id: u32,
+    value: &serde_json::Value,
+) {
+    let mut tiles = tilemap_tiles(value);
+    let authored_columns = tilemap_columns(value);
+    let columns = if authored_columns > 0 {
+        authored_columns
+    } else {
+        tiles.len().max(1)
+    };
+    let rows = tiles.len().div_ceil(columns.max(1));
+
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Tilemap").strong().size(12.0));
+        ui.label(
+            RichText::new(format!("{columns} x {rows}"))
+                .size(10.0)
+                .weak(),
+        );
+        if value
+            .get("tileset_path")
+            .and_then(|path| path.as_str())
+            .is_some_and(|path| path.is_empty())
+        {
+            ui.label(
+                RichText::new("no tileset")
+                    .size(10.0)
+                    .color(Color32::from_rgb(226, 168, 64)),
+            )
+            .on_hover_text("Set tileset_path before tiles can be rendered");
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Columns").size(10.5));
+        let mut edited_columns = columns as u32;
+        if ui
+            .add(egui::DragValue::new(&mut edited_columns).range(1..=256))
+            .on_hover_text("Re-flows the same tiles into this many columns")
+            .changed()
+        {
+            workspace.set_field(
+                entity_id,
+                TILEMAP_COMPONENT,
+                "columns",
+                serde_json::json!(edited_columns),
+            );
+        }
+
+        ui.label(RichText::new("Rows").size(10.5));
+        let mut edited_rows = rows as u32;
+        if ui
+            .add(egui::DragValue::new(&mut edited_rows).range(1..=256))
+            .on_hover_text("Pads with empty cells or drops the tail")
+            .changed()
+        {
+            tiles.resize(edited_rows as usize * columns.max(1), 0);
+            write_tiles(workspace, entity_id, &tiles);
+        }
+
+        ui.separator();
+        ui.label(RichText::new("Palette").size(10.5))
+            .on_hover_text("Left click cycles 0..=Palette, right click clears one cell");
+        ui.add(egui::DragValue::new(&mut state.tilemap_palette).range(1..=64));
+        if ui.small_button("Clear").clicked() {
+            for tile in &mut tiles {
+                *tile = 0;
+            }
+            write_tiles(workspace, entity_id, &tiles);
+        }
+    });
+
+    let side = 18.0;
+    egui::ScrollArea::vertical()
+        .id_salt("tilemap-grid")
+        .max_height(240.0)
+        .show(ui, |ui| {
+            for row in 0..rows {
+                ui.horizontal(|ui| {
+                    for column in 0..columns {
+                        let index = row * columns + column;
+                        let Some(current) = tiles.get(index).copied() else {
+                            continue;
+                        };
+                        let label = if current == 0 {
+                            "\u{b7}".to_string()
+                        } else {
+                            current.to_string()
+                        };
+                        let response = ui.add_sized(
+                            [side, side],
+                            egui::Button::new(RichText::new(label).size(10.0)),
+                        );
+                        if response.clicked_by(egui::PointerButton::Secondary) {
+                            tiles[index] = 0;
+                            write_tiles(workspace, entity_id, &tiles);
+                        } else if response.clicked() {
+                            tiles[index] = next_tile(current, state.tilemap_palette);
+                            write_tiles(workspace, entity_id, &tiles);
+                        }
+                    }
+                });
+            }
+        });
+}
+
 fn inspector_single(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState, index: usize) {
     if index >= workspace.document().doc.entities.len() {
         workspace.clear_selection();
@@ -1748,6 +1908,15 @@ fn inspector_single(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState,
         }
     });
     ui.separator();
+
+    // ---- 瓦片地图网格（#529）----
+    if let Some(tilemap) = workspace.document().doc.entities[index]
+        .component(TILEMAP_COMPONENT)
+        .cloned()
+    {
+        tilemap_editor(ui, workspace, state, entity_id, &tilemap);
+        ui.separator();
+    }
 
     // ---- 组件 ----
     ui.horizontal(|ui| {
@@ -4873,13 +5042,57 @@ mod window_smoke_tests {
     use super::*;
 
     fn run_frame(mut draw: impl FnMut(&mut egui::Ui, &mut Workspace, &mut UiState)) {
+        run_frame_with(
+            Workspace::sample(),
+            UiState::new(),
+            |ui, workspace, state| draw(ui, workspace, state),
+        );
+    }
+
+    fn run_frame_with(
+        mut workspace: Workspace,
+        mut state: UiState,
+        mut draw: impl FnMut(&mut egui::Ui, &mut Workspace, &mut UiState),
+    ) {
         let ctx = egui::Context::default();
-        let mut workspace = Workspace::sample();
-        let mut state = UiState::new();
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 draw(ui, &mut workspace, &mut state);
             });
+        });
+    }
+
+    #[test]
+    fn tilemap_cells_cycle_through_the_palette() {
+        // #529：左键 0 → 1 → … → palette → 0，右键清零由 UI 直接写 0。
+        assert_eq!(next_tile(0, 4), 1);
+        assert_eq!(next_tile(3, 4), 4);
+        assert_eq!(next_tile(4, 4), 0);
+        assert_eq!(next_tile(9, 4), 0, "越界的旧值也回到空");
+        assert_eq!(next_tile(0, 0), 1, "palette 至少为 1");
+
+        let value = serde_json::json!({ "columns": 3, "tiles": [0, 2] });
+        assert_eq!(tilemap_columns(&value), 3);
+        assert_eq!(tilemap_tiles(&value), vec![0, 2]);
+        assert!(tilemap_tiles(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn a_tilemap_entity_renders_the_grid_editor() {
+        let mut workspace = Workspace::sample();
+        let index = workspace.document_mut().doc.add_named_child(None, "Ground");
+        let id = workspace.document().doc.id_of_index(index).unwrap();
+        workspace.document_mut().doc.entities[index]
+            .components
+            .insert(
+                TILEMAP_COMPONENT.to_string(),
+                serde_json::json!({ "columns": 2, "tiles": [1, 0, 2, 0] }),
+            );
+        workspace.selection = vec![index];
+        assert_eq!(workspace.document().doc.id_of_index(index), Some(id));
+
+        run_frame_with(workspace, UiState::new(), |ui, workspace, state| {
+            inspector(ui, workspace, state)
         });
     }
 

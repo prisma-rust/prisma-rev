@@ -4,7 +4,7 @@
 //! |-----------|------------|
 //! | 层次结构  | `Parent`, `Child` |
 //! | 变换     | `LocalTransform`, `LocalToWorld`, `TransformDirty` |
-//! | 渲染     | `MeshRenderer`, `SpriteRenderer`, `Active` |
+//! | 渲染     | `MeshRenderer`, `SpriteRenderer`, `Tilemap`, `Active` |
 //! | 动画     | `SpriteAnimation`（2D 帧）, `KeyframeAnimation`（曲线） |
 //! | 粒子     | `ParticleSystem`（世界空间 3D CPU 粒子）、`ParticleEmitter2D`（世界 XY 平面 2D 粒子） |
 //! | 光源 | `Light`（形状）, `DirectionalLight`, `PointLight`, `SpotLight`（旧） |
@@ -382,6 +382,127 @@ impl SpriteRenderer {
         };
         let frame = self.frame_size_or(texture_size);
         [frame[0] as f32 / ppu, frame[1] as f32 / ppu]
+    }
+}
+
+/// 2D 瓦片地图 = `Tilemap`（#529）。
+///
+/// 一个实体承载整张网格：引擎每帧把**非空**格子展开成 `SpriteDrawItem`
+/// （共用 `SpritePass` 的实例缓冲与 bindless 纹理表），所以几百格仍然只有
+/// 一次 draw call，而不是几百个实体各带一份 `SpriteRenderer`。
+///
+/// 约定：
+/// - `tiles` 是**行优先**的扁平数组，`0` = 空格（与 Tiled 的 GID 0 一致），
+///   `n > 0` = tileset 里第 `n - 1` 块（从左到右、从上到下）；
+/// - `columns == 0` 表示所有瓦片排成一行；
+/// - 第 0 行在**上方**（世界 `+Y` 方向是屏幕上方），所以行号越大世界 `y` 越小；
+/// - 网格原点 = 实体世界位置（父级变换、旋转、缩放都会生效）。
+///
+/// 与 `SpriteRenderer` 共用图集：`tile_size` 是 tileset 里单块瓦片的像素尺寸，
+/// 实际列数由「纹理宽度 / `tile_size.x`」在运行时推导（和精灵表一致）。
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
+#[reflect(name = "prism_engine::scene::Tilemap")]
+#[serde(default)]
+pub struct Tilemap {
+    /// tileset 贴图路径；空 = 不绘制。
+    pub tileset_path: String,
+    /// tileset 里单块瓦片的像素尺寸；`[0, 0]` = 整张图一块。
+    pub tile_size: [u32; 2],
+    /// 每格的世界尺寸。
+    pub cell_size: [f32; 2],
+    /// 网格列数；`0` = 所有瓦片排成一行。
+    pub columns: u32,
+    /// 行优先的瓦片索引；`0` = 空格，`n > 0` = 第 `n - 1` 块。
+    pub tiles: Vec<u32>,
+    /// 顶点色乘算（线性 RGBA）。
+    pub color: [f32; 4],
+    /// 排序层，数值越大越靠前（与 `SpriteRenderer` 同一套排序键）。
+    pub sorting_layer: i32,
+    /// 同层内顺序。
+    pub order_in_layer: i32,
+}
+
+impl Default for Tilemap {
+    fn default() -> Self {
+        Self {
+            tileset_path: String::new(),
+            tile_size: [16, 16],
+            cell_size: [1.0, 1.0],
+            columns: 0,
+            tiles: Vec::new(),
+            color: [1.0, 1.0, 1.0, 1.0],
+            sorting_layer: 0,
+            order_in_layer: 0,
+        }
+    }
+}
+
+impl Tilemap {
+    /// 是否有可绘制的内容。
+    pub fn has_tiles(&self) -> bool {
+        !self.tileset_path.is_empty()
+            && self.tiles.iter().any(|tile| *tile != 0)
+            && self.cell_size[0].is_finite()
+            && self.cell_size[0] > 0.0
+            && self.cell_size[1].is_finite()
+            && self.cell_size[1] > 0.0
+    }
+
+    /// 网格规模 `(columns, rows)`；空 `tiles` 时返回 `(1, 0)`。
+    pub fn grid(&self) -> (u32, u32) {
+        let columns = if self.columns > 0 {
+            self.columns as usize
+        } else {
+            self.tiles.len().max(1)
+        };
+        let rows = self.tiles.len().div_ceil(columns.max(1));
+        (columns.max(1) as u32, rows as u32)
+    }
+
+    /// 单块瓦片在 tileset 里的像素尺寸（`tile_size` 非法时退化为整张纹理）。
+    pub fn tile_size_or(&self, texture_size: [u32; 2]) -> [u32; 2] {
+        if self.tile_size[0] > 0 && self.tile_size[1] > 0 {
+            self.tile_size
+        } else {
+            [texture_size[0].max(1), texture_size[1].max(1)]
+        }
+    }
+
+    /// tileset 的列数 / 行数。
+    pub fn tileset_grid(&self, texture_size: [u32; 2]) -> (u32, u32) {
+        let tile = self.tile_size_or(texture_size);
+        (
+            (texture_size[0] / tile[0].max(1)).max(1),
+            (texture_size[1] / tile[1].max(1)).max(1),
+        )
+    }
+
+    /// 第 `index`（0 起）块瓦片在 tileset 里的 UV 矩形 `[u0, v0, u1, v1]`。
+    pub fn tile_uv(&self, index: u32, texture_size: [u32; 2]) -> [f32; 4] {
+        let tile = self.tile_size_or(texture_size);
+        let (columns, rows) = self.tileset_grid(texture_size);
+        let slot = index.min(columns.saturating_mul(rows).saturating_sub(1));
+        let column = slot % columns;
+        let row = slot / columns;
+        let (width, height) = (texture_size[0].max(1) as f32, texture_size[1].max(1) as f32);
+        let (tile_w, tile_h) = (tile[0].max(1) as f32, tile[1].max(1) as f32);
+        let u0 = column as f32 * tile_w / width;
+        let v0 = row as f32 * tile_h / height;
+        [
+            u0,
+            v0,
+            ((column as f32 + 1.0) * tile_w / width).min(1.0),
+            ((row as f32 + 1.0) * tile_h / height).min(1.0),
+        ]
+    }
+
+    /// 第 `row / column` 格中心的局部坐标（左下角为原点、`+Y` 向上）。
+    pub fn cell_center(&self, column: u32, row: u32, rows: u32) -> [f32; 2] {
+        let (cell_w, cell_h) = (self.cell_size[0], self.cell_size[1]);
+        [
+            (column as f32 + 0.5) * cell_w,
+            (rows as f32 - row as f32 - 0.5) * cell_h,
+        ]
     }
 }
 
