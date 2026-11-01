@@ -515,10 +515,27 @@ fn gltf_import_bakes_every_node_and_primitive_into_one_mesh() {
         ],
         "meshes": [{
             "primitives": [
-                { "attributes": { "POSITION": 0 }, "indices": 1 },
-                { "attributes": { "POSITION": 2 }, "indices": 3 }
+                { "attributes": { "POSITION": 0 }, "indices": 1, "material": 0 },
+                { "attributes": { "POSITION": 2 }, "indices": 3, "material": 1 }
             ]
         }],
+        "materials": [
+            {
+                "name": "Red",
+                "pbrMetallicRoughness": {
+                    "baseColorFactor": [1.0, 0.0, 0.0, 1.0],
+                    "metallicFactor": 0.1,
+                    "roughnessFactor": 0.8
+                }
+            },
+            {
+                "name": "Blue",
+                "pbrMetallicRoughness": {
+                    "baseColorFactor": [0.0, 0.0, 1.0, 1.0]
+                },
+                "doubleSided": true
+            }
+        ],
         "accessors": [
             accessor(0, 5126, 3, "VEC3"),
             accessor(1, 5123, 3, "SCALAR"),
@@ -542,6 +559,23 @@ fn gltf_import_bakes_every_node_and_primitive_into_one_mesh() {
     let meta = result.metadata.unwrap();
     assert_eq!(meta["primitive_count"], 4);
     assert_eq!(meta["node_count"], 2);
+    // 每个 primitive 的 index range + 材质都要留下（#520）。
+    assert_eq!(meta["submesh_count"], 4);
+    assert_eq!(meta["submeshes"][0]["index_start"], 0);
+    assert_eq!(meta["submeshes"][0]["index_count"], 3);
+    assert_eq!(meta["submeshes"][0]["material_index"], 0);
+    assert_eq!(meta["submeshes"][0]["material"], "Red");
+    assert_eq!(meta["submeshes"][1]["index_start"], 3);
+    assert_eq!(meta["submeshes"][1]["material_index"], 1);
+    assert_eq!(meta["submeshes"][1]["material"], "Blue");
+    assert_eq!(meta["submeshes"][2]["index_start"], 6);
+    assert_eq!(meta["material_count"], 2);
+    assert_eq!(meta["materials"][0]["name"], "Red");
+    assert_eq!(meta["materials"][0]["base_color"][0], 1.0);
+    assert!((meta["materials"][0]["metallic"].as_f64().unwrap() - 0.1).abs() < 1e-6);
+    assert!((meta["materials"][0]["roughness"].as_f64().unwrap() - 0.8).abs() < 1e-6);
+    assert_eq!(meta["materials"][1]["double_sided"], true);
+    assert_eq!(meta["materials"][1]["alpha_mode"], "Opaque");
 
     // 第一个节点的顶点被平移了 +5，第二个节点在 z=7。
     let first = rmxi_position(&result.output_data, 0);
@@ -550,6 +584,70 @@ fn gltf_import_bakes_every_node_and_primitive_into_one_mesh() {
     let second_node = rmxi_position(&result.output_data, 6);
     assert!((second_node[0]).abs() < 1e-5, "got {second_node:?}");
     assert!((second_node[2] - 7.0).abs() < 1e-5, "got {second_node:?}");
+}
+
+fn one_pixel_png() -> Vec<u8> {
+    use image::ImageEncoder as _;
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(&[255, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
+        .unwrap();
+    png
+}
+
+#[test]
+fn gltf_import_records_image_metadata_and_material_texture_slots() {
+    let (positions, indices) = triangle_bytes(1.0);
+    let png = one_pixel_png();
+    let mut bin = Vec::new();
+    bin.extend_from_slice(&positions); // 0..36
+    let idx_offset = bin.len();
+    bin.extend_from_slice(&indices); // 36..42
+    let pad = (4 - (bin.len() % 4)) % 4;
+    bin.extend(std::iter::repeat_n(0u8, pad));
+    let image_offset = bin.len();
+    bin.extend_from_slice(&png);
+
+    let json = serde_json::json!({
+        "asset": { "version": "2.0" },
+        "scene": 0,
+        "scenes": [{ "nodes": [0] }],
+        "nodes": [{ "mesh": 0 }],
+        "images": [{ "bufferView": 2, "mimeType": "image/png", "name": "red" }],
+        "textures": [{ "source": 0 }],
+        "materials": [{
+            "name": "Textured",
+            "pbrMetallicRoughness": {
+                "baseColorFactor": [1.0, 1.0, 1.0, 1.0],
+                "baseColorTexture": { "index": 0 }
+            }
+        }],
+        "meshes": [{
+            "primitives": [
+                { "attributes": { "POSITION": 0 }, "indices": 1, "material": 0 }
+            ]
+        }],
+        "accessors": [
+            accessor(0, 5126, 3, "VEC3"),
+            accessor(1, 5123, 3, "SCALAR")
+        ],
+        "bufferViews": [
+            { "buffer": 0, "byteOffset": 0, "byteLength": 36 },
+            { "buffer": 0, "byteOffset": idx_offset, "byteLength": 6 },
+            { "buffer": 0, "byteOffset": image_offset, "byteLength": png.len() }
+        ],
+        "buffers": [{ "byteLength": bin.len() }]
+    });
+
+    let result = import_bytes("test_material_image.glb", pack_glb(json, &bin));
+    let meta = result.metadata.unwrap();
+    assert_eq!(meta["images"][0]["name"], "red");
+    assert_eq!(meta["images"][0]["mime_type"], "image/png");
+    assert_eq!(meta["images"][0]["width"], 1);
+    assert_eq!(meta["images"][0]["height"], 1);
+    assert_eq!(meta["images"][0]["source_bytes"], png.len());
+    assert_eq!(meta["materials"][0]["base_color_texture"], 0);
+    assert_eq!(meta["submeshes"][0]["material"], "Textured");
 }
 
 #[test]
