@@ -297,8 +297,11 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   所有 `.pak`：重建包后自动 `on_pak_changed` → 重载路径清单 → `invalidate_assets`，
   实体下一帧重新解析，不用退出再进游戏（#495）。未设置 / `0` / 空串时完全关：
   不建线程、不 stat 文件（发布版默认如此）。
-- 已知代价：渲染器还没有按句柄回收的接口，被替换的旧纹理 / 网格槽会一直占着，
-  所以只适合开发期反复迭代；松散资产（未进包的文件）仍然需要重新 cook。
+- 旧 GPU 资源会被真正回收（#495）：`GpuAssetResolver` 按 `(实体, 槽位)` 记账，
+  热重载（`generation` 归零）、组件被删、实体销毁、路径改写时把槽位 / 句柄交回
+  `GraphRenderer::release_assets`（纹理按 bindless 槽、网格按 `MeshHandle`、材质按
+  SSBO 槽反查后销毁），所以反复重载不会持续吃显存。
+- 仍未覆盖：松散资产（未进包的文件）仍然需要重新 cook 才会进包。
   - 缩放是**最近邻**，像素画放大不糊；内容是窗口那一帧，不重渲染。
 - 实现方式：`execute` 在图像回到 `PRESENT_SRC_KHR` 后插入
   `vkCmdCopyImageToBuffer`（`PRESENT_SRC → TRANSFER_SRC → PRESENT_SRC`），

@@ -25,6 +25,27 @@ pub struct AssetResolveRequest {
     pub texture: Option<TextureUploadInput>,
 }
 
+/// 一 decided 释放的 GPU 资源（纯数据，Send）。
+///
+/// 主线程不知道渲染器的内部句柄，只知道组件里存的槽位 / 句柄值，所以回传的
+/// 释放请求也用同一组值；渲染线程按值反查并销毁（#495）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AssetRelease {
+    /// bindless SRV 槽位。
+    pub texture_slot: Option<u32>,
+    /// 网格句柄。
+    pub mesh_handle: Option<MeshHandle>,
+    /// 材质 SSBO 槽位。
+    pub material_slot: Option<u32>,
+}
+
+impl AssetRelease {
+    /// 是否包含任何需要释放的资源。
+    pub fn is_empty(&self) -> bool {
+        self.texture_slot.is_none() && self.mesh_handle.is_none() && self.material_slot.is_none()
+    }
+}
+
 /// 渲染线程完成上传后回传的句柄（纯数据，Send）。
 pub struct AssetResolveResult {
     pub mesh_handle: Option<MeshHandle>,

@@ -1194,6 +1194,14 @@ impl App {
             shared.enqueue_asset_requests(reqs);
         }
 
+        // 失效的 GPU 资源（实体销毁 / 热重载 / 路径改写）在渲染线程真正释放（#495）。
+        let releases = self.asset_resolver.take_releases();
+        if !releases.is_empty() {
+            shared.send_renderer_message(Box::new(move |renderer| {
+                renderer.release_assets(&releases);
+            }));
+        }
+
         // GPU 段结果写回：渲染线程回传句柄，主线程写入组件。
         let results = shared.take_asset_results();
         if !results.is_empty() {

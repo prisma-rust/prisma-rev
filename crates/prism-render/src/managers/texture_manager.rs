@@ -522,6 +522,24 @@ impl RenderTextureManager {
         }
     }
 
+    /// 按 **bindless SRV 槽位** 释放（#495 热重载 / 实体销毁）。
+    ///
+    /// 引擎侧组件只存槽位（`SpriteRef.texture_slot` 等），拿不到管理器的
+    /// `AssetTextureHandle`；这里反查一次再走 `unregister`，保证图像 / 内存 /
+    /// 视图与槽位一起回收，而不是留在显存里。
+    pub fn unregister_srv(&mut self, srv: u32, device: &ash::Device) -> bool {
+        let Some(handle) = self
+            .textures
+            .iter()
+            .find(|(_, tex)| tex.srv.0 == srv)
+            .map(|(handle, _)| handle)
+        else {
+            return false;
+        };
+        self.unregister(handle, device);
+        true
+    }
+
     /// 释放 every entry (GPU image/memory/view + bindless 槽 The
     /// underlying bindless 表 is dropped when this 管理器 is dropped,
     /// which destroys the 描述符 池 集合 布局 and 4 samplers.

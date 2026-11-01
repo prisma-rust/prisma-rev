@@ -24,7 +24,7 @@ use prism_asset::formats::{
 use prism_asset::runtime::{MaterialAsset, MeshAsset, ResourceManager, TextureAsset};
 use prism_ecs::Entity;
 use prism_ecs::World;
-use prism_render::asset_bridge::{AssetResolveRequest, MaterialResolveData};
+use prism_render::asset_bridge::{AssetRelease, AssetResolveRequest, MaterialResolveData};
 use prism_render::managers::{MeshUploadInput, TextureFormat, TextureUploadInput};
 
 use crate::scene::components::{
@@ -111,6 +111,17 @@ pub struct GpuAssetResolver {
     fonts_loaded: HashSet<String>,
     /// 读过但失败的字体路径：不再每帧重试（与 [`Self::failed`] 同理）。
     fonts_failed: HashSet<String>,
+    /// 已经写到组件里的 GPU 槽位 / 句柄，按 `(实体, 槽位)` 记账（#495）。
+    ///
+    /// 组件被销毁、路径被改写、`generation` 归零（热重载）时据此回收显存；
+    /// 以前这些资源只会被新上传覆盖，旧图像 / 网格永远留在 GPU 上。
+    resolved: HashMap<(Entity, AssetSlot), AssetRelease>,
+    /// 本实体的贴图请求属于哪个槽位（`Sprite` / `Tileset` / `UiImage`）。
+    ///
+    /// 结果回传时只有一个 `texture_slot`，必须知道它对应哪个组件才能记账。
+    pending_texture_slot: HashMap<Entity, AssetSlot>,
+    /// 待宿主转发给渲染器的释放请求。
+    releases: Vec<AssetRelease>,
     /// 已投递、但句柄还没回写的网格局部包围盒（`entity → AABB`）。
     ///
     /// CPU 段已经在手里有顶点位置，所以包围盒在上传请求发出前就算好；句柄回来
@@ -152,6 +163,9 @@ impl GpuAssetResolver {
             ui_image_paths: HashMap::new(),
             fonts_loaded: HashSet::new(),
             fonts_failed: HashSet::new(),
+            resolved: HashMap::new(),
+            pending_texture_slot: HashMap::new(),
+            releases: Vec::new(),
             pending_bounds: HashMap::new(),
         }
     }
@@ -202,6 +216,99 @@ impl GpuAssetResolver {
             }
         }
         out
+    }
+
+    /// 记下「这个实体的这个槽位现在用的是哪个 GPU 资源」。
+    ///
+    /// 覆盖旧值时如果资源换了（重新上传到新槽位），旧的那份立即排进释放队列
+    /// —— 组件在同一帧被改写，不会出现「还在采样已释放槽位」的中间帧。
+    fn record_resolved(&mut self, entity: Entity, slot: AssetSlot, value: AssetRelease) {
+        if value.is_empty() {
+            return;
+        }
+        if let Some(previous) = self.resolved.insert((entity, slot), value) {
+            if previous != value {
+                self.releases.push(previous);
+            }
+        }
+    }
+
+    /// 这一帧里该实体的这个槽位是否已经不再需要 GPU 资源。
+    ///
+    /// 判定标准只有两条，都是「确定不会再画」：承载它的组件没了，或
+    /// `generation == 0`（`invalidate_*` 刚把它标脏，马上会重新上传）。
+    fn slot_is_stale(&self, world: &World, entity: Entity, slot: AssetSlot) -> bool {
+        use crate::scene::runtime_components::{TilemapRef, UiImageRef};
+        match slot {
+            AssetSlot::Mesh => {
+                world.get::<MeshRenderer>(entity).is_none()
+                    || world
+                        .get::<MeshRef>(entity)
+                        .map(|r| r.generation == 0)
+                        .unwrap_or(true)
+            }
+            AssetSlot::Material => {
+                world.get::<MeshRenderer>(entity).is_none()
+                    || world
+                        .get::<MaterialRef>(entity)
+                        .map(|r| r.generation == 0)
+                        .unwrap_or(true)
+            }
+            AssetSlot::Sprite => {
+                world.get::<SpriteRenderer>(entity).is_none()
+                    || world
+                        .get::<SpriteRef>(entity)
+                        .map(|r| r.generation == 0)
+                        .unwrap_or(true)
+            }
+            AssetSlot::Tileset => {
+                world.get::<Tilemap>(entity).is_none()
+                    || world
+                        .get::<TilemapRef>(entity)
+                        .map(|r| r.generation == 0)
+                        .unwrap_or(true)
+            }
+            AssetSlot::UiImage => {
+                world
+                    .get::<crate::ui::components::Style>(entity)
+                    .map(|style| style.image.is_empty())
+                    .unwrap_or(true)
+                    || world
+                        .get::<UiImageRef>(entity)
+                        .map(|r| r.generation == 0)
+                        .unwrap_or(true)
+            }
+        }
+    }
+
+    /// 把已经失效的 GPU 资源排进释放队列（由 [`Self::take_releases`] 交给宿主）。
+    fn release_stale_assets(&mut self, world: &World) {
+        let stale: Vec<(Entity, AssetSlot)> = self
+            .resolved
+            .keys()
+            .filter(|(entity, slot)| self.slot_is_stale(world, *entity, *slot))
+            .copied()
+            .collect();
+        for key in stale {
+            if let Some(release) = self.resolved.remove(&key) {
+                self.releases.push(release);
+            }
+        }
+        // 实体被销毁后，还没回传的「贴图属于哪个槽位」的登记也没用了。
+        self.pending_texture_slot.retain(|entity, _| {
+            self.resolved.keys().any(|(e, _)| e == entity)
+                || world.get::<SpriteRenderer>(*entity).is_some()
+                || world.get::<Tilemap>(*entity).is_some()
+                || world.get::<crate::ui::components::Style>(*entity).is_some()
+        });
+    }
+
+    /// 取走待释放的 GPU 资源；宿主把它们转给渲染器（`GraphRenderer::release_assets`）。
+    ///
+    /// 在 `prepare_requests` 之后调用：失效的槽位在这一帧内就被回收，重新上传
+    /// 的请求同时入队，所以热重载不会每次都多占一份显存。
+    pub fn take_releases(&mut self) -> Vec<AssetRelease> {
+        std::mem::take(&mut self.releases)
     }
 
     /// 该实体的这个槽位是否已经因同一个路径失败过。
@@ -320,6 +427,9 @@ impl GpuAssetResolver {
     /// 槽位会记入失败缓存（[`GpuAssetResolver::failed`]），同一坏路径只尝试一次，
     /// 直到路径被改写。
     pub fn prepare_requests(&mut self, world: &World) -> Vec<(Entity, AssetResolveRequest)> {
+        // 先回收这一帧已经失效的 GPU 资源（#495）：实体没了、组件被删、或
+        // `generation` 归零（热重载）时把槽位交还给渲染器，再重新上传。
+        self.release_stale_assets(world);
         // 运行时生成的网格（地形，#517）：路径以 `__proc/` 开头，直接从世界里的
         // 表取，不经过 `.pak`。
         let procedural = world.get_resource::<crate::scene::systems::terrain::ProceduralMeshes>();
@@ -513,6 +623,16 @@ impl GpuAssetResolver {
                 }
                 None => None,
             };
+            if texture.is_some() {
+                let slot = if item.tileset {
+                    AssetSlot::Tileset
+                } else if item.ui_image {
+                    AssetSlot::UiImage
+                } else {
+                    AssetSlot::Sprite
+                };
+                self.pending_texture_slot.insert(item.entity, slot);
+            }
             // 包围盒在请求发出前算好：GPU 上传后句柄才回来，而 CPU 段此刻
             // 已经解出顶点位置了（#491）。
             if let Some(bounds) = mesh.as_ref().and_then(MeshUploadInput::bounds) {
@@ -550,6 +670,16 @@ impl GpuAssetResolver {
                     mr.generation = 1;
                 }
             }
+            if let Some(handle) = result.mesh_handle {
+                self.record_resolved(
+                    *entity,
+                    AssetSlot::Mesh,
+                    AssetRelease {
+                        mesh_handle: Some(handle),
+                        ..AssetRelease::default()
+                    },
+                );
+            }
             if let Some(bounds) = self.pending_bounds.remove(entity) {
                 if let Some(handle) = result.mesh_handle {
                     if world.get_resource::<MeshBounds>().is_none() {
@@ -566,7 +696,29 @@ impl GpuAssetResolver {
                     mr.generation = 1;
                 }
             }
+            if let Some(slot) = result.material_slot {
+                self.record_resolved(
+                    *entity,
+                    AssetSlot::Material,
+                    AssetRelease {
+                        material_slot: Some(slot),
+                        ..AssetRelease::default()
+                    },
+                );
+            }
             if let (Some(slot), Some(size)) = (result.texture_slot, result.texture_size) {
+                let texture_slot = self
+                    .pending_texture_slot
+                    .remove(entity)
+                    .unwrap_or(AssetSlot::Sprite);
+                self.record_resolved(
+                    *entity,
+                    texture_slot,
+                    AssetRelease {
+                        texture_slot: Some(slot),
+                        ..AssetRelease::default()
+                    },
+                );
                 let mut sprite =
                     world
                         .get::<SpriteRef>(*entity)
@@ -660,6 +812,12 @@ impl GpuAssetResolver {
                 entities.push(entity);
             }
         }
+        // UI 背景图（#591）也走同一条贴图上传路径，热重载时必须一起失效。
+        for (entity, _) in world.query::<crate::scene::runtime_components::UiImageRef>() {
+            if !entities.contains(&entity) {
+                entities.push(entity);
+            }
+        }
         let count = entities.len();
         for entity in entities {
             self.reset_entity_refs(world, entity);
@@ -685,6 +843,11 @@ impl GpuAssetResolver {
         }
         for (entity, tilemap) in world.query::<Tilemap>() {
             if tilemap.tileset_path == path && !entities.contains(&entity) {
+                entities.push(entity);
+            }
+        }
+        for (entity, style) in world.query::<crate::ui::components::Style>() {
+            if style.image == path && !entities.contains(&entity) {
                 entities.push(entity);
             }
         }
@@ -1064,6 +1227,132 @@ mod tests {
             "缺失的字体只报一次，不返回字节"
         );
         assert!(resolver.prepare_ui_fonts(&world).is_empty());
+    }
+
+    /// #495：句柄记账 / 释放。返回一个已经「上传完成」的精灵实体。
+    fn resolved_sprite(world: &mut World, resolver: &mut GpuAssetResolver, slot: u32) -> Entity {
+        let entity = world.spawn();
+        world.insert(
+            entity,
+            SpriteRenderer {
+                sprite_path: "sprites/boat.png".to_string(),
+                ..Default::default()
+            },
+        );
+        resolver.apply_results(
+            world,
+            &[(
+                entity,
+                AssetResolveResult {
+                    mesh_handle: None,
+                    material_slot: None,
+                    texture_slot: Some(slot),
+                    texture_size: Some([16, 16]),
+                },
+            )],
+        );
+        entity
+    }
+
+    #[test]
+    fn a_good_upload_does_not_queue_a_release() {
+        let mut world = World::new();
+        let mut resolver = GpuAssetResolver::new();
+        resolved_sprite(&mut world, &mut resolver, 9);
+        assert!(resolver.take_releases().is_empty());
+    }
+
+    #[test]
+    fn re_uploading_to_a_new_slot_releases_the_previous_one() {
+        // 路径被改写 → 新上传拿到新槽位，旧槽位必须还回去，否则每次换图漏一张。
+        let mut world = World::new();
+        let mut resolver = GpuAssetResolver::new();
+        let entity = resolved_sprite(&mut world, &mut resolver, 9);
+        resolver.apply_results(
+            &mut world,
+            &[(
+                entity,
+                AssetResolveResult {
+                    mesh_handle: None,
+                    material_slot: None,
+                    texture_slot: Some(21),
+                    texture_size: Some([16, 16]),
+                },
+            )],
+        );
+        let releases = resolver.take_releases();
+        assert_eq!(releases.len(), 1);
+        assert_eq!(releases[0].texture_slot, Some(9));
+        // 同一个槽位重复回传（结果重放）不算失效。
+        resolver.apply_results(
+            &mut world,
+            &[(
+                entity,
+                AssetResolveResult {
+                    mesh_handle: None,
+                    material_slot: None,
+                    texture_slot: Some(21),
+                    texture_size: Some([16, 16]),
+                },
+            )],
+        );
+        assert!(resolver.take_releases().is_empty());
+    }
+
+    #[test]
+    fn despawning_the_entity_releases_its_gpu_handles() {
+        let mut world = World::new();
+        let mut resolver = GpuAssetResolver::new();
+        let entity = resolved_sprite(&mut world, &mut resolver, 5);
+        world.despawn(entity);
+
+        // `prepare_requests` 开头会回收失效资源。
+        resolver.prepare_requests(&world);
+        let releases = resolver.take_releases();
+        assert_eq!(releases.len(), 1, "{releases:?}");
+        assert_eq!(releases[0].texture_slot, Some(5));
+        // 只释放一次。
+        resolver.prepare_requests(&world);
+        assert!(resolver.take_releases().is_empty());
+    }
+
+    #[test]
+    fn hot_reload_invalidation_releases_every_handle() {
+        // 热重载会把 generation 清零；旧图像 / 网格必须这一帧就还回去。
+        let mut world = World::new();
+        let mut resolver = GpuAssetResolver::new();
+        let sprite = resolved_sprite(&mut world, &mut resolver, 7);
+        let mesh_entity = spawn_renderer(&mut world, "models/cube.gltf", "materials/cube.mat.json");
+        let mesh_handle = prism_render::managers::MeshHandle::default();
+        resolver.apply_results(
+            &mut world,
+            &[(
+                mesh_entity,
+                AssetResolveResult {
+                    mesh_handle: Some(mesh_handle),
+                    material_slot: Some(4),
+                    texture_slot: None,
+                    texture_size: None,
+                },
+            )],
+        );
+        assert!(resolver.take_releases().is_empty());
+
+        resolver.invalidate_assets(&mut world);
+        resolver.prepare_requests(&world);
+        let mut releases = resolver.take_releases();
+        releases.sort_by_key(|r| {
+            (
+                r.texture_slot.unwrap_or(u32::MAX),
+                r.material_slot.unwrap_or(u32::MAX),
+            )
+        });
+        assert_eq!(releases.len(), 3, "{releases:?}");
+        assert!(releases.iter().any(|r| r.texture_slot == Some(7)));
+        assert!(releases.iter().any(|r| r.material_slot == Some(4)));
+        assert!(releases.iter().any(|r| r.mesh_handle == Some(mesh_handle)));
+        // 精灵实体本身还在，重新上传时会重新记账。
+        assert!(world.get::<SpriteRef>(sprite).is_some());
     }
 
     fn spawn_renderer(world: &mut World, mesh_path: &str, material_path: &str) -> Entity {
