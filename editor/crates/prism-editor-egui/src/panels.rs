@@ -2191,6 +2191,7 @@ fn inspector_single(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState,
             component_debug_editor(ui, workspace, entity_id, &name, &value);
             continue;
         };
+        let presets = workspace.component_preset_names(&schema.name);
         let mut set = |field: &str, value: Value| {
             workspace.set_field(entity_id, &schema.name, field, value);
         };
@@ -2203,6 +2204,7 @@ fn inspector_single(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState,
             &mut set,
             &asset_paths,
             &doc_dir,
+            &presets,
         );
         if name == "prism_engine::scene::LineRenderer" {
             line_renderer_editor(ui, workspace, entity_id, &schema.name, &value);
@@ -2229,6 +2231,23 @@ fn inspector_single(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState,
             }
             widgets::CardAction::MoveDown(name) => {
                 workspace.move_component_at(index, &name, 1);
+            }
+            widgets::CardAction::SavePreset {
+                component,
+                name,
+                value,
+            } => {
+                workspace.save_component_preset(&component, &name, value);
+                state.status = format!("saved preset {name} for {component}");
+            }
+            widgets::CardAction::ApplyPreset { component, name } => {
+                match workspace.component_preset_value(&component, &name) {
+                    Some(value) => {
+                        workspace.set_field(entity_id, &component, "", value);
+                        state.status = format!("applied preset {name}");
+                    }
+                    None => state.status = format!("preset {name} not found"),
+                }
             }
         }
     }
@@ -2783,6 +2802,7 @@ fn inspector_multi(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState, 
         let Some(schema) = workspace.schema.component(&name).cloned() else {
             continue;
         };
+        let presets = workspace.component_preset_names(&schema.name);
         let mut set = |field: &str, value: Value| {
             workspace.set_field_multi(&ids, &schema.name, field, value);
         };
@@ -2795,6 +2815,7 @@ fn inspector_multi(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState, 
             &mut set,
             &asset_paths,
             &doc_dir,
+            &presets,
         );
     }
     for action in actions {
@@ -2825,6 +2846,23 @@ fn inspector_multi(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState, 
             widgets::CardAction::MoveDown(name) => {
                 for index in indices {
                     workspace.move_component_at(*index, &name, 1);
+                }
+            }
+            widgets::CardAction::SavePreset {
+                component,
+                name,
+                value,
+            } => {
+                workspace.save_component_preset(&component, &name, value);
+                state.status = format!("saved preset {name} for {component}");
+            }
+            widgets::CardAction::ApplyPreset { component, name } => {
+                match workspace.component_preset_value(&component, &name) {
+                    Some(value) => {
+                        let applied = workspace.set_field_multi(&ids, &component, "", value);
+                        state.status = format!("applied preset {name} ({applied} objects)");
+                    }
+                    None => state.status = format!("preset {name} not found"),
                 }
             }
         }
