@@ -258,6 +258,12 @@ pub struct UiState {
     pub log_sources: Vec<LogSource>,
     pub log_search: String,
     pub log_autoscroll: bool,
+    /// Console 把重复消息折叠成一行 + 计数（#421）。
+    pub log_collapse: bool,
+    /// 进入 Play 时清空 Console（#421）。
+    pub log_clear_on_play: bool,
+    /// Play 中出现 Error / Panic 时自动暂停（#421）。
+    pub log_error_pause: bool,
     /// 项目设置面板的搜索词 + 读盘缓存（`#428`：不要每帧读盘）。
     pub settings_search: String,
     pub settings_cache: Option<SettingsCache>,
@@ -489,6 +495,10 @@ impl UiState {
     pub fn new() -> Self {
         Self {
             log_autoscroll: true,
+            // 三个开关默认关：升级后 Console 的显示与行为保持原样。
+            log_collapse: false,
+            log_clear_on_play: false,
+            log_error_pause: false,
             viewport_scale: 1.0,
             asset_folder: "assets".to_string(),
             asset_history: vec!["assets".to_string()],
@@ -4178,6 +4188,12 @@ pub fn log(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
             }
         });
         ui.checkbox(&mut state.log_autoscroll, "Follow");
+        ui.checkbox(&mut state.log_collapse, "Collapse")
+            .on_hover_text("Merge identical messages into one row with a count");
+        ui.checkbox(&mut state.log_clear_on_play, "Clear on Play")
+            .on_hover_text("Clear the Console when Play starts");
+        ui.checkbox(&mut state.log_error_pause, "Error Pause")
+            .on_hover_text("Pause Play when an error is logged");
         if ui.button("Clear").clicked() {
             workspace.log.clear();
         }
@@ -4188,27 +4204,104 @@ pub fn log(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
     ui.separator();
 
     let lines = workspace.log.visible_lines();
+    let rows = log_rows(&lines, state.log_collapse);
     let row_height = 16.0;
+    let mut jump: Option<(std::path::PathBuf, Option<usize>, Option<usize>)> = None;
     egui::ScrollArea::vertical()
         .id_salt("log-scroll")
         .auto_shrink([false, false])
         .stick_to_bottom(state.log_autoscroll)
-        .show_rows(ui, row_height, lines.len(), |ui, range| {
-            for line in &lines[range] {
+        .show_rows(ui, row_height, rows.len(), |ui, range| {
+            for (index, count) in &rows[range] {
+                let line = &lines[*index];
                 let color = match line.level {
                     LogLevel::Error | LogLevel::Panic => egui::Color32::from_rgb(232, 96, 96),
                     LogLevel::Warn => egui::Color32::from_rgb(224, 176, 80),
                     LogLevel::Info => egui::Color32::from_gray(200),
                     LogLevel::Debug | LogLevel::Trace => egui::Color32::from_gray(140),
                 };
-                ui.label(
-                    RichText::new(format!("[{}] {}", line.source.label(), line.text))
-                        .monospace()
-                        .size(11.0)
-                        .color(color),
-                );
+                let text = if *count > 1 {
+                    format!("[{}] {}  (×{count})", line.source.label(), line.text)
+                } else {
+                    format!("[{}] {}", line.source.label(), line.text)
+                };
+                let response = ui.label(RichText::new(text).monospace().size(11.0).color(color));
+                // 双击跳转（#421）：日志里带 `path:line[:col]` 时交给默认编辑器。
+                if log_location(&line.text).is_some() {
+                    let response = response.interact(Sense::click());
+                    if response.double_clicked() {
+                        jump = log_location(&line.text).map(|(path, line, column)| {
+                            (std::path::PathBuf::from(path), line, column)
+                        });
+                    }
+                }
             }
         });
+    if let Some((path, line, column)) = jump {
+        state.status = match open_source_location(&path, line, column) {
+            Ok(()) => format!("opened {}", path.display()),
+            Err(error) => error,
+        };
+    }
+}
+
+/// Console 的显示行：`(原始行下标, 重复次数)`。
+///
+/// `collapse` 关闭时每行一份；打开后**相同的 `(级别, 来源, 文本)`** 合并到第一次
+/// 出现的位置并计数（Unity Collapse 的语义），因此顺序仍然是按时间。
+fn log_rows(lines: &[prism_editor_core::LogLine], collapse: bool) -> Vec<(usize, usize)> {
+    if !collapse {
+        return (0..lines.len()).map(|index| (index, 1)).collect();
+    }
+    let mut rows: Vec<(usize, usize)> = Vec::new();
+    let mut seen: std::collections::HashMap<(LogLevel, LogSource, &str), usize> =
+        std::collections::HashMap::new();
+    for (index, line) in lines.iter().enumerate() {
+        match seen.get(&(line.level, line.source, line.text.as_str())) {
+            Some(&row) => rows[row].1 += 1,
+            None => {
+                seen.insert((line.level, line.source, line.text.as_str()), rows.len());
+                rows.push((index, 1));
+            }
+        }
+    }
+    rows
+}
+
+/// 从日志文本里找第一个 `path:line[:col]`，用于双击跳转（#421）。
+///
+/// 只认真实存在的文件，避免把 `foo.rs` 这种「举例文本」也当路径；行号 / 列号
+/// 可省略。返回的路径保持日志里写的相对形式（`open_source_location` 自己
+/// 按当前目录解析）。
+fn log_location(text: &str) -> Option<(String, Option<usize>, Option<usize>)> {
+    for raw in text.split_whitespace() {
+        let token = raw.trim_matches(|c: char| {
+            matches!(c, '(' | ')' | '[' | ']' | ',' | ';' | '"' | '\'' | '`')
+        });
+        // 从尾部剥掉最多两段 `:数字`（先剥列号，再剥行号）。
+        let mut path = token;
+        let mut numbers: Vec<usize> = Vec::new();
+        while numbers.len() < 2 {
+            let Some((head, tail)) = path.rsplit_once(':') else {
+                break;
+            };
+            let Ok(number) = tail.parse::<usize>() else {
+                break;
+            };
+            numbers.push(number);
+            path = head;
+        }
+        if !path.contains('.') || !std::path::Path::new(path).is_file() {
+            continue;
+        }
+        numbers.reverse();
+        return Some((
+            path.to_string(),
+            numbers.first().copied(),
+            numbers.get(1).copied(),
+        ));
+    }
+    None
 }
 
 /// Problems 面板：编译的 error / warning，点一行跳到源码位置。
@@ -5545,6 +5638,45 @@ mod window_smoke_tests {
                 draw(ui, &mut workspace, &mut state);
             });
         });
+    }
+
+    #[test]
+    fn collapse_merges_identical_log_lines_and_keeps_time_order() {
+        let line = |seq: u64, level: LogLevel, text: &str| prism_editor_core::LogLine {
+            source: LogSource::Engine,
+            level,
+            text: text.to_string(),
+            seq,
+        };
+        let lines = vec![
+            line(0, LogLevel::Info, "a"),
+            line(1, LogLevel::Warn, "b"),
+            line(2, LogLevel::Info, "a"),
+        ];
+        assert_eq!(log_rows(&lines, false), vec![(0, 1), (1, 1), (2, 1)]);
+        assert_eq!(log_rows(&lines, true), vec![(0, 2), (1, 1)]);
+        // 不同级别 / 来源的同样文本不合并。
+        let mut other = line(3, LogLevel::Info, "a");
+        other.source = LogSource::Game;
+        let mut lines = lines;
+        lines.push(other);
+        assert_eq!(log_rows(&lines, true), vec![(0, 2), (1, 1), (3, 1)]);
+    }
+
+    #[test]
+    fn log_location_finds_an_existing_file_with_line_and_column() {
+        let temp = std::env::temp_dir().join("prism-log-location-test.rs");
+        std::fs::write(&temp, "// x").unwrap();
+        let text = format!("thread panicked at {}:12:3", temp.display());
+        let found = log_location(&text).expect("location");
+        assert_eq!(found.0, temp.display().to_string());
+        assert_eq!(found.1, Some(12));
+        assert_eq!(found.2, Some(3));
+        // 行号可省略；不存在的文件不算位置。
+        let only_file = format!("see {}", temp.display());
+        assert_eq!(log_location(&only_file).map(|found| found.1), Some(None));
+        assert!(log_location("no path here").is_none());
+        let _ = std::fs::remove_file(&temp);
     }
 
     #[test]
