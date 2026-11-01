@@ -258,8 +258,13 @@ pub fn convert_ui_draw_list_to_overlay_into(world: &World, out: &mut prism_rende
         let y0 = (py / h) * 2.0 - 1.0;
         let x1 = ((px + pw) / w) * 2.0 - 1.0;
         let y1 = ((py + ph) / h) * 2.0 - 1.0;
-        // NDC border 半径 近似
-        let br_ndc = q.border_radius / w.max(h) * 2.0;
+        // NDC border 半径：按 quad 自身尺寸归一化，渲染侧再乘回像素尺寸
+        // 才能得到与作者写法一致的圆角（#634）。
+        let br_ndc = if pw.max(ph) > 0.0 {
+            q.border_radius / pw.max(ph) * 2.0
+        } else {
+            0.0
+        };
         out.push_quad(prism_render::ui_overlay::UiQuad {
             rect: [x0, y0, x1, y1], // NDC [xmin, ymin, xmax, ymax]
             color: q.color,

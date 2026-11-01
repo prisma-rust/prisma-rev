@@ -11,6 +11,12 @@ struct UiVertex {
     pos: [f32; 2],
     uv: [f32; 2],
     color: [f32; 4],
+    /// Pixel-space offset from the quad centre (rounded-rect SDF, #634).
+    local: [f32; 2],
+    /// Half size of the quad in pixels.
+    half_size: [f32; 2],
+    /// Corner radius in pixels; `< 0` = no SDF (glyph quads).
+    radius: f32,
 }
 
 use std::collections::HashMap;
@@ -601,6 +607,21 @@ impl UiOverlay {
                 .location(2)
                 .format(vk::Format::R32G32B32A32_SFLOAT)
                 .offset(16),
+            vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(3)
+                .format(vk::Format::R32G32_SFLOAT)
+                .offset(32),
+            vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(4)
+                .format(vk::Format::R32G32_SFLOAT)
+                .offset(40),
+            vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(5)
+                .format(vk::Format::R32_SFLOAT)
+                .offset(48),
         ];
         let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default()
             .vertex_binding_descriptions(std::slice::from_ref(&binding_desc))
@@ -732,6 +753,14 @@ impl UiOverlay {
         let push_quad = |vertices: &mut Vec<UiVertex>, quad: &crate::ui_overlay::UiQuad| {
             let [x0, y0, x1, y1] = quad.rect;
             let [r, g, b, a] = quad.color;
+            // NDC rect → pixel size. `UiQuad::border_radius` is already
+            // normalised by the engine (`radius_px / max(w, h) * 2`), so
+            // convert it back to pixels for the SDF.
+            let width_px = (x1 - x0).abs() * 0.5 * w;
+            let height_px = (y1 - y0).abs() * 0.5 * h;
+            let half = [width_px * 0.5, height_px * 0.5];
+            let radius = (quad.border_radius * width_px.max(height_px) * 0.5)
+                .clamp(0.0, half[0].min(half[1]));
             emit_quad(
                 vertices,
                 [x0, y0],
@@ -739,6 +768,7 @@ impl UiOverlay {
                 [0.0, 0.0],
                 [0.0, 0.0],
                 [r, g, b, a],
+                Some((half, radius)),
             );
         };
 
@@ -975,6 +1005,7 @@ impl UiOverlay {
                     [u0, v0],
                     [u1, v1],
                     [r, g, b, a],
+                    None,
                 );
             }
             cursor_x += glyph.advance;
@@ -990,23 +1021,31 @@ fn emit_quad(
     uv0: [f32; 2],
     uv1: [f32; 2],
     color: [f32; 4],
+    rounded: Option<([f32; 2], f32)>,
 ) {
     let [x0, y0] = p0;
     let [x1, y1] = p1;
     let [u0, v0] = uv0;
     let [u1, v1] = uv1;
-    for &(px, py, u, v) in &[
-        (x0, y0, u0, v0),
-        (x1, y0, u1, v0),
-        (x0, y1, u0, v1),
-        (x1, y1, u1, v1),
-        (x1, y0, u1, v0),
-        (x0, y1, u0, v1),
+    for &(px, py, u, v, sx, sy) in &[
+        (x0, y0, u0, v0, -1.0, -1.0),
+        (x1, y0, u1, v0, 1.0, -1.0),
+        (x0, y1, u0, v1, -1.0, 1.0),
+        (x1, y1, u1, v1, 1.0, 1.0),
+        (x1, y0, u1, v0, 1.0, -1.0),
+        (x0, y1, u0, v1, -1.0, 1.0),
     ] {
+        let (local, half_size, radius) = match rounded {
+            Some((half, radius)) => ([sx * half[0], sy * half[1]], half, radius),
+            None => ([0.0; 2], [0.0; 2], -1.0),
+        };
         out.push(UiVertex {
             pos: [px, py],
             uv: [u, v],
             color,
+            local,
+            half_size,
+            radius,
         });
     }
 }
