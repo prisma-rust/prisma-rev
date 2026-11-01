@@ -29,6 +29,17 @@ deviating from those conventions is a bug. (`README.md` is the human-facing over
 - 只读侦察交给 subagent，写操作留在主会话；交接时写清已完成 / 未完成 / 风险 / 验证命令。
   侦察 issue 也算调查 —— 派 subagent 之前先认领。
 
+## Termux / aarch64 ARM 验证例外（用户已明确授权）
+
+- 当 agent 运行在 **Termux / aarch64 ARM 设备**上时，可以不执行 `scripts/pr_ready.py`，
+  也可以不进行完整编译验证或 `cargo test`。
+- **原因不是无法执行，而是该环境下完整编译/测试效率太低**；用户已明确同意用静态检查替代。
+- 该环境下的最低要求：**静态分析、`cargo fmt`、`cargo clippy`**。
+- 工具链可用时应运行 fmt/clippy；若因环境限制确实无法运行，必须在最终回复/PR 中明确列出未验证项，
+  不能假装已验证。
+- 这是对上面「合并前跑 `pr_ready.py`」硬规则的明确例外；离开 Termux/aarch64 ARM 环境后恢复完整验证。
+- 例外只降低验证强度，不降低实现范围、代码质量或 review 标准。
+
 ## Layout
 - `crates/prism-ecs` — ECS core (Entity/Component/World/Query).
 - `crates/prism-reflect` — 运行时反射（`Reflect`/`TypeDesc`/`TypeRegistry`）+
