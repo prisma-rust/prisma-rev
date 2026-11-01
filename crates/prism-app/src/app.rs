@@ -166,6 +166,12 @@ pub struct App {
     #[cfg(feature = "audio")]
     audio_voices: crate::scene_audio::VoiceHandles,
 
+    // ---------- 物理（主线程 + 独立步进线程，`physics` feature） ----------
+    /// 每个固定步把 ECS 里的 `Rigidbody` / `Collider` 送进 rapier，并把结果写回
+    /// `LocalTransform`（#522）。`None` = 未启用 / 构建没有 physics feature。
+    #[cfg(feature = "physics")]
+    physics: Option<crate::physics_runner::PhysicsRuntime>,
+
     // ---------- 窗口大小调整 ----------
     needs_resize: bool,
 
@@ -314,6 +320,8 @@ impl App {
             scene_audio: crate::scene_audio::SceneAudio::new(),
             #[cfg(feature = "audio")]
             audio_voices: crate::scene_audio::VoiceHandles::default(),
+            #[cfg(feature = "physics")]
+            physics: None,
             needs_resize: false,
             host_extent: None,
             host_surface: None,
@@ -415,11 +423,16 @@ impl App {
                 // 渲染在 resumed() 时条件创建
             }
             Subsystem::Physics => {
-                // 还没有物理步进：`prism_app::physics_runner` 的 rapier 线程没有接进
-                // `App`，场景里可创作的 `Collider` / `Rigidbody` 目前只用于查询
-                // （`prism_engine::physics::raycast`）。见 #522。
+                #[cfg(feature = "physics")]
+                {
+                    // #522：物理线程每个固定步积分 `Rigidbody`，结果写回
+                    // `LocalTransform`；`Collider` 同时继续服务射线查询。
+                    self.physics = Some(crate::physics_runner::PhysicsRuntime::spawn());
+                }
+                #[cfg(not(feature = "physics"))]
                 log::warn!(
-                    "physics subsystem requested but nothing steps bodies yet —                      colliders are query-only (prism_engine::physics::raycast)"
+                    "physics subsystem requested but this build has no `physics` feature — \
+                     colliders remain query-only; rebuild with `--features physics` to step bodies"
                 );
             }
             Subsystem::Audio => {
@@ -1140,6 +1153,12 @@ impl App {
                 const FIXED_STEP: Duration = Duration::from_nanos(16_666_667);
                 let mut fixed_steps = 0;
                 while self.fixed_accumulator >= FIXED_STEP && fixed_steps < 8 {
+                    // 物理走固定步（#522）：结果在下面的 `engine.update()` 里由
+                    // `hierarchy_system` 传播成 `LocalToWorld`，渲染当帧就能看到。
+                    #[cfg(feature = "physics")]
+                    if let Some(physics) = self.physics.as_mut() {
+                        physics.step(engine.world_mut());
+                    }
                     engine.fixed_update(FIXED_STEP.as_secs_f32(), &self.input);
                     self.fixed_accumulator -= FIXED_STEP;
                     fixed_steps += 1;

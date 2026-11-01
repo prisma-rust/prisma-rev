@@ -1209,7 +1209,7 @@ kerning / ligature。需要这些能力要引入 HarfBuzz / `IDWriteTextLayout` 
 |---|---|---|
 | `audio`（cpal+firewheel+symphonia） | **+4.14 MB** | 体积大头，50 个 crate 的运行时栈 |
 | `pathtrace` | +135 KB | 1.6k 行 + SPIR-V + BLAS/TLAS |
-| `physics` | +3 KB | 代码是死代码（`physics_runner` 未接线），只多编译时间 |
+| `physics` | +3 KB（接线前测量） | #522 后 `physics_runner` 真正步进刚体；rapier 仍只在打开 `prism-app/physics` 时编入 |
 | base（全关） | 10.24 MB | 见下方构成 |
 
 `ui-fontdue` → `ui-directwrite`（Windows / `x86_64-pc-windows-gnu` / `dist` 档 +
