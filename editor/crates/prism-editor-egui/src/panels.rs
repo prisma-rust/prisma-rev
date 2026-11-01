@@ -2294,10 +2294,26 @@ fn inspector_multi(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState, 
         .iter()
         .filter_map(|index| workspace.document().doc.id_of_index(*index))
         .collect();
+    // #507：活动对象是最后点击的那个，不是文档顺序里的第一个。
+    let active = workspace
+        .primary_selection()
+        .filter(|index| indices.contains(index))
+        .unwrap_or(indices[0]);
+    let active_name = workspace
+        .document()
+        .doc
+        .entities
+        .get(active)
+        .and_then(|entity| entity.name.clone())
+        .unwrap_or_else(|| format!("entity {active}"));
     ui.label(
-        RichText::new(format!("{} GameObjects selected", indices.len()))
-            .strong()
-            .size(12.0),
+        RichText::new(format!(
+            "{} GameObjects selected · Active: {}",
+            indices.len(),
+            active_name
+        ))
+        .strong()
+        .size(12.0),
     );
     ui.label(
         RichText::new("Fields apply to every selected entity in one undo step.")
@@ -2306,8 +2322,8 @@ fn inspector_multi(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState, 
     );
     ui.separator();
 
-    // 批量 Transform（显示值取第一个选中实体，其余不一致的分量标 "—"）。
-    let first = indices[0];
+    // 批量 Transform（显示活动对象的值，其余不一致的分量标 "—"）。
+    let first = active;
     let transform = workspace.document().doc.entities[first].transform.clone();
     let mixed = mixed_transform_axes(workspace, indices);
     ui.label(RichText::new("Transform").strong().size(12.0));
