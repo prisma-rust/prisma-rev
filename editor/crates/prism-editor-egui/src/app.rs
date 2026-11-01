@@ -3591,11 +3591,16 @@ impl EditorApp {
                     "EDIT"
                 };
                 let color = if self.playing {
-                    Color32::from_rgb(120, 200, 120)
+                    panels::play_mode_tint(self.paused)
                 } else {
                     Color32::from_gray(150)
                 };
-                ui.label(RichText::new(text).size(10.0).color(color).strong());
+                let mut label = RichText::new(text).size(10.0).color(color).strong();
+                if self.playing {
+                    // 播放 / 暂停时给状态栏一个底色，余光也能看出当前不在编辑态（#500）。
+                    label = label.background_color(color.gamma_multiply(0.22));
+                }
+                ui.label(label);
                 let selected = self.workspace.selection.len();
                 let entities = self.workspace.document().doc.entities.len();
                 ui.label(
@@ -5077,6 +5082,22 @@ impl App for EditorApp {
                     .inner_margin(egui::Margin::same(4)),
             )
             .show(ctx, |ui| self.dock_tree(ui));
+
+        // Play 态染色（#500）：整窗一圈描边，暂停时换琥珀色。只画边框，
+        // 不覆盖内容 —— 悬浮面板和弹窗仍然清晰可读。
+        if self.playing {
+            let color = panels::play_mode_tint(self.paused);
+            let painter = ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::new("play-mode-frame"),
+            ));
+            painter.rect_stroke(
+                ctx.viewport_rect().shrink(1.5),
+                0.0,
+                egui::Stroke::new(3.0_f32, color),
+                egui::StrokeKind::Inside,
+            );
+        }
 
         self.finish_tab_drag(ctx);
         self.floating_panels(ctx);
