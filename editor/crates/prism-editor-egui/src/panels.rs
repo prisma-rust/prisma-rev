@@ -3236,26 +3236,33 @@ pub fn asset_delete_confirm(ui: &Ui, workspace: &mut Workspace, state: &mut UiSt
             });
         });
     if confirmed {
-        state.pending_asset_delete = None;
-        let mut deleted = 0usize;
-        let mut failures = Vec::new();
-        for path in &paths {
-            let before = state.status.clone();
-            delete_asset_now(workspace, state, path);
-            if state.status.starts_with("deleted ") {
-                deleted += 1;
-            } else if state.status != before {
-                failures.push(state.status.clone());
-            }
-        }
-        state.status = if failures.is_empty() {
-            format!("deleted {deleted} asset(s)")
-        } else {
-            format!("deleted {deleted}, failed: {}", failures.join("; "))
-        };
+        apply_pending_asset_delete(workspace, state);
     } else if cancelled {
         state.pending_asset_delete = None;
     }
+}
+
+/// 执行 `pending_asset_delete` 里的批量删除（确认框 / 控制通道共用，#618）。
+pub fn apply_pending_asset_delete(workspace: &mut Workspace, state: &mut UiState) {
+    let Some(paths) = state.pending_asset_delete.take() else {
+        return;
+    };
+    let mut deleted = 0usize;
+    let mut failures = Vec::new();
+    for path in &paths {
+        let before = state.status.clone();
+        delete_asset_now(workspace, state, path);
+        if state.status.starts_with("deleted ") {
+            deleted += 1;
+        } else if state.status != before {
+            failures.push(state.status.clone());
+        }
+    }
+    state.status = if failures.is_empty() {
+        format!("deleted {deleted} asset(s)")
+    } else {
+        format!("deleted {deleted}, failed: {}", failures.join("; "))
+    };
 }
 
 fn is_document_path(path: &str) -> bool {
@@ -3290,18 +3297,23 @@ pub fn doc_delete_confirm(ctx: &egui::Context, workspace: &mut Workspace, state:
             });
         });
     match decision {
-        Some(true) => {
-            match workspace.delete_document(&path) {
-                Ok(()) => {
-                    state.forget_asset(&path);
-                    state.status = format!("deleted {path}");
-                }
-                Err(error) => state.status = format!("delete failed: {error}"),
-            }
-            state.pending_doc_delete = None;
-        }
+        Some(true) => apply_pending_doc_delete(workspace, state),
         Some(false) => state.pending_doc_delete = None,
         None => {}
+    }
+}
+
+/// 执行 `pending_doc_delete`（确认框 / 控制通道共用，#618）。
+pub fn apply_pending_doc_delete(workspace: &mut Workspace, state: &mut UiState) {
+    let Some(path) = state.pending_doc_delete.take() else {
+        return;
+    };
+    match workspace.delete_document(&path) {
+        Ok(()) => {
+            state.forget_asset(&path);
+            state.status = format!("deleted {path}");
+        }
+        Err(error) => state.status = format!("delete failed: {error}"),
     }
 }
 
@@ -4361,14 +4373,19 @@ pub fn entity_delete_confirm(ctx: &egui::Context, workspace: &mut Workspace, sta
             });
         });
     match decision {
-        Some(true) => {
-            workspace.select_many(&indices, false);
-            workspace.delete_selection();
-            state.pending_entity_delete = None;
-        }
+        Some(true) => apply_pending_entity_delete(workspace, state),
         Some(false) => state.pending_entity_delete = None,
         None => {}
     }
+}
+
+/// 执行 `pending_entity_delete`（确认框 / 控制通道共用，#618）。
+pub fn apply_pending_entity_delete(workspace: &mut Workspace, state: &mut UiState) {
+    let Some(indices) = state.pending_entity_delete.take() else {
+        return;
+    };
+    workspace.select_many(&indices, false);
+    workspace.delete_selection();
 }
 
 pub fn theme(ui: &mut Ui, workspace: &mut Workspace) {
@@ -4884,6 +4901,17 @@ mod window_smoke_tests {
             });
         });
         assert!(open);
+    }
+
+    #[test]
+    fn confirmation_actions_can_run_without_the_dialog_widget() {
+        let mut workspace = Workspace::sample();
+        let mut state = UiState::new();
+        let before = workspace.document().doc.entities.len();
+        state.pending_entity_delete = Some(vec![0]);
+        apply_pending_entity_delete(&mut workspace, &mut state);
+        assert!(workspace.document().doc.entities.len() < before);
+        assert!(state.pending_entity_delete.is_none());
     }
 
     #[test]

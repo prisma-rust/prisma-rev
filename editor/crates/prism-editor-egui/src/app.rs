@@ -301,6 +301,14 @@ enum CloseDecision {
     Cancel,
 }
 
+/// 磁盘冲突对话框的选择（#452 / #618）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SaveConflictChoice {
+    Overwrite,
+    Reload,
+    Cancel,
+}
+
 pub struct EditorApp {
     pub workspace: Workspace,
     pub state: UiState,
@@ -892,6 +900,131 @@ impl EditorApp {
         }
     }
 
+    /// 当前打开的模态对话框，供 `ui.snapshot` / `ui.click` 使用（#618）。
+    fn dialogs(&self) -> Vec<crate::ui_tree::Dialog> {
+        use crate::ui_tree::Dialog;
+        let mut out = Vec::new();
+
+        if let Some(indices) = &self.state.pending_entity_delete {
+            let message = if indices.len() == 1 {
+                "Delete the selected entity and its children?".to_string()
+            } else {
+                format!(
+                    "Delete {} selected entities and their children?",
+                    indices.len()
+                )
+            };
+            out.push(
+                Dialog::new("delete-entities", "Delete", message)
+                    .button("delete", "Delete")
+                    .button("cancel", "Cancel"),
+            );
+        }
+
+        if let Some(path) = &self.state.pending_doc_delete {
+            out.push(
+                Dialog::new(
+                    "delete-document",
+                    "Delete Document",
+                    format!(
+                        "Delete {path}? The file, its open tab and its Build Settings entry are removed."
+                    ),
+                )
+                .button("delete", "Delete")
+                .button("cancel", "Cancel"),
+            );
+        }
+
+        if let Some(paths) = &self.state.pending_asset_delete {
+            let message = match paths.as_slice() {
+                [one] => format!("删除 {one}？此操作不可撤销。"),
+                many => format!("删除 {} 项资产？此操作不可撤销。", many.len()),
+            };
+            out.push(
+                Dialog::new("delete-assets", "Delete Asset", message)
+                    .button("delete", "Delete")
+                    .button("cancel", "Cancel"),
+            );
+        }
+
+        if let Some(index) = self.state.pending_save_conflict {
+            let (title, path) = self
+                .workspace
+                .docs
+                .get(index)
+                .map(|document| (document.title(), document.path.clone().unwrap_or_default()))
+                .unwrap_or_else(|| ("Document".to_string(), String::new()));
+            out.push(
+                Dialog::new(
+                    "save-conflict",
+                    "File Changed on Disk",
+                    format!("{title} was modified outside the editor. ({path})"),
+                )
+                .button("overwrite", "Overwrite")
+                .button("reload", "Reload from Disk")
+                .button("cancel", "Cancel"),
+            );
+        }
+
+        if let Some(target) = self.state.pending_close {
+            let (message, detail) = match target {
+                panels::CloseTarget::Document(index) => {
+                    let title = self
+                        .workspace
+                        .docs
+                        .get(index)
+                        .map(|document| document.title())
+                        .unwrap_or_else(|| "document".to_string());
+                    (
+                        format!("{title} has unsaved changes."),
+                        "Close it anyway?".to_string(),
+                    )
+                }
+                panels::CloseTarget::App => {
+                    let count = self
+                        .workspace
+                        .docs
+                        .iter()
+                        .filter(|document| document.dirty)
+                        .count();
+                    (
+                        format!("{count} document(s) have unsaved changes."),
+                        "Quit anyway?".to_string(),
+                    )
+                }
+            };
+            out.push(
+                Dialog::new("close", "Unsaved Changes", format!("{message} {detail}"))
+                    .button("save", "Save")
+                    .button("discard", "Don't Save")
+                    .button("cancel", "Cancel"),
+            );
+        }
+
+        if let Some(confirm) = &self.state.confirm {
+            out.push(
+                Dialog::new("confirm", confirm.title.clone(), confirm.message.clone())
+                    .button("ok", &confirm.ok)
+                    .button("cancel", "Cancel"),
+            );
+        }
+
+        if let Some(prompt) = &self.state.prompt {
+            out.push(
+                Dialog::new(
+                    "prompt",
+                    prompt.title.clone(),
+                    format!("{}（当前值：{}）", prompt.hint, prompt.value),
+                )
+                .button("ok", "OK")
+                .button("cancel", "Cancel")
+                .value(prompt.value.clone()),
+            );
+        }
+
+        out
+    }
+
     /// Scene / Game 视口里的物体：世界坐标 + 投影后的视口局部像素。
     ///
     /// 这是 `ui.snapshot` 的 `objects` 与 `ui.click {"node":"view:<tab>:entity:<id>"}`
@@ -1167,8 +1300,111 @@ impl EditorApp {
             return Ok(format!("game resolution {}", target.label()));
         }
         Err(format!(
-            "unsupported node '{node}' (command:… / panel:… / doc:… / entity:… / asset:… / search:open / resolution:<WxH>|fit:<WxH>|match)"
+            "unsupported node '{node}' (command:… / panel:… / doc:… / entity:… / asset:… / dialog:… / search:open / resolution:<WxH>|fit:<WxH>|match)"
         ))
+    }
+
+    /// `dialog:<id>:<button>`：走和真实按钮完全相同的处理路径（#618）。
+    fn ui_click_dialog(
+        &mut self,
+        ctx: &egui::Context,
+        node: &str,
+    ) -> Result<serde_json::Value, String> {
+        let (id, action) = crate::ui_tree::parse_dialog_node(node)
+            .ok_or_else(|| format!("bad dialog node '{node}'"))?;
+        let action = action.ok_or_else(|| format!("'{node}' 是对话框，不是按钮"))?;
+        let label = match (id, action) {
+            ("delete-entities", "delete") => {
+                panels::apply_pending_entity_delete(&mut self.workspace, &mut self.state);
+                "delete entities"
+            }
+            ("delete-entities", "cancel") => {
+                self.state.pending_entity_delete = None;
+                "cancel delete entities"
+            }
+            ("delete-document", "delete") => {
+                panels::apply_pending_doc_delete(&mut self.workspace, &mut self.state);
+                "delete document"
+            }
+            ("delete-document", "cancel") => {
+                self.state.pending_doc_delete = None;
+                "cancel delete document"
+            }
+            ("delete-assets", "delete") => {
+                panels::apply_pending_asset_delete(&mut self.workspace, &mut self.state);
+                "delete assets"
+            }
+            ("delete-assets", "cancel") => {
+                self.state.pending_asset_delete = None;
+                "cancel delete assets"
+            }
+            ("save-conflict", "overwrite") => {
+                let index = self
+                    .state
+                    .pending_save_conflict
+                    .ok_or_else(|| "no save conflict".to_string())?;
+                self.apply_save_conflict_choice(index, SaveConflictChoice::Overwrite);
+                "overwrite"
+            }
+            ("save-conflict", "reload") => {
+                let index = self
+                    .state
+                    .pending_save_conflict
+                    .ok_or_else(|| "no save conflict".to_string())?;
+                self.apply_save_conflict_choice(index, SaveConflictChoice::Reload);
+                "reload"
+            }
+            ("save-conflict", "cancel") => {
+                self.state.pending_save_conflict = None;
+                "cancel save conflict"
+            }
+            ("close", "save") => {
+                let target = self
+                    .state
+                    .pending_close
+                    .ok_or_else(|| "no pending close".to_string())?;
+                self.apply_close_decision(ctx, target, CloseDecision::Save);
+                "save and close"
+            }
+            ("close", "discard") => {
+                let target = self
+                    .state
+                    .pending_close
+                    .ok_or_else(|| "no pending close".to_string())?;
+                self.apply_close_decision(ctx, target, CloseDecision::Discard);
+                "discard and close"
+            }
+            ("close", "cancel") => {
+                self.state.pending_close = None;
+                "cancel close"
+            }
+            ("confirm", "ok") => {
+                self.accept_confirm();
+                "confirm"
+            }
+            ("confirm", "cancel") => {
+                self.state.confirm = None;
+                "cancel confirm"
+            }
+            ("prompt", "ok") => {
+                let Some(prompt) = self.state.prompt.clone() else {
+                    return Err("no prompt".into());
+                };
+                self.commit_prompt(prompt.kind, prompt.value.trim().to_string())?;
+                "prompt ok"
+            }
+            ("prompt", "cancel") => {
+                self.state.prompt = None;
+                "cancel prompt"
+            }
+            _ => return Err(format!("unknown dialog button '{node}'")),
+        };
+        Ok(json!({
+            "dialog": id,
+            "button": action,
+            "action": label,
+            "pending_dialog": self.dialogs().first().map(|dialog| dialog.node()),
+        }))
     }
 
     /// 执行全局搜索里确认的那一条（选择实体 / 打开文档或资产 / 跑命令）。
@@ -1218,6 +1454,16 @@ impl EditorApp {
 
     /// `ui.set`：目前支持检查器字段 `field:<entity>:<component>:<path>`。
     fn ui_set(&mut self, node: &str, value: serde_json::Value) -> Result<String, String> {
+        if let Some(("prompt", None)) = crate::ui_tree::parse_dialog_node(node) {
+            let text = value
+                .as_str()
+                .ok_or_else(|| "dialog:prompt 需要字符串 value".to_string())?;
+            let Some(prompt) = self.state.prompt.as_mut() else {
+                return Err("no prompt is open".into());
+            };
+            prompt.value = text.to_string();
+            return Ok("set prompt value".to_string());
+        }
         let rest = node.strip_prefix("field:").ok_or_else(|| {
             format!("unsupported node '{node}' (field:<entity>:<component>:<path>)")
         })?;
@@ -1490,6 +1736,7 @@ impl EditorApp {
                     .map(|line| format!("[{:?}] {}", line.level, line.text))
                     .collect();
                 let viewports = self.viewport_objects();
+                let dialogs = self.dialogs();
                 let input = crate::ui_tree::SnapshotInput {
                     workspace: &self.workspace,
                     playing: self.playing,
@@ -1508,6 +1755,7 @@ impl EditorApp {
                     leaves: &self.dock_leaves,
                     logs: &logs,
                     viewports: &viewports,
+                    dialogs: &dialogs,
                 };
                 crate::ui_tree::snapshot(&input)
             }
@@ -1519,6 +1767,9 @@ impl EditorApp {
                 let offset = args.get("offset").and_then(parse_offset);
                 let clicked = match crate::ui_tree::parse_view_object_node(node) {
                     Some(tab) => self.ui_click_view_object(tab, node, offset),
+                    None if crate::ui_tree::parse_dialog_node(node).is_some() => {
+                        self.ui_click_dialog(ctx, node)
+                    }
                     None => match offset {
                         Some(offset) => self.ui_click_panel_offset(node, offset),
                         None => self
@@ -1529,6 +1780,13 @@ impl EditorApp {
                 match clicked {
                     Ok(mut value) => {
                         value["ok"] = json!(true);
+                        // #618：命令可能只是挂起了确认框；回执里直接给出 pending，
+                        // 脚本不用再猜「为什么 ok 了却没生效」。
+                        value["pending_dialog"] = self
+                            .dialogs()
+                            .first()
+                            .map(|dialog| json!(dialog.node()))
+                            .unwrap_or(serde_json::Value::Null);
                         value
                     }
                     Err(error) => json!({ "ok": false, "node": node, "error": error }),
@@ -3567,17 +3825,22 @@ impl EditorApp {
                 });
             });
         if accepted {
-            self.state.confirm = None;
-            match confirm.kind {
-                panels::ConfirmKind::CleanPlayer => {
-                    self.start_build(crate::build::BuildKind::Clean)
-                }
-                panels::ConfirmKind::CleanEngine => {
-                    self.start_build(crate::build::BuildKind::CleanEngine)
-                }
-            }
+            self.accept_confirm();
         } else if cancelled || !open {
             self.state.confirm = None;
+        }
+    }
+
+    /// 接受当前的通用确认框（UI 与 `dialog:confirm:ok` 共用，#618）。
+    fn accept_confirm(&mut self) {
+        let Some(confirm) = self.state.confirm.take() else {
+            return;
+        };
+        match confirm.kind {
+            panels::ConfirmKind::CleanPlayer => self.start_build(crate::build::BuildKind::Clean),
+            panels::ConfirmKind::CleanEngine => {
+                self.start_build(crate::build::BuildKind::CleanEngine)
+            }
         }
     }
 
@@ -3604,65 +3867,73 @@ impl EditorApp {
 
         if commit {
             let value = prompt.value.trim().to_string();
-            let result = match prompt.kind {
-                panels::PromptKind::SaveAs => self
-                    .workspace
-                    .save_active_as(&value)
-                    .map(|path| format!("saved {path}")),
-                panels::PromptKind::NewFolder => self
-                    .workspace
-                    .create_asset_folder(&value)
-                    .map(|path| format!("created {path}")),
-                panels::PromptKind::SavePrefab => self
-                    .workspace
-                    .save_selection_as_prefab_at(Some("assets/prefabs"), &value)
-                    .map(|path| format!("saved prefab {path}")),
-                panels::PromptKind::PrefabVariant => self.create_prefab_variant(&value),
-                panels::PromptKind::LayoutName => {
-                    self.save_named_layout(&value);
-                    Ok(format!("layout saved: {value}"))
-                }
-                panels::PromptKind::LayoutFileSave => {
-                    let path = PathBuf::from(&value);
-                    if let Some(dir) = path.parent() {
-                        let _ = std::fs::create_dir_all(dir);
-                    }
-                    std::fs::write(
-                        &path,
-                        serde_json::to_string_pretty(&self.current_layout_json())
-                            .unwrap_or_default(),
-                    )
-                    .map(|()| format!("layout written: {}", path.display()))
-                }
-                panels::PromptKind::LayoutFileLoad => {
-                    let text = std::fs::read_to_string(&value);
-                    match text {
-                        Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
-                            Ok(json) => {
-                                self.apply_layout_json(&json);
-                                Ok(format!("layout loaded: {value}"))
-                            }
-                            Err(error) => Err(std::io::Error::new(
-                                std::io::ErrorKind::InvalidData,
-                                format!("invalid layout json: {error}"),
-                            )),
-                        },
-                        Err(error) => Err(error),
-                    }
-                }
-            };
-            match result {
-                Ok(message) => {
-                    self.state.status = message;
-                    self.doc_hash = 0;
-                    self.state.prompt = None;
-                }
-                Err(error) => self.state.status = format!("{error}"),
-            }
+            let _ = self.commit_prompt(prompt.kind, value);
         } else if !open {
             self.state.prompt = None;
         } else {
             self.state.prompt = Some(prompt);
+        }
+    }
+
+    /// 提交当前输入框（UI 与 `dialog:prompt:ok` 共用，#618）。
+    fn commit_prompt(&mut self, kind: panels::PromptKind, value: String) -> Result<(), String> {
+        let result = match kind {
+            panels::PromptKind::SaveAs => self
+                .workspace
+                .save_active_as(&value)
+                .map(|path| format!("saved {path}")),
+            panels::PromptKind::NewFolder => self
+                .workspace
+                .create_asset_folder(&value)
+                .map(|path| format!("created {path}")),
+            panels::PromptKind::SavePrefab => self
+                .workspace
+                .save_selection_as_prefab_at(Some("assets/prefabs"), &value)
+                .map(|path| format!("saved prefab {path}")),
+            panels::PromptKind::PrefabVariant => self.create_prefab_variant(&value),
+            panels::PromptKind::LayoutName => {
+                self.save_named_layout(&value);
+                Ok(format!("layout saved: {value}"))
+            }
+            panels::PromptKind::LayoutFileSave => {
+                let path = PathBuf::from(&value);
+                if let Some(dir) = path.parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                }
+                std::fs::write(
+                    &path,
+                    serde_json::to_string_pretty(&self.current_layout_json()).unwrap_or_default(),
+                )
+                .map(|()| format!("layout written: {}", path.display()))
+            }
+            panels::PromptKind::LayoutFileLoad => {
+                let text = std::fs::read_to_string(&value);
+                match text {
+                    Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+                        Ok(json) => {
+                            self.apply_layout_json(&json);
+                            Ok(format!("layout loaded: {value}"))
+                        }
+                        Err(error) => Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("invalid layout json: {error}"),
+                        )),
+                    },
+                    Err(error) => Err(error),
+                }
+            }
+        };
+        match result {
+            Ok(message) => {
+                self.state.status = message;
+                self.doc_hash = 0;
+                self.state.prompt = None;
+                Ok(())
+            }
+            Err(error) => {
+                self.state.status = format!("{error}");
+                Err(error.to_string())
+            }
         }
     }
 
@@ -3681,13 +3952,7 @@ impl EditorApp {
         let title = document.title();
         let path = document.path.clone().unwrap_or_default();
 
-        #[derive(Clone, Copy, PartialEq)]
-        enum Choice {
-            Overwrite,
-            Reload,
-            Cancel,
-        }
-        let mut choice: Option<Choice> = None;
+        let mut choice: Option<SaveConflictChoice> = None;
         egui::Window::new("File Changed on Disk")
             .collapsible(false)
             .resizable(false)
@@ -3699,34 +3964,35 @@ impl EditorApp {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     if ui.button("Overwrite").clicked() {
-                        choice = Some(Choice::Overwrite);
+                        choice = Some(SaveConflictChoice::Overwrite);
                     }
                     if ui.button("Reload from Disk").clicked() {
-                        choice = Some(Choice::Reload);
+                        choice = Some(SaveConflictChoice::Reload);
                     }
                     if ui.button("Cancel").clicked() {
-                        choice = Some(Choice::Cancel);
+                        choice = Some(SaveConflictChoice::Cancel);
                     }
                 });
             });
 
+        if let Some(choice) = choice {
+            self.apply_save_conflict_choice(index, choice);
+        }
+    }
+
+    /// 执行磁盘冲突的选择（UI 与 `dialog:save-conflict:*` 共用，#618）。
+    fn apply_save_conflict_choice(&mut self, index: usize, choice: SaveConflictChoice) {
+        self.state.pending_save_conflict = None;
         match choice {
-            Some(Choice::Overwrite) => {
-                self.state.pending_save_conflict = None;
-                match self.workspace.save_document_forced(index) {
-                    Ok(path) => self.state.status = format!("saved {path} (overwrote)"),
-                    Err(error) => self.state.status = format!("save failed: {error}"),
-                }
-            }
-            Some(Choice::Reload) => {
-                self.state.pending_save_conflict = None;
-                match self.workspace.reload_document_from_disk(index) {
-                    Ok(()) => self.state.status = "reloaded from disk".to_string(),
-                    Err(error) => self.state.status = format!("reload failed: {error}"),
-                }
-            }
-            Some(Choice::Cancel) => self.state.pending_save_conflict = None,
-            None => {}
+            SaveConflictChoice::Overwrite => match self.workspace.save_document_forced(index) {
+                Ok(path) => self.state.status = format!("saved {path} (overwrote)"),
+                Err(error) => self.state.status = format!("save failed: {error}"),
+            },
+            SaveConflictChoice::Reload => match self.workspace.reload_document_from_disk(index) {
+                Ok(()) => self.state.status = "reloaded from disk".to_string(),
+                Err(error) => self.state.status = format!("reload failed: {error}"),
+            },
+            SaveConflictChoice::Cancel => {}
         }
     }
 
@@ -3786,18 +4052,30 @@ impl EditorApp {
             });
 
         match decision {
-            Some(CloseDecision::Save) => match self.save_before_close(target) {
-                Ok(()) => self.finish_close(ctx, target),
-                Err(error) => self.state.status = format!("save failed: {error}"),
-            },
-            Some(CloseDecision::Discard) => self.finish_close(ctx, target),
-            Some(CloseDecision::Cancel) => self.state.pending_close = None,
+            Some(decision) => self.apply_close_decision(ctx, target, decision),
             None => {
                 // 标题栏的 × 等同 Cancel。
                 if !open {
                     self.state.pending_close = None;
                 }
             }
+        }
+    }
+
+    /// 执行未保存关闭对话框的选择（UI 与 `dialog:close:*` 共用，#618）。
+    fn apply_close_decision(
+        &mut self,
+        ctx: &egui::Context,
+        target: panels::CloseTarget,
+        decision: CloseDecision,
+    ) {
+        match decision {
+            CloseDecision::Save => match self.save_before_close(target) {
+                Ok(()) => self.finish_close(ctx, target),
+                Err(error) => self.state.status = format!("save failed: {error}"),
+            },
+            CloseDecision::Discard => self.finish_close(ctx, target),
+            CloseDecision::Cancel => self.state.pending_close = None,
         }
     }
 
