@@ -1319,6 +1319,13 @@ impl ViewportState {
                 .and_then(|value| value.as_f64())
                 .map(|value| value as f32)
         }
+        fn flag(entity: &prism_editor_core::EntityJson, component: &str, field: &str) -> bool {
+            entity
+                .component(component)
+                .and_then(|value| value.get(field))
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+        }
         fn color(entity: &prism_editor_core::EntityJson, component: &str, alpha: u8) -> Color32 {
             let channel = |index: usize| {
                 entity
@@ -1377,40 +1384,82 @@ impl ViewportState {
 
             if is_camera {
                 let color = Color32::from_rgba_unmultiplied(150, 185, 225, alpha);
-                // 视锥：fov 取相机组件，宽高比固定 16:9 近似（编辑器里只做示意）。
-                let fov = number(entity, CAMERA, "fov_y_degrees").unwrap_or(60.0);
-                let far = world_len * 1.4;
-                let hh = (fov.to_radians() * 0.5).tan() * far;
-                let hw = hh * 1.6;
-                let corner = |du: f32, dv: f32| {
+                // 用相机自己的 near/far 和投影模式画取景范围：
+                // - 透视：near/far 两个矩形 + 四条侧棱；
+                // - 正交：同样两个矩形，但尺寸由 orthographic_size 决定（#601）。
+                let orthographic = flag(entity, CAMERA, "orthographic");
+                let near = number(entity, CAMERA, "near")
+                    .filter(|value| value.is_finite() && *value > 0.0)
+                    .unwrap_or(0.1);
+                let far = number(entity, CAMERA, "far")
+                    .filter(|value| value.is_finite() && *value > near)
+                    .unwrap_or(1000.0);
+                let aspect = if width > 0.0 && height > 0.0 {
+                    width / height
+                } else {
+                    16.0 / 9.0
+                };
+                let (near_hw, near_hh, far_hw, far_hh) = if orthographic {
+                    let half_height = number(entity, CAMERA, "orthographic_size")
+                        .filter(|value| value.is_finite() && *value > 0.0)
+                        .unwrap_or(5.0);
+                    (
+                        half_height * aspect,
+                        half_height,
+                        half_height * aspect,
+                        half_height,
+                    )
+                } else {
+                    let fov = number(entity, CAMERA, "fov_y_degrees")
+                        .filter(|value| value.is_finite() && *value > 0.0)
+                        .unwrap_or(60.0);
+                    let half_tan = (fov.to_radians() * 0.5).tan();
+                    (
+                        half_tan * near * aspect,
+                        half_tan * near,
+                        half_tan * far * aspect,
+                        half_tan * far,
+                    )
+                };
+                let corner = |distance: f32, hw: f32, hh: f32, du: f32, dv: f32| {
                     let point = [
                         position[0]
-                            + forward[0] * far
+                            + forward[0] * distance
                             + basis[0][0] * hw * du
                             + basis[1][0] * hh * dv,
                         position[1]
-                            + forward[1] * far
+                            + forward[1] * distance
                             + basis[0][1] * hw * du
                             + basis[1][1] * hh * dv,
                         position[2]
-                            + forward[2] * far
+                            + forward[2] * distance
                             + basis[0][2] * hw * du
                             + basis[1][2] * hh * dv,
                     ];
                     vm::project(point, frame, width, height)
                         .map(|(x, y, _)| rect.min + egui::vec2(x, y))
                 };
-                let corners = [
-                    corner(-1.0, -1.0),
-                    corner(1.0, -1.0),
-                    corner(1.0, 1.0),
-                    corner(-1.0, 1.0),
+                let near_corners = [
+                    corner(near, near_hw, near_hh, -1.0, -1.0),
+                    corner(near, near_hw, near_hh, 1.0, -1.0),
+                    corner(near, near_hw, near_hh, 1.0, 1.0),
+                    corner(near, near_hw, near_hh, -1.0, 1.0),
                 ];
-                for corner in corners.iter().flatten() {
-                    painter.line_segment([center, *corner], stroke(color));
+                let far_corners = [
+                    corner(far, far_hw, far_hh, -1.0, -1.0),
+                    corner(far, far_hw, far_hh, 1.0, -1.0),
+                    corner(far, far_hw, far_hh, 1.0, 1.0),
+                    corner(far, far_hw, far_hh, -1.0, 1.0),
+                ];
+                for corners in [&near_corners, &far_corners] {
+                    for pair in 0..4 {
+                        if let (Some(a), Some(b)) = (corners[pair], corners[(pair + 1) % 4]) {
+                            painter.line_segment([a, b], stroke(color));
+                        }
+                    }
                 }
                 for pair in 0..4 {
-                    if let (Some(a), Some(b)) = (corners[pair], corners[(pair + 1) % 4]) {
+                    if let (Some(a), Some(b)) = (near_corners[pair], far_corners[pair]) {
                         painter.line_segment([a, b], stroke(color));
                     }
                 }
