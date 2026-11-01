@@ -1298,6 +1298,27 @@ mod asset_inspector_tests {
 
     /// 选中的资产不在索引里时显示占位，不 panic、不写文档。
     #[test]
+    fn import_settings_sidecar_round_trips() {
+        // #514：编辑器写、cooker 读同一组键；坏文件回落到默认值。
+        let dir = std::env::temp_dir().join(format!("prism-import-ui-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("assets/sprites")).unwrap();
+        let sidecar = dir.join(import_settings_path("assets/sprites/boat.png"));
+        assert_eq!(read_import_settings(&sidecar), (0, true));
+
+        std::fs::write(&sidecar, import_settings_json(512, false)).unwrap();
+        assert_eq!(read_import_settings(&sidecar), (512, false));
+
+        // 缺字段：只覆盖写出来的那一项。
+        std::fs::write(&sidecar, r#"{"maxSize": 256}"#).unwrap();
+        assert_eq!(read_import_settings(&sidecar), (256, true));
+
+        std::fs::write(&sidecar, "not json").unwrap();
+        assert_eq!(read_import_settings(&sidecar), (0, true));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn an_unknown_asset_renders_a_placeholder() {
         let mut workspace = Workspace::sample();
         let mut state = UiState::default();
@@ -1443,6 +1464,10 @@ fn asset_inspector(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) 
                     .size(10.0),
             );
         }
+    }
+
+    if details.asset.kind == AssetKind::Texture {
+        texture_import_settings(ui, workspace, state, &path);
     }
 
     ui.separator();
@@ -7018,4 +7043,92 @@ fn layout_editor(ui: &mut Ui, workspace: &mut Workspace, entity_id: u32, layout:
                 ui.end_row();
             }
         });
+}
+
+/// 纹理导入设置的旁挂路径（与 cooker 的 `ImportSettings::sidecar_path` 同约定）。
+fn import_settings_path(asset: &str) -> String {
+    format!("{asset}.import.json")
+}
+
+/// 读旁挂 JSON 的 `maxSize` / `generateMips`；缺失或坏文件回落到 `(0, true)`。
+fn read_import_settings(path: &std::path::Path) -> (u32, bool) {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return (0, true);
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&text) else {
+        return (0, true);
+    };
+    let max_size = value.get("maxSize").and_then(Value::as_u64).unwrap_or(0) as u32;
+    let mips = value
+        .get("generateMips")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    (max_size, mips)
+}
+
+/// 旁挂 JSON 的写回形状（cooker 的 `ImportSettings` 读同一组键）。
+fn import_settings_json(max_size: u32, generate_mips: bool) -> String {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "maxSize": max_size,
+        "generateMips": generate_mips,
+    }))
+    .unwrap_or_default()
+}
+
+/// 纹理导入设置（#514）：`Max Size` / `Mips`，Apply 写旁挂、Revert 重读、Reimport 重打场景包。
+fn texture_import_settings(ui: &mut Ui, workspace: &Workspace, state: &mut UiState, asset: &str) {
+    let Some(root) = workspace.project_root.clone() else {
+        return;
+    };
+    let sidecar = root.join(import_settings_path(asset));
+    let id = egui::Id::new(("import-settings", asset));
+    let mut buffer = ui
+        .data(|data| data.get_temp::<(u32, bool)>(id))
+        .unwrap_or_else(|| read_import_settings(&sidecar));
+
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Import Settings").strong().size(11.0));
+        ui.label(
+            RichText::new("max size / mips take effect after Reimport")
+                .weak()
+                .size(10.0),
+        );
+    });
+    ui.horizontal(|ui| {
+        ui.label("Max Size");
+        ui.add(
+            egui::DragValue::new(&mut buffer.0)
+                .range(0..=16384)
+                .speed(16.0),
+        )
+        .on_hover_text("Longest edge in pixels; 0 = unlimited");
+        ui.checkbox(&mut buffer.1, "Mips");
+    });
+    ui.horizontal(|ui| {
+        if ui.button("Apply").clicked() {
+            state.status = match std::fs::write(&sidecar, import_settings_json(buffer.0, buffer.1))
+            {
+                Ok(()) => format!("saved {}", sidecar.display()),
+                Err(error) => format!("save import settings failed: {error}"),
+            };
+            ui.data_mut(|data| data.insert_temp(id, buffer));
+        }
+        if ui.button("Revert").clicked() {
+            buffer = read_import_settings(&sidecar);
+            ui.data_mut(|data| data.insert_temp(id, buffer));
+            state.status = format!("reloaded import settings for {asset}");
+        }
+        if ui.button("Reimport").clicked() {
+            state.pending_build = Some(crate::build::BuildKind::ScenePack);
+            state.status = "rebuilding the scene pack (Reimport)".to_string();
+        }
+    });
+    if !sidecar.is_file() {
+        ui.label(
+            RichText::new("no sidecar yet — Apply creates it")
+                .weak()
+                .size(10.0),
+        );
+    }
 }

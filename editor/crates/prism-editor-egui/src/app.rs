@@ -5332,6 +5332,12 @@ impl App for EditorApp {
             )
             .show(ctx, |ui| self.dock_tree(ui));
 
+        // 面板（例如资产检查器的 Reimport）可能在任意 tab 里排队构建请求：
+        // 这里兜底消费一次，不要求用户先切到 Build 面板。
+        if let Some(kind) = self.state.pending_build.take() {
+            self.start_build(kind);
+        }
+
         // Play 态染色（#500）：整窗一圈描边，暂停时换琥珀色。只画边框，
         // 不覆盖内容 —— 悬浮面板和弹窗仍然清晰可读。
         if self.playing {

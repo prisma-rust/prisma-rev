@@ -272,6 +272,12 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   the list of paths (#530). Pak asset IDs are derived from the packaged relative path
   (`AssetId::from_path`), so adding a file never renumbers existing assets and cooked
   material texture IDs stay valid.
+- Per-asset import settings (#514): textures read
+  `<source>.import.json` next to the file (e.g. `assets/sprites/boat.png.import.json`)
+  with `{"maxSize": 1024, "generateMips": false}`. The scene-pack texture cooker applies
+  `maxSize` (area-average downscale, aspect preserved, never upscales) and
+  `generateMips`; missing fields follow the profile. The editor's asset inspector writes
+  the same keys (`Apply` / `Revert` / `Reimport`).
 - One-off scene cook: `cargo run -p prism-build-pipeline -- cook assets/scenes/default.scene.json`
   (writes `assets/cooked/default.rscn`; the old `prism-asset-cli` name is gone).
 - Pack already-cooked files: `cargo run -p prism-build-pipeline -- pack assets/cooked`

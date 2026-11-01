@@ -283,6 +283,12 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
   多个词之间是 AND，多个 `t:` 之间是 OR。选中资产后检查器显示资产详情（类型 / 体积 /
   GUID / 引用数 / 预览），底部的 **Ping In Scene** 和右键菜单的 `Ping In Scene` 会
   选中第一个引用该资产的实体并在 Scene 视图里框住它 —— 资产 ↔ 场景双向定位。
+- **纹理导入设置（#514）**：资产检查器选中纹理时多出 `Import Settings`
+  （`Max Size` 0 = 不限、`Mips` 开关）。`Apply` 写旁挂文件
+  `<asset>.import.json`（如 `assets/sprites/boat.png.import.json`），`Revert` 重新读盘，
+  `Reimport` 直接重打场景包（`BuildKind::ScenePack`，不要求先切到 Build 面板）。
+  cooker 在烘纹理时读同一份 JSON：`maxSize` 按**面积平均**缩小（保持宽高比，只缩不放），
+  `generateMips` 控制是否生成 mip 链；缺省字段跟随 profile。
 - **Problems**：项目模块与玩家构建的 error / warning 列表（`file:line:col`），
   点一行打开源码；工具栏的模块状态与第一段同源，`Ctrl+R` / `Compile` 重新编译。
 - **Docking**：拖动标签页（行为）：拖到另一个 leaf 的左/右/上/下 25% = 分屏，

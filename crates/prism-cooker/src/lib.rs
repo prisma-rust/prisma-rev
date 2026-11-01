@@ -11,6 +11,7 @@
 
 pub mod cooker;
 pub mod db;
+pub mod import_settings;
 pub mod importer;
 pub mod pack;
 
@@ -19,5 +20,6 @@ pub use cooker::{
     CookerRegistry,
 };
 pub use db::{AssetDatabase, AssetRecord, ImportCache};
+pub use import_settings::ImportSettings;
 pub use importer::{default_importer_registry, ImportError, ImportPipeline, Importer};
 pub use pack::{pack_directory, PackSummary};

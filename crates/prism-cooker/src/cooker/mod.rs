@@ -226,6 +226,61 @@ impl TextureCooker {
         Some((w, h, &data[pixels_start..pixels_start + expected]))
     }
 
+    /// 把最长边压到 `max_size` 以内（0 = 不限制），保持宽高比。
+    ///
+    /// 用面积平均（box filter）而不是最近邻：缩小后不会丢掉整体亮度，
+    /// 也不会产生摩尔纹。只做**缩小**，小图不会被放大。
+    fn clamp_max_size<'a>(
+        width: u32,
+        height: u32,
+        rgba: &'a [u8],
+        max_size: u32,
+    ) -> (u32, u32, std::borrow::Cow<'a, [u8]>) {
+        if max_size == 0 {
+            return (width, height, std::borrow::Cow::Borrowed(rgba));
+        }
+        let longest = width.max(height);
+        if longest <= max_size {
+            return (width, height, std::borrow::Cow::Borrowed(rgba));
+        }
+        let scale = max_size as f32 / longest as f32;
+        let new_w = ((width as f32 * scale).round() as u32).max(1);
+        let new_h = ((height as f32 * scale).round() as u32).max(1);
+        (
+            new_w,
+            new_h,
+            std::borrow::Cow::Owned(Self::resize_rgba(width, height, rgba, new_w, new_h)),
+        )
+    }
+
+    /// 面积平均缩放（只用于缩小）。
+    fn resize_rgba(width: u32, height: u32, rgba: &[u8], new_w: u32, new_h: u32) -> Vec<u8> {
+        let mut out = Vec::with_capacity(new_w as usize * new_h as usize * 4);
+        for y in 0..new_h {
+            let y0 = y * height / new_h;
+            let y1 = ((y + 1) * height / new_h).max(y0 + 1).min(height);
+            for x in 0..new_w {
+                let x0 = x * width / new_w;
+                let x1 = ((x + 1) * width / new_w).max(x0 + 1).min(width);
+                let mut acc = [0u32; 4];
+                let mut count = 0u32;
+                for sy in y0..y1 {
+                    for sx in x0..x1 {
+                        let idx = ((sy * width) + sx) as usize * 4;
+                        for channel in 0..4 {
+                            acc[channel] += rgba[idx + channel] as u32;
+                        }
+                        count += 1;
+                    }
+                }
+                for channel in acc {
+                    out.push((channel / count.max(1)) as u8);
+                }
+            }
+        }
+        out
+    }
+
     /// Generate a mip 链 using simple 2×2 盒 filtering.
     fn generate_mips(width: u32, height: u32, rgba: &[u8]) -> Vec<(u32, u32, Vec<u8>)> {
         let mut mips = Vec::new();
@@ -334,7 +389,14 @@ impl Cooker for TextureCooker {
             return Err(CookError::CookFailed("Zero-dimension texture".into()));
         }
 
-        let mips_rgba = Self::generate_mips(w, h, rgba);
+        // 每资产导入设置（`<asset>.import.json`）可以覆盖 profile 的 max_size / mips：
+        // 先把最长边压到 max_size 以内，再按需生成 mip 链。
+        let (w, h, rgba) = Self::clamp_max_size(w, h, rgba, ctx.settings.texture.max_size);
+        let mips_rgba = if ctx.settings.texture.generate_mips {
+            Self::generate_mips(w, h, &rgba)
+        } else {
+            vec![(w, h, rgba.to_vec())]
+        };
 
         // 格式 byte：只有 RGBA8 有编码器。块压缩（BC / ASTC / ETC2）还没实现，
         // 所以 profile 里声明的桌面 / 移动格式仍然回退 —— 但**运行时**已经能读

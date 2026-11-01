@@ -273,6 +273,73 @@ fn an_unimplemented_compression_profile_still_falls_back_to_rgba8() {
     assert!(result.compress);
 }
 
+fn rtex_header(data: &[u8]) -> (u32, u32, u32) {
+    assert_eq!(&data[..4], b"RTEX");
+    let width = u32::from_le_bytes(data[5..9].try_into().unwrap());
+    let height = u32::from_le_bytes(data[9..13].try_into().unwrap());
+    let levels = u32::from_le_bytes(data[13..17].try_into().unwrap());
+    (width, height, levels)
+}
+
+#[test]
+fn texture_cooker_honours_max_size_and_keeps_the_aspect_ratio() {
+    // 8×4 红图，最长边压到 4 → 4×2；mip 链 4×2 → 2×1 → 1×1 = 3 级。
+    let pixels = std::iter::repeat_n([255u8, 0, 0, 255], 8 * 4)
+        .flatten()
+        .collect::<Vec<_>>();
+    let intermediate = make_texture_intermediate(8, 4, &pixels);
+    let id = AssetId::from_raw((1u64 << 32) | 102);
+    let record = crate::db::AssetRecord::new(
+        id,
+        "wide.png".into(),
+        AssetType::Texture,
+        "texture-importer",
+    );
+    let mut settings = profile::CookSettings::default();
+    settings.texture.max_size = 4;
+    let ctx = CookContext {
+        record: &record,
+        imported_data: &intermediate,
+        settings: &settings,
+    };
+    let result = TextureCooker.cook(&ctx).unwrap();
+    assert_eq!(rtex_header(&result.cooked_data), (4, 2, 3));
+
+    // 小图不会被放大。
+    let intermediate = make_texture_intermediate(2, 2, &pixels[..16]);
+    let ctx = CookContext {
+        record: &record,
+        imported_data: &intermediate,
+        settings: &settings,
+    };
+    let result = TextureCooker.cook(&ctx).unwrap();
+    assert_eq!(rtex_header(&result.cooked_data), (2, 2, 2));
+}
+
+#[test]
+fn texture_cooker_can_skip_the_mip_chain() {
+    let pixels = std::iter::repeat_n([10u8, 20, 30, 255], 4 * 4)
+        .flatten()
+        .collect::<Vec<_>>();
+    let intermediate = make_texture_intermediate(4, 4, &pixels);
+    let id = AssetId::from_raw((1u64 << 32) | 103);
+    let record = crate::db::AssetRecord::new(
+        id,
+        "flat.png".into(),
+        AssetType::Texture,
+        "texture-importer",
+    );
+    let mut settings = profile::CookSettings::default();
+    settings.texture.generate_mips = false;
+    let ctx = CookContext {
+        record: &record,
+        imported_data: &intermediate,
+        settings: &settings,
+    };
+    let result = TextureCooker.cook(&ctx).unwrap();
+    assert_eq!(rtex_header(&result.cooked_data), (4, 4, 1));
+}
+
 #[test]
 fn texture_cooker_rejects_bad_magic() {
     let cooker = TextureCooker;
