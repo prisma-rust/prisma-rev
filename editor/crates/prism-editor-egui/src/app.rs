@@ -4208,6 +4208,104 @@ impl EditorApp {
         }
     }
 
+    /// Scene 视图左上角的浮层工具条（#421）：把最常用的视口开关放在鼠标旁边。
+    ///
+    /// 只做这个实例，不引入 Unity `OverlayCanvas` 那套通用抽象；位置固定
+    /// （左上角 8px），折叠状态存在 `UiState`。
+    fn scene_overlay(&mut self, ui: &mut egui::Ui, rect: Rect) {
+        let collapsed = self.state.scene_overlay_collapsed;
+        let bar = scene_overlay_rect(rect, collapsed);
+        let mut settings = self.render_settings.clone();
+        let mut changed = false;
+        let mut skybox_changed = false;
+        let mut camera_changed = false;
+        let mut collapsed_now = collapsed;
+
+        ui.scope_builder(egui::UiBuilder::new().max_rect(bar), |ui| {
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgba_unmultiplied(18, 20, 24, 200))
+                .stroke(egui::Stroke::new(
+                    1.0_f32,
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 24),
+                ))
+                .corner_radius(egui::CornerRadius::same(4))
+                .inner_margin(egui::Margin::symmetric(5, 2))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        if ui
+                            .small_button(if collapsed_now {
+                                icons::CARET_RIGHT
+                            } else {
+                                icons::CARET_DOWN
+                            })
+                            .on_hover_text("Collapse / expand viewport tools")
+                            .clicked()
+                        {
+                            collapsed_now = !collapsed_now;
+                        }
+                        if collapsed_now {
+                            return;
+                        }
+                        if ui
+                            .selectable_label(settings.show_grid, "Grid")
+                            .on_hover_text("Ground grid (G)")
+                            .clicked()
+                        {
+                            settings.show_grid = !settings.show_grid;
+                            changed = true;
+                        }
+                        if ui
+                            .selectable_label(self.workspace.show_skybox, "Sky")
+                            .on_hover_text("Scene skybox background (S)")
+                            .clicked()
+                        {
+                            self.workspace.show_skybox = !self.workspace.show_skybox;
+                            skybox_changed = true;
+                        }
+                        if ui
+                            .selectable_label(self.workspace.camera.orthographic, "2D")
+                            .on_hover_text("Orthographic XY view")
+                            .clicked()
+                        {
+                            self.workspace.camera.toggle_2d();
+                            camera_changed = true;
+                        }
+                        if ui
+                            .selectable_label(self.workspace.snap.enabled, "Snap")
+                            .on_hover_text("Snap gizmo drags (hold Ctrl to invert)")
+                            .clicked()
+                        {
+                            self.workspace.snap.enabled = !self.workspace.snap.enabled;
+                        }
+                        ui.add(
+                            egui::DragValue::new(&mut self.workspace.snap.translate)
+                                .speed(0.01)
+                                .range(0.01..=100.0)
+                                .prefix("Δ "),
+                        )
+                        .on_hover_text("Translate snap step (world units)");
+                    });
+                });
+        });
+
+        if collapsed_now != collapsed {
+            self.state.scene_overlay_collapsed = collapsed_now;
+        }
+        if changed {
+            self.apply_render_settings(settings);
+        }
+        if skybox_changed {
+            let on = self.workspace.show_skybox;
+            if let Some(view) = self.scene_view.as_mut() {
+                view.host.set_show_skybox(on);
+            }
+            self.mark_scene_dirty();
+        }
+        if camera_changed {
+            self.mark_scene_dirty();
+        }
+    }
+
     fn show_viewport(&mut self, ui: &mut egui::Ui, kind: ViewKind, rect: Rect) {
         let _ = rect;
         if !self.ensure_view(kind) {
@@ -4254,6 +4352,9 @@ impl EditorApp {
         }
         if document_changed {
             self.state.status = "moved selection".to_string();
+        }
+        if kind == ViewKind::Scene {
+            self.scene_overlay(ui, rect);
         }
     }
 
@@ -5468,6 +5569,24 @@ fn read_report(root: Option<&Path>) -> Option<String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_scene_overlay_stays_inside_the_viewport() {
+        let viewport = Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(800.0, 600.0));
+        let expanded = scene_overlay_rect(viewport, false);
+        assert_eq!(expanded.min, egui::pos2(18.0, 28.0));
+        assert!(expanded.width() > 200.0);
+        assert!(viewport.contains(expanded.min) && viewport.contains(expanded.max));
+
+        let collapsed = scene_overlay_rect(viewport, true);
+        assert!(collapsed.width() < expanded.width());
+
+        // 窄视口：宽度被夹到视口内。
+        let tiny = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(40.0, 40.0));
+        let rect = scene_overlay_rect(tiny, false);
+        assert!(rect.width() <= tiny.width());
+        assert!(tiny.contains(rect.min) && tiny.contains(rect.max));
+    }
+
     fn rect() -> Rect {
         Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(400.0, 300.0))
     }
@@ -5735,6 +5854,18 @@ mod tests {
 }
 
 /// `position[1]` → (`position`, 1)；没有下标就是 (`position`, 0)。
+/// Scene 视图浮层工具条的位置（#421）：左上角 8px，宽度随折叠状态变化。
+///
+/// 窄视口下宽度也不会超过视口，避免浮层盖住整块画面。
+fn scene_overlay_rect(viewport: Rect, collapsed: bool) -> Rect {
+    let width: f32 = if collapsed { 30.0 } else { 360.0 };
+    let available = (viewport.width() - 16.0).max(30.0);
+    Rect::from_min_size(
+        viewport.min + egui::vec2(8.0, 8.0),
+        egui::vec2(width.min(available), 26.0),
+    )
+}
+
 fn split_axis(path: &str) -> Option<(&str, usize)> {
     match path.split_once('[') {
         Some((field, rest)) => {

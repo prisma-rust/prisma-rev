@@ -173,6 +173,11 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
   `near` / `far`，并分别开关**相机图标 / 光源图标**。FOV 与裁剪面同时写进引擎相机和
   拾取射线（`CameraFrame::fov_y_degrees`），gizmo、点选与画面不会错位；
   `2D` 开关仍是正交 XY 视图。
+- **视口浮层工具条（#421）**：Scene 视图左上角（8px 处）有一条半透明工具条，
+  不用把视线移到顶部工具栏：`Grid`（`G`）、`Sky`（`S`）、`2D`（正交 XY）、
+  `Snap` 开关与平移吸附步长（`Δ`，世界单位，0.01–100）。左侧箭头折叠成一个小方块；
+  折叠状态只存在 `UiState`，不进文档。它是这个 issue 建议的**最小实例**，
+  不是 Unity `OverlayCanvas` 那套可拖拽停靠系统。
 - 工具：`W` / `E` / `R` 切换移动 / 旋转 / 缩放 gizmo，`X` 切世界/局部，`G` 开关网格；
   `S` 开关 Scene view 背景（场景天空盒 / 纯色，与引擎的
   `SceneViewState.showSkybox` 同语义，默认开）；

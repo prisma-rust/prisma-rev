@@ -255,6 +255,8 @@ pub struct UiState {
     pub viewport_scale: f32,
     /// 瓦片地图格子编辑器的调色板大小（左键循环 `0..=palette`，#529）。
     pub tilemap_palette: u32,
+    /// Scene 视图左上角的浮层工具条是否折叠（#421）。
+    pub scene_overlay_collapsed: bool,
     /// Project 面板的列表 / 网格视图（#419）。
     pub asset_view: AssetView,
     /// Project 面板的一列 / 两列（左目录树 + 右内容，#419）。
