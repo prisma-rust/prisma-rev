@@ -142,7 +142,12 @@ pub fn ui_render_system(world: &mut World) {
         if !style.visible {
             continue;
         }
-        let bg = style.background;
+        // #528：`Button` 按交互状态换色，没有 `Button` 时继续用
+        // `Style::background`（两者可以共存，按钮优先）。
+        let bg = match world.get::<Button>(entity) {
+            Some(button) => button.color(world.get::<Interaction>(entity)),
+            None => style.background,
+        };
         if bg[3] <= 0.0 {
             continue;
         } // 完全透明跳过

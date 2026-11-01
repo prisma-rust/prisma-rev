@@ -55,6 +55,42 @@ fn spawn_interactive(world: &mut World, rect: [f32; 4]) -> Entity {
 }
 
 #[test]
+fn buttons_draw_their_interaction_colors() {
+    // #528：`Button` 覆盖 `Style.background`，并跟随 hover / pressed 换色。
+    let mut world = world_with_screen();
+    let entity = spawn_quad(&mut world, [10.0, 10.0, 100.0, 40.0]);
+    let button = Button::default();
+    world.insert(entity, button);
+
+    ui_render_system(&mut world);
+    let overlay = convert_ui_draw_list_to_overlay(&world);
+    assert_eq!(overlay.quads[0].color, button.normal, "默认用 normal 色");
+
+    world.insert(
+        entity,
+        Interaction {
+            hovered: true,
+            ..Default::default()
+        },
+    );
+    ui_render_system(&mut world);
+    let overlay = convert_ui_draw_list_to_overlay(&world);
+    assert_eq!(overlay.quads[0].color, button.hover);
+
+    world.insert(
+        entity,
+        Interaction {
+            hovered: true,
+            pressed: true,
+            ..Default::default()
+        },
+    );
+    ui_render_system(&mut world);
+    let overlay = convert_ui_draw_list_to_overlay(&world);
+    assert_eq!(overlay.quads[0].color, button.pressed, "按下比 hover 优先");
+}
+
+#[test]
 fn border_radius_is_normalised_by_the_quad_size() {
     let mut world = world_with_screen();
     let entity = spawn_quad(&mut world, [100.0, 100.0, 200.0, 100.0]);
@@ -165,9 +201,16 @@ fn inactive_element_does_not_block_hit_testing() {
     world.insert_resource(UiInputState {
         cursor_pos: [50.0, 50.0],
         left_clicked: true,
+        left_held: true,
         ..UiInputState::default()
     });
-
+    ui_input_system(&mut world);
+    // #528：点击在松开时成立，补一个松开帧。
+    world.insert_resource(UiInputState {
+        cursor_pos: [50.0, 50.0],
+        left_released: true,
+        ..UiInputState::default()
+    });
     ui_input_system(&mut world);
 
     let below_interaction = world.get::<Interaction>(below).expect("interaction");

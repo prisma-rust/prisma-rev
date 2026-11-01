@@ -23,22 +23,53 @@ use prism_ecs::{Entity, World};
 pub struct UiInputState {
     /// 鼠标在窗口中的位置（像素）。
     pub cursor_pos: [f32; 2],
-    /// 当前帧是否按下了左键。
+    /// 当前帧是否按下了左键（按下边沿）。
     pub left_clicked: bool,
     /// 左键当前是否按住。
     pub left_held: bool,
+    /// 当前帧是否松开了左键（松开边沿）。点击在**松开**时成立。
+    pub left_released: bool,
     /// 本帧新按下的按键列表（去重，任意键跳过等用）。
     pub pressed_keys: Vec<crate::input::KeyCode>,
+}
+
+/// 左键按下的目标（#528）。
+///
+/// 持久资源：按下时记下命中的实体，松开时只有「同一实体」才算点击。
+/// 这样在按钮外按下、拖到按钮上松开不会误触发，反过来拖出按钮再松开也不算。
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UiPressState {
+    pub entity: Option<Entity>,
+}
+
+/// 键盘焦点（#528）：最近一次点击的按钮，`Enter` / `Space` 提交它。
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UiFocus {
+    pub entity: Option<Entity>,
 }
 
 /// UI Input System —— 每帧运行，做命中测试更新 Interaction 组件。
 ///
 /// 必须在 `ui::layout` 之后运行（需要 ComputedLayout 已经就绪）。
+///
+/// 点击语义与 Unity 的 `Clickable` 一致：在元素内按下、**并且在元素内松开**
+/// 才置 `clicked`；`pressed` 表示指针仍按在按下目标上。带 `Button` 且
+/// `interactable = false` 的元素只更新 `hovered`，不响应按下 / 点击。
+/// 有键盘焦点（最近点击的按钮）时，`Enter` / `Space` 也会置 `clicked`。
 pub fn ui_input_system(world: &mut World) {
     let state = match world.get_resource::<UiInputState>() {
         Some(s) => s.clone(),
         None => return,
     };
+
+    // 第零步：`Button` 是可作者化的交互元素，场景里不一定显式挂
+    // `Interaction`（那是运行期状态）；这里补齐，作者只写 `Button` 也能用。
+    let buttons: Vec<Entity> = world.query::<Button>().map(|(entity, _)| entity).collect();
+    for entity in buttons {
+        if world.get::<Interaction>(entity).is_none() {
+            world.insert(entity, Interaction::default());
+        }
+    }
 
     // 第一步：清空所有之前帧的状态
     for (_, interaction) in world.query_mut::<Interaction>() {
@@ -47,21 +78,61 @@ pub fn ui_input_system(world: &mut World) {
         interaction.pressed = false;
     }
 
-    // 第二步：命中测试，选出光标下最上层的那一个元素
-    let Some(entity) = topmost_hit(world, state.cursor_pos) else {
-        return;
-    };
+    let hit = topmost_hit(world, state.cursor_pos);
+    let mut press = world.remove_resource::<UiPressState>().unwrap_or_default();
+    let mut focus = world.remove_resource::<UiFocus>().unwrap_or_default();
 
-    // 第三步：只把状态写给最上层元素
-    if let Some(interaction) = world.get_mut::<Interaction>(entity) {
-        interaction.hovered = true;
-        if state.left_clicked {
-            interaction.clicked = true;
-        }
-        if state.left_held {
-            interaction.pressed = true;
+    // 第二步：按下时记录目标；点击 = 同一目标上松开。
+    if state.left_clicked {
+        press.entity = hit;
+        if hit.and_then(|entity| world.get::<Button>(entity)).is_some() {
+            focus.entity = hit;
         }
     }
+
+    // 第三步：只把状态写给最上层元素
+    if let Some(entity) = hit {
+        let interactable = world
+            .get::<Button>(entity)
+            .map(|button| button.interactable)
+            .unwrap_or(true);
+        if let Some(interaction) = world.get_mut::<Interaction>(entity) {
+            interaction.hovered = true;
+            if interactable {
+                interaction.pressed =
+                    press.entity == Some(entity) && (state.left_held || state.left_clicked);
+                interaction.clicked = press.entity == Some(entity) && state.left_released;
+            }
+        }
+    }
+
+    // 第四步：键盘激活。焦点元素不需要在光标下（光标可能已经移开）。
+    let activate = state.pressed_keys.iter().any(|key| {
+        matches!(
+            key,
+            crate::input::KeyCode::Enter | crate::input::KeyCode::Space
+        )
+    });
+    if activate {
+        if let Some(entity) = focus.entity {
+            let interactable = world
+                .get::<Button>(entity)
+                .map(|button| button.interactable)
+                .unwrap_or(true);
+            if interactable {
+                if let Some(interaction) = world.get_mut::<Interaction>(entity) {
+                    interaction.clicked = true;
+                }
+            }
+        }
+    }
+
+    // 松开后按下目标失效（无论在元素内外松开）。
+    if state.left_released {
+        press.entity = None;
+    }
+    world.insert_resource(press);
+    world.insert_resource(focus);
 }
 
 /// 光标下最上层的可交互 UI 实体（`None` = 没有命中）。

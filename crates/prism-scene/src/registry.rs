@@ -409,7 +409,9 @@ pub fn builtin_schema_fingerprint() -> u64 {
 pub fn register_builtin_components(registry: &mut ComponentRegistry) {
     use crate::components::*;
     #[cfg(feature = "group-ui")]
-    use crate::ui::{Anchors, ComputedLayout, Margin, Node, Pivot, Style, Text};
+    use crate::ui::{
+        Anchors, Button, ComputedLayout, Interaction, Margin, Node, Pivot, Style, Text,
+    };
 
     // ── 场景基础组件 ──
     registry.register_reflect_serde::<Active>("prism_engine::scene::Active");
@@ -512,6 +514,9 @@ pub fn register_builtin_components(registry: &mut ComponentRegistry) {
         // `ui::layout` 自己 ensure；只登记类型，不让作者挂载。
         registry.register_reflect_type::<ComputedLayout>();
         registry.register_reflect_serde::<Text>("prism_engine::ui::Text");
+        // #528：可交互 UI 的组件必须能在场景 / 预制体里保存。
+        registry.register_reflect_serde::<Interaction>("prism_engine::ui::Interaction");
+        registry.register_reflect_serde::<Button>("prism_engine::ui::Button");
     }
 
     // ── 嵌套类型（类型表/cook 需要）──

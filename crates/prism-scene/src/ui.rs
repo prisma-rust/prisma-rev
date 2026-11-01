@@ -288,17 +288,119 @@ impl ReflectType for TextAlign {
 // ── Interaction ───────────────────────────────────────────────
 
 /// 交互状态（由 Input System 每帧更新）。
-#[derive(Clone, Copy, Debug, Default)]
+///
+/// 从 #528 起也可以挂在场景里：状态每帧被重写，但组件本身可以序列化，
+/// 因此场景 / 预制体 / 模板能保存「这个元素可交互」这件事，游戏代码
+/// 也不用自己插入运行时组件。
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, Reflect)]
+#[reflect(name = "prism_engine::ui::Interaction")]
+#[serde(default)]
 pub struct Interaction {
     pub hovered: bool,
+    /// 指针在**按下目标**上按住（拖出元素后松开就不算按下）。
     pub pressed: bool,
-    /// 一帧有效，input system 设置后下一帧清零。
+    /// 一帧有效：在元素内按下、并在元素内松开（或键盘激活）时置位。
     pub clicked: bool,
+}
+
+// ── Button ───────────────────────────────────────────────────
+
+/// 可点击按钮的**外观**状态色（#528）。
+///
+/// 只是数据：`ui_render_system` 按 [`Interaction`] 挑选颜色，`ui_input_system`
+/// 负责 hover / pressed / clicked 语义。没有 `Button` 的 UI 元素继续用
+/// [`Style::background`]，两者可以共存（`Button` 优先）。
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Reflect)]
+#[reflect(name = "prism_engine::ui::Button")]
+#[serde(default)]
+pub struct Button {
+    /// `false` = 显示 [`Button::disabled`] 颜色，且不再响应点击。
+    pub interactable: bool,
+    pub normal: [f32; 4],
+    pub hover: [f32; 4],
+    pub pressed: [f32; 4],
+    pub disabled: [f32; 4],
+}
+
+impl Default for Button {
+    fn default() -> Self {
+        Self {
+            interactable: true,
+            normal: [0.18, 0.20, 0.24, 1.0],
+            hover: [0.24, 0.27, 0.32, 1.0],
+            pressed: [0.12, 0.14, 0.17, 1.0],
+            disabled: [0.15, 0.15, 0.16, 0.85],
+        }
+    }
+}
+
+impl Button {
+    /// 当前应画的背景色；`interaction` 缺失时按未交互处理。
+    pub fn color(&self, interaction: Option<&Interaction>) -> [f32; 4] {
+        if !self.interactable {
+            return self.disabled;
+        }
+        match interaction {
+            Some(state) if state.pressed => self.pressed,
+            Some(state) if state.hovered => self.hover,
+            _ => self.normal,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Style, Text, TextAlign};
+    use super::{Button, Interaction, Style, Text, TextAlign};
+
+    #[test]
+    fn button_colors_follow_the_interaction_state() {
+        let button = Button::default();
+        assert_eq!(button.color(None), button.normal);
+        assert_eq!(
+            button.color(Some(&Interaction {
+                hovered: true,
+                ..Default::default()
+            })),
+            button.hover
+        );
+        assert_eq!(
+            button.color(Some(&Interaction {
+                hovered: true,
+                pressed: true,
+                ..Default::default()
+            })),
+            button.pressed,
+            "按下比 hover 优先"
+        );
+        let disabled = Button {
+            interactable: false,
+            ..Default::default()
+        };
+        assert_eq!(
+            disabled.color(Some(&Interaction {
+                hovered: true,
+                pressed: true,
+                ..Default::default()
+            })),
+            disabled.disabled
+        );
+    }
+
+    #[test]
+    fn button_and_interaction_round_trip_through_json() {
+        let button: Button = serde_json::from_str(r#"{"interactable":false}"#).unwrap();
+        assert!(!button.interactable);
+        assert_eq!(button.normal, Button::default().normal, "其余字段走默认");
+        let json = serde_json::to_string(&button).unwrap();
+        let back: Button = serde_json::from_str(&json).unwrap();
+        assert!(!back.interactable);
+
+        let interaction: Interaction =
+            serde_json::from_str(r#"{"hovered":true,"pressed":false,"clicked":true}"#).unwrap();
+        assert!(interaction.hovered && interaction.clicked && !interaction.pressed);
+        let legacy: Interaction = serde_json::from_str("{}").unwrap();
+        assert!(!legacy.hovered, "空对象 = 未交互");
+    }
 
     #[test]
     fn style_partial_json_is_visible_by_default() {
