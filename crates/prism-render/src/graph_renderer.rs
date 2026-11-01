@@ -251,6 +251,9 @@ pub struct GraphRenderer {
     /// `graph.execute` and reaches into them only for lifecycle ops
     /// (`recreate_swapchain`) via `graph.pass_mut`.
     settings: RenderSettings,
+    /// 当前需要画选中描边的 ECS 实体 id（#487）。编辑器每帧通过
+    /// [`Self::set_outline_entities`] 更新；空 = 不画。
+    outline_entities: Vec<u32>,
     shadow_sampler: vk::Sampler,
     // Captured from the graph's allocated shadow 映射表 consumed via the
     // 描述符 集合 in `forward_pass`.
@@ -621,6 +624,7 @@ impl GraphRenderer {
             brdf_bindless_slot: brdf_handle.0,
             graph,
             settings,
+            outline_entities: Vec::new(),
             shadow_sampler,
             shadow_view,
             #[cfg(not(feature = "shadows"))]
@@ -1025,6 +1029,7 @@ impl GraphRenderer {
             brdf_bindless_slot: brdf_handle.0,
             graph,
             settings,
+            outline_entities: Vec::new(),
             shadow_sampler,
             shadow_view,
             #[cfg(not(feature = "shadows"))]
@@ -1117,6 +1122,20 @@ impl GraphRenderer {
     /// after construction.
     pub fn graph_mut(&mut self) -> &mut RenderGraph {
         &mut self.graph
+    }
+
+    /// 设置本帧要画选中描边的 ECS 实体 id（#487）。
+    ///
+    /// 编辑器把 `workspace.selection` 映射成 `prism_ecs::Entity::id()` 后调用；
+    /// 空切片关闭描边。等待绘制期间列表会被复制，调用方不需要保持借用。
+    pub fn set_outline_entities(&mut self, entities: &[u32]) {
+        self.outline_entities.clear();
+        self.outline_entities.extend_from_slice(entities);
+    }
+
+    /// 当前选中描边实体列表（测试 / 调试用）。
+    pub fn outline_entities(&self) -> &[u32] {
+        &self.outline_entities
     }
 
     /// Request a path-tracer accumulation reset on the 下一个 帧 调用 this
@@ -2197,6 +2216,7 @@ impl GraphRenderer {
                 },
                 debug_flags,
                 wireframe: *wireframe,
+                outline_entities: &self.outline_entities,
                 grade: grade.sanitized(),
                 inv_view_rot: {
                     let v = &frame_data.view;

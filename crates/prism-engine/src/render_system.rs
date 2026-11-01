@@ -902,6 +902,7 @@ mod tests {
     fn shadow_caster(bounds: Option<prism_render::culling::Aabb>) -> DrawItem {
         DrawItem {
             mesh: Default::default(),
+            entity_id: u32::MAX,
             model: Mat4::IDENTITY.to_cols_array_2d(),
             material: None,
             cast_shadow: true,

@@ -370,6 +370,12 @@ impl DrawState {
 pub struct DrawItem {
     /// GPU 网格 handle (from [`crate::managers::RenderMeshManager`]).
     pub mesh: MeshHandle,
+    /// 产生这个绘制项的 ECS 实体 id（`prism_ecs::Entity::id()`）。
+    ///
+    /// 渲染器本身不依赖 ECS；编辑器把选中的实体 id 交给
+    /// [`GraphRenderer::set_outline_entities`]，`ForwardPass` 据此给对应的
+    /// 网格画选中描边（#487）。程序化 / 测试绘制可用 `u32::MAX` 表示无实体。
+    pub entity_id: u32,
     /// 模型 矩阵 世界 变换 for this 实例
     pub model: [[f32; 4]; 4],
     /// 材质 SSBO 槽 索引 into `RenderMaterialManager`'s
@@ -799,6 +805,12 @@ pub struct GraphFrame<'a> {
     pub debug_flags: u32,
     /// 前向管线线框模式（#431）。设备不支持 `fillModeNonSolid` 时忽略。
     pub wireframe: bool,
+    /// 需要画选中描边的 ECS 实体 id（#487）。
+    ///
+    /// 由编辑器通过 [`GraphRenderer::set_outline_entities`] 每帧设置；空切片
+    /// 表示没有选中物体。`ForwardPass` 只对 `DrawItem::entity_id` 命中的绘制
+    /// 项画反向外壳。
+    pub outline_entities: &'a [u32],
     /// Inverse-view 旋转 (upper-left 3x3 of inverse(view)), packed as mat4.
     /// Used by the skybox pass to 旋转 view-space look directions into 世界
     /// 空间 Because the 视图 矩阵 is a 刚体 变换 this is just the

@@ -94,6 +94,10 @@ echo "Compiling Slang shaders (slangc = $SLANGC, profile = $PROFILE)..."
 compile_stage mesh_vert vertexMain vertex
 emit_reflection mesh_vert vertexMain vertex
 
+# outline: inverted-hull selection outline (#487). Vertex + solid-color fragment.
+compile_stage outline vertexMain vertex
+compile_stage outline fragmentMain fragment
+
 # gizmo: vertex + fragment
 compile_stage gizmo vertexMain vertex
 compile_stage gizmo fragmentMain fragment

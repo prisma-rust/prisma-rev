@@ -1499,6 +1499,15 @@ impl ViewportState {
             if !is_selected && !is_related {
                 continue;
             }
+            // 选中的网格由引擎的 inverted-hull pass 画真实描边（#487），这里
+            // 只保留无网格对象（sprite / 空物体）和父级 / 子级的辅助线框。
+            let is_mesh = doc
+                .entities
+                .get(index)
+                .is_some_and(|entity| entity.has_component("prism_engine::scene::MeshRenderer"));
+            if is_selected && is_mesh {
+                continue;
+            }
             let Some(edges) =
                 vm::projected_box_edges(&transform, frame, rect.width(), rect.height())
             else {

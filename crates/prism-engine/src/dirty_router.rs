@@ -161,6 +161,7 @@ mod tests {
     fn draw_item(x: f32, material: Option<u32>) -> DrawItem {
         DrawItem {
             mesh: Default::default(),
+            entity_id: u32::MAX,
             model: [
                 [1.0, 0.0, 0.0, 0.0],
                 [0.0, 1.0, 0.0, 0.0],

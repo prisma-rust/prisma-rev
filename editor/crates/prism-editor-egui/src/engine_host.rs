@@ -218,6 +218,15 @@ impl EngineHost {
         &mut self.input
     }
 
+    /// 把编辑器文档里的选中下标映射成 ECS 实体 id，交给渲染器画网格描边（#487）。
+    ///
+    /// `enabled == false` 或下标越界时清空列表；父级 / 子级的投影线框仍由
+    /// 视口覆盖层负责，这里只画直接选中的网格。
+    pub fn set_selection_outline(&mut self, selected: &[usize], enabled: bool) {
+        let ids = selection_entity_ids(&self.entities, selected, enabled);
+        self.renderer.set_outline_entities(&ids);
+    }
+
     /// 文档下标对应的 cooked mesh 局部 AABB（Scene 视图精确拾取用，#600）。
     ///
     /// 场景尚未完成资产上传时返回 `None`，调用方退回单位立方体。
@@ -861,6 +870,18 @@ fn xstep_dt() -> f32 {
     1.0 / 60.0
 }
 
+/// 文档下标 → ECS 实体 id；越界 / 关闭时跳过。抽成纯函数便于单测（#487）。
+fn selection_entity_ids(entities: &[Entity], selected: &[usize], enabled: bool) -> Vec<u32> {
+    if !enabled {
+        return Vec::new();
+    }
+    selected
+        .iter()
+        .filter_map(|index| entities.get(*index))
+        .map(|entity| entity.id())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -896,6 +917,19 @@ mod tests {
     #[test]
     fn simulation_step_uses_fixed_sixtieth_second() {
         assert!((xstep_dt() - 1.0 / 60.0).abs() < f32::EPSILON);
+    }
+
+    /// #487：只把文档里真正存在的选中下标映射成实体 id；关闭时清空。
+    #[test]
+    fn selection_outline_maps_document_indices_to_entity_ids() {
+        let entities = [
+            Entity::from_raw(10, 0),
+            Entity::from_raw(42, 0),
+            Entity::from_raw(7, 0),
+        ];
+        assert_eq!(selection_entity_ids(&entities, &[0, 2], true), vec![10, 7]);
+        assert_eq!(selection_entity_ids(&entities, &[0, 99], true), vec![10]);
+        assert!(selection_entity_ids(&entities, &[0, 1], false).is_empty());
     }
 
     #[test]
