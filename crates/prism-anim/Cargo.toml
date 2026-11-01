@@ -1,0 +1,10 @@
+[package]
+name = "prism-anim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Skeleton, clip sampling and CPU skinning reference for PrismaRev (#560)"
+
+[dependencies]
+prism-asset = { path = "../prism-asset", default-features = false, features = ["runtime"] }
+glam.workspace = true

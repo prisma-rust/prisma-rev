@@ -540,6 +540,51 @@ fn physics_components_survive_cook_and_decode() {
 }
 
 #[test]
+fn an_animator_survives_cook_and_decode() {
+    let mut registry = ComponentRegistry::new();
+    register_builtin_components(&mut registry);
+    let scene = SceneJson::parse(
+        r#"{
+            "version": 3,
+            "entities": [{
+                "id": 0,
+                "name": "Rig",
+                "components": {
+                    "prism_engine::scene::Animator": {
+                        "clip_path": "models/hero.skinning/clips/0_walk.ranim",
+                        "time": 0.5,
+                        "speed": 2.0,
+                        "looped": false,
+                        "playing": true
+                    }
+                }
+            }]
+        }"#,
+    )
+    .unwrap();
+
+    let bytes = crate::encode_scene(&scene, &registry).expect("scene with animator must cook");
+    let decoded = crate::decode_scene(&bytes, &registry).expect("cooked scene must decode");
+
+    let mut world = prism_ecs::World::new();
+    let entity = world.spawn();
+    for component in &decoded.entities[0].components {
+        assert!(registry.apply_object(&mut world, entity, component));
+    }
+    let animator = world
+        .get::<crate::components::Animator>(entity)
+        .expect("animator must apply to the world");
+    assert_eq!(
+        animator.clip_path,
+        "models/hero.skinning/clips/0_walk.ranim"
+    );
+    assert_eq!(animator.time, 0.5);
+    assert_eq!(animator.speed, 2.0);
+    assert!(!animator.looped);
+    assert!(animator.playing);
+}
+
+#[test]
 fn a_terrain_survives_cook_and_decode() {
     // 地形组件是「路径 + 若干标量」，RSCN 的位置化编码最容易丢字符串（heightmap）
     // 和 `[f32; 2]`（size）（#517）。

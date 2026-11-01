@@ -1145,6 +1145,96 @@ impl GpuAssetResolver {
     }
 
     // -----------------------------------------------------------------------
+    // 骨骼动画资产（#560 P0-2）
+    // -----------------------------------------------------------------------
+
+    /// 把场景里引用的 `.rskel` / `.ranim` 读进 [`SkeletonLibrary`]。
+    ///
+    /// 需要 `&mut World`（要写资源），所以不进调度系统；调用方在每帧的
+    /// `prepare_requests` 附近调用一次即可（重复调用是幂等的）。
+    pub fn load_animation_assets(&mut self, world: &mut World) -> usize {
+        use crate::scene::systems::animator::SkeletonLibrary;
+
+        let mut requested: Vec<String> = Vec::new();
+        for (entity, root) in world.query::<prism_scene::components::SkeletonRoot>() {
+            if !root.skeleton_path.trim().is_empty() {
+                requested.push(root.skeleton_path.clone());
+            }
+            if let Some(animator) = world.get::<prism_scene::components::Animator>(entity) {
+                let clip = if animator.clip_path.trim().is_empty() {
+                    root.default_clip_path.clone()
+                } else {
+                    animator.clip_path.clone()
+                };
+                if !clip.trim().is_empty() {
+                    requested.push(clip);
+                }
+            }
+        }
+        if requested.is_empty() {
+            return 0;
+        }
+        requested.sort();
+        requested.dedup();
+
+        if world.get_resource::<SkeletonLibrary>().is_none() {
+            world.insert_resource(SkeletonLibrary::new());
+        }
+
+        let mut loaded = 0usize;
+        for path in requested {
+            let already = world
+                .get_resource::<SkeletonLibrary>()
+                .is_some_and(|library| library.has_skeleton(&path) || library.has_clip(&path));
+            if already {
+                continue;
+            }
+            let Some(id) = self.resource_manager.id_by_path(&path) else {
+                report_missing_reference(&path, "animation");
+                continue;
+            };
+            // 骨架与剪辑类型不同，用扩展名区分（cook 端写出的路径带 `.rskel` / `.ranim`）。
+            if path.ends_with(".rskel") {
+                let Ok(handle) = self
+                    .resource_manager
+                    .load_with_deps::<prism_asset::runtime::SkeletonAsset>(id)
+                    .map_err(|error| log::warn!("load_animation_assets: '{path}' failed: {error}"))
+                else {
+                    continue;
+                };
+                let Ok(asset) = self.resource_manager.get(handle) else {
+                    continue;
+                };
+                let Some(skeleton) = prism_anim::Skeleton::from_info(&asset.info) else {
+                    log::warn!("load_animation_assets: '{path}' is not a valid skeleton");
+                    continue;
+                };
+                if let Some(library) = world.get_resource_mut::<SkeletonLibrary>() {
+                    library.insert_skeleton(path, skeleton);
+                    loaded += 1;
+                }
+            } else if path.ends_with(".ranim") {
+                let Ok(handle) = self
+                    .resource_manager
+                    .load_with_deps::<prism_asset::runtime::AnimClipAsset>(id)
+                    .map_err(|error| log::warn!("load_animation_assets: '{path}' failed: {error}"))
+                else {
+                    continue;
+                };
+                let Ok(asset) = self.resource_manager.get(handle) else {
+                    continue;
+                };
+                let clip = prism_anim::Clip::from_info(&asset.info);
+                if let Some(library) = world.get_resource_mut::<SkeletonLibrary>() {
+                    library.insert_clip(path, clip);
+                    loaded += 1;
+                }
+            }
+        }
+        loaded
+    }
+
+    // -----------------------------------------------------------------------
     // 内部 CPU 加载 helpers（纯数据，无渲染器依赖）
     // -----------------------------------------------------------------------
 

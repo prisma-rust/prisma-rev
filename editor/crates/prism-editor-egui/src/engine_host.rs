@@ -687,6 +687,10 @@ impl EngineHost {
             self.renderer.register_ui_font(name, bytes);
         }
 
+        // 骨骼动画资产（#560 P0-2）：幂等，只有新出现的 `.rskel` / `.ranim` 才读盘。
+        self.asset_resolver
+            .load_animation_assets(self.engine.world_mut());
+
         let requests = self
             .asset_resolver
             .prepare_requests(self.engine.world_mut());

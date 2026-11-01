@@ -374,7 +374,13 @@ fn collect_files(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) -> R
 /// Validate + normalize an optional directory prefix (`a\b\` → `a/b`).
 fn normalize_optional_dir(dir: &str) -> Result<String> {
     let normalized = dir.trim().replace('\\', "/");
-    if Path::new(&normalized).is_absolute() {
+    // `/absolute` 在 Windows 上不算 `is_absolute()`（没有盘符），但它仍是根路径；
+    // `C:` / 相对盘符也是一样 —— 三种都得在每个平台上拒绝，否则同一个参数
+    // 在 CI（Linux）上被拒、在开发机上被接受。
+    let rooted = normalized.starts_with('/')
+        || normalized.get(1..2) == Some(":")
+        || Path::new(&normalized).is_absolute();
+    if rooted {
         bail!("optional directory must be relative to the input, got '{dir}'");
     }
     let normalized = normalized.trim_matches('/');

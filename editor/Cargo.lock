@@ -2556,6 +2556,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "prism-anim"
+version = "0.1.0"
+dependencies = [
+ "glam 0.33.12",
+ "prism-asset",
+]
+
+[[package]]
 name = "prism-asset"
 version = "0.1.0"
 dependencies = [
@@ -2629,6 +2637,7 @@ dependencies = [
  "glam 0.33.12",
  "jni",
  "log",
+ "prism-anim",
  "prism-asset",
  "prism-ecs",
  "prism-project-api",

@@ -1255,6 +1255,10 @@ impl App {
             }));
         }
 
+        // 骨骼动画资产（#560 P0-2）：幂等，只有出现新的 `.rskel` / `.ranim` 才读盘。
+        self.asset_resolver
+            .load_animation_assets(engine.world_mut());
+
         // CPU 段：扫描待解析实体并产出上传请求（纯数据，不碰渲染器）。
         let reqs = self.asset_resolver.prepare_requests(engine.world_mut());
         if !reqs.is_empty() {

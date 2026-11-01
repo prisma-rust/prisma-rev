@@ -502,6 +502,7 @@ pub fn register_builtin_components(registry: &mut ComponentRegistry) {
     // ── 音频（作者态；解码与混音在宿主层 `prism-app::scene_audio`）──
     registry.register_reflect_serde::<AudioSource>("prism_engine::scene::AudioSource");
     registry.register_reflect_serde::<Terrain>("prism_engine::scene::Terrain");
+    registry.register_reflect_serde::<Animator>("prism_engine::scene::Animator");
     registry.register_reflect_serde::<SkeletonRoot>("prism_engine::scene::SkeletonRoot");
     registry
         .register_reflect_serde::<SkinnedMeshRenderer>("prism_engine::scene::SkinnedMeshRenderer");

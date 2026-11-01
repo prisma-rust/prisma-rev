@@ -2018,6 +2018,48 @@ impl SkinnedMeshRenderer {
 }
 
 // ---------------------------------------------------------------------------
+// 蒙皮动画
+// ---------------------------------------------------------------------------
+
+/// 骨架的播放控制（#560 P0-2）。
+///
+/// 事件源是 cooked 的 `.ranim` 剪辑；骨架由同一实体上的 [`SkeletonRoot`] 指定。
+/// `clip_path` 为空时用 `SkeletonRoot::default_clip_path`。
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
+#[reflect(name = "prism_engine::scene::Animator")]
+#[serde(default)]
+pub struct Animator {
+    /// 动画剪辑路径（`.ranim`，相对 `assets/`）。空 = 用骨架的默认剪辑。
+    pub clip_path: String,
+    /// 起始时间（秒）；编辑器 scrub 直接写这里。
+    pub time: f32,
+    /// 播放速度倍数（负值倒放）。
+    pub speed: f32,
+    /// 循环播放。
+    pub looped: bool,
+    /// 是否推进时间。
+    pub playing: bool,
+}
+
+impl Default for Animator {
+    fn default() -> Self {
+        Self {
+            clip_path: String::new(),
+            time: 0.0,
+            speed: 1.0,
+            looped: true,
+            playing: true,
+        }
+    }
+}
+
+impl Animator {
+    pub fn has_clip(&self) -> bool {
+        !self.clip_path.trim().is_empty()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 地形
 // ---------------------------------------------------------------------------
 
