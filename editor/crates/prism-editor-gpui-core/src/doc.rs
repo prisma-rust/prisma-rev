@@ -1142,7 +1142,7 @@ mod tests {
 
     #[test]
     fn prune_defaults_removes_defaults_and_read_only_fields() {
-        let schema = Schema::from_value(serde_json::json!({
+        let schema = Schema::from_value(&serde_json::json!({
             "types": [{
                 "name": "test::Comp",
                 "isComponent": true,

@@ -436,6 +436,10 @@ pub struct Workspace {
     /// 只影响绘制：dock tree 原样保留，所以还原时不会丢布局。
     pub maximized_tab: Option<String>,
     pub selection: Vec<usize>,
+    /// 最后点击 / 右键的实体（检查器与 Add Component 的「活动对象」，#507）。
+    ///
+    /// 选择集仍按文档顺序保存用于批量操作，但 `primary_selection()` 优先返回它。
+    pub selection_active: Option<usize>,
     pub expanded: HashSet<u32>,
     pub clipboard: Option<ComponentClipboard>,
     /// 实体剪贴板（Ctrl+C/X/V）：每项是一棵已重新编号的子树。
@@ -493,6 +497,7 @@ struct PlaySnapshot {
     undo: crate::undo::UndoStack,
     dirty: bool,
     selection: Vec<usize>,
+    selection_active: Option<usize>,
 }
 
 /// 实例相对源预制体的一个字段差异（Unity 的 Prefab Override）。
@@ -546,6 +551,7 @@ impl Workspace {
             floating: Vec::new(),
             maximized_tab: None,
             selection: Vec::new(),
+            selection_active: None,
             expanded: HashSet::new(),
             clipboard: None,
             entity_clipboard: None,
@@ -763,7 +769,7 @@ impl Workspace {
                 .iter()
                 .position(|document| document.kind == DocKind::Scene)
                 .unwrap_or(0);
-            self.selection.clear();
+            self.clear_selection();
             self.expanded.clear();
         }
         self.hydrate_documents();
@@ -811,6 +817,7 @@ impl Workspace {
         });
         if let Some(root) = inserted.first() {
             self.selection = vec![*root];
+            self.selection_active = Some(*root);
             if let Some(id) = self.document().doc.id_of_index(*root) {
                 self.expanded.insert(id);
             }
@@ -974,7 +981,7 @@ impl Workspace {
             }
         }
         self.active = self.active.min(self.docs.len().saturating_sub(1));
-        self.selection.clear();
+        self.clear_selection();
         self.expanded.clear();
         if self.docs.is_empty() {
             self.new_document(DocKind::Scene, None);
@@ -1470,7 +1477,7 @@ impl Workspace {
         document.note_disk_state(Some(&root));
         self.docs.push(document);
         self.active = self.docs.len() - 1;
-        self.selection.clear();
+        self.clear_selection();
         self.expanded.clear();
         self.hydrate_documents();
         self.log(
@@ -1798,7 +1805,7 @@ impl Workspace {
     pub fn set_active(&mut self, index: usize) {
         if index < self.docs.len() {
             self.active = index;
-            self.selection.clear();
+            self.clear_selection();
             self.expanded.clear();
         }
     }
@@ -1832,7 +1839,7 @@ impl Workspace {
                     );
                     self.docs.push(document);
                     self.active = self.docs.len() - 1;
-                    self.selection.clear();
+                    self.clear_selection();
                     self.log(
                         LogSource::Editor,
                         LogLevel::Info,
@@ -1863,7 +1870,7 @@ impl Workspace {
         });
         self.docs.push(Document::new(kind, path, doc));
         self.active = self.docs.len() - 1;
-        self.selection.clear();
+        self.clear_selection();
         self.expanded.clear();
         self.log(
             LogSource::Editor,
@@ -1896,7 +1903,7 @@ impl Workspace {
         if self.active >= self.docs.len() {
             self.active = self.docs.len() - 1;
         }
-        self.selection.clear();
+        self.clear_selection();
     }
 
     pub fn mark_saved(&mut self) {
@@ -1957,6 +1964,7 @@ impl Workspace {
         selection.dedup();
         let count = selection.len();
         self.selection = selection;
+        self.selection_active = self.selection.last().copied();
         count
     }
 
@@ -1966,13 +1974,14 @@ impl Workspace {
         self.selection.retain(|index| *index < len);
         self.selection.sort_unstable();
         self.selection.dedup();
+        self.normalize_selection_active();
     }
 
     // ── 选择 / 层级 ─────────────────────────────────────────────────────
 
     pub fn select(&mut self, index: usize, extend: bool) {
         if !extend {
-            self.selection.clear();
+            self.clear_selection();
         }
         if let Some(position) = self.selection.iter().position(|item| *item == index) {
             if extend {
@@ -1982,6 +1991,11 @@ impl Workspace {
             self.selection.push(index);
         }
         self.selection.sort_unstable();
+        if self.selection.contains(&index) {
+            self.selection_active = Some(index);
+        } else {
+            self.normalize_selection_active();
+        }
     }
 
     /// 右键菜单的目标（Unity 的 `TreeView` 行为，#524）。
@@ -1994,6 +2008,8 @@ impl Workspace {
     /// 返回选择是否被改过。
     pub fn select_for_context(&mut self, index: usize) -> bool {
         if self.selection.contains(&index) {
+            // 右键已选中的行：选择集不动，但把它设为活动对象（#507）。
+            self.selection_active = Some(index);
             return false;
         }
         if index >= self.document().doc.entities.len() {
@@ -2010,16 +2026,22 @@ impl Workspace {
     pub fn select_with(&mut self, index: usize, mode: SelectMode) {
         match mode {
             SelectMode::Replace => {
-                self.selection.clear();
+                self.clear_selection();
                 self.selection.push(index);
+                self.selection_active = Some(index);
             }
             SelectMode::Add => {
                 if !self.selection.contains(&index) {
                     self.selection.push(index);
                 }
+                self.selection_active = Some(index);
             }
             SelectMode::Remove => {
                 self.selection.retain(|item| *item != index);
+                if self.selection_active == Some(index) {
+                    self.selection_active = None;
+                }
+                self.normalize_selection_active();
             }
         }
         self.selection.sort_unstable();
@@ -2032,6 +2054,7 @@ impl Workspace {
             (index, anchor)
         };
         self.selection = (start..=end).collect();
+        self.selection_active = Some(index);
     }
 
     /// 框选：`additive = false` 覆盖选择，`true` 并入。
@@ -2050,12 +2073,13 @@ impl Workspace {
     pub fn select_many_with(&mut self, indices: &[usize], mode: SelectMode) {
         match mode {
             SelectMode::Replace => {
-                self.selection.clear();
+                self.clear_selection();
                 for index in indices {
                     if !self.selection.contains(index) {
                         self.selection.push(*index);
                     }
                 }
+                self.selection_active = indices.last().copied();
             }
             SelectMode::Add => {
                 for index in indices {
@@ -2063,9 +2087,19 @@ impl Workspace {
                         self.selection.push(*index);
                     }
                 }
+                if let Some(index) = indices.last() {
+                    self.selection_active = Some(*index);
+                }
             }
             SelectMode::Remove => {
                 self.selection.retain(|index| !indices.contains(index));
+                if self
+                    .selection_active
+                    .is_some_and(|index| indices.contains(&index))
+                {
+                    self.selection_active = None;
+                }
+                self.normalize_selection_active();
             }
         }
         self.selection.sort_unstable();
@@ -2075,15 +2109,30 @@ impl Workspace {
     pub fn clear_selection_in(&mut self, mode: SelectMode) {
         if mode == SelectMode::Replace {
             self.selection.clear();
+            self.selection_active = None;
         }
     }
 
     pub fn clear_selection(&mut self) {
         self.selection.clear();
+        self.selection_active = None;
     }
 
+    /// 活动对象：最后点击 / 右键的实体；不在选择集里时退回选择集末尾。
     pub fn primary_selection(&self) -> Option<usize> {
-        self.selection.first().copied()
+        self.selection_active
+            .filter(|index| self.selection.contains(index))
+            .or_else(|| self.selection.last().copied())
+    }
+
+    /// 选择集被别处直接改写后，保证活动对象仍然属于它。
+    fn normalize_selection_active(&mut self) {
+        if self
+            .selection_active
+            .is_some_and(|index| !self.selection.contains(&index))
+        {
+            self.selection_active = self.selection.last().copied();
+        }
     }
 
     pub fn toggle_expanded(&mut self, index: usize) {
@@ -2149,7 +2198,7 @@ impl Workspace {
         self.edit("删除实体", |document| {
             document.doc.remove_entities(&indices);
         });
-        self.selection.clear();
+        self.clear_selection();
     }
 
     /// 顶层选中实体：去掉“父级也在选中集合里”的项，避免复制整棵子树两次。
@@ -2253,6 +2302,7 @@ impl Workspace {
             return roots;
         }
         self.selection = roots.clone();
+        self.selection_active = roots.last().copied();
         for index in &roots {
             if let Some(id) = self.document().doc.id_of_index(*index) {
                 self.expanded.insert(id);
@@ -2286,6 +2336,7 @@ impl Workspace {
         }
         inserted.sort_unstable();
         self.selection = inserted.clone();
+        self.selection_active = inserted.last().copied();
         for index in &inserted {
             if let Some(id) = self.document().doc.id_of_index(*index) {
                 self.expanded.insert(id);
@@ -3744,6 +3795,7 @@ impl Workspace {
             undo: document.undo.clone(),
             dirty: document.dirty,
             selection: self.selection.clone(),
+            selection_active: self.selection_active,
         }
     }
 
@@ -3762,6 +3814,10 @@ impl Workspace {
         let mut selection = snapshot.selection;
         selection.retain(|index| *index < entity_count);
         self.selection = selection;
+        self.selection_active = snapshot
+            .selection_active
+            .filter(|index| self.selection.contains(index))
+            .or_else(|| self.selection.last().copied());
     }
 
     pub fn pause(&mut self) {
@@ -3972,6 +4028,7 @@ impl Workspace {
             Command::DeleteSelection => self.delete_selection(),
             Command::SelectAll => {
                 self.selection = (0..self.document().doc.entities.len()).collect();
+                self.selection_active = self.selection.last().copied();
             }
             Command::PasteComponent => self.paste_component(),
             Command::ClearComponentClipboard => {
@@ -5534,6 +5591,38 @@ mod tests {
         assert_eq!(workspace.selection, vec![0, 1, 2], "附加选择去重");
         workspace.select_many(&[], false);
         assert!(workspace.selection.is_empty());
+    }
+
+    #[test]
+    fn the_last_clicked_entity_stays_active_in_a_multi_selection() {
+        // #507：选择集按文档顺序保存，但检查器/Add Component 用最后点击的那个。
+        let mut workspace = Workspace::load_fixture(&fixture());
+        workspace.select_with(0, SelectMode::Replace);
+        workspace.select_with(2, SelectMode::Add);
+        workspace.select_with(1, SelectMode::Add);
+        assert_eq!(workspace.selection, vec![0, 1, 2], "集合仍按文档顺序");
+        assert_eq!(
+            workspace.primary_selection(),
+            Some(1),
+            "活动对象是最后点击的实体"
+        );
+
+        workspace.select_with(1, SelectMode::Remove);
+        assert_eq!(
+            workspace.primary_selection(),
+            Some(2),
+            "移除活动对象后回退到选择集末尾"
+        );
+    }
+
+    #[test]
+    fn right_clicking_a_selected_entity_makes_it_active_without_changing_the_set() {
+        let mut workspace = Workspace::load_fixture(&fixture());
+        workspace.select_many(&[0, 1, 2], false);
+        assert_eq!(workspace.primary_selection(), Some(2));
+        assert!(!workspace.select_for_context(0));
+        assert_eq!(workspace.selection, vec![0, 1, 2]);
+        assert_eq!(workspace.primary_selection(), Some(0));
     }
 
     #[test]
