@@ -92,6 +92,7 @@ fn draw_item(mesh: prism_render::managers::MeshHandle) -> DrawItem {
         cast_shadow: false,
         visible_in_main_pass: true,
         cast_shadow_two_sided: false,
+        bone_offset: None,
         state: DrawState::default(),
         world_bounds: None,
         index_start: 0,
@@ -123,6 +124,7 @@ fn render(renderer: &mut GraphRenderer, item: &DrawItem) -> Vec<u8> {
             &[],
             PostGrade::default(),
             false,
+            &[], // bone matrices
         )
         .expect("headless render failed");
     renderer

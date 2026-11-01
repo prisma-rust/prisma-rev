@@ -107,7 +107,7 @@ pub struct ForwardPass {
     /// 所有变体的描述符集合布局 / 推送常量范围完全相同，只有光栅化与颜色
     /// 混合状态不同，因此描述符绑定与推送常量在一次绘制列表内可以跨变体复用。
     /// key 的第二项是线框开关（#431）：`POLYGON_MODE_LINE` 需要单独的管线。
-    pipelines: std::collections::HashMap<(DrawState, bool), GraphicsPipeline>,
+    pipelines: std::collections::HashMap<(DrawState, bool, bool), GraphicsPipeline>,
     /// 选中描边的反向外壳管线（#487）：只读 set 0 的帧 UBO，片元输出纯色。
     /// 与场景网格共享顶点格式 / 渲染 pass / 深度附件，只是剔除正面、不写深度。
     outline_pipeline: Option<GraphicsPipeline>,
@@ -137,6 +137,10 @@ pub struct ForwardPass {
     /// tearing and race conditions between concurrent in-flight frames.
     light_buffers: Vec<vk::Buffer>,
     light_memories: Vec<vk::DeviceMemory>,
+    /// Bone palette SSBO (set 0 binding 3, #560 P0-3): one per frame in
+    /// flight, `BONE_CAPACITY` mat4 entries each.
+    bone_buffers: Vec<vk::Buffer>,
+    bone_memories: Vec<vk::DeviceMemory>,
     /// 集合 4 - previous-frame GTAO R8 可见性 纹理 (combined 图像
     /// 采样器 One 描述符 集合 per frame-in-flight so updating the 环境光遮蔽
     /// 视图 for 帧 N doesn't disturb 帧 N-1's still-in-flight 集合
@@ -216,6 +220,8 @@ impl ForwardPass {
             bindless_layout: vk::DescriptorSetLayout::null(),
             light_buffers: Vec::new(),
             light_memories: Vec::new(),
+            bone_buffers: Vec::new(),
+            bone_memories: Vec::new(),
             ao_ds_layout: None,
             ao_descriptor_sets: Vec::new(),
             ao_ds_pool: None,
@@ -462,6 +468,16 @@ impl ForwardPass {
                 unsafe { device.free_memory(mem, None) };
             }
         }
+        for buf in self.bone_buffers.drain(..) {
+            if buf != vk::Buffer::null() {
+                unsafe { device.destroy_buffer(buf, None) };
+            }
+        }
+        for mem in self.bone_memories.drain(..) {
+            if mem != vk::DeviceMemory::null() {
+                unsafe { device.free_memory(mem, None) };
+            }
+        }
         // Skybox pass (its own 管线 + set-2 布局
         self.skybox.destroy(device);
         // Gizmo (its own 管线 + 顶点 缓冲区 放置 frees them).
@@ -549,6 +565,12 @@ impl ForwardPass {
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            // binding 3: bone palette (#560 P0-3), read by the vertex stage.
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(3)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::VERTEX),
         ];
         let frame_layout = unsafe {
             device.create_descriptor_set_layout(
@@ -633,6 +655,32 @@ impl ForwardPass {
             new_light_memories.push(mem);
         }
 
+        // ---- Bone palette SSBO (binding 3, #560 P0-3) ----
+        // One host-visible buffer per frame in flight. `BONE_CAPACITY` is the
+        // number of mat4 entries a single frame can address; the engine packs
+        // every skinned draw's palette into it each frame.
+        let bone_ssbo_size =
+            (Self::BONE_CAPACITY as vk::DeviceSize) * (std::mem::size_of::<[[f32; 4]; 4]>() as u64);
+        let mut new_bone_buffers = Vec::with_capacity(fif_count);
+        let mut new_bone_memories = Vec::with_capacity(fif_count);
+        for _ in 0..fif_count {
+            let (buf, mem) = crate::buffer::create_buffer(
+                context,
+                bone_ssbo_size,
+                crate::buffer::BufferUsage::STORAGE_BUFFER,
+                crate::buffer::MemoryProperties::HOST_VISIBLE
+                    | crate::buffer::MemoryProperties::HOST_COHERENT,
+            )
+            .context("ForwardPass: create bone SSBO buffer")?;
+            let ptr =
+                unsafe { device.map_memory(mem, 0, bone_ssbo_size, vk::MemoryMapFlags::empty()) }
+                    .context("ForwardPass: map bone SSBO memory")?;
+            unsafe { std::ptr::write_bytes(ptr as *mut u8, 0, bone_ssbo_size as usize) };
+            unsafe { device.unmap_memory(mem) };
+            new_bone_buffers.push(buf);
+            new_bone_memories.push(mem);
+        }
+
         // 销毁 old 光源 缓冲区 if any.
         for buf in self.light_buffers.drain(..) {
             if buf != vk::Buffer::null() {
@@ -644,8 +692,20 @@ impl ForwardPass {
                 unsafe { device.free_memory(mem, None) };
             }
         }
+        for buf in self.bone_buffers.drain(..) {
+            if buf != vk::Buffer::null() {
+                unsafe { device.destroy_buffer(buf, None) };
+            }
+        }
+        for mem in self.bone_memories.drain(..) {
+            if mem != vk::DeviceMemory::null() {
+                unsafe { device.free_memory(mem, None) };
+            }
+        }
         self.light_buffers = new_light_buffers;
         self.light_memories = new_light_memories;
+        self.bone_buffers = new_bone_buffers;
+        self.bone_memories = new_bone_memories;
 
         // 写入 each 集合 绑定 0 = this frame's UBO, 绑定 1 = materials SSBO,
         // 绑定 2 = this frame's 光源 SSBO.
@@ -676,7 +736,17 @@ impl ForwardPass {
                     .range(ubo_size)
             })
             .collect();
-        let mut writes = Vec::with_capacity(fif_count * 3);
+        let bone_infos: Vec<vk::DescriptorBufferInfo> = self
+            .bone_buffers
+            .iter()
+            .map(|buf| {
+                vk::DescriptorBufferInfo::default()
+                    .buffer(*buf)
+                    .offset(0)
+                    .range(vk::WHOLE_SIZE)
+            })
+            .collect();
+        let mut writes = Vec::with_capacity(fif_count * 4);
         for (i, set) in sets.iter().enumerate() {
             writes.push(
                 vk::WriteDescriptorSet::default()
@@ -698,6 +768,13 @@ impl ForwardPass {
                     .dst_binding(2)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                     .buffer_info(std::slice::from_ref(&light_infos[i])),
+            );
+            writes.push(
+                vk::WriteDescriptorSet::default()
+                    .dst_set(*set)
+                    .dst_binding(3)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .buffer_info(std::slice::from_ref(&bone_infos[i])),
             );
         }
         unsafe { device.update_descriptor_sets(&writes, &[]) };
@@ -1031,6 +1108,56 @@ impl ForwardPass {
     /// The buffer is `HOST_VISIBLE | HOST_COHERENT`, so this is a plain map +
     /// copy + unmap. Safe to call before the SSBO is first bound (the descriptor
     /// points at the same buffer regardless of its contents).
+    /// How many bone matrices one frame can address (#560 P0-3).
+    ///
+    /// 4096 mat4 = 256 KiB per frame in flight; the engine packs palettes of
+    /// every skinned draw into this window and refuses to draw beyond it.
+    pub const BONE_CAPACITY: usize = 4096;
+
+    /// Upload this frame's bone palette (skinning matrices, column-major).
+    ///
+    /// `matrices` longer than [`Self::BONE_CAPACITY`] is truncated: the draw
+    /// loop uses the same clamp when it assigns `bone_offset`.
+    pub fn update_bones(
+        &mut self,
+        device: &ash::Device,
+        frame_index: u32,
+        matrices: &[[[f32; 4]; 4]],
+    ) -> Result<()> {
+        if self.bone_memories.is_empty() {
+            return Ok(());
+        }
+        let index = (frame_index as usize) % self.bone_memories.len();
+        let mem = self.bone_memories[index];
+        if mem == vk::DeviceMemory::null() {
+            return Ok(());
+        }
+        let count = matrices.len().min(Self::BONE_CAPACITY);
+        let matrix_size = std::mem::size_of::<[[f32; 4]; 4]>();
+        let total_bytes = (Self::BONE_CAPACITY * matrix_size) as vk::DeviceSize;
+        let ptr = unsafe { device.map_memory(mem, 0, total_bytes, vk::MemoryMapFlags::empty()) }
+            .context("ForwardPass::update_bones: map")?;
+        unsafe {
+            let dst = ptr as *mut u8;
+            // Clear the tail so a shader that indexes past the live range
+            // reads identity-ish zeros instead of last frame's bones.
+            std::ptr::write_bytes(
+                dst.add(count * matrix_size),
+                0,
+                (Self::BONE_CAPACITY - count) * matrix_size,
+            );
+            if count > 0 {
+                std::ptr::copy_nonoverlapping(
+                    matrices.as_ptr() as *const u8,
+                    dst,
+                    count * matrix_size,
+                );
+            }
+            device.unmap_memory(mem);
+        }
+        Ok(())
+    }
+
     pub fn update_lights(
         &mut self,
         device: &ash::Device,
@@ -1194,7 +1321,10 @@ impl ForwardPass {
         let missing: Vec<DrawState> = states
             .iter()
             .copied()
-            .filter(|state| !self.pipelines.contains_key(&(*state, wireframe)))
+            .filter(|state| {
+                !self.pipelines.contains_key(&(*state, wireframe, false))
+                    || !self.pipelines.contains_key(&(*state, wireframe, true))
+            })
             .collect();
         if missing.is_empty() {
             return Ok(());
@@ -1214,7 +1344,15 @@ impl ForwardPass {
         let frag_module =
             shader::load_shader_module(device, FRAG_SPV).context("ForwardPass: load frag")?;
 
+        // Skinned variant: same module family, `vertexSkinnedMain` declares the
+        // extra joints/weights inputs from vertex buffer 1 (#560 P0-3).
+        const VERT_SKINNED_SPV: &[u8] =
+            include_bytes!("../../../assets/shaders/mesh_vert_skinned.vert.spv");
+        let vert_skinned_module = shader::load_shader_module(device, VERT_SKINNED_SPV)
+            .context("ForwardPass: load skinned vert")?;
+
         let vert_entry = std::ffi::CString::new("vertexMain").unwrap();
+        let skin_entry = std::ffi::CString::new("vertexSkinnedMain").unwrap();
         let frag_entry = std::ffi::CString::new("fragmentMain").unwrap();
         let vert_stage = shader::shader_stage(
             vk::ShaderStageFlags::VERTEX,
@@ -1230,6 +1368,8 @@ impl ForwardPass {
 
         let binding_desc = Vertex::binding_description();
         let attr_descs = Vertex::attribute_descriptions();
+        let skin_binding_desc = crate::mesh::SkinVertex::binding_description();
+        let skin_attr_descs = crate::mesh::SkinVertex::attribute_descriptions();
 
         // 集合 0: 帧 UBO 绑定 0) + materials SSBO 绑定 1).
         let set0_layout = self
@@ -1277,11 +1417,48 @@ impl ForwardPass {
         for state in missing {
             // MRT: 附件 0 = 颜色（按 `DrawState` 混合），附件 1 = 视图法线（不混合）。
             let blend_attachments = color_blend_attachments(state);
-            let pipeline = GraphicsPipeline::new(&PipelineDesc {
+            for skinned in [false, true] {
+                let (variant_stages, variant_bindings, variant_attrs) = if skinned {
+                    let stages = [
+                        shader::shader_stage(
+                            vk::ShaderStageFlags::VERTEX,
+                            vert_skinned_module,
+                            skin_entry.as_c_str(),
+                        ),
+                        shader::shader_stage(
+                            vk::ShaderStageFlags::FRAGMENT,
+                            frag_module,
+                            frag_entry.as_c_str(),
+                        ),
+                    ];
+                    (stages, [binding_desc, skin_binding_desc], [0; 2])
+                } else {
+                    (shader_stages, [binding_desc, skin_binding_desc], [0; 2])
+                };
+                let _ = variant_attrs;
+                let binding_descs: &[vk::VertexInputBindingDescription] = if skinned {
+                    &variant_bindings
+                } else {
+                    std::slice::from_ref(&variant_bindings[0])
+                };
+                let attr_descriptor_list: &[vk::VertexInputAttributeDescription] = if skinned {
+                    &[
+                        attr_descs[0],
+                        attr_descs[1],
+                        attr_descs[2],
+                        attr_descs[3],
+                        attr_descs[4],
+                        skin_attr_descs[0],
+                        skin_attr_descs[1],
+                    ]
+                } else {
+                    &attr_descs
+                };
+                let pipeline = GraphicsPipeline::new(&PipelineDesc {
                 device,
-                shader_stages: &shader_stages,
-                vertex_binding_desc: std::slice::from_ref(&binding_desc),
-                vertex_attr_descs: &attr_descs,
+                shader_stages: &variant_stages,
+                vertex_binding_desc: binding_descs,
+                vertex_attr_descs: attr_descriptor_list,
                 descriptor_set_layouts: &set_layouts,
                 push_constant_ranges: &push,
                 render_pass: rp,
@@ -1303,12 +1480,16 @@ impl ForwardPass {
                 }),
             })
             .with_context(|| {
-                format!("ForwardPass: create pipeline ({state:?}, wireframe={wireframe})")
+                format!(
+                    "ForwardPass: create pipeline ({state:?}, wireframe={wireframe}, skinned={skinned})"
+                )
             })?;
-            self.pipelines.insert((state, wireframe), pipeline);
+                self.pipelines.insert((state, wireframe, skinned), pipeline);
+            }
         }
 
         unsafe { device.destroy_shader_module(vert_module, None) };
+        unsafe { device.destroy_shader_module(vert_skinned_module, None) };
         unsafe { device.destroy_shader_module(frag_module, None) };
         // set2_layout (IBL) is borrowed from `IblResources` 集合 via
         // `set_resources`) — do NOT 销毁 it here. `IblResources` owns the
@@ -1530,7 +1711,7 @@ impl RenderPassNode for ForwardPass {
         // （不透明、背面剔除）变体的 layout 绑定一次即可；循环里只按需重绑管线。
         let pipeline = self
             .pipelines
-            .get(&(DrawState::default(), wireframe))
+            .get(&(DrawState::default(), wireframe, false))
             .context("ForwardPass: default pipeline missing")?;
 
         // 解析 the per-frame 描述符 集合 now (used after the skybox 绘制
@@ -1709,17 +1890,30 @@ impl RenderPassNode for ForwardPass {
             // 循环开始前刚绑定的是默认（不透明）管线；只有遇到别的状态才重绑
             // （剔除 / 深度写 / 混合都是管线状态）。描述符与推送常量布局在所有
             // 变体之间一致，所以不需要重新绑定描述符集。
-            let mut bound_state = (DrawState::default(), wireframe);
+            let mut bound_state = (DrawState::default(), wireframe, false);
             for item in ctx.frame.draw_list {
                 // `ShadowsOnly` 物体不参与相机主通道（`ShadowCastingMode`）。
                 if !item.visible_in_main_pass {
                     continue;
                 }
-                let uploaded = match ctx.frame.mesh_manager.get(item.mesh) {
-                    Some(m) => &m.mesh,
+                let uploaded_mesh = match ctx.frame.mesh_manager.get(item.mesh) {
+                    Some(m) => m,
                     None => continue,
                 };
-                let key = (item.state, wireframe);
+                let uploaded = &uploaded_mesh.mesh;
+                let skinned = item.bone_offset.is_some();
+                // Skinned draws read joints/weights from vertex buffer 1. A
+                // skinned draw without an uploaded skin buffer is skipped
+                // rather than drawn with garbage weights.
+                let skin = if skinned {
+                    uploaded_mesh.skin.as_ref()
+                } else {
+                    None
+                };
+                if skinned && skin.is_none() {
+                    continue;
+                }
+                let key = (item.state, wireframe, skinned);
                 if key != bound_state {
                     let variant = self.pipelines.get(&key).with_context(|| {
                         format!("ForwardPass: no pipeline for {:?}", item.state)
@@ -1733,10 +1927,17 @@ impl RenderPassNode for ForwardPass {
                 }
                 drawn += 1;
 
-                let vertex_buffers = [uploaded.vertex_buffer];
-                let offsets = [0u64];
-                ctx.device
-                    .cmd_bind_vertex_buffers(ctx.cmd, 0, &vertex_buffers, &offsets);
+                if let Some(skin) = skin {
+                    let vertex_buffers = [uploaded.vertex_buffer, skin.buffer];
+                    let offsets = [0u64, 0u64];
+                    ctx.device
+                        .cmd_bind_vertex_buffers(ctx.cmd, 0, &vertex_buffers, &offsets);
+                } else {
+                    let vertex_buffers = [uploaded.vertex_buffer];
+                    let offsets = [0u64];
+                    ctx.device
+                        .cmd_bind_vertex_buffers(ctx.cmd, 0, &vertex_buffers, &offsets);
+                }
 
                 // 推送 per-draw constants: 模型 + 材质 SSBO 槽 The
                 // remaining fields (albedo_idx/normal_idx) are
@@ -1754,9 +1955,12 @@ impl RenderPassNode for ForwardPass {
                     normal_idx: u32::MAX,
                     // PBR 分量 toggles from the app (15-bit bitmask).
                     debug_flags: ctx.frame.debug_flags,
-                    // std140 hole between `debug_flags` and `_padding` (see
-                    // scene_frag.rs: the layout is generated from reflection).
-                    _pad_84: [0; 12],
+                    // Skinning (#560 P0-3): `bone_offset` picks the first
+                    // palette matrix of this draw; unskinned draws keep
+                    // `skin_mode = 0` so the vertex stage never reads the SSBO.
+                    bone_offset: item.bone_offset.unwrap_or(0),
+                    skin_mode: u32::from(item.bone_offset.is_some()),
+                    _pad_92: 0,
                     _padding: [0; 3],
                 };
                 ctx.device.cmd_push_constants(

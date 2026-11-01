@@ -405,6 +405,12 @@ pub struct DrawItem {
     ///
     /// `Some(0)` 的绘制项会被渲染器跳过，方便调用方表达空 submesh。
     pub index_count: Option<u32>,
+    /// Skinned draw (#560 P0-3): index of this draw's first bone-palette
+    /// matrix inside the frame's bone SSBO (`ForwardPass::BONE_CAPACITY`).
+    ///
+    /// `None` = static mesh; the vertex stage then skips the bone buffer
+    /// entirely, so existing draws cost exactly what they did before.
+    pub bone_offset: Option<u32>,
 }
 
 impl DrawItem {
@@ -790,6 +796,9 @@ pub struct GraphFrame<'a> {
     pub sprite_lights: &'a [SpriteLight],
     /// World-space particle billboards for this frame (sorted back-to-front).
     pub particle_items: &'a [ParticleDrawItem],
+    /// Bone palette for skinned draws (#560 P0-3); indexed by
+    /// [`DrawItem::bone_offset`]. Empty when nothing is skinned.
+    pub bone_matrices: &'a [[[f32; 4]; 4]],
     /// ECS-authored skybox parameters (`None` = skip the sky draw).
     pub skybox: Option<crate::skybox_pass::SkyboxSettings>,
     /// 网格 管理器 — passes 解析 [`DrawItem::mesh`] handles to GPU buffers.

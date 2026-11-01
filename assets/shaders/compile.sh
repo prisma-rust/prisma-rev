@@ -32,7 +32,7 @@ mkdir -p "$REFL"
 # mesh_vert.vert.spv / scene_frag.frag.spv / shadow_depth.vert.spv).
 # Slang entry points are vertexMain / fragmentMain (see the [shader(...)] attrs).
 compile_stage() {
-  local name="$1" entry="$2" stage="$3"
+  local name="$1" entry="$2" stage="$3" out_name="${4:-$1}"
   # Map slang stage names (vertex/fragment) to the file extension the engine
   # expects (vert/frag), so the generated .spv matches include_bytes! paths.
   case "$stage" in
@@ -40,8 +40,8 @@ compile_stage() {
     fragment) ext=frag ;;
     *)        ext="$stage" ;;
   esac
-  local out_spv="$OUT/${name}.${ext}.spv"
-  echo "  $name :: $entry -> ${name}.${ext}.spv"
+  local out_spv="$OUT/${out_name}.${ext}.spv"
+  echo "  $name :: $entry -> ${out_name}.${ext}.spv"
   "$SLANGC" "$SRC/${name}.slang" \
     -profile "$PROFILE" \
     -target spirv \
@@ -93,6 +93,9 @@ echo "Compiling Slang shaders (slangc = $SLANGC, profile = $PROFILE)..."
 # mesh_vert: vertex stage for the ForwardPass (shared by all scene geometry).
 compile_stage mesh_vert vertexMain vertex
 emit_reflection mesh_vert vertexMain vertex
+# mesh_vert, skinned entry point: same module, extra vertex buffer
+# (binding 1 = joints/weights, #560 P0-3).
+compile_stage mesh_vert vertexSkinnedMain vertex mesh_vert_skinned
 
 # outline: inverted-hull selection outline (#487). Vertex + solid-color fragment.
 compile_stage outline vertexMain vertex

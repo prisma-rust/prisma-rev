@@ -65,6 +65,7 @@ fn render_graded(renderer: &mut GraphRenderer, grade: PostGrade) -> Vec<u8> {
             &[], // no PT lights
             grade,
             false,
+            &[], // bone matrices
         )
         .expect("headless render failed");
     renderer
