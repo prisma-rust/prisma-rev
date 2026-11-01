@@ -1382,7 +1382,8 @@ impl RenderPassNode for ForwardPass {
         // or the 交换链 changed. `set_ao` rebinds the previous-frame GTAO
         // 可见性 视图 (1-frame 延迟 `update_lights` rewrites the
         // point-light SSBO from the ECS-collected lights for this 帧
-        self.ensure_target(ctx.device, ctx.context, ctx.image_index, ctx.extent)?;
+        // #613：内部渲染分辨率开启时目标小于交换链。
+        self.ensure_target(ctx.device, ctx.context, ctx.image_index, ctx.render_extent)?;
         self.set_ao(ctx.device, ctx.frame_index, ctx.frame.ao_view);
         self.update_lights(ctx.device, ctx.frame_index, ctx.frame.lights)?;
 

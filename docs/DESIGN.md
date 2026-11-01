@@ -972,6 +972,30 @@ id 的语义和编辑器的下标重映射**不能分开落地**：只要 `paren
 换成 JSON 不增加任何依赖。`serde_json` 保留，**`toml` 不再出现在任何 crate 里**
 （`cargo tree -p prism-app -e normal | grep toml` 必须为空）。
 
+#### 内部分辨率 / 整数缩放（`[render]`，#613）
+
+2D 项目按设计分辨率作画（`projects/fishing` 是 640×360），但窗口往往大得多：
+在 2000×1125 上直接按窗口分辨率渲染，最近邻放大会得到 3.125× 这种非整数比例，
+一块美术像素变成大小不一的矩形。两个键把「渲染分辨率」和「输出分辨率」分开：
+
+```ini
+[render]
+; 留空 / off / native = 按窗口分辨率渲染（默认，行为与之前完全一致）
+internal_resolution = 640x360
+; stretch = 铺满窗口（像素不等宽）；integer = 最大整数倍 + 居中黑边
+internal_scale_mode = integer
+```
+
+- 两个轴都写了才生效；只写一边时另一边按窗口宽高比推导；
+- 场景（ForwardPass 的 HDR / 深度 / 法线中间目标、路径追踪累积）按内部尺寸渲染，
+  UI 叠加仍按窗口尺寸（文字保持清晰）；
+- `PostPass` 把内部图放大到窗口：`stretch` 铺满，`integer` 取
+  `min(窗口宽/内部宽, 窗口高/内部高)` 的整数倍并居中，四周留黑边；
+  `integer` 时采样器切到最近邻，像素画不会被插值糊掉；
+- 相机投影用**内部**宽高比（`RenderSettings::render_aspect`），否则 2D 构图会被拉伸；
+- 编辑器 Game 视图走同一条链路（`EngineHost::render` + `GraphRenderer::set_internal_resolution`），
+  所以 Play 看到的像素比例就是打包产物的比例。
+
 #### INI 方言（唯一实现标准）
 
 1. `[section]` 行，节内 `key = value`；节与节之间顺序无关；

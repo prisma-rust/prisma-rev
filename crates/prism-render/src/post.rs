@@ -67,9 +67,13 @@ pub struct PostPass {
     ds_layout: vk::DescriptorSetLayout,
     ds_pool: vk::DescriptorPool,
     sampler: vk::Sampler,
+    /// 最近邻采样器（`InternalScaleMode::Integer`，#613）：像素画放大不糊。
+    sampler_nearest: vk::Sampler,
     /// The 高动态范围 视图 currently bound to each frame-in-flight's 描述符 集合
     /// Tracked so we skip 冗余 描述符 rewrites.
     bound_hdrs: Vec<vk::ImageView>,
+    /// 每个 in-flight 帧当前绑定的是否是最近邻采样器（与 `bound_hdrs` 一起判缓存）。
+    bound_nearest: Vec<bool>,
     device: Option<ash::Device>,
 }
 
@@ -106,6 +110,22 @@ impl PostPass {
             )
         }
         .context("PostPass: create sampler")?;
+
+        let sampler_nearest = unsafe {
+            device.create_sampler(
+                &vk::SamplerCreateInfo::default()
+                    .mag_filter(vk::Filter::NEAREST)
+                    .min_filter(vk::Filter::NEAREST)
+                    .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
+                    .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                    .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                    .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                    .min_lod(0.0)
+                    .max_lod(vk::LOD_CLAMP_NONE),
+                None,
+            )
+        }
+        .context("PostPass: create nearest sampler")?;
 
         let bindings = [vk::DescriptorSetLayoutBinding::default()
             .binding(0)
@@ -162,7 +182,9 @@ impl PostPass {
             ds_layout,
             ds_pool,
             sampler,
+            sampler_nearest,
             bound_hdrs: vec![vk::ImageView::null(); fif as usize],
+            bound_nearest: vec![false; fif as usize],
             device: Some(device.clone()),
         })
     }
@@ -275,15 +297,21 @@ impl PostPass {
         frame_index: u32,
         view: vk::ImageView,
         image_layout: vk::ImageLayout,
+        nearest: bool,
     ) {
         let i = (frame_index as usize) % self.descriptor_sets.len();
-        if view == self.bound_hdrs[i] {
+        if view == self.bound_hdrs[i] && nearest == self.bound_nearest[i] {
             return;
         }
         self.bound_hdrs[i] = view;
+        self.bound_nearest[i] = nearest;
         let image_info = vk::DescriptorImageInfo::default()
             .image_view(view)
-            .sampler(self.sampler)
+            .sampler(if nearest {
+                self.sampler_nearest
+            } else {
+                self.sampler
+            })
             .image_layout(image_layout);
         let write = vk::WriteDescriptorSet::default()
             .dst_set(self.descriptor_sets[i])
@@ -305,6 +333,7 @@ impl PostPass {
         frame_index: u32,
         image_index: u32,
         hdr_image: vk::Image,
+        dest: vk::Rect2D,
         push: &shader_bindings::post::PostPush,
     ) -> anyhow::Result<()> {
         self.ensure_pipeline(device)?;
@@ -357,26 +386,20 @@ impl PostPass {
                 std::slice::from_ref(&ds),
                 &[],
             );
+            // #613：内部分辨率按整数倍/拉伸放到 `dest`，其余区域由清屏色填黑边。
             device.cmd_set_viewport(
                 cmd,
                 0,
                 &[vk::Viewport {
-                    x: 0.0,
-                    y: 0.0,
-                    width: self.extent.width as f32,
-                    height: self.extent.height as f32,
+                    x: dest.offset.x as f32,
+                    y: dest.offset.y as f32,
+                    width: dest.extent.width as f32,
+                    height: dest.extent.height as f32,
                     min_depth: 0.0,
                     max_depth: 1.0,
                 }],
             );
-            device.cmd_set_scissor(
-                cmd,
-                0,
-                &[vk::Rect2D {
-                    offset: vk::Offset2D { x: 0, y: 0 },
-                    extent: self.extent,
-                }],
-            );
+            device.cmd_set_scissor(cmd, 0, &[dest]);
             device.cmd_push_constants(
                 cmd,
                 pipeline.layout,
@@ -484,6 +507,7 @@ impl PostPass {
         unsafe { device.destroy_descriptor_set_layout(self.ds_layout, None) };
         unsafe { device.destroy_descriptor_pool(self.ds_pool, None) };
         unsafe { device.destroy_sampler(self.sampler, None) };
+        unsafe { device.destroy_sampler(self.sampler_nearest, None) };
         self.device = None;
     }
 }
@@ -587,7 +611,22 @@ impl RenderPassNode for PostPass {
         // Bind the selected 输入 视图 into this frame's 描述符 集合 The
         // cache (`bound_hdrs`) keys on the 视图 handle, so switching modes
         // (which changes the 视图 triggers a rewrite automatically.
-        self.set_input(ctx.device, ctx.frame_index, input_view, image_layout);
+        // #613：内部渲染分辨率 → 目标矩形与采样方式。
+        let nearest = ctx.settings.internal_scale_mode
+            == crate::render_graph::InternalScaleMode::Integer
+            && ctx.render_extent != ctx.extent;
+        let dest = crate::render_graph::post_destination(
+            ctx.extent,
+            ctx.render_extent,
+            ctx.settings.internal_scale_mode,
+        );
+        self.set_input(
+            ctx.device,
+            ctx.frame_index,
+            input_view,
+            image_layout,
+            nearest,
+        );
 
         // The generated PostPush carries tonemapMode (Reinhard / ACES /
         // passthrough), aaMode (0 = off, 1 = FXAA) and invTexelSize (one texel in
@@ -614,14 +653,16 @@ impl RenderPassNode for PostPass {
             contrast: ctx.frame.grade.contrast,
             saturation: ctx.frame.grade.saturation,
             vignette: ctx.frame.grade.vignette,
+            // #613：FXAA 采样的是**内部渲染目标**，一个 texel 的 UV 尺寸按它的
+            // 分辨率算；用交换链尺寸会在内部分辨率缩小时把采样步长算小。
             invTexelSize: [
-                if self.extent.width > 0 {
-                    1.0 / self.extent.width as f32
+                if ctx.render_extent.width > 0 {
+                    1.0 / ctx.render_extent.width as f32
                 } else {
                     0.0
                 },
-                if self.extent.height > 0 {
-                    1.0 / self.extent.height as f32
+                if ctx.render_extent.height > 0 {
+                    1.0 / ctx.render_extent.height as f32
                 } else {
                     0.0
                 },
@@ -633,6 +674,7 @@ impl RenderPassNode for PostPass {
             ctx.frame_index,
             ctx.image_index,
             input_image,
+            dest,
             &push,
         )
     }

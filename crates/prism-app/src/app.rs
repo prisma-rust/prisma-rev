@@ -1119,9 +1119,12 @@ impl App {
         if let (Some(shared), Some(engine)) = (self.render_shared.as_ref(), self.engine.as_mut()) {
             // 复用渲染线程上一帧归还的数据包（`Vec` 容量随之保留，#66）。
             let mut packet = shared.take_spare_packet().unwrap_or_default();
+            // #613：内部分辨率生效时相机按**内部**宽高比投影，后处理再整数
+            // 放大到窗口；否则 2D 像素会被拉成不等宽的矩形。
+            let aspect = self.render_settings.render_aspect(self.display_aspect);
             extract_frame_packet_into_with_shadow(
                 engine.world_mut(),
-                self.display_aspect,
+                aspect,
                 &self.surface_rotation,
                 self.render_settings.shadow_distance,
                 &mut packet,

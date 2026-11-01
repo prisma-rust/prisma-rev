@@ -266,6 +266,10 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
   还可以选固定分辨率（1920×1080 等）或「只锁比例」的 `16:9 (fit)` /
   `4:3 (fit)` 等；`Match Window` 保留旧的跟面板缩放行为。控制通道用
   `resolution:1600x900` / `resolution:fit:16x9` / `resolution:match`。
+- **内部分辨率 / 整数缩放（#613）**：工程 `assets/settings.ini [render]` 的
+  `internal_resolution = 640x360` + `internal_scale_mode = integer` 会让场景按 640×360
+  渲染、再整数倍放大到窗口（居中黑边），相机也按内部宽高比投影 —— 于是美术像素是
+  等大的方块。Game 视图与打包产物走同一份配置，`off`（默认）保持按窗口分辨率渲染。
 - **2D 网格**：Scene 视图切到 2D / 正交相机时，参考网格画在 `z = 0` 的 XY 平面
   （X 红、Y 绿），而不是 3D 的 XZ 地面；位置和线宽沿用原来的 1m / 10m 分级（#602）。
 - **瓦片地图（`prism_engine::scene::Tilemap`）**：一个实体管一整张网格。`tiles` 行优先、

@@ -460,6 +460,10 @@ fn render_one_frame(
         show_grid: settings.show_grid,
     };
 
+    // #613：内部分辨率必须在 `begin_frame` 之前生效——begin_frame 用它决定
+    // HDR 中间目标尺寸，execute 再用它做 PostPass 的目标矩形。
+    renderer.set_internal_resolution(settings.internal_resolution, settings.internal_scale_mode);
+
     let ctx = match renderer.begin_frame()? {
         Some(c) => c,
         None => return Ok(false),

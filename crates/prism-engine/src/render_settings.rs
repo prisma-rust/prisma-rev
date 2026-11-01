@@ -4,7 +4,7 @@
 //! into a single 结构体 so [`render_system`] has a clean, 可扩展 参数
 //! instead of a growing 列表 of 标量 arguments.
 
-pub use prism_render::RenderMode;
+pub use prism_render::{InternalScaleMode, RenderMode};
 
 /// PBR isolate flag names, ordered by shader bit (`PBR_FLAG_*` in
 /// `scene_frag.slang`). Bit `i` corresponds to `PBR_FLAG_NAMES[i]`.
@@ -85,6 +85,13 @@ pub struct RenderSettings {
     pub saturation: f32,
     /// 暗角强度（`0.0` = 关闭，`1.0` = 四角全黑）。
     pub vignette: f32,
+    /// 内部渲染分辨率 `[宽, 高]`（#613）；`[0, 0]` = 关闭。
+    ///
+    /// 开启后场景按这个尺寸渲染，`PostPass` 再放大到窗口；相机的宽高比也跟着
+    /// 变成 `宽 / 高`，所以窗口尺寸变化不再改变取景。
+    pub internal_resolution: [u32; 2],
+    /// 内部图像放大到窗口的方式（拉伸 / 整数倍 + 黑边）。
+    pub internal_scale_mode: InternalScaleMode,
     /// 主方向光的阴影覆盖距离（世界单位，米）。
     ///
     /// 阴影正交盒子以**相机前方 `distance * 0.5` 处**为中心、边长 `distance`；
@@ -128,6 +135,52 @@ impl Default for RenderSettings {
             saturation: 1.0,
             vignette: 0.0,
             shadow_distance: DEFAULT_SHADOW_DISTANCE,
+            internal_resolution: [0, 0],
+            internal_scale_mode: InternalScaleMode::Stretch,
         }
+    }
+}
+
+impl RenderSettings {
+    /// 内部渲染分辨率生效时的相机宽高比；否则沿用窗口宽高比（#613）。
+    ///
+    /// 只有一个维度非零时另一边按窗口比例推导，宽高比与窗口一致，直接返回
+    /// `window_aspect`。
+    pub fn render_aspect(&self, window_aspect: f32) -> f32 {
+        let [width, height] = self.internal_resolution;
+        if width > 0 && height > 0 {
+            width as f32 / height as f32
+        } else if window_aspect.is_finite() && window_aspect > 0.0 {
+            window_aspect
+        } else {
+            16.0 / 9.0
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{InternalScaleMode, RenderSettings};
+
+    #[test]
+    fn render_aspect_prefers_the_internal_resolution() {
+        // #613：内部分辨率生效时相机必须按内部比例投影，而不是窗口比例。
+        let mut settings = RenderSettings::default();
+        assert_eq!(settings.internal_resolution, [0, 0]);
+        assert_eq!(settings.internal_scale_mode, InternalScaleMode::Stretch);
+        // 没有内部分辨率时沿用窗口比例。
+        assert!((settings.render_aspect(21.0 / 9.0) - 21.0 / 9.0).abs() < 1e-6);
+
+        settings.internal_resolution = [640, 360];
+        assert!((settings.render_aspect(21.0 / 9.0) - 16.0 / 9.0).abs() < 1e-6);
+
+        // 只有一个维度时宽高比与窗口一致，回落到窗口比例。
+        settings.internal_resolution = [640, 0];
+        assert!((settings.render_aspect(4.0 / 3.0) - 4.0 / 3.0).abs() < 1e-6);
+
+        // 坏窗口比例也有确定的结果，不会把 NaN 传给投影矩阵。
+        settings.internal_resolution = [0, 0];
+        assert_eq!(settings.render_aspect(f32::NAN), 16.0 / 9.0);
+        assert_eq!(settings.render_aspect(0.0), 16.0 / 9.0);
     }
 }
