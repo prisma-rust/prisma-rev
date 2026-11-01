@@ -2351,6 +2351,29 @@ impl Workspace {
         self.selection_active = Some(index);
     }
 
+    /// 按**当前可见行顺序**做 Shift 区间选择（层级树 / 列表的 `ordered`）。
+    ///
+    /// 与 [`Workspace::select_range`] 的区别：这里只选 `ordered` 里的下标，折叠 subtree
+    /// 或搜索过滤掉的行不会被夹带进来。锚点或目标不在可见行里时退化成普通单击。
+    pub fn select_visible_range(&mut self, ordered: &[usize], anchor: usize, index: usize) {
+        let Some(anchor_pos) = ordered.iter().position(|row| *row == anchor) else {
+            self.select(index, false);
+            return;
+        };
+        let Some(target_pos) = ordered.iter().position(|row| *row == index) else {
+            self.select(index, false);
+            return;
+        };
+        let (start, end) = if anchor_pos <= target_pos {
+            (anchor_pos, target_pos)
+        } else {
+            (target_pos, anchor_pos)
+        };
+        self.selection = ordered[start..=end].to_vec();
+        self.selection.sort_unstable();
+        self.selection_active = Some(index);
+    }
+
     /// 框选：`additive = false` 覆盖选择，`true` 并入。
     pub fn select_many(&mut self, indices: &[usize], additive: bool) {
         self.select_many_with(
@@ -6371,6 +6394,24 @@ mod tests {
         assert_eq!(workspace.selection, vec![1], "已有项被切换掉");
         workspace.select(0, true);
         assert_eq!(workspace.selection, vec![0, 1]);
+    }
+
+    #[test]
+    fn visible_range_selection_skips_rows_hidden_by_filters() {
+        let mut workspace = Workspace::sample();
+        // 可见行顺序与实体下标顺序不一致：中间那行被折叠 / 搜索过滤掉了。
+        let ordered = [0usize, 2, 3];
+        workspace.select_visible_range(&ordered, 0, 3);
+        assert_eq!(workspace.selection, vec![0, 2, 3]);
+        assert_eq!(workspace.selection_active, Some(3));
+
+        workspace.select_visible_range(&ordered, 3, 0);
+        assert_eq!(workspace.selection, vec![0, 2, 3], "反向选择同样规范化");
+
+        // 锚点不在可见列表里：退化成普通单击，不选整段。
+        workspace.select_visible_range(&ordered, 1, 2);
+        assert_eq!(workspace.selection, vec![2]);
+        assert_eq!(workspace.selection_active, Some(2));
     }
 
     #[test]
