@@ -145,6 +145,7 @@ pub fn scene_render_system_into_with_frustum(
                 };
                 out.push(DrawItem {
                     mesh: mr.render_handle,
+                    entity_id: entity.id(),
                     model,
                     material,
                     cast_shadow: mode.casts_shadows(),
@@ -163,6 +164,7 @@ pub fn scene_render_system_into_with_frustum(
             };
             out.push(DrawItem {
                 mesh: mr.render_handle,
+                entity_id: entity.id(),
                 model,
                 material,
                 cast_shadow: mode.casts_shadows(),

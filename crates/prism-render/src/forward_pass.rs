@@ -29,6 +29,19 @@ use crate::render_graph::{
 use crate::shader;
 use crate::skybox_pass::SkyboxPass;
 
+/// `assets/shaders/slang/outline.slang::OutlinePush` 的 Rust 镜像。
+///
+/// 反向外壳只读取帧 UBO（set 0 binding 0）和一个推送常量块；反射报告
+/// 块大小 96 字节（mat4 + vec4 + float + std140 尾部填充）。
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct OutlinePush {
+    model: [[f32; 4]; 4],
+    color: [f32; 4],
+    thickness: f32,
+    _pad: [f32; 3],
+}
+
 /// 向前 scene pass (bindless PBR + neutral ambient + shadow 映射表 targeting
 /// the 交换链
 ///
@@ -95,6 +108,9 @@ pub struct ForwardPass {
     /// 混合状态不同，因此描述符绑定与推送常量在一次绘制列表内可以跨变体复用。
     /// key 的第二项是线框开关（#431）：`POLYGON_MODE_LINE` 需要单独的管线。
     pipelines: std::collections::HashMap<(DrawState, bool), GraphicsPipeline>,
+    /// 选中描边的反向外壳管线（#487）：只读 set 0 的帧 UBO，片元输出纯色。
+    /// 与场景网格共享顶点格式 / 渲染 pass / 深度附件，只是剔除正面、不写深度。
+    outline_pipeline: Option<GraphicsPipeline>,
     ibl_descriptor_set: vk::DescriptorSet,
     /// IBL 描述符 集合 布局 (borrowed from `IblResources`). Used by the
     /// skybox pass to 构建 its 管线 布局
@@ -187,6 +203,7 @@ impl ForwardPass {
             },
             render_pass: None,
             pipelines: std::collections::HashMap::new(),
+            outline_pipeline: None,
             ibl_descriptor_set: vk::DescriptorSet::null(),
             ibl_layout: vk::DescriptorSetLayout::null(),
             shadow_ds_layout: None,
@@ -1301,6 +1318,88 @@ impl ForwardPass {
 
         Ok(())
     }
+
+    /// 惰性创建选中描边管线（#487）。
+    ///
+    /// 反向外壳只绑定 set 0（帧 UBO），所以管线布局比场景管线窄；剔除正面、
+    /// 关闭深度写入，让扩大的背面只在原网格轮廓外通过深度测试。附件 1（视图
+    /// 法线）不写，避免污染 GTAO 的输入。
+    fn ensure_outline_pipeline(&mut self, device: &ash::Device) -> Result<()> {
+        if self.outline_pipeline.is_some() {
+            return Ok(());
+        }
+        let rp = self
+            .render_pass
+            .context("ForwardPass: render_pass not created before outline pipeline")?;
+        let frame_set_layout = self
+            .frame_set_layout
+            .context("ForwardPass: set0 layout not set (call set_resources)")?;
+
+        const VERT_SPV: &[u8] = include_bytes!("../../../assets/shaders/outline.vert.spv");
+        const FRAG_SPV: &[u8] = include_bytes!("../../../assets/shaders/outline.frag.spv");
+        let vert_module =
+            shader::load_shader_module(device, VERT_SPV).context("outline: load vert")?;
+        let frag_module =
+            shader::load_shader_module(device, FRAG_SPV).context("outline: load frag")?;
+        let vert_entry = std::ffi::CString::new("vertexMain").unwrap();
+        let frag_entry = std::ffi::CString::new("fragmentMain").unwrap();
+        let shader_stages = [
+            shader::shader_stage(
+                vk::ShaderStageFlags::VERTEX,
+                vert_module,
+                vert_entry.as_c_str(),
+            ),
+            shader::shader_stage(
+                vk::ShaderStageFlags::FRAGMENT,
+                frag_module,
+                frag_entry.as_c_str(),
+            ),
+        ];
+        let binding_desc = Vertex::binding_description();
+        let attr_descs = Vertex::attribute_descriptions();
+        let set_layouts = [frame_set_layout];
+        let push = [vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
+            .offset(0)
+            .size(std::mem::size_of::<OutlinePush>() as u32)];
+        // 附件 0 写纯色、不混合；附件 1（视图法线）不写。
+        let blend_attachments = [
+            vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::RGBA)
+                .blend_enable(false),
+            vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::empty())
+                .blend_enable(false),
+        ];
+
+        let pipeline = GraphicsPipeline::new(&PipelineDesc {
+            device,
+            shader_stages: &shader_stages,
+            vertex_binding_desc: std::slice::from_ref(&binding_desc),
+            vertex_attr_descs: &attr_descs,
+            descriptor_set_layouts: &set_layouts,
+            push_constant_ranges: &push,
+            render_pass: rp,
+            subpass: 0,
+            // 正面剔除：只留下被法线外扩的背面，形成轮廓。
+            cull_mode: Some(vk::CullModeFlags::FRONT),
+            depth_bias_enable: None,
+            depth_bias_constant_factor: None,
+            depth_bias_slope_factor: None,
+            depth_write_enable: Some(false),
+            depth_test_enable: None,
+            color_attachment_count: None,
+            color_blend_attachments: Some(&blend_attachments),
+            front_face: None,
+            polygon_mode: Some(vk::PolygonMode::FILL),
+        })
+        .context("ForwardPass: create outline pipeline")?;
+
+        unsafe { device.destroy_shader_module(vert_module, None) };
+        unsafe { device.destroy_shader_module(frag_module, None) };
+        self.outline_pipeline = Some(pipeline);
+        Ok(())
+    }
 }
 impl RenderPassNode for ForwardPass {
     fn name(&self) -> &str {
@@ -1682,6 +1781,94 @@ impl RenderPassNode for ForwardPass {
                         .cmd_draw_indexed(ctx.cmd, index_count, 1, item.index_start, 0, 0);
                 } else {
                     ctx.device.cmd_draw(ctx.cmd, uploaded.vertex_count, 1, 0, 0);
+                }
+            }
+        }
+
+        // 选中描边（#487）：把选中的网格再画一遍，正面剔除 + 法线外扩。
+        // 放在不透明网格之后、粒子 / 精灵之前：被其它几何挡住的部分会正常
+        // 被深度测试丢弃，不会像屏幕空间线框那样浮在最上面。
+        let outline_requested = ctx.frame.draw_list.iter().any(|item| {
+            item.visible_in_main_pass && ctx.frame.outline_entities.contains(&item.entity_id)
+        });
+        if outline_requested {
+            self.ensure_outline_pipeline(ctx.device)?;
+            let outline = self
+                .outline_pipeline
+                .as_ref()
+                .context("ForwardPass: outline pipeline missing")?;
+            unsafe {
+                ctx.device.cmd_bind_pipeline(
+                    ctx.cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    outline.pipeline,
+                );
+                ctx.device.cmd_bind_descriptor_sets(
+                    ctx.cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    outline.layout,
+                    0,
+                    std::slice::from_ref(&frame_set),
+                    &[],
+                );
+            }
+
+            for item in ctx.frame.draw_list {
+                if !item.visible_in_main_pass
+                    || !ctx.frame.outline_entities.contains(&item.entity_id)
+                {
+                    continue;
+                }
+                let Some(uploaded) = ctx.frame.mesh_manager.get(item.mesh) else {
+                    continue;
+                };
+                // 线宽随物体尺度走，缩放很大的物体不会只剩一条细缝。
+                let scale = (0..3)
+                    .map(|column| {
+                        let c = &item.model[column];
+                        (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt()
+                    })
+                    .fold(0.0f32, f32::max);
+                let pc = OutlinePush {
+                    model: item.model,
+                    color: [4.0, 0.25, 0.02, 1.0],
+                    thickness: 0.02 * scale.max(1e-4),
+                    _pad: [0.0; 3],
+                };
+                unsafe {
+                    let vertex_buffers = [uploaded.mesh.vertex_buffer];
+                    let offsets = [0u64];
+                    ctx.device
+                        .cmd_bind_vertex_buffers(ctx.cmd, 0, &vertex_buffers, &offsets);
+                    ctx.device.cmd_push_constants(
+                        ctx.cmd,
+                        outline.layout,
+                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                        0,
+                        std::slice::from_raw_parts(
+                            &pc as *const _ as *const u8,
+                            std::mem::size_of::<OutlinePush>(),
+                        ),
+                    );
+                    if let Some(ib) = uploaded.mesh.index_buffer {
+                        let index_count = item.index_count.unwrap_or(uploaded.index_count());
+                        if index_count == 0 {
+                            continue;
+                        }
+                        ctx.device
+                            .cmd_bind_index_buffer(ctx.cmd, ib, 0, vk::IndexType::UINT32);
+                        ctx.device.cmd_draw_indexed(
+                            ctx.cmd,
+                            index_count,
+                            1,
+                            item.index_start,
+                            0,
+                            0,
+                        );
+                    } else {
+                        ctx.device
+                            .cmd_draw(ctx.cmd, uploaded.vertex_count(), 1, 0, 0);
+                    }
                 }
             }
         }

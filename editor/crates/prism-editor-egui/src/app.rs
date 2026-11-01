@@ -4550,8 +4550,13 @@ impl EditorApp {
                 }
             }
             let camera = self.workspace.camera;
+            let selected: Vec<usize> = self.workspace.selection.iter().copied().collect();
+            let outline = self.workspace.show_selection_outline;
             if let Some(view) = self.scene_view.as_mut() {
                 view.host.place_editor_camera(&camera);
+                // #487：真正的网格描边走引擎 pass，投影线框只保留给
+                // 无网格对象 / 父级子级。
+                view.host.set_selection_outline(&selected, outline);
             }
         }
 

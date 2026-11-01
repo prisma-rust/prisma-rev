@@ -40,6 +40,7 @@ fn draw_item(queue: i32, eye_distance_x: f32) -> DrawItem {
     model[3][0] = eye_distance_x;
     DrawItem {
         mesh: crate::managers::MeshHandle::default(),
+        entity_id: u32::MAX,
         model,
         material: None,
         cast_shadow: true,
