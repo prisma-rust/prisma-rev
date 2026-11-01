@@ -58,6 +58,8 @@ pub enum PhysicsCommand {
         body_status: PhysicsBodyStatus,
         settings: BodySettings,
         shape: ColliderDesc,
+        /// `Collider.is_trigger` → rapier `sensor`：参与查询但不阻挡刚体。
+        sensor: bool,
     },
     DespawnBody {
         entity: EntityId,
@@ -173,6 +175,7 @@ pub fn physics_thread_main(step_rx: Receiver<PhysicsStep>, result_tx: Sender<Phy
                     body_status,
                     settings,
                     shape,
+                    sensor,
                 } => {
                     let mut body_builder = RigidBodyBuilder::new(rapier_status(body_status))
                         .pose(array_to_pose(position, rotation))
@@ -214,7 +217,7 @@ pub fn physics_thread_main(step_rx: Receiver<PhysicsStep>, result_tx: Sender<Phy
                     } else {
                         1.0
                     };
-                    let collider = collider_builder.density(density).build();
+                    let collider = collider_builder.density(density).sensor(sensor).build();
                     collider_set.insert_with_parent(collider, body_handle, &mut rigid_body_set);
                 }
                 PhysicsCommand::DespawnBody { entity } => {
@@ -306,6 +309,7 @@ struct TrackedBody {
     status: PhysicsBodyStatus,
     settings: BodySettings,
     shape: ColliderDesc,
+    sensor: bool,
 }
 
 impl PhysicsRuntime {
@@ -403,10 +407,12 @@ impl PhysicsRuntime {
             let shape = collider
                 .map(|collider| collider_desc(collider, world_scale))
                 .unwrap_or_else(|| default_box(world_scale));
+            let sensor = collider.is_some_and(|collider| collider.is_trigger);
             let desired = TrackedBody {
                 status,
                 settings,
                 shape: shape.clone(),
+                sensor,
             };
 
             let position = world_position.to_array();
@@ -420,6 +426,7 @@ impl PhysicsRuntime {
                         body_status: status,
                         settings,
                         shape,
+                        sensor,
                     });
                 }
                 Some(previous) if *previous != desired => {
@@ -432,6 +439,7 @@ impl PhysicsRuntime {
                         body_status: status,
                         settings,
                         shape,
+                        sensor,
                     });
                 }
                 Some(previous) if previous.status == PhysicsBodyStatus::KinematicPosition => {
@@ -611,6 +619,7 @@ mod tests {
                             radius: 0.5,
                             center: [0.0; 3],
                         },
+                        sensor: false,
                     },
                     PhysicsCommand::SpawnBody {
                         entity: floor,
@@ -622,6 +631,7 @@ mod tests {
                             half_extents: [5.0, 0.5, 5.0],
                             center: [0.0; 3],
                         },
+                        sensor: false,
                     },
                 ],
             })
@@ -835,6 +845,82 @@ mod tests {
         assert!(
             (world_position.x - 10.0).abs() < 1.0e-3,
             "child should stay under its parent at world x=10, got {world_position:?}"
+        );
+    }
+
+    /// #522：`Collider.is_trigger` 必须变成 rapier sensor——球穿过触发器，
+    /// 落在更下面的真实地板上，而不是被 trigger 挡住。
+    #[test]
+    fn trigger_collider_does_not_block_a_dynamic_body() {
+        let mut world = World::new();
+        let trigger = world.spawn();
+        world.insert(
+            trigger,
+            Rigidbody {
+                body_type: BodyType::Static,
+                ..Default::default()
+            },
+        );
+        world.insert(
+            trigger,
+            Collider {
+                half_extents: [5.0, 0.5, 5.0],
+                is_trigger: true,
+                ..Default::default()
+            },
+        );
+        let floor = world.spawn();
+        world.insert(
+            floor,
+            LocalTransform {
+                position: glam::Vec3::new(0.0, -2.0, 0.0),
+                ..Default::default()
+            },
+        );
+        world.insert(
+            floor,
+            Rigidbody {
+                body_type: BodyType::Static,
+                ..Default::default()
+            },
+        );
+        world.insert(
+            floor,
+            Collider {
+                half_extents: [5.0, 0.5, 5.0],
+                ..Default::default()
+            },
+        );
+        let ball = world.spawn();
+        world.insert(
+            ball,
+            LocalTransform {
+                position: glam::Vec3::new(0.0, 5.0, 0.0),
+                ..Default::default()
+            },
+        );
+        world.insert(ball, Rigidbody::default());
+        world.insert(
+            ball,
+            Collider {
+                shape: ColliderShape::Sphere,
+                radius: 0.5,
+                ..Default::default()
+            },
+        );
+
+        let mut runtime = PhysicsRuntime::spawn();
+        for _ in 0..240 {
+            assert!(runtime.step(&mut world));
+        }
+        let y = world
+            .get::<LocalTransform>(ball)
+            .expect("ball transform")
+            .position
+            .y;
+        assert!(
+            (-1.05..-0.95).contains(&y),
+            "ball should pass through the sensor and rest at y≈-1.0, got {y}"
         );
     }
 
