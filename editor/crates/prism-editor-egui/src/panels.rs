@@ -662,7 +662,8 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
                 }
             });
         }
-        let visibility_changed = !workspace.document().hidden_entities.is_empty() || workspace.isolate;
+        let visibility_changed =
+            !workspace.document().hidden_entities.is_empty() || workspace.isolate;
         if visibility_changed && ui.button(format!("{} Show All", icons::EYE)).clicked() {
             workspace.show_all_entities();
         }
@@ -819,9 +820,7 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
                 if response.clicked() {
                     action = Some(TreeAction::ToggleActive(index));
                 }
-                let hidden = entity
-                    .id
-                    .is_some_and(|id| hidden_ids.contains(&id));
+                let hidden = entity.id.is_some_and(|id| hidden_ids.contains(&id));
                 let visibility_icon = if hidden {
                     icons::EYE_CLOSED
                 } else {
@@ -5079,6 +5078,7 @@ fn history_row(
 pub enum SceneRenderMode {
     Shaded,
     Wireframe,
+    ShadedWireframe,
     Direct,
     Specular,
     Metallic,
@@ -5090,9 +5090,10 @@ pub enum SceneRenderMode {
 }
 
 impl SceneRenderMode {
-    pub const ALL: [SceneRenderMode; 10] = [
+    pub const ALL: [SceneRenderMode; 11] = [
         SceneRenderMode::Shaded,
         SceneRenderMode::Wireframe,
+        SceneRenderMode::ShadedWireframe,
         SceneRenderMode::Direct,
         SceneRenderMode::Specular,
         SceneRenderMode::Metallic,
@@ -5107,6 +5108,7 @@ impl SceneRenderMode {
         match self {
             SceneRenderMode::Shaded => "Shaded",
             SceneRenderMode::Wireframe => "Wireframe",
+            SceneRenderMode::ShadedWireframe => "Shaded Wireframe",
             SceneRenderMode::Direct => "Direct",
             SceneRenderMode::Specular => "Specular",
             SceneRenderMode::Metallic => "Metallic",
@@ -5136,6 +5138,11 @@ impl SceneRenderMode {
         matches!(self, SceneRenderMode::Wireframe)
     }
 
+    /// 是否在正常填充上叠加线框（#431）。
+    fn shaded_wireframe(self) -> bool {
+        matches!(self, SceneRenderMode::ShadedWireframe)
+    }
+
     /// PostPass 调试 RT：`0` 正常、`1` 线性深度、`2` 视图空间法线。
     fn debug_rt(self) -> u32 {
         match self {
@@ -5151,6 +5158,7 @@ impl SceneRenderMode {
             mode.debug_flags() == settings.debug_flags
                 && mode.debug_rt() == settings.debug_rt
                 && mode.wireframe() == settings.wireframe
+                && mode.shaded_wireframe() == settings.shaded_wireframe
         })
     }
 
@@ -5158,6 +5166,7 @@ impl SceneRenderMode {
         settings.debug_flags = self.debug_flags();
         settings.debug_rt = self.debug_rt();
         settings.wireframe = self.wireframe();
+        settings.shaded_wireframe = self.shaded_wireframe();
     }
 }
 
@@ -6643,9 +6652,16 @@ mod render_mode_tests {
         SceneRenderMode::Shaded.apply(&mut settings);
         assert_eq!((settings.debug_flags, settings.debug_rt), (0, 0));
         assert!(!settings.wireframe);
+        assert!(!settings.shaded_wireframe);
 
         SceneRenderMode::Wireframe.apply(&mut settings);
         assert!(settings.wireframe);
+        assert!(!settings.shaded_wireframe);
+        assert_eq!((settings.debug_flags, settings.debug_rt), (0, 0));
+
+        SceneRenderMode::ShadedWireframe.apply(&mut settings);
+        assert!(!settings.wireframe);
+        assert!(settings.shaded_wireframe);
         assert_eq!((settings.debug_flags, settings.debug_rt), (0, 0));
 
         settings.debug_flags = (1 << 0) | (1 << 3);

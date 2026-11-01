@@ -814,6 +814,7 @@ impl EngineHost {
             inv_projection: scene.inv_projection.to_cols_array_2d(),
             debug_flags: self.settings.debug_flags,
             wireframe: self.settings.wireframe,
+            shaded_wireframe: self.settings.shaded_wireframe,
             tonemap_mode: self.settings.tonemap_mode,
             aa_mode: self.settings.aa_mode,
             debug_rt: self.settings.debug_rt,

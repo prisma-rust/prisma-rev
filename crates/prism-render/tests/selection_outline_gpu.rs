@@ -100,6 +100,15 @@ fn draw_item(mesh: prism_render::managers::MeshHandle) -> DrawItem {
 }
 
 fn render(renderer: &mut GraphRenderer, item: &DrawItem) -> Vec<u8> {
+    render_with(renderer, item, false, false)
+}
+
+fn render_with(
+    renderer: &mut GraphRenderer,
+    item: &DrawItem,
+    wireframe: bool,
+    shaded_wireframe: bool,
+) -> Vec<u8> {
     let (view_proj, view) = camera();
     let frame_data = frame_data(view_proj, view);
     renderer
@@ -122,7 +131,8 @@ fn render(renderer: &mut GraphRenderer, item: &DrawItem) -> Vec<u8> {
             1.0,
             &[],
             PostGrade::default(),
-            false,
+            wireframe,
+            shaded_wireframe,
         )
         .expect("headless render failed");
     renderer
@@ -141,6 +151,45 @@ fn orange_pixels(pixels: &[u8]) -> usize {
             r > 120.0 && r > g * 1.6 && g > b * 1.5
         })
         .count()
+}
+
+fn dark_pixels(pixels: &[u8]) -> usize {
+    pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|pixel| pixel[0] < 40 && pixel[1] < 40 && pixel[2] < 40)
+        .count()
+}
+
+#[test]
+fn shaded_wireframe_keeps_the_fill_and_adds_dark_edges() {
+    let Some(mut renderer) = try_create_headless() else {
+        return;
+    };
+    if !renderer.context().wireframe_supported {
+        eprintln!("[SKIP] fillModeNonSolid not supported by this driver");
+        return;
+    }
+    let mesh = renderer
+        .register_mesh(&prism_render::primitives::builtin("box").expect("box mesh"))
+        .expect("register box");
+    let item = draw_item(mesh);
+
+    let plain = render_with(&mut renderer, &item, false, false);
+    let shaded = render_with(&mut renderer, &item, false, true);
+
+    let plain_dark = dark_pixels(&plain);
+    let shaded_dark = dark_pixels(&shaded);
+    assert!(
+        shaded_dark > plain_dark + 50,
+        "expected the fill to stay and dark wire edges to be added: plain={plain_dark}, shaded={shaded_dark}"
+    );
+    // 填充仍然在：线框不是唯一内容。
+    assert!(
+        shaded_dark < 256 * 256,
+        "shaded wireframe must not replace the filled image"
+    );
 }
 
 #[test]

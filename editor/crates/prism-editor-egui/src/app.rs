@@ -5810,6 +5810,7 @@ fn render_settings_json(
         "shadowDistance": settings.shadow_distance,
         "debugRt": settings.debug_rt,
         "wireframe": settings.wireframe,
+        "shadedWireframe": settings.shaded_wireframe,
         "pathTrace": settings.render_mode == RenderMode::PathTrace,
         "ptMaxBounces": settings.pt_max_bounces,
         "ptRayMaxDistance": settings.pt_ray_max_distance,
@@ -5858,6 +5859,10 @@ fn render_settings_from_json(
             .get("wireframe")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(base.wireframe),
+        shaded_wireframe: value
+            .get("shadedWireframe")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(base.shaded_wireframe),
         render_mode: if path_trace {
             RenderMode::PathTrace
         } else {
@@ -6141,6 +6146,7 @@ mod tests {
             debug_flags: 0b1010,
             debug_rt: 2,
             wireframe: true,
+            shaded_wireframe: true,
             render_mode: RenderMode::PathTrace,
             tonemap_mode: 2,
             ..Default::default()
@@ -6151,6 +6157,10 @@ mod tests {
         assert_eq!(game.debug_flags, 0, "PBR isolate is a scene-view helper");
         assert_eq!(game.debug_rt, 0, "debug RT is a scene-view helper");
         assert!(!game.wireframe, "wireframe is a scene-view helper");
+        assert!(
+            !game.shaded_wireframe,
+            "shaded wireframe is a scene-view helper"
+        );
 
         // Scene view 反过来：它就该从工具栏当前状态出发。
         let scene = initial_view_settings(ViewKind::Scene, &editor);
@@ -6158,6 +6168,7 @@ mod tests {
         assert_eq!(scene.debug_flags, 0b1010);
         assert_eq!(scene.debug_rt, 2);
         assert!(scene.wireframe);
+        assert!(scene.shaded_wireframe);
     }
 
     #[test]
@@ -6190,6 +6201,7 @@ mod tests {
         settings.saturation = 0.6;
         settings.vignette = 0.3;
         settings.shadow_distance = 90.0;
+        settings.shaded_wireframe = true;
         let value = render_settings_json(&settings);
         let loaded = render_settings_from_json(&value, false);
         assert_eq!(loaded.show_grid, true);
@@ -6199,6 +6211,7 @@ mod tests {
         assert_eq!(loaded.saturation, 0.6);
         assert_eq!(loaded.vignette, 0.3);
         assert_eq!(loaded.shadow_distance, 90.0);
+        assert!(loaded.shaded_wireframe);
         assert_eq!(
             render_settings_from_json(&serde_json::json!({}), true).show_grid,
             true

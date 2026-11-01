@@ -805,6 +805,8 @@ pub struct GraphFrame<'a> {
     pub debug_flags: u32,
     /// 前向管线线框模式（#431）。设备不支持 `fillModeNonSolid` 时忽略。
     pub wireframe: bool,
+    /// 正常填充 + 线框叠加（#431）。`wireframe` 为 true 时以纯线框为准。
+    pub shaded_wireframe: bool,
     /// 需要画选中描边的 ECS 实体 id（#487）。
     ///
     /// 由编辑器通过 [`GraphRenderer::set_outline_entities`] 每帧设置；空切片
