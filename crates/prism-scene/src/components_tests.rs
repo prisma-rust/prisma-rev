@@ -269,6 +269,9 @@ fn sprite_json_round_trips_and_fills_missing_fields() {
         flip_y: false,
         sorting_layer: 2,
         order_in_layer: -1,
+        src_blend: BlendMode::SrcAlpha,
+        dst_blend: BlendMode::One,
+        blend_op: BlendOp::Add,
     };
     let json = serde_json::to_string(&sprite).unwrap();
     let back: SpriteRenderer = serde_json::from_str(&json).unwrap();
@@ -282,6 +285,9 @@ fn sprite_json_round_trips_and_fills_missing_fields() {
     assert!(back.flip_x);
     assert_eq!(back.sorting_layer, 2);
     assert_eq!(back.order_in_layer, -1);
+    assert_eq!(back.src_blend, BlendMode::SrcAlpha);
+    assert_eq!(back.dst_blend, BlendMode::One);
+    assert_eq!(back.blend_op, BlendOp::Add);
 
     // 老文档只有路径：其余字段走 serde 默认。
     let legacy: SpriteRenderer = serde_json::from_str(r#"{"sprite_path":"a.png"}"#).unwrap();
@@ -290,6 +296,11 @@ fn sprite_json_round_trips_and_fills_missing_fields() {
     assert_eq!(legacy.frame_size, [0, 0]);
     assert_eq!(legacy.sheet_columns, 0, "老文档按单行图集处理");
     assert_eq!(legacy.sheet_row, 0);
+    assert_eq!(
+        legacy.src_blend,
+        BlendMode::SrcAlpha,
+        "老文档默认 alpha 混合"
+    );
 }
 
 #[test]

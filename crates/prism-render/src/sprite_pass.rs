@@ -25,10 +25,11 @@ use ash::vk;
 
 use crate::buffer::{create_buffer, BufferUsage, MemoryProperties};
 use crate::context::VulkanContext;
-use crate::pipeline::{GraphicsPipeline, PipelineDesc};
+use crate::pipeline::{blend_factor, blend_operation, GraphicsPipeline, PipelineDesc};
 use crate::render_graph::SpriteDrawItem;
 use crate::shader;
 use crate::shader_bindings::sprites as bindings;
+use prism_gfx::{BlendMode, BlendOp};
 
 const SPRITE_VERT_SPV: &[u8] = include_bytes!("../../../assets/shaders/sprites.vert.spv");
 const SPRITE_FRAG_SPV: &[u8] = include_bytes!("../../../assets/shaders/sprites.frag.spv");
@@ -86,9 +87,13 @@ impl SpriteInstance {
     }
 }
 
+/// `(src, dst, op)` 唯一标识一条混合管线。
+type BlendKey = (BlendMode, BlendMode, BlendOp);
+
 /// 2D 精灵实例化绘制通道。
 pub struct SpritePass {
-    pipeline: Option<GraphicsPipeline>,
+    /// 按混合状态缓存的管线（#610）：Alpha / Additive / Multiply 共用实例缓冲。
+    pipelines: std::collections::HashMap<BlendKey, GraphicsPipeline>,
     /// 管线编译时使用的 render pass（ForwardPass 重建后需要重编）。
     built_for_render_pass: Option<vk::RenderPass>,
     instance_buffer: vk::Buffer,
@@ -103,7 +108,7 @@ impl SpritePass {
     /// `VulkanContext`, so it cannot allocate GPU memory here).
     pub fn new() -> Self {
         Self {
-            pipeline: None,
+            pipelines: std::collections::HashMap::new(),
             built_for_render_pass: None,
             instance_buffer: vk::Buffer::null(),
             instance_memory: vk::DeviceMemory::null(),
@@ -138,35 +143,59 @@ impl SpritePass {
         if items.is_empty() || bindless_set == vk::DescriptorSet::null() {
             return Ok(());
         }
-        self.ensure_pipeline(device, render_pass, bindless_layout)?;
+        if self.built_for_render_pass != Some(render_pass) {
+            self.pipelines.clear();
+            self.built_for_render_pass = Some(render_pass);
+        }
         self.grow(device, context, items.len() as u32)?;
         self.upload(context, items)?;
 
-        let pipeline = self.pipeline.as_ref().expect("pipeline built above");
-
-        unsafe {
-            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline.pipeline);
-            device.cmd_bind_descriptor_sets(
-                cmd,
-                vk::PipelineBindPoint::GRAPHICS,
-                pipeline.layout,
-                0,
-                std::slice::from_ref(&bindless_set),
-                &[],
+        // 保持 CPU 排序顺序，只把相邻的同混合状态合并成一次 draw。
+        // 混合模式不是排序键，所以交错的精确顺序仍然保留。
+        let mut start = 0usize;
+        while start < items.len() {
+            let key = (
+                items[start].src_blend,
+                items[start].dst_blend,
+                items[start].blend_op,
             );
-            device.cmd_push_constants(
-                cmd,
-                pipeline.layout,
-                vk::ShaderStageFlags::VERTEX,
-                0,
-                std::slice::from_raw_parts(
-                    view_proj as *const [[f32; 4]; 4] as *const u8,
-                    size_of::<[[f32; 4]; 4]>(),
-                ),
-            );
-            device.cmd_bind_vertex_buffers(cmd, 0, &[self.instance_buffer], &[0]);
-            // 6 vertices = 2 triangles, one instance per sprite.
-            device.cmd_draw(cmd, 6, items.len() as u32, 0, 0);
+            let mut end = start + 1;
+            while end < items.len()
+                && (
+                    items[end].src_blend,
+                    items[end].dst_blend,
+                    items[end].blend_op,
+                ) == key
+            {
+                end += 1;
+            }
+            self.ensure_pipeline(device, render_pass, bindless_layout, key)?;
+            let pipeline = self.pipelines.get(&key).expect("pipeline built above");
+            unsafe {
+                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline.pipeline);
+                device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    pipeline.layout,
+                    0,
+                    std::slice::from_ref(&bindless_set),
+                    &[],
+                );
+                device.cmd_push_constants(
+                    cmd,
+                    pipeline.layout,
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    std::slice::from_raw_parts(
+                        view_proj as *const [[f32; 4]; 4] as *const u8,
+                        size_of::<[[f32; 4]; 4]>(),
+                    ),
+                );
+                device.cmd_bind_vertex_buffers(cmd, 0, &[self.instance_buffer], &[0]);
+                // 6 vertices = 2 triangles; one instance per sprite.
+                device.cmd_draw(cmd, 6, (end - start) as u32, 0, start as u32);
+            }
+            start = end;
         }
 
         Ok(())
@@ -177,12 +206,12 @@ impl SpritePass {
         device: &ash::Device,
         render_pass: vk::RenderPass,
         bindless_layout: vk::DescriptorSetLayout,
+        blend: BlendKey,
     ) -> Result<()> {
-        if self.pipeline.is_some() && self.built_for_render_pass == Some(render_pass) {
+        if self.pipelines.contains_key(&blend) {
             return Ok(());
         }
         self.device = Some(device.clone());
-        self.pipeline = None;
 
         let vert_module =
             shader::load_shader_module(device, SPRITE_VERT_SPV).context("SpritePass: vert")?;
@@ -214,15 +243,29 @@ impl SpritePass {
         // ForwardPass' render pass has two color attachments (HDR color +
         // view-space normal). Sprites blend into SV_Target0 and leave the
         // normal target untouched (write mask empty), mirroring SkyboxPass.
+        let (src_blend, dst_blend, blend_op) = blend;
+        let alpha_blend = src_blend == BlendMode::SrcAlpha
+            && dst_blend == BlendMode::OneMinusSrcAlpha
+            && blend_op == BlendOp::Add;
         let blend_attachments = [
             vk::PipelineColorBlendAttachmentState::default()
                 .color_write_mask(vk::ColorComponentFlags::RGBA)
                 .blend_enable(true)
-                .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
-                .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-                .color_blend_op(vk::BlendOp::ADD)
-                .src_alpha_blend_factor(vk::BlendFactor::ONE)
-                .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+                .src_color_blend_factor(blend_factor(src_blend))
+                .dst_color_blend_factor(blend_factor(dst_blend))
+                .color_blend_op(blend_operation(blend_op))
+                // alpha 通道只在标准 alpha 混合时累乘；加色 / 乘法的 alpha
+                // 保持目标值，避免把后面的精灵变透明。
+                .src_alpha_blend_factor(if alpha_blend {
+                    vk::BlendFactor::ONE
+                } else {
+                    vk::BlendFactor::ZERO
+                })
+                .dst_alpha_blend_factor(if alpha_blend {
+                    vk::BlendFactor::ZERO
+                } else {
+                    vk::BlendFactor::ONE
+                })
                 .alpha_blend_op(vk::BlendOp::ADD),
             vk::PipelineColorBlendAttachmentState::default()
                 .color_write_mask(vk::ColorComponentFlags::empty())
@@ -256,7 +299,7 @@ impl SpritePass {
             device.destroy_shader_module(frag_module, None);
         }
 
-        self.pipeline = Some(pipeline);
+        self.pipelines.insert(blend, pipeline);
         self.built_for_render_pass = Some(render_pass);
         Ok(())
     }
@@ -321,7 +364,7 @@ impl SpritePass {
 
     /// 交换链重建 / 销毁前释放 GPU 资源。
     pub fn destroy(&mut self, device: &ash::Device) {
-        self.pipeline = None;
+        self.pipelines.clear();
         self.built_for_render_pass = None;
         unsafe {
             if self.instance_buffer != vk::Buffer::null() {
@@ -341,7 +384,7 @@ impl SpritePass {
 impl Drop for SpritePass {
     fn drop(&mut self) {
         if let Some(device) = self.device.take() {
-            self.pipeline = None;
+            self.pipelines.clear();
             unsafe {
                 if self.instance_buffer != vk::Buffer::null() {
                     device.destroy_buffer(self.instance_buffer, None);
