@@ -13,11 +13,12 @@
 //
 // Push constants: SpritePush (64 bytes) = world-view-projection.
 //
-// Per-instance vertex data (one 96-byte record, instance rate):
+// Per-instance vertex data (one 112-byte record, instance rate):
 //   loc 0..3 : the four world-space quad corners, BL, BR, TR, TL (float3 each)
 //   loc 4    : uv rect (u0, v0, u1, v1)
 //   loc 5    : color (linear RGBA, multiplied with the sampled texel)
 //   loc 6    : bindless texture index
+//   loc 7    : world-space clip rect (min_x, min_y, max_x, max_y); max < min = off
 //
 // Sprites expand their model matrix on the CPU; 2D lines hand over explicit
 // world-space triangles (a triangle is a quad whose last two corners coincide).
@@ -57,6 +58,7 @@ struct SpriteVertexIn
     [[vk::location(4)]] float4 uvRect;
     [[vk::location(5)]] float4 color;
     [[vk::location(6)]] uint   textureIndex;
+    [[vk::location(7)]] float4 clip;
 };
 
 struct SpriteVaryings
@@ -65,6 +67,8 @@ struct SpriteVaryings
     float2 uv      : TEXCOORD0;
     float4 color   : COLOR0;
     uint   textureIndex : TEXCOORD1;
+    float3 worldPos : TEXCOORD2;
+    nointerpolation float4 clip : TEXCOORD3;
 };
 
 // Unit quad as two triangles. `QUAD_CORNER` indexes the four corner records;
@@ -90,12 +94,23 @@ SpriteVaryings vertexMain(SpriteVertexIn in, uint vertexId : SV_VertexID)
     out.uv = uv;
     out.color = in.color;
     out.textureIndex = in.textureIndex;
+    out.worldPos = world;
+    out.clip = in.clip;
     return out;
 }
 
 [shader("fragment")]
 float4 fragmentMain(SpriteVaryings in) : SV_Target0
 {
+    // Per-fragment world-space clipping (#582). `max < min` = clip disabled, so
+    // a plain sprite still costs one compare on a constant value. Discarding
+    // here keeps the whole 2D layer in a single draw call — no per-instance
+    // scissor or extra pass.
+    if (in.clip.z >= in.clip.x
+        && (in.worldPos.x < in.clip.x || in.worldPos.x > in.clip.z
+            || in.worldPos.y < in.clip.y || in.worldPos.y > in.clip.w))
+        discard;
+
     // `0xFFFFFFFF` = solid fill (LineRenderer quads): no texture fetch.
     if (in.textureIndex == 0xFFFFFFFFu)
         return in.color;

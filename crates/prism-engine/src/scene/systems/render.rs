@@ -262,6 +262,7 @@ fn sprite_entries(world: &World) -> Vec<(SortKey, prism_render::SpriteDrawItem)>
                     src_blend: sprite.src_blend,
                     dst_blend: sprite.dst_blend,
                     blend_op: sprite.blend_op,
+                    clip: prism_render::clip_bounds(sprite.clip_enabled, sprite.clip_rect),
                 },
             )
         })
@@ -303,6 +304,7 @@ fn line_entries(world: &World) -> Vec<(SortKey, prism_render::SpriteDrawItem)> {
                     src_blend: prism_scene::render_enums::BlendMode::SrcAlpha,
                     dst_blend: prism_scene::render_enums::BlendMode::OneMinusSrcAlpha,
                     blend_op: prism_scene::render_enums::BlendOp::Add,
+                    clip: prism_render::NO_CLIP,
                 },
             ));
         }

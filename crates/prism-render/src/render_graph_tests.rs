@@ -293,3 +293,21 @@ fn graph_resources_clear_frame_preserves_persistent_resources() {
     assert!(resources.published_image(handle).is_none());
     assert_eq!(resources.param(handle), None);
 }
+
+#[test]
+fn clip_bounds_normalises_and_disables_degenerate_rects() {
+    // 作者可以任意顺序写角点。
+    assert_eq!(
+        clip_bounds(true, [10.0, 20.0, -5.0, 4.0]),
+        [-5.0, 4.0, 10.0, 20.0]
+    );
+    // 关闭 / 非有限 / 零面积 → 不裁剪（刚勾上开关还没填矩形时不会隐藏精灵）。
+    assert_eq!(clip_bounds(false, [0.0, 0.0, 8.0, 8.0]), NO_CLIP);
+    assert_eq!(clip_bounds(true, [0.0, 0.0, f32::NAN, 8.0]), NO_CLIP);
+    assert_eq!(clip_bounds(true, [4.0, 0.0, 4.0, 8.0]), NO_CLIP);
+    assert_eq!(clip_bounds(true, [0.0, 0.0, 0.0, 0.0]), NO_CLIP);
+    // 半平面式裁剪（水面以下的倒影）保持有效：`max < min` 才是关。
+    let below = clip_bounds(true, [-1.0e4, -1.0e4, 1.0e4, 12.0]);
+    assert_eq!(below, [-1.0e4, -1.0e4, 1.0e4, 12.0]);
+    assert!(below[2] >= below[0] && below[3] >= below[1]);
+}

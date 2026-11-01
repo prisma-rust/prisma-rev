@@ -272,6 +272,8 @@ fn sprite_json_round_trips_and_fills_missing_fields() {
         src_blend: BlendMode::SrcAlpha,
         dst_blend: BlendMode::One,
         blend_op: BlendOp::Add,
+        clip_enabled: true,
+        clip_rect: [-4.0, -2.0, 4.0, 2.0],
     };
     let json = serde_json::to_string(&sprite).unwrap();
     let back: SpriteRenderer = serde_json::from_str(&json).unwrap();
@@ -288,6 +290,8 @@ fn sprite_json_round_trips_and_fills_missing_fields() {
     assert_eq!(back.src_blend, BlendMode::SrcAlpha);
     assert_eq!(back.dst_blend, BlendMode::One);
     assert_eq!(back.blend_op, BlendOp::Add);
+    assert!(back.clip_enabled);
+    assert_eq!(back.clip_rect, [-4.0, -2.0, 4.0, 2.0]);
 
     // 老文档只有路径：其余字段走 serde 默认。
     let legacy: SpriteRenderer = serde_json::from_str(r#"{"sprite_path":"a.png"}"#).unwrap();
@@ -301,6 +305,24 @@ fn sprite_json_round_trips_and_fills_missing_fields() {
         BlendMode::SrcAlpha,
         "老文档默认 alpha 混合"
     );
+
+    // #582：裁剪默认关闭，旧文档不会突然被裁。
+    assert!(!legacy.clip_enabled);
+    assert_eq!(legacy.clip_rect, [0.0; 4]);
+}
+
+#[test]
+fn sprite_clip_rect_round_trips() {
+    let sprite = SpriteRenderer {
+        sprite_path: "sprites/reflection.png".into(),
+        clip_enabled: true,
+        clip_rect: [-100.0, -50.0, 100.0, 12.5],
+        ..Default::default()
+    };
+    let json = serde_json::to_string(&sprite).unwrap();
+    let back: SpriteRenderer = serde_json::from_str(&json).unwrap();
+    assert!(back.clip_enabled);
+    assert_eq!(back.clip_rect, [-100.0, -50.0, 100.0, 12.5]);
 }
 
 #[test]
