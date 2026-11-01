@@ -138,6 +138,10 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
 可选能力**默认关**、按 feature 打开：`prism-app/physics`、`prism-app/audio`（连带
 `prism-engine/audio` 的 `AudioSource`）、`prism-asset/async-io`。玩家树由
 `scripts/check_deps.py` 守预算（黑名单 + crate 上限），本地和 CI 都跑，别调高常量。
+- `prism-app/audio` 的场景音频：距离衰减 + **等功率声像**。声像按听者（`AudioListener`，
+  没有就用第一个相机）的右向量投影，在**开始播放时**烘焙进片段（单声道 → 立体声，
+  立体声按 L/R 缩放），所以混音器仍然只需要 `set_volume`；`spatial_blend = 0` 保持纯 2D，
+  移动中的声源保留首次播放时的声像。总线 / 编辑器试听仍未接（#508）。
 - The only editor is the egui editor (`editor/`, Rust + egui + ash). Its data layer lives in
   `editor/crates/prism-editor-gpui-core`; the engine side must stay generic: no editor-only
   concepts (panels, docks, selection) may leak into `prism-app` / `prism-engine` / `prism-render`.

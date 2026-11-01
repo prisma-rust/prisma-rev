@@ -13,8 +13,9 @@
 //!
 //! # 现状与边界
 //!
-//! - **只有距离衰减**：`spatial_blend` 把衰减曲线与 2D 满音量混合；左右声像
-//!   （`pan`）还没有，混音器 API 里也还没有 `set_volume_pan`。
+//! - **距离衰减 + 等功率声像**：`spatial_blend` 既缩放衰减曲线，也缩放左右声像。
+//!   声像在**开始播放时**按听者右向量烘焙进片段（单声道 → 立体声、立体声按 L/R
+//!   缩放），所以移动中的声源保留首次播放时的声像；混音器仍然只需要 `set_volume`。
 //! - 只读**松散文件**：`assets/**` 里的音频；`.pak` 内的音频还没接。
 //! - 片段的采样率/声道由解码器给；混音器负责重采样。
 //! - 不监听文件变化：改音频后需要重启或重新加载场景（资产热重载只处理 `.pak`）。
@@ -120,7 +121,7 @@ impl SceneAudio {
         sink: &mut dyn AudioSink,
         requests: Option<&Sender<DecodeRequest>>,
     ) {
-        let (listener_position, listener_gain) = listener(world);
+        let listener = listener(world);
         let mut live: Vec<Entity> = Vec::new();
 
         let sources: Vec<(Entity, AudioSource)> = world
@@ -137,13 +138,20 @@ impl SceneAudio {
                 continue;
             }
 
-            let volume = match (world_position(world, entity), listener_position) {
-                (Some(position), Some(listener)) => {
-                    source.volume_at(distance(position, listener)) * listener_gain
+            let position = world_position(world, entity);
+            let volume = match (position, listener.position) {
+                (Some(position), Some(listener_position)) => {
+                    source.volume_at(distance(position, listener_position)) * listener.gain
                 }
-                _ => source.volume_at(0.0) * listener_gain,
+                _ => source.volume_at(0.0) * listener.gain,
             }
             .clamp(0.0, 1.0);
+            let pan = pan_for(
+                position,
+                listener.position,
+                listener.right,
+                source.spatial_blend,
+            );
 
             if !self.clips.contains_key(&source.sound_path) {
                 self.request(&source.sound_path, requests);
@@ -164,7 +172,13 @@ impl SceneAudio {
                         continue;
                     };
                     let path = source.sound_path.clone();
-                    let id = sink.play(clip);
+                    let panned = if pan.abs() > 1e-4 {
+                        let (left, right) = pan_gains(pan);
+                        Some(panned_clip(clip, left, right))
+                    } else {
+                        None
+                    };
+                    let id = sink.play(panned.as_ref().unwrap_or(clip));
                     if id == 0 {
                         continue;
                     }
@@ -193,7 +207,13 @@ impl SceneAudio {
                             continue;
                         };
                         let path = source.sound_path.clone();
-                        let id = sink.play(clip);
+                        let panned = if pan.abs() > 1e-4 {
+                            let (left, right) = pan_gains(pan);
+                            Some(panned_clip(clip, left, right))
+                        } else {
+                            None
+                        };
+                        let id = sink.play(panned.as_ref().unwrap_or(clip));
                         if id == 0 {
                             continue;
                         }
@@ -261,21 +281,117 @@ impl SceneAudio {
     }
 }
 
-/// 听者位置与增益：优先 `AudioListener` 实体，否则退回第一个相机，再否则原点。
-fn listener(world: &World) -> (Option<[f32; 3]>, f32) {
+/// 听者：位置、增益与**右向量**（声像用）。
+struct Listener {
+    position: Option<[f32; 3]>,
+    gain: f32,
+    right: [f32; 3],
+}
+
+/// 听者位置 / 增益 / 右方向：优先 `AudioListener` 实体，否则退回第一个相机，
+/// 再否则原点 + 世界 +X。
+fn listener(world: &World) -> Listener {
     let gain = |entity: Entity, fallback: f32| {
         world
             .get::<AudioListener>(entity)
             .map(|listener| listener.gain.clamp(0.0, 1.0))
             .unwrap_or(fallback)
     };
+    let right = |entity: Entity| {
+        world
+            .get::<LocalToWorld>(entity)
+            .map(|world| {
+                let axis = world.0.x_axis.truncate();
+                let length = axis.length();
+                if length.is_finite() && length > 1e-5 {
+                    (axis / length).to_array()
+                } else {
+                    [1.0, 0.0, 0.0]
+                }
+            })
+            .unwrap_or([1.0, 0.0, 0.0])
+    };
     if let Some((entity, _)) = world.query::<AudioListener>().next() {
-        return (world_position(world, entity), gain(entity, 1.0));
+        return Listener {
+            position: world_position(world, entity),
+            gain: gain(entity, 1.0),
+            right: right(entity),
+        };
     }
     if let Some((entity, _)) = world.query::<Camera>().next() {
-        return (world_position(world, entity), 1.0);
+        return Listener {
+            position: world_position(world, entity),
+            gain: 1.0,
+            right: right(entity),
+        };
     }
-    (Some([0.0; 3]), 1.0)
+    Listener {
+        position: Some([0.0; 3]),
+        gain: 1.0,
+        right: [1.0, 0.0, 0.0],
+    }
+}
+
+/// 声像：`-1` 全左、`+1` 全右，按 `spatial_blend` 缩放（2D 声源恒为 0）。
+///
+/// 只投影到听者的右向量上，不区分前后：3D 音频的首版够用，等混音器支持
+/// HRTF / 双耳时再换成完整方位。
+fn pan_for(
+    source: Option<[f32; 3]>,
+    listener: Option<[f32; 3]>,
+    right: [f32; 3],
+    spatial_blend: f32,
+) -> f32 {
+    if !(spatial_blend.is_finite() && spatial_blend > 0.0) {
+        return 0.0;
+    }
+    let (Some(source), Some(listener)) = (source, listener) else {
+        return 0.0;
+    };
+    let offset = [
+        source[0] - listener[0],
+        source[1] - listener[1],
+        source[2] - listener[2],
+    ];
+    let length = (offset[0] * offset[0] + offset[1] * offset[1] + offset[2] * offset[2]).sqrt();
+    if !length.is_finite() || length < 1e-4 {
+        return 0.0;
+    }
+    let dot = (offset[0] * right[0] + offset[1] * right[1] + offset[2] * right[2]) / length;
+    (dot * spatial_blend).clamp(-1.0, 1.0)
+}
+
+/// 等功率声像增益 `(left, right)`；`pan = 0` 时两侧都是 `1/√2`。
+fn pan_gains(pan: f32) -> (f32, f32) {
+    let angle = (pan.clamp(-1.0, 1.0) + 1.0) * std::f32::consts::FRAC_PI_4;
+    (angle.cos(), angle.sin())
+}
+
+/// 把片段烘焙成已声像处理的副本：单声道 → 立体声（每个采样两路），
+/// 立体声 / 多声道按 L/R 缩放前两路。
+fn panned_clip(clip: &AudioData, left: f32, right: f32) -> AudioData {
+    let channels = clip.channels as usize;
+    let (samples, channels) = if channels <= 1 {
+        let mut samples = Vec::with_capacity(clip.samples.len() * 2);
+        for sample in &clip.samples {
+            samples.push(sample * left);
+            samples.push(sample * right);
+        }
+        (samples, 2)
+    } else {
+        let mut samples = clip.samples.clone();
+        for frame in samples.chunks_mut(channels) {
+            frame[0] *= left;
+            frame[1] *= right;
+        }
+        (samples, clip.channels)
+    };
+    AudioData {
+        samples,
+        sample_rate: clip.sample_rate,
+        channels,
+        duration: clip.duration,
+    }
 }
 
 fn world_position(world: &World, entity: Entity) -> Option<[f32; 3]> {
@@ -356,6 +472,8 @@ mod tests {
         volumes: HashMap<u64, f32>,
         stopped: Vec<u64>,
         played: usize,
+        /// 最近一次交给混音器的片段（声像测试用）。
+        last_clip: Option<AudioData>,
     }
 
     impl FakeSink {
@@ -364,7 +482,7 @@ mod tests {
         }
         fn volumes(&self) -> Vec<f32> {
             let mut values: Vec<(u64, f32)> = self.volumes.iter().map(|(k, v)| (*k, *v)).collect();
-            values.sort_by(|a, b| a.0.cmp(&b.0));
+            values.sort_by_key(|a| a.0);
             values.into_iter().map(|(_, volume)| volume).collect()
         }
     }
@@ -375,6 +493,7 @@ mod tests {
             self.next += 1;
             let id = self.next;
             self.played += 1;
+            self.last_clip = Some(clip.clone());
             self.playing.insert(id, true);
             self.ends.insert(id, "clip");
             id
@@ -454,6 +573,83 @@ mod tests {
         scene.update(&world, &mut sink, None);
         assert_eq!(sink.played, 1);
         assert!((sink.volumes()[0] - 0.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn panning_gains_are_equal_power_and_follow_spatial_blend() {
+        let center = pan_gains(0.0);
+        assert!((center.0 - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        assert!((center.1 - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        let left = pan_gains(-1.0);
+        assert!((left.0 - 1.0).abs() < 1e-6 && left.1.abs() < 1e-6);
+        let right = pan_gains(1.0);
+        assert!(right.0.abs() < 1e-6 && (right.1 - 1.0).abs() < 1e-6);
+
+        let axis = [1.0, 0.0, 0.0];
+        assert!((pan_for(Some([5.0, 0.0, 0.0]), Some([0.0; 3]), axis, 1.0) - 1.0).abs() < 1e-6);
+        assert!((pan_for(Some([-5.0, 0.0, 0.0]), Some([0.0; 3]), axis, 1.0) + 1.0).abs() < 1e-6);
+        // 2D 声源 / 缺位置 / 与听者重合都居中，且不产生 NaN。
+        assert_eq!(
+            pan_for(Some([5.0, 0.0, 0.0]), Some([0.0; 3]), axis, 0.0),
+            0.0
+        );
+        assert_eq!(pan_for(None, Some([0.0; 3]), axis, 1.0), 0.0);
+        assert_eq!(pan_for(Some([0.0; 3]), Some([0.0; 3]), axis, 1.0), 0.0);
+    }
+
+    #[test]
+    fn a_panned_clip_scales_the_channels_without_reordering_samples() {
+        let mut mono = clip();
+        mono.samples = vec![1.0, -1.0];
+        let panned = panned_clip(&mono, 1.0, 0.0);
+        assert_eq!(panned.channels, 2);
+        assert_eq!(panned.samples, vec![1.0, 0.0, -1.0, 0.0]);
+
+        let stereo = AudioData {
+            samples: vec![1.0, 0.5, -1.0, -0.5],
+            sample_rate: 44_100,
+            channels: 2,
+            duration: Duration::from_secs(1),
+        };
+        let panned = panned_clip(&stereo, 0.5, 0.25);
+        assert_eq!(panned.channels, 2);
+        assert_eq!(panned.samples, vec![0.5, 0.125, -0.5, -0.125]);
+    }
+
+    #[test]
+    fn a_source_to_the_right_plays_panned_right() {
+        // 听者在原点、无旋转（右向量 = +X），声源在 +X：pan 应为 +1。
+        let mut world = World::new();
+        let listener_entity = place(&mut world, [0.0; 3]);
+        world.insert(listener_entity, Camera::default());
+        let speaker = place(&mut world, [5.0, 0.0, 0.0]);
+        source(
+            &mut world,
+            speaker,
+            AudioSource {
+                spatial_blend: 1.0,
+                min_distance: 0.0,
+                max_distance: 10.0,
+                volume: 1.0,
+                ..plain("audio/beep.ogg")
+            },
+        );
+
+        let mut scene = SceneAudio::new();
+        let mut mono = clip();
+        mono.samples = vec![1.0; 4];
+        scene.insert_clip("audio/beep.ogg", mono);
+        let mut sink = FakeSink::default();
+        scene.update(&world, &mut sink, None);
+
+        let played = sink.last_clip.as_ref().expect("played clip");
+        assert_eq!(played.channels, 2);
+        assert_eq!(played.samples.len(), 8);
+        assert!(played.samples[0].abs() < 1e-6, "left gain must be 0");
+        assert!(
+            (played.samples[1] - 1.0).abs() < 1e-6,
+            "right gain must be 1"
+        );
     }
 
     #[test]
