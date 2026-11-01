@@ -809,6 +809,9 @@ prism-scene::rscn::encode_scene
 
 - **[G2] Cooker 输出格式与引擎对接** ✅ **场景链路已打通**：`SceneCooker` 产出 RSCN v4，`prism-engine` 的 `SceneLoader` 用同一份 `prism-scene` schema 解码；`prism-cooker` 中有真实 `.scene.json` 的 cook/decode 测试。纹理/网格的压缩数据端到端对比仍待补。
 
+- **换场（#482）**：`Engine::{load_scene_json_file_with_mode, unload_scene}` +
+  `Persistent` 标记是引擎原语；宿主 `App::load_scene_json_file` 复用同一个 `Engine`，
+  所以 `Persistent` 子树与用户 system 能活过换场，旧实体的 GPU 句柄经解析器回收。
 - **GPU 资源回收**（#495）：`GpuAssetResolver` 记录每个 `(实体, 槽位)` 当前使用的
   槽位 / 句柄；热重载、组件移除、实体销毁或路径改写时把记录交回
   `GraphRenderer::release_assets`，由渲染器按 bindless 槽 / `MeshHandle` / 材质槽

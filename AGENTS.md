@@ -211,6 +211,12 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
     capability bit or a `GameWorld` method.
   - **Only values with cross-boundary identity are versioned** (fixed index tables such
     as key codes): they are part of the ABI contract, append-only and never reordered.
+- **换场复用同一个 `Engine`**（#482）：`App::load_scene_json_file` 只在第一次加载时建
+  engine / 资源解析器 / `.pak` 监听，之后走 `Engine::load_scene_json_file`（`Single`：
+  先加载成功再卸载旧场景）。`Persistent` 实体连子树活过换场，用户注册的 system 不会被冲掉；
+  旧实体的 GPU 句柄由解析器记账并交回渲染器回收（#495）。`Engine::scene_generation()`
+  每次换场 +1。项目代码还拿不到换场 API（`prism-game-api` / `HostApi` 的
+  `scene_generation` 接缝未接），那是后续单独的一刀。
 - `prism-app` keeps the neutral `FrameHook` / `prism_render::external_overlay::SwapchainOverlay`
   seams for debug hosts and future tooling; main → render thread UI data crosses as a
   **type-erased** `OverlayMessage` (`Box<dyn FnOnce(&mut dyn SwapchainOverlay) + Send>`) via
