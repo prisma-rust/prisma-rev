@@ -574,27 +574,49 @@ impl App {
         let _ = shared.take_asset_results();
     }
 
-    /// 从松散的 `.scene.json` 重新加载场景（宿主 / 编辑器）。
+    /// 从松散的 `.scene.json` 加载 / 切换场景（宿主 / 编辑器）。
     ///
-    /// 会重建 engine 与资源解析器：实体 id 与 GPU 句柄不能跨场景复用。
+    /// **复用同一个 `Engine`**（#482）：`Engine::load_scene_json_file` 是 `Single`
+    /// 模式——先加载新场景、成功后才卸载旧场景，`Persistent` 实体（等价
+    /// `DontDestroyOnLoad`）连同子树活过换场；注册过的 system / schedule 也不会
+    /// 被冲掉。
+    ///
+    /// 旧场景的 GPU 句柄由资源解析器回收：被卸载的实体不再出现在世界里，
+    /// `prepare_requests` 会把它们的纹理 / 网格 / 材质槽交回渲染器（#495）。
+    /// 只有第一次加载才新建 engine 与资源解析器（`.pak` 也只挂一次）。
+    ///
     /// 返回**文档顺序**的实体表（与 `.scene.json` 的 `entities` 下标一一对应）。
     pub fn load_scene_json_file(
         &mut self,
         path: &Path,
     ) -> Result<Vec<prism_engine::ecs::Entity>, String> {
         self.sync_render_thread();
-        self.engine = Some(Engine::empty());
-        self.asset_resolver = GpuAssetResolver::new();
-        self.asset_resolver.load_resource_package();
-        self.pak_watcher = spawn_pak_watcher();
-        let engine = self.engine.as_mut().expect("engine just re-created");
+        if self.engine.is_none() {
+            self.engine = Some(Engine::empty());
+            self.asset_resolver = GpuAssetResolver::new();
+            self.asset_resolver.load_resource_package();
+            self.pak_watcher = spawn_pak_watcher();
+        }
+        let engine = self.engine.as_mut().expect("engine present");
         let entities = engine.load_scene_json_file(path)?;
         engine.runtime_initialize();
 
         self.last_frame = None;
         self.fixed_accumulator = Duration::ZERO;
+        self.reset_persistent_play_state();
         self.apply_scene_environment();
         Ok(entities)
+    }
+
+    /// 换场后清掉只对「上一场」有意义的播放状态。
+    ///
+    /// 资源解析器按 `(实体, 槽位)` 记账（#495）；旧实体已经被卸载，这里让
+    /// 缓存立刻丢弃它们的条目，而不是等下一次 `prepare_requests` 才清理。
+    fn reset_persistent_play_state(&mut self) {
+        let Some(engine) = self.engine.as_mut() else {
+            return;
+        };
+        self.asset_resolver.forget_missing_entities(engine.world());
     }
 
     /// 把场景 `Skybox` 指向的 HDR 交给渲染线程重建 IBL。

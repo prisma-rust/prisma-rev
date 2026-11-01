@@ -303,6 +303,30 @@ impl GpuAssetResolver {
         });
     }
 
+    /// 换场 / 卸载后立刻丢弃已经不存在的实体的缓存（#482）。
+    ///
+    /// 等价于 `prepare_requests` 开头的清理，但可以显式调用，让换场当帧就把
+    /// 旧世界的槽位交回渲染器、并清掉 `enqueued` / 失败缓存里对不上的键。
+    pub fn forget_missing_entities(&mut self, world: &World) {
+        self.release_stale_assets(world);
+        self.enqueued.retain(|entity| {
+            world.get::<MeshRenderer>(*entity).is_some()
+                || world.get::<SpriteRenderer>(*entity).is_some()
+                || world.get::<Tilemap>(*entity).is_some()
+                || world
+                    .get::<crate::ui::components::Style>(*entity)
+                    .is_some_and(|style| !style.image.is_empty())
+        });
+        self.failed.retain(|(entity, _), _| {
+            world.get::<MeshRenderer>(*entity).is_some()
+                || world.get::<SpriteRenderer>(*entity).is_some()
+                || world.get::<Tilemap>(*entity).is_some()
+                || world
+                    .get::<crate::ui::components::Style>(*entity)
+                    .is_some_and(|style| !style.image.is_empty())
+        });
+    }
+
     /// 取走待释放的 GPU 资源；宿主把它们转给渲染器（`GraphRenderer::release_assets`）。
     ///
     /// 在 `prepare_requests` 之后调用：失效的槽位在这一帧内就被回收，重新上传
