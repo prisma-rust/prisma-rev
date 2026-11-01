@@ -185,3 +185,39 @@ fn colliders_without_a_world_transform_are_skipped() {
     world.insert(entity, boxed(1.0));
     assert!(raycast(&world, [0.0, 0.0, -5.0], [0.0, 0.0, 1.0], 100.0, u32::MAX).is_none());
 }
+
+#[test]
+fn push_out_keeps_a_particle_outside_a_box_surface() {
+    let shape = WorldShape::new(&boxed(1.0), &glam::Mat4::IDENTITY);
+    let (position, normal) = shape
+        .push_out(glam::vec3(1.1, 0.0, 0.0), 0.2)
+        .expect("point is within the particle radius of the +X face");
+    assert!((position.x - 1.2).abs() < 1e-5, "position {position:?}");
+    assert!((normal.x - 1.0).abs() < 1e-5, "normal {normal:?}");
+    assert!(shape.push_out(glam::vec3(1.5, 0.0, 0.0), 0.2).is_none());
+}
+
+#[test]
+fn push_out_uses_the_nearest_face_when_inside_a_box() {
+    let shape = WorldShape::new(&boxed(1.0), &glam::Mat4::IDENTITY);
+    let (position, normal) = shape
+        .push_out(glam::vec3(0.9, 0.0, 0.0), 0.25)
+        .expect("inside point is pushed out");
+    assert!((position.x - 1.25).abs() < 1e-5, "position {position:?}");
+    assert!((normal.x - 1.0).abs() < 1e-5, "normal {normal:?}");
+}
+
+#[test]
+fn push_out_uses_the_radial_normal_for_a_sphere() {
+    let collider = Collider {
+        shape: ColliderShape::Sphere,
+        radius: 1.0,
+        ..Default::default()
+    };
+    let shape = WorldShape::new(&collider, &glam::Mat4::IDENTITY);
+    let (position, normal) = shape
+        .push_out(glam::vec3(0.0, 1.1, 0.0), 0.2)
+        .expect("point is within the particle radius of the sphere");
+    assert!((position.y - 1.2).abs() < 1e-5, "position {position:?}");
+    assert!((normal.y - 1.0).abs() < 1e-5, "normal {normal:?}");
+}
