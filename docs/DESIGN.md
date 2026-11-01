@@ -675,6 +675,10 @@ RTEX 的 mip 链由 Cooker 通过 2×2 box filter 生成（`TextureCooker::gener
 └─────────────────────────────────────────┘
 ```
 - **压缩**：zstd（按 asset 粒度，`FLAG_COMPRESSED` 标记）
+- **流式**：`FLAG_STREAMED` 标记的资源保持未压缩，读取端可只按 offset/length 取块；
+  `CookSettings.streaming` 打开后，cooked 大小达到 `streaming_threshold_bytes`
+  （默认 4 MiB，移动端 1 MiB）的资源自动带此标记。`prism-build-pipeline pack/build-scenes
+  --stream-threshold <bytes>` 可对已 cook 目录按文件大小设置同一阈值。
 - **校验**：xxh3-64 覆盖 `header[4..44]`（version / asset_count / 各偏移与长度；`magic` 与
   `checksum` 自身除外）+ registry + deps + data。读取端在**解析 registry 之前**校验，
   篡改 `version` / `asset_count` 会直接得到 `ChecksumMismatch`（#89）。
@@ -709,6 +713,9 @@ RTEX 的 mip 链由 Cooker 通过 2×2 box filter 生成（`TextureCooker::gener
 `ShaderOverrides` / `CompressionOverrides`），只有**写出来的**字段才覆盖父级或内置值，
 缺省字段保持继承结果。所以 `{"texture":{"quality":95}}` 不会把父级的 `max_size` 清成 0，
 显式写入默认值（`"compression":"rgba8"`、`"generate_mips":false`）也能生效。
+`streaming_threshold_bytes` 同样是可覆盖字段：只有 `streaming: true` 时生效，
+cooked 资源达到阈值就带 `FLAG_STREAMED` 并跳过 zstd；`prism-cook build
+--stream-threshold` 可临时覆盖 profile 值。
 
 **`ProfileManager`：**
 - `resolve(name)` → 递归继承合并 → `CookSettings`

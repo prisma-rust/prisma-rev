@@ -61,6 +61,9 @@ enum Command {
         /// zstd compression level (0-22, 0 = no compression)
         #[arg(long, short = 'l', default_value_t = 3)]
         compression: u32,
+        /// Mark assets at or above this many uncompressed bytes as streamed
+        #[arg(long)]
+        stream_threshold: Option<u64>,
     },
     /// Build a .pak resource package from a directory of cooked files
     Pack {
@@ -72,6 +75,9 @@ enum Command {
         /// zstd compression level (0-22, 0 = no compression)
         #[arg(long, short = 'l', default_value_t = 3)]
         compression: u32,
+        /// Mark files at or above this many uncompressed bytes as streamed
+        #[arg(long)]
+        stream_threshold: Option<u64>,
     },
     /// Generate a procedural heightmap (fbm terrain + hydraulic/thermal erosion)
     ///
@@ -180,6 +186,7 @@ fn main() -> Result<()> {
             staging,
             output,
             compression,
+            stream_threshold,
         } => {
             let manifest = prism_build_pipeline::resolve_scene_manifest(&manifest)?;
             log::info!(
@@ -188,17 +195,21 @@ fn main() -> Result<()> {
                 staging.display(),
                 output.display()
             );
-            let summary = prism_build_pipeline::build_scene_package(
+            let summary = prism_build_pipeline::build_scene_package_with_options(
                 &manifest,
                 &staging,
                 &output,
-                compression,
+                prism_cooker::PackOptions {
+                    compression,
+                    stream_threshold_bytes: stream_threshold,
+                },
             )?;
             log::info!(
-                "build-scenes: {} scene(s), {} skipped; {} files, {} bytes -> {}; manifest {}",
+                "build-scenes: {} scene(s), {} skipped; {} files ({} streamed), {} bytes -> {}; manifest {}",
                 summary.scenes,
                 summary.skipped,
                 summary.pack.asset_count,
+                summary.pack.streamed_assets,
                 summary.pack.total_bytes,
                 summary.pack.pak_bytes,
                 summary.pack.manifest_path.display()
@@ -209,12 +220,21 @@ fn main() -> Result<()> {
             input,
             output,
             compression,
+            stream_threshold,
         } => {
             log::info!("pack: {input:?} -> {output:?}");
-            let summary = prism_cooker::pack_directory(&input, &output, compression)?;
+            let summary = prism_cooker::pack_directory_with_options(
+                &input,
+                &output,
+                prism_cooker::PackOptions {
+                    compression,
+                    stream_threshold_bytes: stream_threshold,
+                },
+            )?;
             log::info!(
-                "pack: {} files, {} bytes uncompressed -> {} bytes; manifest {}",
+                "pack: {} files ({} streamed), {} bytes uncompressed -> {} bytes; manifest {}",
                 summary.asset_count,
+                summary.streamed_assets,
                 summary.total_bytes,
                 summary.pak_bytes,
                 summary.manifest_path.display()

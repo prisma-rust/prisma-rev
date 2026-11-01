@@ -124,6 +124,54 @@ fn full_cook_pipeline() {
     assert!(!pak.is_empty());
 }
 
+/// #509：profile 打开 streaming 后，只有达到阈值的 cooked 资源带 streamed 标记。
+#[test]
+fn cook_pipeline_marks_only_large_assets_as_streamed() {
+    let mut db = AssetDatabase::new();
+    let small_id = db.generate_id();
+    let large_id = db.generate_id();
+    db.insert(crate::db::AssetRecord::new(
+        small_id,
+        "small.bin".into(),
+        AssetType::Binary,
+        "raw",
+    ))
+    .unwrap();
+    db.insert(crate::db::AssetRecord::new(
+        large_id,
+        "large.bin".into(),
+        AssetType::Binary,
+        "raw",
+    ))
+    .unwrap();
+
+    let reg = default_cooker_registry();
+    let pipeline = CookPipeline::new(reg);
+    let settings = profile::CookSettings {
+        streaming: true,
+        streaming_threshold_bytes: 8,
+        ..Default::default()
+    };
+
+    let mut asset_data = HashMap::new();
+    asset_data.insert(small_id, b"tiny".to_vec());
+    asset_data.insert(large_id, vec![3u8; 16]);
+
+    let mut builder = PackageBuilder::new();
+    builder.set_compression(9);
+    let summary = pipeline
+        .cook_all(&db, &asset_data, &mut builder, &settings)
+        .unwrap();
+    assert_eq!(summary.cooked, 2);
+    assert_eq!(summary.streamed, 1);
+
+    let pak = builder.build().unwrap();
+    let reader = prism_asset::package::PackageReader::from_bytes(&pak).unwrap();
+    assert!(!reader.is_asset_streamed(small_id));
+    assert!(reader.is_asset_streamed(large_id));
+    assert!(!reader.find_record(large_id).unwrap().is_compressed());
+}
+
 #[test]
 fn cook_pipeline_skips_missing_data() {
     let mut db = AssetDatabase::new();

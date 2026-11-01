@@ -166,6 +166,7 @@ fn cli_overrides_apply_correctly() {
         texture_compression: Some(TextureCompression::Bc7),
         no_mipmaps: true,
         streaming: Some(true),
+        streaming_threshold_bytes: Some(2048),
         compression_level: Some(9),
         ..Default::default()
     };
@@ -174,7 +175,54 @@ fn cli_overrides_apply_correctly() {
     assert_eq!(settings.texture.compression, TextureCompression::Bc7);
     assert!(!settings.texture.generate_mips);
     assert!(settings.streaming);
+    assert_eq!(settings.streaming_threshold_bytes, 2048);
     assert_eq!(settings.compression.level, 9);
+}
+
+#[test]
+fn streaming_threshold_only_applies_when_streaming_is_enabled() {
+    let disabled = CookSettings {
+        streaming_threshold_bytes: 1024,
+        ..Default::default()
+    };
+
+    // Desktop/default profiles keep the old all-compressed layout.
+    assert!(!disabled.streaming);
+    assert!(!disabled.should_stream(usize::MAX));
+
+    let enabled = CookSettings {
+        streaming: true,
+        streaming_threshold_bytes: 1024,
+        ..Default::default()
+    };
+    assert!(!enabled.should_stream(1023));
+    assert!(enabled.should_stream(1024), "cutoff is inclusive");
+    assert!(enabled.should_stream(usize::MAX));
+}
+
+#[test]
+fn profile_can_override_the_streaming_threshold() {
+    let dir = std::env::temp_dir().join(format!("prism-stream-profile-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("mobile.json"),
+        serde_json::json!({
+            "base": "android",
+            "streaming": true,
+            "streaming_threshold_bytes": 4096
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let mut manager = ProfileManager::new(&dir);
+    let settings = manager.resolve("mobile").unwrap();
+    assert!(settings.streaming);
+    assert_eq!(settings.streaming_threshold_bytes, 4096);
+    assert!(settings.should_stream(4096));
+    assert!(!settings.should_stream(4095));
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

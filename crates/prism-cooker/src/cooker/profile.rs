@@ -188,8 +188,20 @@ pub struct CookSettings {
     pub shader: ShaderSettings,
     pub compression: CompressionSettings,
     pub streaming: bool,
+    /// Assets at or above this uncompressed size get `FLAG_STREAMED` when
+    /// `streaming` is enabled. Streamed assets stay uncompressed so a reader
+    /// can serve them straight from the package offset range.
+    #[serde(default = "default_streaming_threshold_bytes")]
+    pub streaming_threshold_bytes: u64,
     pub chunk_size: u64,
     pub custom: HashMap<String, serde_json::Value>,
+}
+
+/// Default large-asset cutoff for streaming profiles (4 MiB).
+pub const DEFAULT_STREAMING_THRESHOLD_BYTES: u64 = 4 * 1024 * 1024;
+
+fn default_streaming_threshold_bytes() -> u64 {
+    DEFAULT_STREAMING_THRESHOLD_BYTES
 }
 
 // ===========================================================================
@@ -307,6 +319,7 @@ impl Default for CookSettings {
             shader: ShaderSettings::default(),
             compression: CompressionSettings::default(),
             streaming: false,
+            streaming_threshold_bytes: DEFAULT_STREAMING_THRESHOLD_BYTES,
             chunk_size: 64 * 1024,
             custom: HashMap::new(),
         }
@@ -314,6 +327,15 @@ impl Default for CookSettings {
 }
 
 impl CookSettings {
+    /// Whether an asset of `uncompressed_size` bytes should be marked
+    /// `FLAG_STREAMED` under this profile.
+    ///
+    /// The cutoff is ignored when streaming is disabled, so desktop builds
+    /// keep their existing compressed layout unless the profile opts in.
+    pub fn should_stream(&self, uncompressed_size: usize) -> bool {
+        self.streaming && uncompressed_size as u64 >= self.streaming_threshold_bytes
+    }
+
     /// 计算一个稳定的确定性哈希，供增量构建缓存使用。
     ///
     /// `custom` 是 `HashMap`，迭代顺序每个进程都随机化，所以先去掉它再序列化，
@@ -379,6 +401,9 @@ pub struct CookProfile {
     pub streaming: Option<bool>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub streaming_threshold_bytes: Option<u64>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub chunk_size: Option<u64>,
 
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -393,6 +418,7 @@ pub struct CliOverrides {
     pub texture_compression: Option<TextureCompression>,
     pub no_mipmaps: bool,
     pub streaming: Option<bool>,
+    pub streaming_threshold_bytes: Option<u64>,
     pub compression_algo: Option<String>,
     pub compression_level: Option<i32>,
     pub custom: HashMap<String, serde_json::Value>,
@@ -500,6 +526,9 @@ impl ProfileManager {
         if let Some(v) = profile.streaming {
             settings.streaming = v;
         }
+        if let Some(v) = profile.streaming_threshold_bytes {
+            settings.streaming_threshold_bytes = v;
+        }
         if let Some(v) = profile.chunk_size {
             settings.chunk_size = v;
         }
@@ -525,6 +554,9 @@ impl ProfileManager {
         }
         if let Some(s) = overrides.streaming {
             settings.streaming = s;
+        }
+        if let Some(threshold) = overrides.streaming_threshold_bytes {
+            settings.streaming_threshold_bytes = threshold;
         }
         if let Some(ref a) = overrides.compression_algo {
             settings.compression.algorithm = a.clone();
@@ -641,6 +673,7 @@ static BUILTIN_DEFAULTS: LazyLock<HashMap<&'static str, CookProfile>> = LazyLock
                 generate_tangents: Some(false),
             }),
             streaming: Some(true),
+            streaming_threshold_bytes: Some(1024 * 1024),
             chunk_size: Some(32 * 1024),
             ..Default::default()
         },
@@ -665,6 +698,7 @@ static BUILTIN_DEFAULTS: LazyLock<HashMap<&'static str, CookProfile>> = LazyLock
                 generate_tangents: Some(false),
             }),
             streaming: Some(true),
+            streaming_threshold_bytes: Some(1024 * 1024),
             chunk_size: Some(32 * 1024),
             ..Default::default()
         },
@@ -693,6 +727,7 @@ static BUILTIN_DEFAULTS: LazyLock<HashMap<&'static str, CookProfile>> = LazyLock
                 level: Some(5),
             }),
             streaming: Some(true),
+            streaming_threshold_bytes: Some(1024 * 1024),
             chunk_size: Some(16 * 1024),
             ..Default::default()
         },

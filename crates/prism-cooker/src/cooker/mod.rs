@@ -1323,7 +1323,12 @@ impl CookPipeline {
             let result = cooker.cook(&ctx)?;
 
             let deps: Vec<AssetId> = record.dependencies.clone();
-            builder.add_asset(id, record.asset_type, result.cooked_data, &deps);
+            if settings.should_stream(result.cooked_data.len()) {
+                builder.add_streamed_asset(id, record.asset_type, result.cooked_data, &deps);
+                summary.streamed += 1;
+            } else {
+                builder.add_asset(id, record.asset_type, result.cooked_data, &deps);
+            }
             summary.cooked += 1;
         }
 
@@ -1336,6 +1341,8 @@ impl CookPipeline {
 pub struct CookSummary {
     pub cooked: u32,
     pub skipped: u32,
+    /// Assets marked `FLAG_STREAMED` by the active profile.
+    pub streamed: u32,
 }
 
 // ===========================================================================
