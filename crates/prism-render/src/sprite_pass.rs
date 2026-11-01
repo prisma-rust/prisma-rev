@@ -38,15 +38,14 @@ const SPRITE_FRAG_SPV: &[u8] = include_bytes!("../../../assets/shaders/sprites.f
 const INITIAL_CAPACITY: u32 = 256;
 
 /// 单实例顶点数据 —— 必须与 `sprites.slang` 的 `SpriteVertexIn` 一致。
+///
+/// 四个角点是**世界空间**坐标（顺序 `BL, BR, TR, TL`）：精灵的模型矩阵在 CPU
+/// 侧展开，折线的三角形直接给顶点（#604）。三角形 = 最后两个角点重合的四边形。
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct SpriteInstance {
-    /// 世界矩阵第 0 列（含旋转/缩放）。
-    c0: [f32; 4],
-    /// 世界矩阵第 1 列。
-    c1: [f32; 4],
-    /// 世界矩阵第 3 列（平移；2D 只需 xy）。
-    c3: [f32; 4],
+    /// 四边形四个角（世界空间）。
+    corners: [[f32; 3]; 4],
     /// UV 矩形 `(u0, v0, u1, v1)`。
     uv_rect: [f32; 4],
     /// 线性 RGBA 乘算色。
@@ -64,7 +63,7 @@ impl SpriteInstance {
             .input_rate(vk::VertexInputRate::INSTANCE)
     }
 
-    fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 6] {
+    fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 7] {
         let vec4 = |location: u32, offset: u32| {
             vk::VertexInputAttributeDescription::default()
                 .location(location)
@@ -72,19 +71,41 @@ impl SpriteInstance {
                 .format(vk::Format::R32G32B32A32_SFLOAT)
                 .offset(offset)
         };
-        [
-            vec4(0, 0),
-            vec4(1, 16),
-            vec4(2, 32),
-            vec4(3, 48),
-            vec4(4, 64),
+        let vec3 = |location: u32, offset: u32| {
             vk::VertexInputAttributeDescription::default()
-                .location(5)
+                .location(location)
                 .binding(0)
+                .format(vk::Format::R32G32B32_SFLOAT)
+                .offset(offset)
+        };
+        [
+            vec3(0, 0),
+            vec3(1, 12),
+            vec3(2, 24),
+            vec3(3, 36),
+            vec4(4, 48),
+            vec4(5, 64),
+            vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(6)
                 .format(vk::Format::R32_UINT)
                 .offset(80),
         ]
     }
+}
+
+/// 由模型矩阵展开四个世界空间角点（与旧 vertex shader 的
+/// `m0*x + m1*y + m3` 完全一致，顺序 `BL, BR, TR, TL`）。
+fn corners_from_model(model: &[[f32; 4]; 4]) -> [[f32; 3]; 4] {
+    const UNIT: [[f32; 2]; 4] = [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]];
+    let (m0, m1, m3) = (model[0], model[1], model[3]);
+    let mut out = [[0.0f32; 3]; 4];
+    for (corner, xy) in out.iter_mut().zip(UNIT) {
+        for (axis, value) in corner.iter_mut().enumerate() {
+            *value = m0[axis] * xy[0] + m1[axis] * xy[1] + m3[axis];
+        }
+    }
+    out
 }
 
 /// `(src, dst, op)` 唯一标识一条混合管线。
@@ -337,9 +358,9 @@ impl SpritePass {
         let instances: Vec<SpriteInstance> = items
             .iter()
             .map(|item| SpriteInstance {
-                c0: item.model[0],
-                c1: item.model[1],
-                c3: item.model[3],
+                corners: item
+                    .corners
+                    .unwrap_or_else(|| corners_from_model(&item.model)),
                 uv_rect: item.uv_rect,
                 color: item.color,
                 texture: item.texture,
@@ -394,5 +415,38 @@ impl Drop for SpritePass {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{corners_from_model, SpriteInstance};
+
+    /// #604：角点由模型矩阵展开，必须与旧 vertex shader 的
+    /// `m0*x + m1*y + m3` 逐位一致（顺序 BL, BR, TR, TL）。
+    #[test]
+    fn model_corners_match_the_old_vertex_shader() {
+        let model = [
+            [4.0, 0.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [10.0, 20.0, 0.0, 1.0],
+        ];
+        let corners = corners_from_model(&model);
+        assert_eq!(corners[0], [8.0, 19.0, 0.0]);
+        assert_eq!(corners[1], [12.0, 19.0, 0.0]);
+        assert_eq!(corners[2], [12.0, 21.0, 0.0]);
+        assert_eq!(corners[3], [8.0, 21.0, 0.0]);
+    }
+
+    /// 顶点布局是 Rust 与 `sprites.slang` 之间的手工契约，改一边就必须改另一边。
+    #[test]
+    fn the_instance_layout_matches_the_shader_locations() {
+        assert_eq!(std::mem::size_of::<SpriteInstance>(), 96);
+        let attrs = SpriteInstance::attribute_descriptions();
+        let locations: Vec<u32> = attrs.iter().map(|attr| attr.location).collect();
+        assert_eq!(locations, vec![0, 1, 2, 3, 4, 5, 6]);
+        let offsets: Vec<u32> = attrs.iter().map(|attr| attr.offset).collect();
+        assert_eq!(offsets, vec![0, 12, 24, 36, 48, 64, 80]);
     }
 }

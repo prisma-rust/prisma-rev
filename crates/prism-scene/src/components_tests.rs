@@ -456,3 +456,22 @@ fn audio_sources_decay_with_distance_and_blend_toward_2d() {
     assert_eq!(AudioSource::default().volume_at(0.0), 1.0);
     assert!(!AudioSource::default().has_sound());
 }
+
+#[test]
+fn line_json_defaults_to_miter_join_and_butt_caps() {
+    // #604：老文档只有 points / width，新字段必须是 serde 默认值。
+    let line: LineRenderer =
+        serde_json::from_str(r#"{"points":[[0,0,0],[1,0,0]],"width":2}"#).unwrap();
+    assert_eq!(line.join, LineJoin::Miter);
+    assert_eq!(line.cap, LineCap::Butt);
+    assert!((line.miter_limit - 4.0).abs() < 1e-6);
+
+    let text = serde_json::to_string(&LineRenderer {
+        join: LineJoin::Bevel,
+        cap: LineCap::Round,
+        ..line
+    })
+    .unwrap();
+    assert!(text.contains("\"Bevel\""), "{text}");
+    assert!(text.contains("\"Round\""), "{text}");
+}

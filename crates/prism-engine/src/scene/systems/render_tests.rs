@@ -570,13 +570,22 @@ fn spawn_line(world: &mut World, points: Vec<[f32; 3]>, layer: i32) -> prism_ecs
             color: [1.0, 0.5, 0.0, 1.0],
             sorting_layer: layer,
             order_in_layer: 0,
+            ..LineRenderer::default()
         },
     );
     e
 }
 
+/// 三角形在 XY 平面的面积（用于「互不重叠且覆盖完整」的断言）。
+fn triangle_area(corners: &[[f32; 3]; 4]) -> f32 {
+    let a = glam::Vec2::new(corners[0][0], corners[0][1]);
+    let b = glam::Vec2::new(corners[1][0], corners[1][1]);
+    let c = glam::Vec2::new(corners[2][0], corners[2][1]);
+    ((b - a).perp_dot(c - a)).abs() * 0.5
+}
+
 #[test]
-fn line_renders_one_quad_per_segment() {
+fn line_renders_two_triangles_per_segment() {
     let mut world = World::new();
     spawn_line(
         &mut world,
@@ -585,18 +594,118 @@ fn line_renders_one_quad_per_segment() {
     );
 
     let items = scene_line_system(&world);
-    assert_eq!(items.len(), 2, "3 points -> 2 segments");
+    assert_eq!(items.len(), 4, "3 points -> 2 segments x 2 triangles");
     for item in &items {
         assert_eq!(item.texture, SOLID_TEXTURE);
         assert_eq!(item.color, [1.0, 0.5, 0.0, 1.0]);
+        assert!(item.corners.is_some(), "折线用显式世界空间顶点");
     }
 
-    // First segment runs along +X: m0 = (10, 0), m1 = (0, 2) (width 2).
-    assert!((items[0].model[0][0] - 10.0).abs() < 1e-5);
-    assert!((items[0].model[0][1]).abs() < 1e-5);
-    assert!((items[0].model[1][1] - 2.0).abs() < 1e-5);
-    // Midpoint of the first segment.
-    assert!((items[0].model[3][0] - 5.0).abs() < 1e-5);
+    // 斜接拐点：两段在 (10, 0) 处共享同一条边——第 0 段的两个三角形与
+    // 第 1 段的两个三角形恰好交于两个顶点（斜接边的两端）。
+    let points = |first: usize, last: usize| -> Vec<[f32; 3]> {
+        let mut out: Vec<[f32; 3]> = Vec::new();
+        for item in &items[first..last] {
+            for corner in item.corners.unwrap().iter().take(3) {
+                if !out.iter().any(|seen| {
+                    (seen[0] - corner[0]).abs() < 1e-5 && (seen[1] - corner[1]).abs() < 1e-5
+                }) {
+                    out.push(*corner);
+                }
+            }
+        }
+        out
+    };
+    let first = points(0, 2);
+    let second = points(2, 4);
+    let shared = first
+        .iter()
+        .filter(|corner| {
+            second.iter().any(|other| {
+                (other[0] - corner[0]).abs() < 1e-5 && (other[1] - corner[1]).abs() < 1e-5
+            })
+        })
+        .count();
+    assert_eq!(shared, 2, "相邻段只应共用斜接边: {first:?} / {second:?}");
+}
+
+#[test]
+fn line_geometry_is_not_double_blended_at_bends() {
+    // V 形折线：两段各长 10，线宽 2。等宽 miter 笔触的面积恰好等于
+    // `width * centerline_length`，三角形面积之和超过它就是在拐点重叠了（#604）。
+    let mut world = World::new();
+    spawn_line(
+        &mut world,
+        vec![[0.0, 0.0, 0.0], [0.0, 10.0, 0.0], [10.0, 10.0, 0.0]],
+        0,
+    );
+
+    let items = scene_line_system(&world);
+    let area: f32 = items
+        .iter()
+        .map(|item| triangle_area(&item.corners.expect("line triangle")))
+        .sum();
+    let expected = 2.0 * 20.0;
+    assert!(
+        (area - expected).abs() < 0.5,
+        "面积 {area} 应等于 width x length = {expected}（重叠会多出来）"
+    );
+    assert_eq!(items.len(), 4, "miter 拐点不需要额外的补片");
+}
+
+#[test]
+fn bevel_join_fills_the_corner_gap() {
+    let mut world = World::new();
+    let e = spawn_line(
+        &mut world,
+        vec![[0.0, 0.0, 0.0], [0.0, 10.0, 0.0], [10.0, 10.0, 0.0]],
+        0,
+    );
+    world.get_mut::<LineRenderer>(e).unwrap().join = LineJoin::Bevel;
+
+    let items = scene_line_system(&world);
+    assert_eq!(items.len(), 5, "两段 4 个三角形 + 外角 1 个补片");
+    let area: f32 = items
+        .iter()
+        .map(|item| triangle_area(&item.corners.expect("line triangle")))
+        .sum();
+    // 斜切比斜接少一块外角三角形，但不会少到只剩线段：面积介于 0.9x 与 1.05x 之间。
+    assert!(
+        area > 2.0 * 20.0 * 0.9 && area <= 2.0 * 20.0,
+        "bevel 面积 {area}"
+    );
+}
+
+#[test]
+fn square_caps_and_round_caps_extend_the_ends() {
+    let mut world = World::new();
+    let e = spawn_line(&mut world, vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], 0);
+    let flat = scene_line_system(&world)
+        .iter()
+        .map(|item| triangle_area(&item.corners.unwrap()))
+        .sum::<f32>();
+
+    world.get_mut::<LineRenderer>(e).unwrap().cap = LineCap::Square;
+    let square = scene_line_system(&world)
+        .iter()
+        .map(|item| triangle_area(&item.corners.unwrap()))
+        .sum::<f32>();
+    assert!(
+        (square - (flat + 2.0 * 2.0)).abs() < 0.1,
+        "方头多出两个半圆/方块: {square}"
+    );
+
+    world.get_mut::<LineRenderer>(e).unwrap().cap = LineCap::Round;
+    let items = scene_line_system(&world);
+    assert_eq!(items.len(), 2 + 2 * 8, "圆头每端 8 个扇形三角形");
+    let round = items
+        .iter()
+        .map(|item| triangle_area(&item.corners.unwrap()))
+        .sum::<f32>();
+    assert!(
+        (round - (flat + std::f32::consts::PI * 1.0)).abs() < 0.2,
+        "圆头面积接近半圆 pi*r^2: {round}"
+    );
 }
 
 #[test]
@@ -630,10 +739,10 @@ fn sprites_and_lines_sort_together() {
     spawn_line(&mut world, vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], 5);
 
     let items = scene_2d_system(&world);
-    assert_eq!(items.len(), 2);
+    assert_eq!(items.len(), 3, "1 个精灵 + 折线的 2 个三角形");
     assert_eq!(items[0].texture, 7, "sprite (layer 1) draws first");
-    assert_eq!(
-        items[1].texture, SOLID_TEXTURE,
+    assert!(
+        items[1..].iter().all(|item| item.texture == SOLID_TEXTURE),
         "line (layer 5) draws on top"
     );
 }
