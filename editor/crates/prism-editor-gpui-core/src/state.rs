@@ -56,6 +56,9 @@ impl Default for Preferences {
 pub struct SceneSettings {
     pub show_grid: bool,
     pub show_skybox: bool,
+    /// 选中物体的投影线框（#487）；旧存档没有这个键时默认开。
+    #[serde(default = "default_selection_outline")]
+    pub show_selection_outline: bool,
     /// `World` / `Local`（ASCII，避免本地化文案进存档）。
     pub gizmo_space: String,
     /// `Translate` / `Rotate` / `Scale`。
@@ -69,11 +72,17 @@ impl Default for SceneSettings {
         Self {
             show_grid: true,
             show_skybox: true,
+            show_selection_outline: default_selection_outline(),
             gizmo_space: "World".to_string(),
             gizmo_tool: "Translate".to_string(),
             render: None,
         }
     }
+}
+
+/// 旧 `state.json` 没有 `showSelectionOutline`：默认保持当前行为（开）。
+fn default_selection_outline() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -129,6 +138,7 @@ impl EditorState {
             scene: SceneSettings {
                 show_grid: workspace.show_grid,
                 show_skybox: workspace.show_skybox,
+                show_selection_outline: workspace.show_selection_outline,
                 gizmo_space: match workspace.gizmo_space {
                     crate::viewport_math::GizmoSpace::Local => "Local".to_string(),
                     crate::viewport_math::GizmoSpace::World => "World".to_string(),
@@ -198,6 +208,7 @@ impl EditorState {
         workspace.i18n.set_locale(Locale::parse(&self.locale));
         workspace.show_grid = self.scene.show_grid;
         workspace.show_skybox = self.scene.show_skybox;
+        workspace.show_selection_outline = self.scene.show_selection_outline;
         workspace.gizmo_space = match self.scene.gizmo_space.as_str() {
             "Local" | "local" => crate::viewport_math::GizmoSpace::Local,
             _ => crate::viewport_math::GizmoSpace::World,
@@ -351,6 +362,7 @@ mod tests {
         let mut source = workspace();
         source.show_grid = false;
         source.show_skybox = false;
+        source.show_selection_outline = false;
         source.gizmo_space = crate::viewport_math::GizmoSpace::Local;
         let mut state = EditorState::capture(&source, &Preferences::default());
         state.scene.gizmo_tool = "Scale".to_string();
@@ -359,6 +371,7 @@ mod tests {
         let restored = EditorState::from_json_str(&state.to_json_string());
         assert!(!restored.scene.show_grid);
         assert!(!restored.scene.show_skybox);
+        assert!(!restored.scene.show_selection_outline);
         assert_eq!(restored.scene.gizmo_space, "Local");
         assert_eq!(restored.scene.gizmo_tool, "Scale");
         assert!(restored.scene.render.is_some());
@@ -368,13 +381,26 @@ mod tests {
         restored.apply(&mut target, &mut prefs);
         assert!(!target.show_grid);
         assert!(!target.show_skybox);
+        assert!(!target.show_selection_outline);
         assert_eq!(target.gizmo_space, crate::viewport_math::GizmoSpace::Local);
 
-        // 旧存档没有 `scene` 段：走默认值，不能读失败。
+        // 旧存档没有 `scene` 段：走默认值（描边默认开），不能读失败。
         let old = json!({ "version": 1, "dock": {}, "themePreset": "studio" });
         let old_state = EditorState::from_json(&old);
         assert!(old_state.scene.show_grid);
+        assert!(old_state.scene.show_selection_outline);
         assert_eq!(old_state.scene.gizmo_tool, "Translate");
+
+        // 有 `scene` 段但缺 `showSelectionOutline`（旧版本写出的状态）：默认开。
+        let partial = json!({
+            "version": 1,
+            "dock": {},
+            "themePreset": "studio",
+            "scene": { "showGrid": false }
+        });
+        let partial_state = EditorState::from_json(&partial);
+        assert!(!partial_state.scene.show_grid);
+        assert!(partial_state.scene.show_selection_outline);
     }
 
     #[test]
