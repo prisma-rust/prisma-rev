@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use flume::{Receiver, Sender};
 use prism_audio::AudioData;
 use prism_engine::ecs::{Entity, World};
-use prism_engine::scene::components::{AudioListener, AudioSource, Camera, LocalToWorld};
+use prism_engine::scene::components::{AudioBus, AudioListener, AudioSource, Camera, LocalToWorld};
 
 use crate::audio_decode_runner::{DecodeRequest, DecodeResult};
 
@@ -54,7 +54,6 @@ struct Voice {
 }
 
 /// 场景音频驱动。由宿主（`App`）每帧调用一次。
-#[derive(Default)]
 pub struct SceneAudio {
     /// 已解码片段（路径 → 采样）。
     clips: HashMap<String, AudioData>,
@@ -64,11 +63,50 @@ pub struct SceneAudio {
     requests: HashMap<u64, String>,
     next_request: u64,
     voices: HashMap<Entity, Voice>,
+    /// 每条总线的增益（下标 = [`AudioBus::index`]，默认全 1）。
+    bus_gains: [f32; 5],
+}
+
+impl Default for SceneAudio {
+    fn default() -> Self {
+        Self {
+            clips: HashMap::new(),
+            pending: HashMap::new(),
+            requests: HashMap::new(),
+            next_request: 0,
+            voices: HashMap::new(),
+            bus_gains: [1.0; 5],
+        }
+    }
 }
 
 impl SceneAudio {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 设置一条总线的增益（`0..=1`，非有限值忽略）。
+    ///
+    /// `Master` 乘在其它所有总线上；正在播放的声部下一帧就会按新增益更新音量。
+    pub fn set_bus_volume(&mut self, bus: AudioBus, volume: f32) {
+        if volume.is_finite() {
+            self.bus_gains[bus.index()] = volume.clamp(0.0, 1.0);
+        }
+    }
+
+    /// 读取一条总线自己的增益（不含 `Master`）。
+    pub fn bus_volume(&self, bus: AudioBus) -> f32 {
+        self.bus_gains[bus.index()]
+    }
+
+    /// 某个声部实际生效的总增益：`Master` × 自身总线。
+    pub fn bus_gain(&self, bus: AudioBus) -> f32 {
+        let master = self.bus_gains[AudioBus::Master.index()];
+        if bus == AudioBus::Master {
+            master
+        } else {
+            master * self.bus_gains[bus.index()]
+        }
     }
 
     /// 已缓存的片段数（诊断 / 测试）。
@@ -145,7 +183,9 @@ impl SceneAudio {
                 }
                 _ => source.volume_at(0.0) * listener.gain,
             }
-            .clamp(0.0, 1.0);
+            .clamp(0.0, 1.0)
+                * self.bus_gain(source.bus);
+            let volume = volume.clamp(0.0, 1.0);
             let pan = pan_for(
                 position,
                 listener.position,
@@ -537,6 +577,49 @@ mod tests {
             sound_path: path.into(),
             ..AudioSource::default()
         }
+    }
+
+    #[test]
+    fn bus_gains_multiply_the_source_volume_and_master_scales_every_bus() {
+        let mut world = World::new();
+        place(&mut world, [0.0; 3]); // 默认监听者 = 世界原点
+        let speaker = place(&mut world, [0.0; 3]);
+        source(
+            &mut world,
+            speaker,
+            AudioSource {
+                volume: 0.8,
+                bus: AudioBus::Music,
+                ..plain("audio/music.ogg")
+            },
+        );
+
+        let mut scene = SceneAudio::new();
+        scene.insert_clip("audio/music.ogg", clip());
+        let mut sink = FakeSink::default();
+
+        scene.update(&world, &mut sink, None);
+        assert!((sink.volumes()[0] - 0.8).abs() < 1e-6);
+
+        scene.set_bus_volume(AudioBus::Music, 0.5);
+        scene.update(&world, &mut sink, None);
+        assert!((sink.volumes()[0] - 0.4).abs() < 1e-6);
+
+        // Master 乘在所有总线上。
+        scene.set_bus_volume(AudioBus::Master, 0.5);
+        scene.update(&world, &mut sink, None);
+        assert!((sink.volumes()[0] - 0.2).abs() < 1e-6);
+
+        // 其它总线不影响 Music。
+        scene.set_bus_volume(AudioBus::Sfx, 0.1);
+        scene.update(&world, &mut sink, None);
+        assert!((sink.volumes()[0] - 0.2).abs() < 1e-6);
+
+        // 非法值被忽略，不会把总线变成 NaN。
+        scene.set_bus_volume(AudioBus::Music, f32::NAN);
+        assert_eq!(scene.bus_volume(AudioBus::Music), 0.5);
+        // 声源本身就在 Master 上时只乘一次。
+        assert_eq!(scene.bus_gain(AudioBus::Master), 0.5);
     }
 
     #[test]

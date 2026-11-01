@@ -439,6 +439,7 @@ fn an_audio_source_survives_cook_and_decode() {
                         "volume": 0.35,
                         "looped": true,
                         "play_on_awake": false,
+                        "bus": "Music",
                         "spatial_blend": 1.0,
                         "min_distance": 3.0,
                         "max_distance": 20.0
@@ -467,6 +468,7 @@ fn an_audio_source_survives_cook_and_decode() {
     assert_eq!(source.volume, 0.35);
     assert!(source.looped);
     assert!(!source.play_on_awake);
+    assert_eq!(source.bus, crate::components::AudioBus::Music);
     assert_eq!(source.spatial_blend, 1.0);
     assert_eq!(source.max_distance, 20.0);
     let listener = world

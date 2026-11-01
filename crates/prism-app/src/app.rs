@@ -335,6 +335,34 @@ impl App {
         self.engine.as_mut().expect("engine alive")
     }
 
+    /// 设置一条音频总线的增益（#508）；`Master` 乘在其它所有总线上。
+    ///
+    /// 没有 `audio` feature 时是 no-op，方便项目代码无条件调用。
+    pub fn set_audio_bus_volume(
+        &mut self,
+        bus: prism_engine::scene::components::AudioBus,
+        volume: f32,
+    ) -> &mut Self {
+        #[cfg(feature = "audio")]
+        self.scene_audio.set_bus_volume(bus, volume);
+        #[cfg(not(feature = "audio"))]
+        let _ = (bus, volume);
+        self
+    }
+
+    /// 读取一条音频总线自己的增益（不含 `Master`）；无 `audio` feature 时为 1。
+    pub fn audio_bus_volume(&self, bus: prism_engine::scene::components::AudioBus) -> f32 {
+        #[cfg(feature = "audio")]
+        {
+            self.scene_audio.bus_volume(bus)
+        }
+        #[cfg(not(feature = "audio"))]
+        {
+            let _ = bus;
+            1.0
+        }
+    }
+
     /// 注册一个 ECS system（等价于 `engine_mut().schedule_mut().add_system`）。
     ///
     /// 引擎默认调度（UI 基础设施）在构造时已并入，这里注册的系统
