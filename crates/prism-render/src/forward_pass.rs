@@ -1702,7 +1702,7 @@ impl RenderPassNode for ForwardPass {
         // 绘制地面参考网格（深度测试开启，被场景实体遮挡）
         if ctx.frame.show_grid {
             if let Some(grid) = &self.ground_grid {
-                grid.draw(ctx.cmd, &ctx.frame.view_proj);
+                grid.draw(ctx.cmd, &ctx.frame.view_proj, ctx.frame.camera_orthographic);
             }
         }
 

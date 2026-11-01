@@ -47,12 +47,50 @@ impl GridVertex {
     }
 }
 
+/// 网格所在的平面。2D 视图看 XY，3D 视图看 XZ（#602）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GridPlane {
+    Xz,
+    Xy,
+}
+
+fn upload_grid(
+    context: &VulkanContext,
+    verts: &[GridVertex],
+) -> anyhow::Result<(vk::Buffer, vk::DeviceMemory, u32)> {
+    let buf_size = std::mem::size_of_val(verts) as vk::DeviceSize;
+    let (buffer, memory) = create_buffer(
+        context,
+        buf_size,
+        BufferUsage::VERTEX_BUFFER,
+        MemoryProperties::HOST_VISIBLE | MemoryProperties::HOST_COHERENT,
+    )
+    .context("create ground grid vertex buffer")?;
+    unsafe {
+        let ptr = context
+            .device
+            .map_memory(memory, 0, buf_size, vk::MemoryMapFlags::empty())
+            .context("map ground grid vertex memory")?;
+        std::ptr::copy_nonoverlapping(
+            verts.as_ptr() as *const u8,
+            ptr as *mut u8,
+            buf_size as usize,
+        );
+        context.device.unmap_memory(memory);
+    }
+    Ok((buffer, memory, verts.len() as u32))
+}
+
 pub struct GroundGrid {
     pipeline: vk::Pipeline,
     layout: vk::PipelineLayout,
     vertex_buffer: vk::Buffer,
     vertex_memory: vk::DeviceMemory,
     vertex_count: u32,
+    /// 2D 视图用的 XY 网格（#602）。
+    xy_vertex_buffer: vk::Buffer,
+    xy_vertex_memory: vk::DeviceMemory,
+    xy_vertex_count: u32,
     device: ash::Device,
 }
 
@@ -60,28 +98,10 @@ impl GroundGrid {
     pub fn new(context: &VulkanContext, render_pass: vk::RenderPass) -> anyhow::Result<Self> {
         let device = context.device.clone();
 
-        let verts = generate_grid_vertices();
-        let vertex_count = verts.len() as u32;
-        let buf_size = (vertex_count as usize * size_of::<GridVertex>()) as vk::DeviceSize;
-        let (vertex_buffer, vertex_memory) = create_buffer(
-            context,
-            buf_size,
-            BufferUsage::VERTEX_BUFFER,
-            MemoryProperties::HOST_VISIBLE | MemoryProperties::HOST_COHERENT,
-        )
-        .context("create ground grid vertex buffer")?;
-
-        unsafe {
-            let ptr = device
-                .map_memory(vertex_memory, 0, buf_size, vk::MemoryMapFlags::empty())
-                .context("map ground grid vertex memory")?;
-            std::ptr::copy_nonoverlapping(
-                verts.as_ptr() as *const u8,
-                ptr as *mut u8,
-                buf_size as usize,
-            );
-            device.unmap_memory(vertex_memory);
-        }
+        let (vertex_buffer, vertex_memory, vertex_count) =
+            upload_grid(context, &generate_grid_vertices(GridPlane::Xz))?;
+        let (xy_vertex_buffer, xy_vertex_memory, xy_vertex_count) =
+            upload_grid(context, &generate_grid_vertices(GridPlane::Xy))?;
 
         let vert_module =
             crate::shader::load_shader_module(&device, GIZMO_VERT_SPV).context("grid vert")?;
@@ -190,13 +210,22 @@ impl GroundGrid {
             vertex_buffer,
             vertex_memory,
             vertex_count,
+            xy_vertex_buffer,
+            xy_vertex_memory,
+            xy_vertex_count,
             device,
         })
     }
 
-    pub fn draw(&self, cmd: vk::CommandBuffer, view_proj: &[[f32; 4]; 4]) {
+    /// `xy` 为真时画 XY 平面（2D 视图），否则画原有的 XZ 地面网格。
+    pub fn draw(&self, cmd: vk::CommandBuffer, view_proj: &[[f32; 4]; 4], xy: bool) {
         let device = &self.device;
-        let buffers = [self.vertex_buffer];
+        let (buffer, count) = if xy {
+            (self.xy_vertex_buffer, self.xy_vertex_count)
+        } else {
+            (self.vertex_buffer, self.vertex_count)
+        };
+        let buffers = [buffer];
         let offsets = [0u64];
         let identity = [
             [1.0, 0.0, 0.0, 0.0],
@@ -218,7 +247,7 @@ impl GroundGrid {
                 0,
                 std::slice::from_raw_parts(&push as *const _ as *const u8, size_of::<GizmoPush>()),
             );
-            device.cmd_draw(cmd, self.vertex_count, 1, 0, 0);
+            device.cmd_draw(cmd, count, 1, 0, 0);
         }
     }
 }
@@ -231,11 +260,13 @@ impl Drop for GroundGrid {
             self.device.destroy_pipeline_layout(self.layout, None);
             self.device.destroy_buffer(self.vertex_buffer, None);
             self.device.free_memory(self.vertex_memory, None);
+            self.device.destroy_buffer(self.xy_vertex_buffer, None);
+            self.device.free_memory(self.xy_vertex_memory, None);
         }
     }
 }
 
-fn generate_grid_vertices() -> Vec<GridVertex> {
+fn generate_grid_vertices(plane: GridPlane) -> Vec<GridVertex> {
     let mut v = Vec::new();
     let extent = 40.0f32;
     let step = 1.0f32;
@@ -244,76 +275,83 @@ fn generate_grid_vertices() -> Vec<GridVertex> {
     let major_color = [0.35, 0.38, 0.44];
     let pos_x_color = [0.85, 0.25, 0.25];
     let neg_x_color = [0.45, 0.18, 0.18];
-    let pos_z_color = [0.25, 0.50, 0.90];
-    let neg_z_color = [0.18, 0.25, 0.45];
+    // 3D 的第二根轴是 Z（蓝），2D 的是 Y（绿）。
+    let (pos_b_color, neg_b_color) = match plane {
+        GridPlane::Xz => ([0.25, 0.50, 0.90], [0.18, 0.25, 0.45]),
+        GridPlane::Xy => ([0.30, 0.85, 0.35], [0.16, 0.42, 0.18]),
+    };
+    let point = |x: f32, b: f32| match plane {
+        GridPlane::Xz => [x, 0.0, b],
+        GridPlane::Xy => [x, b, 0.0],
+    };
 
     let steps = (extent / step) as i32;
 
-    // 1. 平行于 X 轴的网格线（Z 变化）
+    // 1. 平行于 X 轴的网格线（XZ 的 Z / XY 的 Y 变化）
     for i in -steps..=steps {
-        let z = i as f32 * step;
+        let b = i as f32 * step;
         if i == 0 {
             // X 轴（红）分正负半轴
             v.push(GridVertex {
-                pos: [-extent, 0.0, 0.0],
+                pos: point(-extent, 0.0),
                 color: neg_x_color,
             });
             v.push(GridVertex {
-                pos: [0.0, 0.0, 0.0],
+                pos: point(0.0, 0.0),
                 color: neg_x_color,
             });
 
             v.push(GridVertex {
-                pos: [0.0, 0.0, 0.0],
+                pos: point(0.0, 0.0),
                 color: pos_x_color,
             });
             v.push(GridVertex {
-                pos: [extent, 0.0, 0.0],
+                pos: point(extent, 0.0),
                 color: pos_x_color,
             });
         } else {
             let col = if i % 10 == 0 { major_color } else { sub_color };
             v.push(GridVertex {
-                pos: [-extent, 0.0, z],
+                pos: point(-extent, b),
                 color: col,
             });
             v.push(GridVertex {
-                pos: [extent, 0.0, z],
+                pos: point(extent, b),
                 color: col,
             });
         }
     }
 
-    // 2. 平行于 Z 轴的网格线（X 变化）
+    // 2. 平行于第二根轴的网格线（X 变化）
     for i in -steps..=steps {
         let x = i as f32 * step;
         if i == 0 {
-            // Z 轴（蓝）分正负半轴
+            // 第二根轴分正负半轴
             v.push(GridVertex {
-                pos: [0.0, 0.0, -extent],
-                color: neg_z_color,
+                pos: point(0.0, -extent),
+                color: neg_b_color,
             });
             v.push(GridVertex {
-                pos: [0.0, 0.0, 0.0],
-                color: neg_z_color,
+                pos: point(0.0, 0.0),
+                color: neg_b_color,
             });
 
             v.push(GridVertex {
-                pos: [0.0, 0.0, 0.0],
-                color: pos_z_color,
+                pos: point(0.0, 0.0),
+                color: pos_b_color,
             });
             v.push(GridVertex {
-                pos: [0.0, 0.0, extent],
-                color: pos_z_color,
+                pos: point(0.0, extent),
+                color: pos_b_color,
             });
         } else {
             let col = if i % 10 == 0 { major_color } else { sub_color };
             v.push(GridVertex {
-                pos: [x, 0.0, -extent],
+                pos: point(x, -extent),
                 color: col,
             });
             v.push(GridVertex {
-                pos: [x, 0.0, extent],
+                pos: point(x, extent),
                 color: col,
             });
         }
@@ -328,7 +366,7 @@ mod tests {
 
     #[test]
     fn grid_vertices_contain_axes_and_subdivisions() {
-        let verts = generate_grid_vertices();
+        let verts = generate_grid_vertices(GridPlane::Xz);
         assert!(!verts.is_empty());
         assert_eq!(verts.len() % 2, 0, "Line list 顶点数必须为偶数");
         // 80 步，-40 到 +40: 81 根 X 线 + 81 根 Z 线，中心轴各拆为 2 段
@@ -340,5 +378,15 @@ mod tests {
         let has_pos_z = verts.iter().any(|v| v.color == [0.25, 0.50, 0.90]);
         assert!(has_pos_x, "网格应包含 +X 红色轴线");
         assert!(has_pos_z, "网格应包含 +Z 蓝色轴线");
+    }
+
+    #[test]
+    fn the_2d_grid_lies_in_xy_with_a_green_y_axis() {
+        // #602：2D 视图相机看 −Z，网格必须在 Z = 0 的 XY 平面上。
+        let verts = generate_grid_vertices(GridPlane::Xy);
+        assert_eq!(verts.len(), 328);
+        assert!(verts.iter().all(|v| v.pos[2] == 0.0));
+        assert!(verts.iter().any(|v| v.color == [0.30, 0.85, 0.35]));
+        assert!(verts.iter().any(|v| v.pos[1] == 40.0));
     }
 }
