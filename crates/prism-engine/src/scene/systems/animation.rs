@@ -92,7 +92,7 @@ pub fn sprite_animation_system(world: &mut World, dt: f32) {
         let index = if animation.looped {
             raw as u32 % total
         } else {
-            raw.min(total - 1) as u32
+            raw.min((total - 1) as f32) as u32
         };
 
         world.insert(entity, state);
