@@ -20,6 +20,7 @@ use crate::gpu::SharedVulkan;
 use crate::logging;
 use crate::panels::{self, UiState};
 use crate::project_module::ModuleState;
+use crate::selection_history::{SelectionHistory, SelectionSnapshot};
 use crate::theme;
 use crate::viewport::{GameResolution, ImageBridge, ViewportState};
 use egui_phosphor::regular as icons;
@@ -332,6 +333,8 @@ pub struct EditorApp {
     doc_hash: u64,
     /// 选中集合的哈希（Scene view 的 gizmo / 高亮跟着选择变）。
     selection_hash: u64,
+    /// 选择历史（Edit → Selection Back / Forward，#417）。
+    selection_history: SelectionHistory,
     pending_doc: Option<String>,
     pending_since: Option<Instant>,
     last_frame: Instant,
@@ -490,6 +493,7 @@ impl EditorApp {
         let mut app = Self {
             doc_hash: 0,
             selection_hash: 0,
+            selection_history: SelectionHistory::default(),
             pending_doc: None,
             pending_since: None,
             last_frame: Instant::now(),
@@ -2606,14 +2610,53 @@ impl EditorApp {
         self.workspace.select(index, false);
     }
 
-    fn cycle_selection(&mut self, delta: i32) {
-        let total = self.workspace.document().doc.entities.len();
-        if total == 0 {
+    fn current_selection_snapshot(&self) -> SelectionSnapshot {
+        SelectionSnapshot::new(
+            self.workspace.active_index(),
+            self.workspace.selection.clone(),
+            self.workspace.selection_active,
+        )
+    }
+
+    /// 每帧末尾观察一次选择：只有真的变了才进历史（拖动 gizmo 不会刷屏）。
+    fn track_selection_history(&mut self) {
+        self.selection_history
+            .observe(self.current_selection_snapshot());
+    }
+
+    /// Edit → Selection Back / Forward。还原文档、选择集与活动对象，并把命中项
+    /// 的祖先展开，避免回到一个折叠在父级下面的选择。
+    fn navigate_selection_history(&mut self, delta: isize) {
+        let Some(entry) = self.selection_history.navigate(delta) else {
             return;
+        };
+        if self.workspace.active_index() != entry.document
+            && entry.document < self.workspace.docs.len()
+        {
+            self.workspace.set_active(entry.document);
         }
-        let current = self.workspace.primary_selection().unwrap_or(0) as i64;
-        let next = ((current + delta as i64).rem_euclid(total as i64)) as usize;
-        self.workspace.select(next, false);
+        self.workspace.select_many(&entry.selection, false);
+        self.workspace.selection_active = entry
+            .active
+            .filter(|index| entry.selection.contains(index))
+            .or_else(|| entry.selection.last().copied());
+        let expanded: Vec<u32> = self
+            .workspace
+            .document()
+            .doc
+            .entities
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| entry.selection.contains(index))
+            .flat_map(|(index, _)| self.workspace.document().doc.path_of(index))
+            .filter_map(|index| self.workspace.document().doc.id_of_index(index))
+            .collect();
+        self.workspace.expanded.extend(expanded);
+        self.state.status = format!(
+            "selection history {}/{}",
+            self.selection_history.position() + 1,
+            self.selection_history.len()
+        );
     }
 
     fn copy_transform(&mut self, field: &str) {
@@ -3091,8 +3134,12 @@ impl EditorApp {
                 });
                 self.menu_do(ui, "Select Prefab Root", |app| app.select_prefab_root());
                 ui.separator();
-                self.menu_do(ui, "Next Selection", |app| app.cycle_selection(1));
-                self.menu_do(ui, "Previous Selection", |app| app.cycle_selection(-1));
+                self.menu_do(ui, "Selection Back", |app| {
+                    app.navigate_selection_history(-1)
+                });
+                self.menu_do(ui, "Selection Forward", |app| {
+                    app.navigate_selection_history(1)
+                });
                 ui.separator();
                 ui.menu_button("Copy Transform", |ui| {
                     for field in ["position", "rotation", "scale"] {
@@ -5630,6 +5677,7 @@ impl App for EditorApp {
             }
         }
 
+        self.track_selection_history();
         self.autosave_state();
         let _ = self.last_frame;
         ctx.request_repaint_after(std::time::Duration::from_millis(if self.playing {
