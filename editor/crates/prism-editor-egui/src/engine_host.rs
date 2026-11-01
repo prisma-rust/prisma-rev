@@ -598,6 +598,17 @@ impl EngineHost {
     /// 渲染一帧到离屏图像，并把图像转成可采样的
     /// `SHADER_READ_ONLY_OPTIMAL`。返回 `(image_view, extent)`。
     pub fn render(&mut self) -> anyhow::Result<Option<(ash::vk::ImageView, ash::vk::Extent2D)>> {
+        // 编辑态不跑 `tick()`（它只在 Play 时被调用），但出帧同样需要「模拟步末尾」
+        // 那两步：层级传播 + 资产上传。否则 `LocalToWorld` 停在加载时的值，
+        // `SpriteRef::generation == 0` 又会让 2D 渲染系统把所有精灵过滤掉 ——
+        // 编辑态的 Scene / Game 视图就只剩清屏色（#579）。
+        if !self.simulate {
+            prism_engine::scene::systems::hierarchy::hierarchy_system(self.engine.world_mut());
+            prism_engine::scene::systems::hierarchy::active_hierarchy_system(
+                self.engine.world_mut(),
+            );
+        }
+        self.pump_assets();
         let aspect = self.width as f32 / self.height.max(1) as f32;
         extract_frame_packet_into_with_shadow(
             self.engine.world_mut(),
