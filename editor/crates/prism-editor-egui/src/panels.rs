@@ -2087,11 +2087,10 @@ fn inspector_single(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState,
             continue;
         }
         let Some(schema) = workspace.schema.component(&name).cloned() else {
-            ui.label(
-                RichText::new(format!("{name}  (no schema)"))
-                    .weak()
-                    .size(11.0),
-            );
+            // 没有 schema 的组件（用户项目模块里自有类型、或引擎新增但还没生成
+            // schema）：给一个可编辑的原始 JSON 兜底，而不是只能看「(no schema)」
+            // 然后去手改场景文件（#418 的 Debug 视图）。
+            component_debug_editor(ui, workspace, entity_id, &name, &value);
             continue;
         };
         let mut set = |field: &str, value: Value| {
@@ -2731,6 +2730,75 @@ fn inspector_multi(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState, 
                 }
             }
         }
+    }
+}
+
+/// 没有 schema 的组件：可编辑的原始 JSON（#418 的 Debug 兜底视图）。
+///
+/// 缓冲放在 `egui` 的临时数据里，键是 `(实体, 组件)`；Apply 成功后清掉缓冲，
+/// 下一帧重新从文档读，避免显示过期内容。解析失败时按钮禁用并直接显示错误。
+fn component_debug_editor(
+    ui: &mut Ui,
+    workspace: &mut Workspace,
+    entity_id: u32,
+    name: &str,
+    value: &Value,
+) {
+    let id = egui::Id::new(("component-debug-json", entity_id, name));
+    let mut buffer = ui
+        .data(|data| data.get_temp::<String>(id))
+        .unwrap_or_else(|| serde_json::to_string_pretty(value).unwrap_or_default());
+
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(format!("{name}  (no schema — raw JSON)"))
+                .weak()
+                .size(11.0),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .small_button("Reload")
+                .on_hover_text("Discard the buffer and read the document again")
+                .clicked()
+            {
+                buffer = serde_json::to_string_pretty(value).unwrap_or_default();
+            }
+        });
+    });
+    ui.add(
+        egui::TextEdit::multiline(&mut buffer)
+            .code_editor()
+            .desired_rows(5)
+            .desired_width(f32::INFINITY),
+    );
+
+    let parsed = serde_json::from_str::<Value>(&buffer);
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(parsed.is_ok(), egui::Button::new("Apply JSON"))
+            .clicked()
+        {
+            if let Ok(parsed) = &parsed {
+                workspace.set_field(entity_id, name, "", parsed.clone());
+                ui.data_mut(|data| data.remove::<String>(id));
+            }
+        }
+        match &parsed {
+            Ok(_) => {
+                ui.label(RichText::new("valid JSON").size(10.0).weak());
+            }
+            Err(error) => {
+                ui.label(
+                    RichText::new(error.to_string())
+                        .size(10.0)
+                        .color(Color32::from_rgb(232, 96, 96)),
+                );
+            }
+        }
+    });
+
+    if parsed.is_ok() {
+        ui.data_mut(|data| data.insert_temp(id, buffer));
     }
 }
 
@@ -5904,6 +5972,30 @@ mod window_smoke_tests {
         ping_asset(&mut workspace, &mut state, "assets/models/missing.gltf");
         assert!(workspace.selection.is_empty());
         assert!(state.status.contains("no object references"));
+    }
+
+    #[test]
+    fn a_component_without_schema_gets_an_editable_json_fallback() {
+        // #418：没有 schema 的组件不再只显示「(no schema)」，而是可编辑 JSON。
+        let mut workspace = Workspace::sample();
+        workspace.document_mut().doc.entities[0].components.insert(
+            "test::Custom".to_string(),
+            serde_json::json!({"speed": 3.0}),
+        );
+        workspace.select(0, false);
+        let mut state = UiState::new();
+        let before = workspace.document().doc.to_json_string();
+
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                inspector(ui, &mut workspace, &mut state);
+            });
+        });
+
+        // 只是渲染，不点 Apply 就不写文档、不产生撤销步。
+        assert_eq!(workspace.document().doc.to_json_string(), before);
+        assert!(workspace.undo_history().is_empty());
     }
 
     #[test]
