@@ -14,8 +14,9 @@
 //! # 现状与边界
 //!
 //! - **距离衰减 + 等功率声像**：`spatial_blend` 既缩放衰减曲线，也缩放左右声像。
-//!   声像在**开始播放时**按听者右向量烘焙进片段（单声道 → 立体声、立体声按 L/R
-//!   缩放），所以移动中的声源保留首次播放时的声像；混音器仍然只需要 `set_volume`。
+//!   声像按听者右向量计算后**逐帧**下发给混音器（`AudioSink::set_pan`），所以移动
+//!   中的声源会实时左右移动；混音器用 Firewheel 的 `VolumePanNode` 平滑过渡，
+//!   不需要为了换声像而重播片段。
 //! - 只读**松散文件**：`assets/**` 里的音频；`.pak` 内的音频还没接。
 //! - 片段的采样率/声道由解码器给；混音器负责重采样。
 //! - 不监听文件变化：改音频后需要重启或重新加载场景（资产热重载只处理 `.pak`）。
@@ -37,6 +38,10 @@ pub trait AudioSink {
     fn play(&mut self, clip: &AudioData) -> u64;
     fn stop(&mut self, voice: u64);
     fn set_volume(&mut self, voice: u64, volume: f32);
+    /// 实时声像：`-1` 全左、`0` 居中、`+1` 全右。
+    ///
+    /// 提供空实现是为了不破坏已有的测试 / 自定义 sink；真实混音器应当覆盖它。
+    fn set_pan(&mut self, _voice: u64, _pan: f32) {}
     fn is_playing(&self, voice: u64) -> bool;
 }
 
@@ -47,6 +52,8 @@ struct Voice {
     id: u64,
     /// 已经下发给混音器的音量（避免每帧重复排队事件）。
     volume: f32,
+    /// 已经下发给混音器的声像（#508，移动声源逐帧更新）。
+    pan: f32,
     /// 音频线程是否真的开始播了（`play()` 刚返回时它还是 `false`）。
     started: bool,
     /// 声部对应的片段路径（路径变了要重播）。
@@ -212,22 +219,18 @@ impl SceneAudio {
                         continue;
                     };
                     let path = source.sound_path.clone();
-                    let panned = if pan.abs() > 1e-4 {
-                        let (left, right) = pan_gains(pan);
-                        Some(panned_clip(clip, left, right))
-                    } else {
-                        None
-                    };
-                    let id = sink.play(panned.as_ref().unwrap_or(clip));
+                    let id = sink.play(clip);
                     if id == 0 {
                         continue;
                     }
                     sink.set_volume(id, volume);
+                    sink.set_pan(id, pan);
                     self.voices.insert(
                         entity,
                         Voice {
                             id,
                             volume,
+                            pan,
                             started: false,
                             path,
                         },
@@ -247,22 +250,18 @@ impl SceneAudio {
                             continue;
                         };
                         let path = source.sound_path.clone();
-                        let panned = if pan.abs() > 1e-4 {
-                            let (left, right) = pan_gains(pan);
-                            Some(panned_clip(clip, left, right))
-                        } else {
-                            None
-                        };
-                        let id = sink.play(panned.as_ref().unwrap_or(clip));
+                        let id = sink.play(clip);
                         if id == 0 {
                             continue;
                         }
                         sink.set_volume(id, volume);
+                        sink.set_pan(id, pan);
                         self.voices.insert(
                             entity,
                             Voice {
                                 id,
                                 volume,
+                                pan,
                                 started: false,
                                 path,
                             },
@@ -272,6 +271,10 @@ impl SceneAudio {
                     if (voice.volume - volume).abs() > 0.001 {
                         voice.volume = volume;
                         sink.set_volume(voice.id, volume);
+                    }
+                    if (voice.pan - pan).abs() > 0.001 {
+                        voice.pan = pan;
+                        sink.set_pan(voice.id, pan);
                     }
                 }
             }
@@ -401,39 +404,6 @@ fn pan_for(
     (dot * spatial_blend).clamp(-1.0, 1.0)
 }
 
-/// 等功率声像增益 `(left, right)`；`pan = 0` 时两侧都是 `1/√2`。
-fn pan_gains(pan: f32) -> (f32, f32) {
-    let angle = (pan.clamp(-1.0, 1.0) + 1.0) * std::f32::consts::FRAC_PI_4;
-    (angle.cos(), angle.sin())
-}
-
-/// 把片段烘焙成已声像处理的副本：单声道 → 立体声（每个采样两路），
-/// 立体声 / 多声道按 L/R 缩放前两路。
-fn panned_clip(clip: &AudioData, left: f32, right: f32) -> AudioData {
-    let channels = clip.channels as usize;
-    let (samples, channels) = if channels <= 1 {
-        let mut samples = Vec::with_capacity(clip.samples.len() * 2);
-        for sample in &clip.samples {
-            samples.push(sample * left);
-            samples.push(sample * right);
-        }
-        (samples, 2)
-    } else {
-        let mut samples = clip.samples.clone();
-        for frame in samples.chunks_mut(channels) {
-            frame[0] *= left;
-            frame[1] *= right;
-        }
-        (samples, clip.channels)
-    };
-    AudioData {
-        samples,
-        sample_rate: clip.sample_rate,
-        channels,
-        duration: clip.duration,
-    }
-}
-
 fn world_position(world: &World, entity: Entity) -> Option<[f32; 3]> {
     world
         .get::<LocalToWorld>(entity)
@@ -478,6 +448,12 @@ impl AudioSink for (&mut prism_audio::AudioEngine, &mut VoiceHandles) {
         }
     }
 
+    fn set_pan(&mut self, voice: u64, pan: f32) {
+        if let Some(handle) = self.1.handles.get(&voice) {
+            self.0.set_pan(handle, pan);
+        }
+    }
+
     fn is_playing(&self, voice: u64) -> bool {
         self.1
             .handles
@@ -510,10 +486,9 @@ mod tests {
         ends: HashMap<u64, &'static str>,
         playing: HashMap<u64, bool>,
         volumes: HashMap<u64, f32>,
+        pans: HashMap<u64, f32>,
         stopped: Vec<u64>,
         played: usize,
-        /// 最近一次交给混音器的片段（声像测试用）。
-        last_clip: Option<AudioData>,
     }
 
     impl FakeSink {
@@ -525,6 +500,11 @@ mod tests {
             values.sort_by_key(|a| a.0);
             values.into_iter().map(|(_, volume)| volume).collect()
         }
+        fn pans(&self) -> Vec<f32> {
+            let mut values: Vec<(u64, f32)> = self.pans.iter().map(|(k, v)| (*k, *v)).collect();
+            values.sort_by_key(|a| a.0);
+            values.into_iter().map(|(_, pan)| pan).collect()
+        }
     }
 
     impl AudioSink for FakeSink {
@@ -533,7 +513,6 @@ mod tests {
             self.next += 1;
             let id = self.next;
             self.played += 1;
-            self.last_clip = Some(clip.clone());
             self.playing.insert(id, true);
             self.ends.insert(id, "clip");
             id
@@ -544,6 +523,9 @@ mod tests {
         }
         fn set_volume(&mut self, voice: u64, volume: f32) {
             self.volumes.insert(voice, volume);
+        }
+        fn set_pan(&mut self, voice: u64, pan: f32) {
+            self.pans.insert(voice, pan);
         }
         fn is_playing(&self, voice: u64) -> bool {
             self.playing.get(&voice).copied().unwrap_or(false)
@@ -659,15 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn panning_gains_are_equal_power_and_follow_spatial_blend() {
-        let center = pan_gains(0.0);
-        assert!((center.0 - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
-        assert!((center.1 - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
-        let left = pan_gains(-1.0);
-        assert!((left.0 - 1.0).abs() < 1e-6 && left.1.abs() < 1e-6);
-        let right = pan_gains(1.0);
-        assert!(right.0.abs() < 1e-6 && (right.1 - 1.0).abs() < 1e-6);
-
+    fn pan_follows_the_listener_right_vector_and_spatial_blend() {
         let axis = [1.0, 0.0, 0.0];
         assert!((pan_for(Some([5.0, 0.0, 0.0]), Some([0.0; 3]), axis, 1.0) - 1.0).abs() < 1e-6);
         assert!((pan_for(Some([-5.0, 0.0, 0.0]), Some([0.0; 3]), axis, 1.0) + 1.0).abs() < 1e-6);
@@ -678,25 +652,6 @@ mod tests {
         );
         assert_eq!(pan_for(None, Some([0.0; 3]), axis, 1.0), 0.0);
         assert_eq!(pan_for(Some([0.0; 3]), Some([0.0; 3]), axis, 1.0), 0.0);
-    }
-
-    #[test]
-    fn a_panned_clip_scales_the_channels_without_reordering_samples() {
-        let mut mono = clip();
-        mono.samples = vec![1.0, -1.0];
-        let panned = panned_clip(&mono, 1.0, 0.0);
-        assert_eq!(panned.channels, 2);
-        assert_eq!(panned.samples, vec![1.0, 0.0, -1.0, 0.0]);
-
-        let stereo = AudioData {
-            samples: vec![1.0, 0.5, -1.0, -0.5],
-            sample_rate: 44_100,
-            channels: 2,
-            duration: Duration::from_secs(1),
-        };
-        let panned = panned_clip(&stereo, 0.5, 0.25);
-        assert_eq!(panned.channels, 2);
-        assert_eq!(panned.samples, vec![0.5, 0.125, -0.5, -0.125]);
     }
 
     #[test]
@@ -719,20 +674,45 @@ mod tests {
         );
 
         let mut scene = SceneAudio::new();
-        let mut mono = clip();
-        mono.samples = vec![1.0; 4];
-        scene.insert_clip("audio/beep.ogg", mono);
+        scene.insert_clip("audio/beep.ogg", clip());
         let mut sink = FakeSink::default();
         scene.update(&world, &mut sink, None);
 
-        let played = sink.last_clip.as_ref().expect("played clip");
-        assert_eq!(played.channels, 2);
-        assert_eq!(played.samples.len(), 8);
-        assert!(played.samples[0].abs() < 1e-6, "left gain must be 0");
-        assert!(
-            (played.samples[1] - 1.0).abs() < 1e-6,
-            "right gain must be 1"
+        assert_eq!(sink.pans(), vec![1.0], "right-side source should pan +1");
+    }
+
+    #[test]
+    fn a_moving_source_updates_pan_without_replaying_the_clip() {
+        let mut world = World::new();
+        place(&mut world, [0.0; 3]); // 默认监听者 = 世界原点
+        let speaker = place(&mut world, [5.0, 0.0, 0.0]);
+        source(
+            &mut world,
+            speaker,
+            AudioSource {
+                spatial_blend: 1.0,
+                min_distance: 0.0,
+                max_distance: 10.0,
+                volume: 1.0,
+                ..plain("audio/beep.ogg")
+            },
         );
+
+        let mut scene = SceneAudio::new();
+        scene.insert_clip("audio/beep.ogg", clip());
+        let mut sink = FakeSink::default();
+        scene.update(&world, &mut sink, None);
+        assert_eq!(sink.played, 1);
+        assert_eq!(sink.pans(), vec![1.0]);
+
+        // 移到左侧：同一声部只更新 pan，不重新 play。
+        world.insert(
+            speaker,
+            LocalToWorld(Mat4::from_translation(glam::Vec3::new(-5.0, 0.0, 0.0))),
+        );
+        scene.update(&world, &mut sink, None);
+        assert_eq!(sink.played, 1, "panning must not restart the voice");
+        assert_eq!(sink.pans(), vec![-1.0]);
     }
 
     #[test]
