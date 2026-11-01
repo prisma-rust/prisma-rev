@@ -54,6 +54,9 @@
 > 见 `shaders/slang/shadow_depth.slang` / `scene_frag.slang`）。`RenderSettings::
 > shadow_mode` 支持 `Auto`/`Raster`/`RayQuery`/`None`，由 `resolve_shadow`
 > 按 `VK_KHR_ray_query` 能力自动选择。`ShadowMapPass::SHADOW_CASCADE_COUNT = 1` 为预留。
+> 贴图边长由 `RenderSettings::shadow_map_size` 决定（`settings.ini [render] shadow_map_size`，
+> 默认 2048，钳制到 256..=8192，#526）；它在构造渲染器 / 重建渲染图时生效，运行中改
+> 字段不会重新分配图像。
 >
 > **计划（CSM）**：级联阴影贴图（Cascaded Shadow Maps）尚已实现，仅单张
 > 固定范围正交阴影。下一步扩展在 `ShadowMapPass` 内按相机视锥切片拆成多张级联，

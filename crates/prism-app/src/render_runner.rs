@@ -105,6 +105,7 @@ pub fn render_thread_main(
     scene_env: Option<Vec<u8>>,
     warmup: bool,
     overlay_factory: Option<OverlayFactory>,
+    shadow_map_size: u32,
 ) {
     let mut dirty_router = DirtyRouter::new();
     let mut graph_report = crate::render_graph_report::ReportWriter::from_env();
@@ -126,12 +127,13 @@ pub fn render_thread_main(
                 display: &handles.display,
                 window: &handles.window,
             };
-            GraphRenderer::new_with_vsync(
+            GraphRenderer::new_with_vsync_and_shadow_size(
                 extensions_ref,
                 &handle_bridge,
                 &handle_bridge,
                 None,
                 *vsync,
+                shadow_map_size,
             )
         }
         RenderTarget::NativeSurface {
@@ -144,16 +146,17 @@ pub fn render_thread_main(
                 display: &handles.display,
                 window: &handles.window,
             };
-            GraphRenderer::new_with_vsync(
+            GraphRenderer::new_with_vsync_and_shadow_size(
                 extensions_ref,
                 &handle_bridge,
                 &handle_bridge,
                 None,
                 *vsync,
+                shadow_map_size,
             )
         }
         RenderTarget::Offscreen { width, height } => {
-            GraphRenderer::offscreen_new(*width, *height, None)
+            GraphRenderer::offscreen_new_with_shadow_size(*width, *height, None, shadow_map_size)
         }
     };
     let mut renderer = match created {

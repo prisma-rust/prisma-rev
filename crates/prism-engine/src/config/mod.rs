@@ -46,6 +46,8 @@ pub struct RenderConfig {
     pub contrast: Option<f32>,
     /// 主方向光阴影覆盖距离（米，见 `RenderSettings::shadow_distance`）。
     pub shadow_distance: Option<f32>,
+    /// 阴影贴图边长（texel，见 `RenderSettings::shadow_map_size`，#526）。
+    pub shadow_map_size: Option<u32>,
     /// 显示空间饱和度（`1.0` = 不变，`0.0` = 灰度）。
     pub saturation: Option<f32>,
     /// 暗角强度（`0.0` = 关，`1.0` = 四角全黑）。
@@ -90,6 +92,19 @@ impl RenderConfig {
                 settings.shadow_distance = distance;
             } else {
                 log::warn!("settings: shadow_distance must be positive, got {distance}");
+            }
+        }
+        if let Some(size) = self.shadow_map_size {
+            if (prism_render::MIN_SHADOW_MAP_SIZE..=prism_render::MAX_SHADOW_MAP_SIZE)
+                .contains(&size)
+            {
+                settings.shadow_map_size = size;
+            } else {
+                log::warn!(
+                    "settings: shadow_map_size must be {}..={}, got {size}",
+                    prism_render::MIN_SHADOW_MAP_SIZE,
+                    prism_render::MAX_SHADOW_MAP_SIZE
+                );
             }
         }
         if let Some(value) = self.contrast {
@@ -141,6 +156,7 @@ impl RenderConfig {
             aa_mode: ini.get_u32("render", "aa_mode"),
             contrast: ini.get_f32("render", "contrast"),
             shadow_distance: ini.get_f32("render", "shadow_distance"),
+            shadow_map_size: ini.get_u32("render", "shadow_map_size"),
             saturation: ini.get_f32("render", "saturation"),
             vignette: ini.get_f32("render", "vignette"),
             debug_rt: ini.get_u32("render", "debug_rt"),
@@ -362,6 +378,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "aa_mode",
             "contrast",
             "shadow_distance",
+            "shadow_map_size",
             "saturation",
             "vignette",
             "debug_rt",
@@ -483,7 +500,7 @@ mod tests {
         use crate::render_settings::{RenderMode, RenderSettings};
 
         let cfg = AppConfig::from_ini(
-            "[render]\nrender_mode = \"path_trace\"\ntonemap_mode = 1\naa_mode = 1\ncontrast = 1.4\nsaturation = 0.6\nvignette = 0.3\nshadow_distance = 120.0\npt_max_bounces = 7\n",
+            "[render]\nrender_mode = \"path_trace\"\ntonemap_mode = 1\naa_mode = 1\ncontrast = 1.4\nsaturation = 0.6\nvignette = 0.3\nshadow_distance = 120.0\nshadow_map_size = 1024\npt_max_bounces = 7\n",
         );
         let mut settings = RenderSettings::default();
         cfg.render.apply(&mut settings);
@@ -495,10 +512,25 @@ mod tests {
         assert_eq!(settings.saturation, 0.6);
         assert_eq!(settings.vignette, 0.3);
         assert_eq!(settings.pt_max_bounces, 7);
-        // #526：阴影覆盖距离是可配置的质量旋钮。
+        // #526：阴影覆盖距离与贴图边长都是可配置的质量旋钮。
         assert_eq!(settings.shadow_distance, 120.0);
+        assert_eq!(settings.shadow_map_size, 1024);
         // Unspecified fields keep their defaults.
         assert_eq!(settings.pt_max_iterations, 0);
+    }
+
+    #[test]
+    fn shadow_map_size_outside_the_supported_range_is_ignored() {
+        use crate::render_settings::RenderSettings;
+
+        let cfg = AppConfig::from_ini("[render]\nshadow_map_size = 64\n");
+        let mut settings = RenderSettings::default();
+        cfg.render.apply(&mut settings);
+        assert_eq!(
+            settings.shadow_map_size,
+            prism_render::SHADOW_MAP_SIZE,
+            "out-of-range values must not reach the renderer"
+        );
     }
 
     #[test]
