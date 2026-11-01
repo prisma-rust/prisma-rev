@@ -493,6 +493,7 @@ pub fn register_builtin_components(registry: &mut ComponentRegistry) {
     // 轨道里的是嵌套结构体，先登记类型（RTTIBin 类型表 / 编辑器字段描述），
     // 再登记组件本身。
     registry.register_reflect_type::<crate::animation::Vec3Key>();
+    registry.register_reflect_type::<crate::animation::AnimationEvent>();
     registry.register_reflect_serde::<KeyframeAnimation>("prism_engine::scene::KeyframeAnimation");
 
     // ── 粒子发射器（作者态；活粒子在运行时 `ParticleEmitter` 里）──

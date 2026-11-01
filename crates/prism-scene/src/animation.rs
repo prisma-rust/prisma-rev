@@ -5,7 +5,9 @@
 //! 面：位置 / 旋转 / 缩放三条轨道、线性插值、端点保持（不外插）、循环与单次播放。
 //!
 //! 这里只做「时间 → 值」的纯函数，不碰 ECS；播放头与写回 `Transform` 在引擎侧
-//! （`prism_engine::scene::systems::animation::keyframe_animation_system`）。骨骼
+//! （`prism_engine::scene::systems::animation::keyframe_animation_system`）。
+//! 剪辑事件（[`AnimationEvent`]）也放在这里：只是 `(time, name)` 数据，触发在引擎侧。
+//! 骨骼
 //! 蒙皮不在这层，但骨骼动画的剪辑采样与这里完全一致——骨骼只是把采样结果写给
 //! 骨骼节点的 `Transform`。
 //!
@@ -43,6 +45,38 @@ impl Default for Vec3Key {
 impl Vec3Key {
     pub fn new(time: f32, value: [f32; 3]) -> Self {
         Self { time, value }
+    }
+}
+
+/// 剪辑上的一个事件（#490）：播放头穿过 `time` 时由引擎发射。
+///
+/// 事件名只是字符串，引擎不解释语义；玩法把名字映射成音效 / 特效 / 状态切换。
+/// 时间单位与关键帧一致（秒，相对剪辑起点）；`time` 非有限值的事件会被忽略。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
+#[serde(default)]
+#[reflect(name = "prism_engine::animation::AnimationEvent")]
+pub struct AnimationEvent {
+    /// 触发时间（秒，相对剪辑起点）。
+    pub time: f32,
+    /// 事件名（玩法自定义）。
+    pub name: String,
+}
+
+impl Default for AnimationEvent {
+    fn default() -> Self {
+        Self {
+            time: 0.0,
+            name: String::new(),
+        }
+    }
+}
+
+impl AnimationEvent {
+    pub fn new(time: f32, name: impl Into<String>) -> Self {
+        Self {
+            time,
+            name: name.into(),
+        }
     }
 }
 

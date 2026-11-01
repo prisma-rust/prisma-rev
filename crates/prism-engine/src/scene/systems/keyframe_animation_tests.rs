@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::scene::components::KeyframeAnimation;
-use prism_scene::animation::Vec3Key;
+use prism_scene::animation::{AnimationEvent, Vec3Key};
 
 fn clip(position: &[(f32, [f32; 3])], euler: &[(f32, [f32; 3])]) -> KeyframeAnimation {
     KeyframeAnimation {
@@ -174,4 +174,142 @@ fn an_entity_without_a_transform_is_left_alone() {
 
     keyframe_animation_system(&mut world, 1.0);
     assert!(world.get::<ClipPlayhead>(entity).is_none());
+}
+
+fn fired(world: &World) -> Vec<(String, f32)> {
+    world
+        .get_resource::<AnimationEventQueue>()
+        .map(|queue| {
+            queue
+                .events
+                .iter()
+                .map(|event| (event.name.clone(), event.time))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// #490：播放头穿过事件时间时入队；没穿过的帧不发。
+#[test]
+fn events_fire_when_the_playhead_crosses_them() {
+    let mut world = World::new();
+    let entity = spawn(
+        &mut world,
+        KeyframeAnimation {
+            looped: false,
+            events: vec![
+                AnimationEvent::new(0.5, "step"),
+                AnimationEvent::new(1.5, "land"),
+            ],
+            ..clip(&[(0.0, [0.0; 3]), (2.0, [10.0; 3])], &[])
+        },
+    );
+
+    keyframe_animation_system(&mut world, 0.4);
+    assert!(fired(&world).is_empty());
+
+    keyframe_animation_system(&mut world, 0.2);
+    assert_eq!(fired(&world), vec![("step".to_string(), 0.5)]);
+    assert_eq!(
+        world.get_resource::<AnimationEventQueue>().unwrap().events[0].entity,
+        entity
+    );
+
+    keyframe_animation_system(&mut world, 0.8);
+    assert!(fired(&world).is_empty(), "1.5 has not been crossed yet");
+
+    keyframe_animation_system(&mut world, 0.3);
+    assert_eq!(fired(&world), vec![("land".to_string(), 1.5)]);
+
+    // 夹在末帧之后不再重复。
+    keyframe_animation_system(&mut world, 0.5);
+    assert!(fired(&world).is_empty());
+}
+
+#[test]
+fn a_zero_time_event_fires_on_the_first_advance() {
+    let mut world = World::new();
+    spawn(
+        &mut world,
+        KeyframeAnimation {
+            looped: false,
+            events: vec![AnimationEvent::new(0.0, "start")],
+            ..clip(&[(0.0, [0.0; 3]), (1.0, [1.0; 3])], &[])
+        },
+    );
+
+    keyframe_animation_system(&mut world, 0.1);
+    assert_eq!(fired(&world), vec![("start".to_string(), 0.0)]);
+}
+
+#[test]
+fn a_looped_clip_fires_events_once_per_cycle() {
+    let mut world = World::new();
+    spawn(
+        &mut world,
+        KeyframeAnimation {
+            events: vec![AnimationEvent::new(0.25, "tick")],
+            ..clip(&[(0.0, [0.0; 3]), (1.0, [10.0; 3])], &[])
+        },
+    );
+
+    keyframe_animation_system(&mut world, 0.3);
+    assert_eq!(fired(&world), vec![("tick".to_string(), 0.25)]);
+    keyframe_animation_system(&mut world, 0.3);
+    assert!(fired(&world).is_empty());
+    keyframe_animation_system(&mut world, 0.3);
+    assert!(fired(&world).is_empty());
+    // 0.9 → 1.2：回绕到 0.2，还没到 0.25。
+    keyframe_animation_system(&mut world, 0.3);
+    assert!(fired(&world).is_empty());
+    // 0.2 → 0.5：第二圈的 tick。
+    keyframe_animation_system(&mut world, 0.3);
+    assert_eq!(fired(&world), vec![("tick".to_string(), 0.25)]);
+}
+
+#[test]
+fn paused_clips_do_not_fire_events_and_the_queue_is_cleared() {
+    let mut world = World::new();
+    spawn(
+        &mut world,
+        KeyframeAnimation {
+            playing: false,
+            events: vec![AnimationEvent::new(0.1, "never")],
+            ..clip(&[(0.0, [0.0; 3]), (1.0, [1.0; 3])], &[])
+        },
+    );
+
+    keyframe_animation_system(&mut world, 1.0);
+    assert!(fired(&world).is_empty());
+
+    // 上一帧有事件、下一帧没有时也必须被清空。
+    let stale_entity = world.spawn();
+    world.insert_resource(AnimationEventQueue {
+        events: vec![FiredAnimationEvent {
+            entity: stale_entity,
+            name: "stale".to_string(),
+            time: 99.0,
+        }],
+    });
+    keyframe_animation_system(&mut world, 1.0);
+    assert!(fired(&world).is_empty());
+}
+
+#[test]
+fn a_clip_with_only_events_still_advances_and_fires() {
+    let mut world = World::new();
+    spawn(
+        &mut world,
+        KeyframeAnimation {
+            looped: false,
+            events: vec![AnimationEvent::new(0.2, "cue")],
+            position: Vec::new(),
+            euler_xyz: Vec::new(),
+            scale: Vec::new(),
+            ..KeyframeAnimation::default()
+        },
+    );
+
+    keyframe_animation_system(&mut world, 0.3);
+    assert_eq!(fired(&world), vec![("cue".to_string(), 0.2)]);
 }
