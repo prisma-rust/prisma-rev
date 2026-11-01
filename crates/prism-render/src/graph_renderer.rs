@@ -298,6 +298,8 @@ pub struct GraphRenderer {
     gpu_timer: Option<crate::gpu_timer::GpuTimer>,
     /// 最近一次读回的 per-pass GPU 时间（延迟一帧）。
     gpu_timings: crate::gpu_timer::GpuTimings,
+    /// 最近 N 帧的 GPU 总时间（#518 Phase 2 历史曲线）。
+    gpu_history: crate::gpu_timer::GpuHistory,
 
     // ── 最后一个 field ──────────────────────────────────────────────────
     /// Long-lived GPU session 设备 命令 池 descriptors, UBOs).
@@ -613,6 +615,7 @@ impl GraphRenderer {
             screenshot: None,
             gpu_timer,
             gpu_timings: Default::default(),
+            gpu_history: Default::default(),
         })
     }
     // -------------------------------------------------------------------
@@ -977,6 +980,7 @@ impl GraphRenderer {
             screenshot: None,
             gpu_timer,
             gpu_timings: Default::default(),
+            gpu_history: Default::default(),
             offscreen: Some(offscreen),
             headless_fence,
         })
@@ -1853,6 +1857,9 @@ impl GraphRenderer {
         };
         timer.begin_frame(device, frame_index);
         self.gpu_timings = timer.timings(frame_index).clone();
+        if self.gpu_timings.supported {
+            self.gpu_history.push(self.gpu_timings.total_ms);
+        }
     }
 
     /// 最近一帧的 per-pass GPU 时间。
@@ -1862,6 +1869,11 @@ impl GraphRenderer {
     /// 提交完成后才可读，延迟读回才不会 stall 管线。
     pub fn gpu_timings(&self) -> &crate::gpu_timer::GpuTimings {
         &self.gpu_timings
+    }
+
+    /// 最近 N 帧的 GPU 总时间（旧 → 新，#518 Phase 2 历史曲线）。
+    pub fn gpu_history(&self) -> &crate::gpu_timer::GpuHistory {
+        &self.gpu_history
     }
 
     /// 本帧的 draw call 记录（#518 Phase 2 的数据层，不含回放）。

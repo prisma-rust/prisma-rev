@@ -45,6 +45,67 @@ impl GpuTimings {
     }
 }
 
+/// 默认保留多少帧的 GPU 总时间（≈2 秒 @60fps）。
+pub const DEFAULT_HISTORY_SAMPLES: usize = 120;
+
+/// GPU 总时间的环形缓冲（#518 Phase 2 历史曲线）。
+///
+/// 只保存**已读回**的帧；设备不支持时间戳时调用方不会 push，所以空缓冲
+/// 本身就是「没有 GPU 计时」的信号。非有限 / 负数样本直接丢弃，避免把
+/// 未初始化或异常的时间戳画进面板。
+#[derive(Debug, Clone)]
+pub struct GpuHistory {
+    capacity: usize,
+    samples: std::collections::VecDeque<f32>,
+}
+
+impl GpuHistory {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            samples: std::collections::VecDeque::new(),
+        }
+    }
+
+    /// 追加一帧的总 GPU 时间（ms）；超过容量时丢最旧的一帧。
+    pub fn push(&mut self, ms: f32) {
+        if !ms.is_finite() || ms < 0.0 {
+            return;
+        }
+        if self.samples.len() == self.capacity {
+            self.samples.pop_front();
+        }
+        self.samples.push_back(ms);
+    }
+
+    /// 从旧到新迭代。
+    pub fn samples(&self) -> impl ExactSizeIterator<Item = f32> + '_ {
+        self.samples.iter().copied()
+    }
+
+    pub fn to_vec(&self) -> Vec<f32> {
+        self.samples.iter().copied().collect()
+    }
+
+    pub fn len(&self) -> usize {
+        self.samples.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.samples.is_empty()
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+}
+
+impl Default for GpuHistory {
+    fn default() -> Self {
+        Self::new(DEFAULT_HISTORY_SAMPLES)
+    }
+}
+
 /// 每个帧槽位能记录的 pass 上限；超过的部分不计时（不会 panic）。
 pub const MAX_PASSES_PER_FRAME: usize = 24;
 
@@ -246,5 +307,35 @@ impl GpuTimer {
             total_ms: total,
             passes,
         }
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+
+    #[test]
+    fn history_keeps_the_newest_samples_up_to_capacity() {
+        let mut history = GpuHistory::new(3);
+        for ms in [1.0, 2.0, 3.0, 4.0] {
+            history.push(ms);
+        }
+        assert_eq!(history.to_vec(), vec![2.0, 3.0, 4.0]);
+        assert_eq!(history.len(), 3);
+        assert_eq!(history.capacity(), 3);
+    }
+
+    #[test]
+    fn history_ignores_invalid_samples_and_zero_capacity_is_clamped() {
+        let mut history = GpuHistory::new(0);
+        assert_eq!(history.capacity(), 1);
+        history.push(f32::NAN);
+        history.push(f32::INFINITY);
+        history.push(-1.0);
+        assert!(history.is_empty());
+        history.push(0.0);
+        history.push(1.5);
+        assert_eq!(history.to_vec(), vec![1.5]);
+        assert_eq!(history.samples().sum::<f32>(), 1.5);
     }
 }

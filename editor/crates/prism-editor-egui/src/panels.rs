@@ -5126,6 +5126,7 @@ pub fn render_graph(
             let parsed = prism_editor_core::render_graph::RenderGraphReport::parse(json);
             if let Some(parsed) = &parsed {
                 render_graph_timings(ui, parsed);
+                render_graph_history(ui, parsed);
                 render_graph_stats(ui, parsed);
                 render_graph_draw_calls(ui, parsed);
             }
@@ -5292,6 +5293,58 @@ fn render_graph_timings(ui: &mut Ui, report: &prism_editor_core::render_graph::R
                 ui.end_row();
             }
         });
+}
+
+/// 最近 N 帧 GPU 总时间的 sparkline（#518 Phase 2 历史曲线）。
+///
+/// 横轴等距（报告只存每帧采样，不存时间戳）；虚线位置是 [`FRAME_BUDGET_MS`]。
+fn render_graph_history(ui: &mut Ui, report: &prism_editor_core::render_graph::RenderGraphReport) {
+    let samples = &report.gpu_history_ms;
+    if samples.len() < 2 {
+        return;
+    }
+    ui.add_space(4.0);
+    let average = samples.iter().sum::<f32>() / samples.len() as f32;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("GPU history").strong());
+        ui.label(
+            RichText::new(format!("{average:.2} ms avg · {} frames", samples.len()))
+                .weak()
+                .size(10.0),
+        );
+    });
+
+    let desired = egui::vec2(ui.available_width().clamp(120.0, 360.0), 44.0);
+    let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
+
+    let max = samples
+        .iter()
+        .copied()
+        .fold(FRAME_BUDGET_MS * 1.25, f32::max)
+        .max(1.0);
+    let y_for = |ms: f32| rect.bottom() - (ms / max).clamp(0.0, 1.0) * rect.height();
+
+    let budget_y = y_for(FRAME_BUDGET_MS);
+    painter.line_segment(
+        [
+            egui::pos2(rect.left(), budget_y),
+            egui::pos2(rect.right(), budget_y),
+        ],
+        egui::Stroke::new(1.0, Color32::from_rgb(226, 178, 84)),
+    );
+
+    let last = (samples.len() - 1) as f32;
+    let points: Vec<egui::Pos2> = samples
+        .iter()
+        .enumerate()
+        .map(|(index, ms)| egui::pos2(rect.left() + rect.width() * index as f32 / last, y_for(*ms)))
+        .collect();
+    painter.add(egui::Shape::line(
+        points,
+        egui::Stroke::new(1.5, Color32::from_rgb(120, 200, 140)),
+    ));
 }
 
 // ---------------------------------------------------------------------------

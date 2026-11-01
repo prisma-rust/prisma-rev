@@ -27,6 +27,9 @@ pub struct RenderGraphReport {
     /// 本帧的 draw call 列表（#518 Phase 2）；旧报告没有该字段。
     #[serde(default)]
     pub draw_calls: Vec<ReportDrawCall>,
+    /// 最近若干帧的 GPU 总时间（ms，旧 → 新，#518 Phase 2 历史曲线）。
+    #[serde(default)]
+    pub gpu_history_ms: Vec<f32>,
 }
 
 /// 一条 draw call（#518 Phase 2 的数据层）。
@@ -296,6 +299,16 @@ mod tests {
             RenderGraphReport::parse(r#"{"frame":1,"passes":[],"resources":[]}"#).expect("parses");
         assert_eq!(report.gpu_total_ms(), None);
         assert!(report.passes_by_cost().is_empty());
+        assert!(report.gpu_history_ms.is_empty());
+    }
+
+    #[test]
+    fn gpu_history_parses_in_frame_order() {
+        let report = RenderGraphReport::parse(
+            r#"{"frame":3,"gpuTotalMs":4.0,"gpuHistoryMs":[1.0,2.5,4.0],"passes":[],"resources":[]}"#,
+        )
+        .expect("parses");
+        assert_eq!(report.gpu_history_ms, vec![1.0, 2.5, 4.0]);
     }
 
     #[test]

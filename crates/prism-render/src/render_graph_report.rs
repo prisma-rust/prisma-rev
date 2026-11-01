@@ -96,6 +96,10 @@ pub struct RenderGraphReport {
     /// 本帧的 draw call 列表（#518 Phase 2）；空 / 旧报告时省略。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub draw_calls: Vec<ReportDrawCall>,
+    /// 最近若干帧的 GPU 总时间（ms，旧 → 新，#518 Phase 2 历史曲线）；
+    /// 设备不支持时间戳 / 旧报告时省略。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gpu_history_ms: Vec<f32>,
 }
 
 /// 报告里的渲染设置子集（与编辑器 `RenderSettingsData` 对齐）。
@@ -284,7 +288,20 @@ impl RenderGraphReport {
                 .filter(|total| *total > 0.0),
             stats: None,
             draw_calls: Vec::new(),
+            gpu_history_ms: Vec::new(),
         }
+    }
+
+    /// 附带最近 N 帧的 GPU 总时间（#518 Phase 2 历史曲线）。
+    ///
+    /// 非有限 / 负样本被丢弃；最多保留 240 个点，避免异常调用方把 JSON 撑大。
+    pub fn with_gpu_history(mut self, samples: impl IntoIterator<Item = f32>) -> Self {
+        self.gpu_history_ms = samples
+            .into_iter()
+            .filter(|ms| ms.is_finite() && *ms >= 0.0)
+            .take(240)
+            .collect();
+        self
     }
 
     /// 附带管理器侧的资源统计（#518 Phase 2）。
@@ -354,7 +371,15 @@ impl ReportWriter {
         settings: ReportSettings,
         frame: u64,
     ) {
-        self.maybe_write_with_timings(snapshot, settings, frame, None, None, Vec::new());
+        self.maybe_write_with_timings(
+            snapshot,
+            settings,
+            frame,
+            None,
+            None,
+            Vec::new(),
+            Vec::new(),
+        );
     }
 
     /// 同 [`Self::maybe_write`]，附带 per-pass GPU 时间（#518）。
@@ -366,6 +391,7 @@ impl ReportWriter {
         timings: Option<&crate::gpu_timer::GpuTimings>,
         stats: Option<ReportStats>,
         draw_calls: Vec<ReportDrawCall>,
+        gpu_history: Vec<f32>,
     ) {
         let Some(path) = self.path.as_deref() else {
             return;
@@ -386,6 +412,9 @@ impl ReportWriter {
         }
         if !draw_calls.is_empty() {
             report = report.with_draw_calls(draw_calls);
+        }
+        if !gpu_history.is_empty() {
+            report = report.with_gpu_history(gpu_history);
         }
         if let Err(error) = report.write_json(path) {
             log::warn!(
