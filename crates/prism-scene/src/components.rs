@@ -831,8 +831,12 @@ impl ReflectType for ParticleShape {
 /// 只描述**作者参数**；活着的粒子存在运行时组件
 /// `prism_engine::scene::systems::particles::ParticleEmitter` 里，不进
 /// `.scene.json` / RSCN。每个粒子出生时取一次
-/// `start_speed` / `start_size` / `lifetime` 的随机值，颜色在
-/// `start_color → end_color` 之间按生命周期线性插值。
+/// `start_speed` / `start_size` / `lifetime` 的随机值。
+///
+/// 颜色有两种写法：`color_stops` 非空时按生命周期**均匀采样多段渐变**（一个停靠点 =
+/// 恒定色）；为空时退回 `start_color → end_color` 的两色线性插值。尺寸同理：
+/// `size_over_lifetime` 是出生 / 死亡时的倍率（`[1, 0]` 收缩、`[0.5, 2]` 长大），
+/// 乘在粒子出生尺寸上。
 ///
 /// 粒子在**世界空间**模拟（发射器移动不会拖走已有的粒子），初速度方向按发射器
 /// 当前的旋转换算。
@@ -862,6 +866,16 @@ pub struct ParticleSystem {
     pub start_color: [f32; 4],
     /// 死亡时的线性 RGBA 颜色；alpha 通常写 0 做淡出。
     pub end_color: [f32; 4],
+    /// 多段颜色渐变（线性 RGBA）；非空时**覆盖** `start_color → end_color`。
+    ///
+    /// 停靠点在生命周期上**均匀分布**（第 0 个 = 出生，最后一个 = 死亡），相邻两点
+    /// 之间线性插值；只写一个点等于恒定颜色。空 = 用两色插值（旧行为）。
+    /// 检查器的列表编辑器可以直接增删 / 编辑这些 `[f32; 4]`。
+    pub color_stops: Vec<[f32; 4]>,
+    /// 出生 / 死亡时的尺寸倍率，乘在粒子的出生尺寸上（`[1, 1]` = 不变）。
+    ///
+    /// `[1, 0]` 收缩到消失，`[0.5, 2]` 逐渐变大；非有限值按 1 处理，结果不会为负。
+    pub size_over_lifetime: [f32; 2],
     /// 恒定加速度（世界单位 / 秒²），`[0, -9.81, 0]` 是重力。
     pub gravity: [f32; 3],
     /// 速度阻尼（每秒衰减比例，`0` = 无阻尼，`1` = 一秒内速度归零）。
@@ -888,6 +902,8 @@ impl Default for ParticleSystem {
             start_size: [0.12, 0.28],
             start_color: [1.0, 0.85, 0.35, 1.0],
             end_color: [1.0, 0.25, 0.05, 0.0],
+            color_stops: Vec::new(),
+            size_over_lifetime: [1.0, 1.0],
             gravity: [0.0, 1.2, 0.0],
             drag: 0.6,
             shape: ParticleShape::Cone,
