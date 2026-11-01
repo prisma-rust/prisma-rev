@@ -234,35 +234,57 @@ impl GpuAssetResolver {
     /// cwd, so launching the executable from any directory still finds the
     /// package that sits next to it.
     pub fn load_resource_package(&mut self) {
-        const PAK_NAME: &str = "scenes.pak";
-        const MANIFEST_NAME: &str = "scenes.pak.meta.json";
-
-        let Some(pak_path) = crate::asset_paths::asset_path(PAK_NAME) else {
+        let Some(asset_dir) = crate::asset_paths::asset_dir() else {
             log::warn!("resource package unavailable: no `assets/` directory found");
             return;
         };
-        let manifest_path =
-            crate::asset_paths::asset_path(MANIFEST_NAME).unwrap_or_else(|| pak_path.clone());
-
-        if let Err(e) = self.resource_manager.load_package(&pak_path) {
+        // #530：挂载 `assets/` 下**所有** `.pak`，而不是写死 `scenes.pak`。
+        // 构建可以按内容分包（场景 / 模型贴图 / 后续的流式包），运行时不需要
+        // 知道分了多少个包。
+        let paks = crate::asset_paths::pak_files_in(&asset_dir);
+        if paks.is_empty() {
             log::warn!(
-                "resource package unavailable at {}: {e}; scene assets cannot load",
-                pak_path.display()
+                "resource package unavailable: no `.pak` in {}; \
+                 scene assets cannot load (run `build-scenes`)",
+                asset_dir.display()
             );
             return;
         }
 
-        if let Err(e) = self.resource_manager.load_path_manifest(&manifest_path) {
-            log::warn!(
-                "failed to load path manifest {}: {e} \
-                 (asset resolution by path won't work)",
-                manifest_path.display()
-            );
+        let mut loaded = 0usize;
+        for pak_path in paks {
+            if let Err(e) = self.resource_manager.load_package(&pak_path) {
+                log::warn!(
+                    "resource package {} could not be loaded: {e}; \
+                     assets from it will be missing",
+                    pak_path.display()
+                );
+                continue;
+            }
+            loaded += 1;
+
+            // 每个包旁边有 `<name>.pak.meta.json`（路径清单）时一并加载。
+            let manifest_path = pak_path.with_extension("pak.meta.json");
+            if manifest_path.is_file() {
+                if let Err(e) = self.resource_manager.load_path_manifest(&manifest_path) {
+                    log::warn!(
+                        "failed to load path manifest {}: {e} \
+                         (asset resolution by path won't work for this package)",
+                        manifest_path.display()
+                    );
+                }
+            } else {
+                log::warn!(
+                    "resource package {} has no path manifest ({})",
+                    pak_path.display(),
+                    manifest_path.display()
+                );
+            }
         }
 
         log::info!(
-            "resource package loaded from {}: {} assets registered",
-            pak_path.display(),
+            "resource packages loaded from {}: {loaded} package(s), {} assets registered",
+            asset_dir.display(),
             self.resource_manager.asset_count(),
         );
     }

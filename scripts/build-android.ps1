@@ -125,8 +125,17 @@ try {
     Pop-Location
 }
 
-Copy-Item (Join-Path $ProjectRoot "assets\scenes.pak") $AndroidGameAssets -Force
-Copy-Item (Join-Path $ProjectRoot "assets\scenes.pak.meta.json") $AndroidGameAssets -Force
+# 运行时挂载 `assets/` 下的**全部** `.pak`（#530），所以按扩展名复制，
+# 不再写死 `scenes.pak`——以后按内容分包不用改脚本。
+$Paks = Get-ChildItem (Join-Path $ProjectRoot "assets") -Filter *.pak -File
+$Manifests = Get-ChildItem (Join-Path $ProjectRoot "assets") -Filter *.pak.meta.json -File
+if ($Paks.Count -eq 0) {
+    Write-Error "no .pak produced under assets/ — the APK would contain no assets"
+    exit 1
+}
+$Paks | Copy-Item -Destination $AndroidGameAssets -Force
+$Manifests | Copy-Item -Destination $AndroidGameAssets -Force
+Write-Host "Copied $($Paks.Count) package(s) into the APK assets."
 
 # 新格式 `settings.ini`；旧项目还只有 `settings.toml` 时照样带上（引擎会回退读）。
 foreach ($Name in @("settings.ini", "settings.toml")) {

@@ -112,3 +112,21 @@ fn asset_path_joins_under_the_assets_directory() {
     assert_eq!(resolved, Some(assets.join("scenes.pak")));
     assert!(resolved.unwrap().exists());
 }
+
+/// #530：运行时挂载 `assets/` 下的全部 `.pak`，不写死 `scenes.pak`。
+#[test]
+fn pak_files_lists_every_package_sorted() {
+    let tree = TempTree::new("pak-list");
+    let dir = tree.dir("assets");
+    std::fs::write(dir.join("scenes.pak"), b"a").unwrap();
+    std::fs::write(dir.join("assets.pak"), b"b").unwrap();
+    std::fs::write(dir.join("scenes.pak.meta.json"), b"{}").unwrap();
+    std::fs::create_dir(dir.join("nested.pak")).unwrap();
+
+    let found: Vec<String> = pak_files_in(&dir)
+        .iter()
+        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    // 排序稳定；只认文件、只认 `.pak` 扩展名。
+    assert_eq!(found, vec!["assets.pak", "scenes.pak"]);
+}

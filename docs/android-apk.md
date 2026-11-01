@@ -54,6 +54,9 @@ bash scripts/build-android-game.sh debug --skip-cargo   # .so 已就绪，只重
 
 - API level 取 `max(minSdk, 26)`：`libaaudio.so` 从 API 26 才有，低于它会报 `-laaudio not found`。
 - 打包前**一定 clean**：换过 `.so` 后增量打包会在 zip 里留下空洞（实测 21 MB 产物变 217 MB）。
+- 复制的是 `assets/` 下的**全部** `.pak`（运行时按扩展名挂载），脚本不再写死
+  `scenes.pak`；一个都没有时直接失败。`build-scenes` 也会在场景引用的资源缺失时
+  非零退出——先补齐资产（例如 `python scripts/gen_placeholder_sprites.py`）再打包。
 
 ## 3. 产物
 
@@ -62,7 +65,7 @@ projects/prisma/android/app/build/outputs/apk/<变体>/*.apk
   package com.prisma, minSdk 31, targetSdk 36, arm64-v8a only
   lib/arm64-v8a/libprisma.so    ~12 MB（release）/ ~200 MB（debug，带调试符号）
   classes*.dex                  ~6 MB（GameActivity + appcompat）
-  assets/game/                  scenes.pak + meta + settings.ini + HDR
+  assets/game/                  assets/*.pak + *.pak.meta.json + settings.ini + HDR
 ```
 
 安装：`adb install -r app-debug.apk`，图标即启动游戏。

@@ -106,7 +106,13 @@ echo "==> libprisma.so $(du -h "$JNI_DIR/libprisma.so" | cut -f1)"
 echo "==> build-scenes"
 cargo run -q -p prism-build-pipeline -- build-scenes
 mkdir -p "$ASSET_DIR"
-cp -f "$ROOT/assets/scenes.pak" "$ROOT/assets/scenes.pak.meta.json" "$ASSET_DIR/"
+# 运行时挂载 `assets/` 下的全部 `.pak`（#530），所以按扩展名复制。
+shopt -s nullglob
+PAKS=("$ROOT"/assets/*.pak)
+METAS=("$ROOT"/assets/*.pak.meta.json)
+shopt -u nullglob
+[ ${#PAKS[@]} -gt 0 ] || { echo "assets/ 下没有 .pak，APK 里将没有任何资源" >&2; exit 1; }
+cp -f "${PAKS[@]}" "${METAS[@]}" "$ASSET_DIR/"
 # 新格式 `settings.ini`；旧项目还只有 `settings.toml` 时照样带上（引擎会回退读）。
 for name in settings.ini settings.toml; do
     [ -f "$ROOT/assets/$name" ] && cp -f "$ROOT/assets/$name" "$ASSET_DIR/"

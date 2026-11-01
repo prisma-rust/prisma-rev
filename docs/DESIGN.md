@@ -775,11 +775,18 @@ prism-scene::rscn::encode_scene
 
 - `prism-build-pipeline build-scenes` 读取 `assets/scenes.json`，按其中的路径 cook 场景、
   把 manifest 中 `.scene.json` 路径重写为 `.rscn` 后打进包，并产出运行时使用的
-  `assets/scenes.pak` + `.pak.meta.json`；这是发布入口；
+  `assets/scenes.pak` + `.pak.meta.json`；这是发布入口。
+  它同时**递归收集场景引用的资源**：环境 HDR、`SpriteRenderer.sprite_path`、
+  `MeshRenderer.mesh_path`（glTF/GLB → RMES）与 `material_path`（`.mat.json` → RMAT，
+  连同 5 张贴图）、`Style.image` / `Tilemap.tileset_path` / `Text.font`。任何引用解析
+  不到（文件不存在、绝对路径、逃出 `assets/`）都会让 `build-scenes` **非零退出**并列
+  出路径——否则打包产物会在运行期静默缺资源（#530）；
 - `prism-build-pipeline cook <input.scene.json>` 单场景 cook，直接调用 `SceneCooker`；
 - 通用纹理/网格/二进制资产仍走 `prism-cook import/build`；
 - `prism-build-pipeline pack <cooked-dir>` 把已 cook 的目录打成 `.pak`，并写
-  `.pak.meta.json` 路径清单（ID 按排序后的相对路径确定性分配）；
+  `.pak.meta.json` 路径清单；资产 ID 由**包内相对路径**派生（FNV-1a，
+  [`AssetId::from_path`]），因此往目录里加文件不会重编号已有资源——材质数据的
+  `RMAT` 里烘的是贴图 `AssetId`，只有路径派生才能与包内 ID 对上（#530）；
 - 运行时只读 `.rscn` / `.pak`，不依赖 `prism-cooker`；
 - 开发期也可以从松散的 `.rscn` 文件加载，路径由 `SceneSource` 决定。
 
@@ -802,13 +809,14 @@ prism-scene::rscn::encode_scene
 
 - **[G2] Cooker 输出格式与引擎对接** ✅ **场景链路已打通**：`SceneCooker` 产出 RSCN v4，`prism-engine` 的 `SceneLoader` 用同一份 `prism-scene` schema 解码；`prism-cooker` 中有真实 `.scene.json` 的 cook/decode 测试。纹理/网格的压缩数据端到端对比仍待补。
 
-- **[G3] ResourceManager → Engine 桥接** ✅ **部分完成**：`GpuAssetResolver` 已持 `ResourceManager` 并支持 `load_package/load_package_bytes` 与 `load_with_deps`，`App::new` 中 `load_resource_package()` 已探查 `assets/scenes.pak`；`Handle<T>`→`Entity` 的映射由 `GpuAssetResolver` 的引用缓存维护（`MeshRef` / `MaterialRef` /
+- **[G3] ResourceManager → Engine 桥接** ✅ **部分完成**：`GpuAssetResolver` 已持 `ResourceManager` 并支持 `load_package/load_package_bytes` 与 `load_with_deps`，`App::new` 中 `load_resource_package()` 会挂载 `assets/` 下**所有** `.pak`（每个包旁有同名 `.pak.meta.json` 时一并加载路径清单），不再写死 `scenes.pak`；`Handle<T>`→`Entity` 的映射由 `GpuAssetResolver` 的引用缓存维护（`MeshRef` / `MaterialRef` /
   `SpriteRef` 持 `Handle`），全链路 `CLI build → .pak → ResourceManager → GPU` 可手动验证。
 
 - **[G4] 构建脚本集成** ✅ **已落地**：`prism-build-pipeline build-scenes` 统一完成
   `scenes.json → cooked RSCN → scenes.pak + path manifest`；泛资产仍走 `prism-cook build`，
-  `scripts/run.ps1` 在 `cargo build` 后自动调用它。`scripts/build-android.ps1` 会生成并复制
-  `scenes.pak`/meta 到 APK 的 `assets/game/`；Android 启动时 `run_on_android` 再把
+  `scripts/run.ps1` 在 `cargo build` 后自动调用它。`scripts/build-android.ps1` /
+  `build-android-game.sh` 按扩展名复制 `assets/` 下**全部** `.pak` 与 `.pak.meta.json`
+  到 APK 的 `assets/game/`（一个都没有就报错）；Android 启动时 `run_on_android` 再把
   `game/` 复制到内部存储并切 cwd。
   CI 的资产构建步骤仍待补。
 

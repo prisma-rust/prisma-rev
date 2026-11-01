@@ -73,6 +73,21 @@ impl AssetId {
         self.generation() == u32::MAX
     }
 
+    /// 由**资产相对路径**派生一个稳定的 ID（构建期打包用，#530）。
+    ///
+    /// `pack_directory` 用它给包内每个文件分配 ID，材质/预制体这类在 cook 时
+    /// 就要把依赖 ID 烘进数据块的类型（`RMAT` 里存的就是 `AssetId`）因此能在
+    /// 打包前算出与包内完全一致的 ID —— 顺序分配做不到这一点：往目录里多加
+    /// 一个文件就会把后面所有 ID 平移，烘进材质里的贴图 ID 全部指错。
+    ///
+    /// 路径先按 `/` 归一化（`\\` → `/`），因此 Windows 与 POSIX 构建产出相同
+    /// ID；generation 固定为 1（cooker/数据库命名空间），serial 取 FNV-1a 的
+    /// 低 32 位并避开 0。32 位空间下不同路径仍有极小概率碰撞，打包器会检测
+    /// 并报错而不是静默覆盖。
+    pub fn from_path(path: &str) -> Self {
+        Self::from_raw((1u64 << Self::GENERATION_SHIFT) | u64::from(path_serial(path).max(1)))
+    }
+
     /// Extract the generation 分量
     pub fn generation(self) -> u32 {
         (self.0 >> Self::GENERATION_SHIFT) as u32
@@ -167,6 +182,19 @@ impl AssetIdGenerator {
     pub fn generation(&self) -> u32 {
         self.generation
     }
+}
+
+/// `path` 的 FNV-1a 32 位哈希（路径先 `/` 归一化）。
+///
+/// 选 FNV-1a 是因为它足够短、无依赖、跨平台一致；这里的用途只是「同一路径
+/// 任何时候得到同一个 ID」，不需要密码学强度。
+fn path_serial(path: &str) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in path.replace('\\', "/").as_bytes() {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
 }
 
 #[cfg(test)]

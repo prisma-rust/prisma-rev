@@ -243,8 +243,15 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   `cargo test -p prism-cooker`.
 - Generic asset build: `cargo run -p prism-cooker --bin prism-cook -- build`.
 - Scene package: `cargo run -p prism-build-pipeline -- build-scenes`
-  (cooks every `assets/scenes.toml` entry into `target/scene_pack/`, then writes
-  `assets/scenes.pak` + `.pak.meta.json`; this is the runtime package path).
+  (cooks every `assets/scenes.json` entry into `target/scene_pack/`, stages every asset
+  the scenes reference — environment HDR, sprites, `MeshRenderer.mesh_path` glTF → RMES,
+  `material_path` `.mat.json` → RMAT + its 5 textures, `Style.image`,
+  `Tilemap.tileset_path`, `Text.font` — then writes `assets/scenes.pak` +
+  `.pak.meta.json`; this is the runtime package path). A reference that cannot be
+  resolved (missing file, absolute path, escapes `assets/`) **fails the build** with
+  the list of paths (#530). Pak asset IDs are derived from the packaged relative path
+  (`AssetId::from_path`), so adding a file never renumbers existing assets and cooked
+  material texture IDs stay valid.
 - One-off scene cook: `cargo run -p prism-build-pipeline -- cook assets/scenes/default.scene.json`
   (writes `assets/cooked/default.rscn`; the old `prism-asset-cli` name is gone).
 - Pack already-cooked files: `cargo run -p prism-build-pipeline -- pack assets/cooked`
@@ -532,7 +539,8 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   `ANDROID_NDK_HOME` by **overwriting** it with the validated path, since cargo-ndk reads that env
   var itself), derives the cargo-ndk API level from the manifest's `minSdk`, compiles shaders if
   `slangc` exists (else requires prebuilt `.spv`), runs `prism-build-pipeline build-scenes`,
-  copies `scenes.pak`/`.pak.meta.json` (plus `settings.ini` and the environment HDR) into
+  copies **every** `assets/*.pak` + `*.pak.meta.json` (plus `settings.ini` and the
+  environment HDR) into
   `launcher/src-tauri/gen/android/app/src/main/assets/game/`, runs
   `cargo ndk -P <api> -t arm64-v8a -o <jniLibs> build --release --manifest-path projects/prisma/Cargo.toml`,
   then assembles the APK via `pnpm tauri android build --debug --target aarch64`.

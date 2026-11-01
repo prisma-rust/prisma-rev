@@ -4,15 +4,18 @@
 //! `prism-build-pipeline pack`. It does **not** import or cook; callers must
 //! pass a directory of runtime-ready files (`.rscn`, `.rtex`, `.rmes`, …).
 //!
-//! IDs are allocated deterministically from the sorted relative paths, and a
-//! `.pak.meta.json` manifest is written next to the package so the runtime can
-//! resolve source-relative paths through `ResourceManager::load_path_manifest`.
+//! IDs are derived from each file's relative path (FNV-1a, see
+//! [`AssetId::from_path`]), so adding a file to the input never renumbers the
+//! assets that were already there. That matters for cooked blobs that embed
+//! dependency IDs (a material stores its texture `AssetId`s), which can only
+//! match the package if the packer's allocation is reproducible without
+//! knowing the final file list.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use prism_asset::core::id::AssetIdGenerator;
+use prism_asset::core::id::AssetId;
 use prism_asset::core::AssetType;
 use prism_asset::package::{PackageBuilder, PackageReader};
 
@@ -57,8 +60,10 @@ pub fn pack_directory(
     let compression = compression.min(22) as i32;
     let mut builder = PackageBuilder::new();
     builder.set_compression(compression);
-    let mut ids = AssetIdGenerator::new(1, 0);
     let mut entries = Vec::with_capacity(files.len());
+    // 32 位 serial 空间里撞 ID 的概率很小，但一旦撞了就是「两个文件共用一个
+    // 句柄」，运行时会静默读到错资源 —— 宁可在构建期报错。
+    let mut seen_ids: std::collections::HashMap<AssetId, String> = std::collections::HashMap::new();
     let mut total_bytes = 0u64;
 
     for (relative, absolute) in files {
@@ -71,7 +76,13 @@ pub fn pack_directory(
             .and_then(|ext| ext.to_str())
             .unwrap_or_default();
         let asset_type = AssetType::from_extension(extension);
-        let id = ids.next();
+        let id = AssetId::from_path(&relative);
+        if let Some(existing) = seen_ids.insert(id, relative.clone()) {
+            bail!(
+                "asset id collision between '{existing}' and '{relative}' ({}); rename one of them",
+                AssetId::from_path(&relative)
+            );
+        }
         builder.add_asset(id, asset_type, data, &[]);
         entries.push((id, relative, asset_type));
     }
@@ -204,6 +215,42 @@ mod tests {
             .filter(|name| name.contains(".pak.tmp-"))
             .collect();
         assert!(leftovers.is_empty(), "leftover temp files: {leftovers:?}");
+    }
+
+    /// #530：多一个文件不能改动已有资源的 ID，否则材质里烘进去的贴图 ID 会指错。
+    #[test]
+    fn adding_a_file_does_not_renumber_existing_assets() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = temp.path().join("cooked");
+        fs::create_dir_all(input.join("textures")).unwrap();
+        fs::write(input.join("textures/marble.png"), b"png").unwrap();
+        fs::write(input.join("materials/marble.mat"), b"mat").unwrap_err();
+
+        fs::create_dir_all(input.join("materials")).unwrap();
+        fs::write(input.join("materials/marble.mat"), b"mat").unwrap();
+
+        let first = pack_directory(&input, temp.path().join("a.pak"), 0).unwrap();
+        let before = fs::read_to_string(temp.path().join("a.pak.meta.json")).unwrap();
+        let marble = AssetId::from_path("textures/marble.png");
+        assert!(
+            before.contains(&format!("{:#x}", marble.into_raw())),
+            "manifest must use the path-derived id: {before}"
+        );
+
+        // 加一个按字典序排在前面、会推后原顺序的文件。
+        fs::write(input.join("000-first.bin"), b"x").unwrap();
+        let second = pack_directory(&input, temp.path().join("b.pak"), 0).unwrap();
+        let after = fs::read_to_string(temp.path().join("b.pak.meta.json")).unwrap();
+        assert!(after.contains(&format!("{:#x}", marble.into_raw())));
+        assert_eq!(second.asset_count, first.asset_count + 1);
+
+        // 同一份输入重打仍然字节一致。
+        let again = pack_directory(&input, temp.path().join("c.pak"), 0).unwrap();
+        assert_eq!(
+            fs::read(temp.path().join("b.pak")).unwrap(),
+            fs::read(temp.path().join("c.pak")).unwrap()
+        );
+        assert_eq!(again.asset_count, second.asset_count);
     }
 
     #[test]
