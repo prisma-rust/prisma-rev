@@ -1,0 +1,7 @@
+.gradle/
+local.properties
+build/
+app/build/
+# 由 scripts/build-android-game.sh 生成（.so 与游戏资产都不入库）。
+app/src/main/jniLibs/
+app/src/main/assets/game/
