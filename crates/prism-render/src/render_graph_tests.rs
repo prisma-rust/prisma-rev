@@ -46,6 +46,7 @@ fn draw_item(queue: i32, eye_distance_x: f32) -> DrawItem {
         cast_shadow: true,
         visible_in_main_pass: true,
         cast_shadow_two_sided: false,
+        bone_offset: None,
         state: DrawState {
             render_queue: queue,
             ..DrawState::default()

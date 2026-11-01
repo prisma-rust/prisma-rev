@@ -451,6 +451,12 @@ impl RenderPassNode for ShadowMapPass {
                 if !item.cast_shadow {
                     continue;
                 }
+                // Skinned casters need the skinning path in this pass too
+                // (#560 P0-3c). Until then they must not cast: drawing them
+                // with the static depth pipeline would freeze them in bind pose.
+                if item.bone_offset.is_some() {
+                    continue;
+                }
                 let uploaded = match ctx.frame.mesh_manager.get(item.mesh) {
                     Some(m) => &m.mesh,
                     None => continue,

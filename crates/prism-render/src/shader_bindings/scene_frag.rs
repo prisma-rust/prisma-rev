@@ -70,8 +70,12 @@ pub struct PbrBindlessPush {
     pub normal_idx: u32,
     /// offset 80, size 4
     pub debug_flags: u32,
-    /// std140 alignment hole at offset 84 (12 bytes)
-    pub _pad_84: [u8; 12],
+    /// offset 84, size 4
+    pub bone_offset: u32,
+    /// offset 88, size 4
+    pub skin_mode: u32,
+    /// offset 92, size 4
+    pub _pad_92: u32,
     /// offset 96, size 12
     pub _padding: [u32; 3],
 }

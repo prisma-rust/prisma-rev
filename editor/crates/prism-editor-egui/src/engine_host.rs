@@ -772,6 +772,7 @@ impl EngineHost {
             sprite_items: &self.packet.sprite_items,
             sprite_lights: &self.packet.sprite_lights,
             particle_items: &self.packet.particle_items,
+            bone_matrices: &[],
             skybox: self.packet.skybox,
             frame_data: &frame_data,
             light_view_proj: scene.light_view_proj.to_cols_array_2d(),

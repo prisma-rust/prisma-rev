@@ -96,6 +96,11 @@ pub struct FrameInput<'a> {
     /// World-space particle billboards for this frame (sorted back-to-front
     /// by the engine). Empty when no `ParticleSystem` emits this frame.
     pub particle_items: &'a [crate::render_graph::ParticleDrawItem],
+    /// Bone palette for skinned draws this frame (#560 P0-3).
+    ///
+    /// `DrawItem::bone_offset` indexes into this slice; empty when nothing is
+    /// skinned. `ForwardPass` uploads it into the per-frame bone SSBO.
+    pub bone_matrices: &'a [[[f32; 4]; 4]],
     /// ECS-authored skybox parameters; `None` means no sky draw.
     pub skybox: Option<crate::skybox_pass::SkyboxSettings>,
     pub frame_data: &'a FrameUBOData,
@@ -1251,6 +1256,22 @@ impl GraphRenderer {
         )
     }
 
+    /// `register_mesh` 的蒙皮版本（#560 P0-3）：额外上传 joints/weights
+    /// 到第二个顶点缓冲，绘制项要用 `bone_offset` 指向骨骼调色板。
+    pub fn register_mesh_skinned(
+        &mut self,
+        input: &MeshUploadInput,
+        skin: &crate::managers::SkinAttributes,
+    ) -> anyhow::Result<MeshHandle> {
+        self.mesh_manager.register_skinned(
+            &self.runtime.context,
+            self.runtime.command_pool,
+            self.runtime.context.graphics_queue,
+            input,
+            skin,
+        )
+    }
+
     pub fn create_mesh(
         &self,
         vertices: &[Vertex],
@@ -1386,7 +1407,15 @@ impl GraphRenderer {
         let mut results = Vec::with_capacity(requests.len());
         for req in requests {
             let mesh_handle = match &req.mesh {
-                Some(input) => self.register_mesh_into(&mut uploader, input).ok(),
+                Some(input) => self
+                    .mesh_manager
+                    .register_skinned_into(
+                        &self.runtime.context,
+                        &mut uploader,
+                        input,
+                        req.skin.as_ref(),
+                    )
+                    .ok(),
                 None => None,
             };
 
@@ -2138,6 +2167,7 @@ impl GraphRenderer {
             sprite_items,
             sprite_lights,
             particle_items,
+            bone_matrices,
             skybox,
             frame_data,
             light_view_proj,
@@ -2198,6 +2228,11 @@ impl GraphRenderer {
                 (None, Some(ov)) => ov.as_slice(),
                 (None, None) => &[],
             };
+            // Skinned draws (#560 P0-3): push this frame's palette into the
+            // per-frame bone SSBO before the graph runs.
+            if let Some(forward) = self.graph.pass_mut::<ForwardPass>() {
+                forward.update_bones(device, ctx.frame_index, bone_matrices)?;
+            }
             let graph_frame = GraphFrame {
                 frame_ubo: &self.runtime.frame_ubos[frame],
                 draw_list: draw_items,
@@ -2205,6 +2240,7 @@ impl GraphRenderer {
                 sprite_items,
                 sprite_lights,
                 particle_items,
+                bone_matrices,
                 skybox: *skybox,
                 mesh_manager: &self.mesh_manager,
                 light_view_proj,
@@ -2626,6 +2662,7 @@ impl GraphRenderer {
         pt_lights: &[PtAnalyticLight],
         grade: crate::render_graph::PostGrade,
         wireframe: bool,
+        bone_matrices: &[[[f32; 4]; 4]],
     ) -> anyhow::Result<bool> {
         let ctx = match self.begin_frame()? {
             Some(c) => c,
@@ -2637,6 +2674,7 @@ impl GraphRenderer {
             sprite_items: &[],
             sprite_lights: &[],
             particle_items: &[],
+            bone_matrices,
             skybox: None,
             frame_data,
             light_view_proj,

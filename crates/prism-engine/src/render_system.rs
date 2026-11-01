@@ -660,6 +660,9 @@ pub fn render_system(
         sprite_items,
         sprite_lights,
         particle_items,
+        // 蒙皮调色板（#560 P0-3）：引擎侧在 P0-3b 里把 `BonePalette` 打进
+        // `FramePacket`，这里先按“没有蒙皮绘制项”填充。
+        bone_matrices: &[],
         skybox,
         frame_data: &frame_data,
         light_view_proj: light_view_proj.to_cols_array_2d(),
@@ -908,6 +911,7 @@ mod tests {
             cast_shadow: true,
             visible_in_main_pass: true,
             cast_shadow_two_sided: false,
+            bone_offset: None,
             state: Default::default(),
             world_bounds: bounds,
             index_start: 0,

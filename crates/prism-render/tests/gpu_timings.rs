@@ -56,6 +56,7 @@ fn render_once(renderer: &mut GraphRenderer) {
             &[],
             PostGrade::default(),
             false,
+            &[], // bone matrices
         )
         .expect("headless render failed");
 }

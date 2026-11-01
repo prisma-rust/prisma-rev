@@ -32,6 +32,56 @@
             }
         },
         {
+            "name": "spriteLights",
+            "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 0},
+            "type": {
+                "kind": "resource",
+                "baseShape": "structuredBuffer",
+                "resultType": {
+                    "kind": "struct",
+                    "name": "SpriteLight",
+                    "fields": [
+                        {
+                            "name": "positionRange",
+                            "type": {
+                                "kind": "vector",
+                                "elementCount": 4,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                }
+                            },
+                            "binding": {"kind": "uniform", "offset": 0, "size": 16}
+                        },
+                        {
+                            "name": "colorKind",
+                            "type": {
+                                "kind": "vector",
+                                "elementCount": 4,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                }
+                            },
+                            "binding": {"kind": "uniform", "offset": 16, "size": 16}
+                        },
+                        {
+                            "name": "direction",
+                            "type": {
+                                "kind": "vector",
+                                "elementCount": 4,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                }
+                            },
+                            "binding": {"kind": "uniform", "offset": 32, "size": 16}
+                        }
+                    ]
+                }
+            }
+        },
+        {
             "name": "pc",
             "binding": {"kind": "pushConstantBuffer", "index": 0},
             "type": {
@@ -52,6 +102,18 @@
                                 }
                             },
                             "binding": {"kind": "uniform", "offset": 0, "size": 64}
+                        },
+                        {
+                            "name": "lightParams",
+                            "type": {
+                                "kind": "vector",
+                                "elementCount": 4,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                }
+                            },
+                            "binding": {"kind": "uniform", "offset": 64, "size": 16}
                         }
                     ]
                 },
@@ -75,10 +137,22 @@
                                     }
                                 },
                                 "binding": {"kind": "uniform", "offset": 0, "size": 64}
+                            },
+                            {
+                                "name": "lightParams",
+                                "type": {
+                                    "kind": "vector",
+                                    "elementCount": 4,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    }
+                                },
+                                "binding": {"kind": "uniform", "offset": 64, "size": 16}
                             }
                         ]
                     },
-                    "binding": {"kind": "uniform", "offset": 0, "size": 64}
+                    "binding": {"kind": "uniform", "offset": 0, "size": 80}
                 }
             }
         }
@@ -91,16 +165,16 @@
                 {
                     "name": "in",
                     "stage": "vertex",
-                    "binding": {"kind": "varyingInput", "index": 0, "count": 6},
+                    "binding": {"kind": "varyingInput", "index": 0, "count": 9},
                     "type": {
                         "kind": "struct",
                         "name": "SpriteVertexIn",
                         "fields": [
                             {
-                                "name": "m0",
+                                "name": "corner0",
                                 "type": {
                                     "kind": "vector",
-                                    "elementCount": 4,
+                                    "elementCount": 3,
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "float32"
@@ -110,10 +184,10 @@
                                 "binding": {"kind": "varyingInput", "index": 0}
                             },
                             {
-                                "name": "m1",
+                                "name": "corner1",
                                 "type": {
                                     "kind": "vector",
-                                    "elementCount": 4,
+                                    "elementCount": 3,
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "float32"
@@ -123,10 +197,10 @@
                                 "binding": {"kind": "varyingInput", "index": 1}
                             },
                             {
-                                "name": "m3",
+                                "name": "corner2",
                                 "type": {
                                     "kind": "vector",
-                                    "elementCount": 4,
+                                    "elementCount": 3,
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "float32"
@@ -134,6 +208,19 @@
                                 },
                                 "stage": "vertex",
                                 "binding": {"kind": "varyingInput", "index": 2}
+                            },
+                            {
+                                "name": "corner3",
+                                "type": {
+                                    "kind": "vector",
+                                    "elementCount": 3,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    }
+                                },
+                                "stage": "vertex",
+                                "binding": {"kind": "varyingInput", "index": 3}
                             },
                             {
                                 "name": "uvRect",
@@ -146,7 +233,7 @@
                                     }
                                 },
                                 "stage": "vertex",
-                                "binding": {"kind": "varyingInput", "index": 3}
+                                "binding": {"kind": "varyingInput", "index": 4}
                             },
                             {
                                 "name": "color",
@@ -159,7 +246,7 @@
                                     }
                                 },
                                 "stage": "vertex",
-                                "binding": {"kind": "varyingInput", "index": 4}
+                                "binding": {"kind": "varyingInput", "index": 5}
                             },
                             {
                                 "name": "textureIndex",
@@ -168,7 +255,29 @@
                                     "scalarType": "uint32"
                                 },
                                 "stage": "vertex",
-                                "binding": {"kind": "varyingInput", "index": 5}
+                                "binding": {"kind": "varyingInput", "index": 6}
+                            },
+                            {
+                                "name": "clip",
+                                "type": {
+                                    "kind": "vector",
+                                    "elementCount": 4,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    }
+                                },
+                                "stage": "vertex",
+                                "binding": {"kind": "varyingInput", "index": 7}
+                            },
+                            {
+                                "name": "flags",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint32"
+                                },
+                                "stage": "vertex",
+                                "binding": {"kind": "varyingInput", "index": 8}
                             }
                         ]
                     }
@@ -184,7 +293,7 @@
             ],
             "result": {
                 "stage": "vertex",
-                "binding": {"kind": "varyingOutput", "index": 0, "count": 3},
+                "binding": {"kind": "varyingOutput", "index": 0, "count": 6},
                 "type": {
                     "kind": "struct",
                     "name": "SpriteVaryings",
@@ -239,6 +348,47 @@
                             "binding": {"kind": "varyingOutput", "index": 2},
                             "semanticName": "TEXCOORD",
                             "semanticIndex": 1
+                        },
+                        {
+                            "name": "worldPos",
+                            "type": {
+                                "kind": "vector",
+                                "elementCount": 3,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                }
+                            },
+                            "stage": "vertex",
+                            "binding": {"kind": "varyingOutput", "index": 3},
+                            "semanticName": "TEXCOORD",
+                            "semanticIndex": 2
+                        },
+                        {
+                            "name": "clip",
+                            "type": {
+                                "kind": "vector",
+                                "elementCount": 4,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                }
+                            },
+                            "stage": "vertex",
+                            "binding": {"kind": "varyingOutput", "index": 4},
+                            "semanticName": "TEXCOORD",
+                            "semanticIndex": 3
+                        },
+                        {
+                            "name": "flags",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "uint32"
+                            },
+                            "stage": "vertex",
+                            "binding": {"kind": "varyingOutput", "index": 5},
+                            "semanticName": "TEXCOORD",
+                            "semanticIndex": 4
                         }
                     ]
                 }
@@ -253,6 +403,10 @@
                     "binding": {"kind": "descriptorTableSlot", "index": 1}
                 },
                 {
+                    "name": "spriteLights",
+                    "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 0}
+                },
+                {
                     "name": "pc",
                     "binding": {"kind": "pushConstantBuffer", "index": 0}
                 }
@@ -265,7 +419,7 @@
                 {
                     "name": "in",
                     "stage": "fragment",
-                    "binding": {"kind": "varyingInput", "index": 0, "count": 3},
+                    "binding": {"kind": "varyingInput", "index": 0, "count": 6},
                     "type": {
                         "kind": "struct",
                         "name": "SpriteVaryings",
@@ -320,6 +474,47 @@
                                 "binding": {"kind": "varyingInput", "index": 2},
                                 "semanticName": "TEXCOORD",
                                 "semanticIndex": 1
+                            },
+                            {
+                                "name": "worldPos",
+                                "type": {
+                                    "kind": "vector",
+                                    "elementCount": 3,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    }
+                                },
+                                "stage": "fragment",
+                                "binding": {"kind": "varyingInput", "index": 3},
+                                "semanticName": "TEXCOORD",
+                                "semanticIndex": 2
+                            },
+                            {
+                                "name": "clip",
+                                "type": {
+                                    "kind": "vector",
+                                    "elementCount": 4,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    }
+                                },
+                                "stage": "fragment",
+                                "binding": {"kind": "varyingInput", "index": 4},
+                                "semanticName": "TEXCOORD",
+                                "semanticIndex": 3
+                            },
+                            {
+                                "name": "flags",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint32"
+                                },
+                                "stage": "fragment",
+                                "binding": {"kind": "varyingInput", "index": 5},
+                                "semanticName": "TEXCOORD",
+                                "semanticIndex": 4
                             }
                         ]
                     }
@@ -346,6 +541,10 @@
                 {
                     "name": "bindlessSrvs",
                     "binding": {"kind": "descriptorTableSlot", "index": 1}
+                },
+                {
+                    "name": "spriteLights",
+                    "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 0}
                 },
                 {
                     "name": "pc",

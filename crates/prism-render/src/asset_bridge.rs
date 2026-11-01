@@ -20,6 +20,8 @@ pub struct MaterialResolveData {
 /// 单个实体的 GPU 上传请求（纯数据，Send）。
 pub struct AssetResolveRequest {
     pub mesh: Option<MeshUploadInput>,
+    /// 蒙皮属性（`.rskin` 顶点带关节/权重时；#560 P0-3）。
+    pub skin: Option<crate::managers::SkinAttributes>,
     /// 去重后的材质列表；`materials[i]` 对应 `AssetResolveResult::material_slots[i]`。
     /// 同一路径的多个 submesh 共享一项。
     pub materials: Vec<Option<MaterialResolveData>>,

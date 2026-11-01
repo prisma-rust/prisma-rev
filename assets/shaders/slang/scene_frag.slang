@@ -127,7 +127,7 @@ ConstantBuffer<ProbeVolumeInfo> probeInfo;
 // ---- push constants -------------------------------------------------
 // Byte layout mirrors Rust `PbrBindlessPushConstants` (96 bytes):
 //   model(64) | material_slot(4) | env_handle(4) | albedo_idx(4) | normal_idx(4)
-//   | debug_flags(4) | _pad(12)
+//   | debug_flags(4) | bone_offset(4) | skin_mode(4) | _pad(4) | _padding(12)
 struct PbrBindlessPush
 {
     float4x4 model;
@@ -136,6 +136,9 @@ struct PbrBindlessPush
     uint     albedo_idx;
     uint     normal_idx;
     uint     debug_flags;   // PBR component toggle bitmask (15 bits)
+    uint     bone_offset;   // #560 P0-3: first bone palette matrix for this draw
+    uint     skin_mode;     // 0 = static mesh, 1 = skinned (reads set 0 binding 3)
+    uint     _pad_92;
     uint3    _padding;
 };
 [[vk::push_constant]]

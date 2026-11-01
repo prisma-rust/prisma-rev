@@ -66,6 +66,44 @@ impl Vertex {
     }
 }
 
+/// Per-vertex skinning attributes (#560 P0-3), uploaded into a **second**
+/// vertex buffer (binding 1).
+///
+/// Kept out of [`Vertex`] on purpose: unskinned meshes must not pay 24 extra
+/// bytes per vertex, and the static-mesh pipeline does not declare this
+/// binding at all.
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct SkinVertex {
+    pub joints: [u16; 4],
+    pub weights: [f32; 4],
+}
+
+impl SkinVertex {
+    /// Binding 1, one entry per vertex.
+    pub fn binding_description() -> vk::VertexInputBindingDescription {
+        vk::VertexInputBindingDescription::default()
+            .binding(1)
+            .stride(std::mem::size_of::<Self>() as u32)
+            .input_rate(vk::VertexInputRate::VERTEX)
+    }
+
+    /// joints (loc 5, `R16G16B16A16_UINT`), weights (loc 6, `R32G32B32A32_SFLOAT`).
+    pub fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 2] {
+        let joints = vk::VertexInputAttributeDescription::default()
+            .location(5)
+            .binding(1)
+            .format(vk::Format::R16G16B16A16_UINT)
+            .offset(0);
+        let weights = vk::VertexInputAttributeDescription::default()
+            .location(6)
+            .binding(1)
+            .format(vk::Format::R32G32B32A32_SFLOAT)
+            .offset(8);
+        [joints, weights]
+    }
+}
+
 /// Usage flags for mesh vertex/index buffers.
 ///
 /// `SHADER_DEVICE_ADDRESS` and `ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR`
