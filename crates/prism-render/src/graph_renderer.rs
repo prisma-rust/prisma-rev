@@ -1870,6 +1870,19 @@ impl GraphRenderer {
     /// 让面板能解释“为什么没画”）；精灵与粒子按实际批次合并（与 `SpritePass`
     /// 的连续相同混合状态分批一致）。超过 [`MAX_REPORTED_DRAW_CALLS`] 的部分
     /// 直接丢弃，避免大场景把报告撑到无法阅读。
+    /// 一条 draw call 的管线状态摘要（#518 Frame Debugger）。
+    fn draw_state_summary(state: &crate::render_graph::DrawState) -> String {
+        format!(
+            "queue {} · cull {:?} · z-write {} · {:?}/{:?} {:?}",
+            state.render_queue,
+            state.cull_mode,
+            state.z_write,
+            state.src_blend,
+            state.dst_blend,
+            state.blend_op,
+        )
+    }
+
     pub fn draw_call_report(
         &self,
         draw_items: &[crate::render_graph::DrawItem],
@@ -1894,6 +1907,7 @@ impl GraphRenderer {
                 instances: 1,
                 triangles,
                 visible: item.visible_in_main_pass,
+                state: Some(Self::draw_state_summary(&item.state)),
             });
         }
 
@@ -1914,6 +1928,10 @@ impl GraphRenderer {
                 instances: count,
                 triangles: count as u64 * 2,
                 visible: true,
+                state: Some(format!(
+                    "cull off · z-write false · {:?}/{:?} {:?}",
+                    key.0, key.1, key.2
+                )),
             });
         }
 
@@ -1924,6 +1942,7 @@ impl GraphRenderer {
                 instances: particle_items.len(),
                 triangles: particle_items.len() as u64 * 2,
                 visible: true,
+                state: Some("billboard · depth test on · z-write false".to_string()),
             });
         }
         calls

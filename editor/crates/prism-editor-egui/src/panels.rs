@@ -5176,12 +5176,13 @@ fn render_graph_draw_calls(
         .auto_shrink([false, true])
         .show(ui, |ui| {
             egui::Grid::new("graph-draw-call-grid")
-                .num_columns(3)
+                .num_columns(4)
                 .spacing([12.0, 3.0])
                 .show(ui, |ui| {
                     ui.label(RichText::new("Call").weak().size(10.0));
                     ui.label(RichText::new("Inst.").weak().size(10.0));
                     ui.label(RichText::new("Tris").weak().size(10.0));
+                    ui.label(RichText::new("State").weak().size(10.0));
                     ui.end_row();
                     for call in &report.draw_calls {
                         let mut text = RichText::new(call.summary()).size(11.0);
@@ -5191,6 +5192,13 @@ fn render_graph_draw_calls(
                         ui.label(text);
                         ui.label(RichText::new(call.instances.to_string()).size(11.0));
                         ui.label(RichText::new(call.triangles.to_string()).size(11.0));
+                        let mut state = RichText::new(call.state.as_deref().unwrap_or("—"))
+                            .weak()
+                            .size(10.0);
+                        if !call.visible {
+                            state = state.italics();
+                        }
+                        ui.label(state);
                         ui.end_row();
                     }
                 });
@@ -6507,7 +6515,8 @@ mod window_smoke_tests {
                      "materials":4,"materialBytes":384},
             "drawCalls":[
               {"pass":"forward","label":"mesh #0 · material 0","instances":1,
-               "triangles":12,"visible":true},
+               "triangles":12,"visible":true,
+               "state":"queue 2000 · cull Back · z-write true · One/Zero Add"},
               {"pass":"sprite","label":"SrcAlpha / OneMinusSrcAlpha","instances":4,
                "triangles":8,"visible":false}
             ]}"#;

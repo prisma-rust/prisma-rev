@@ -43,6 +43,9 @@ pub struct ReportDrawCall {
     pub triangles: u64,
     #[serde(default)]
     pub visible: bool,
+    /// 管线状态摘要（队列 / 剔除 / 深度写 / 混合）；旧报告没有该字段。
+    #[serde(default)]
+    pub state: Option<String>,
 }
 
 impl ReportDrawCall {
@@ -184,7 +187,8 @@ mod tests {
             r#"{"generatedAtMs":1,"frame":2,"passes":[],"resources":[],
                 "drawCalls":[
                   {"pass":"forward","label":"mesh #0 · material 2","instances":1,
-                   "triangles":12,"visible":true},
+                   "triangles":12,"visible":true,
+                   "state":"queue 2000 · cull Back · z-write true · One/Zero Add"},
                   {"pass":"sprite","label":"SrcAlpha / OneMinusSrcAlpha","instances":4,
                    "triangles":8,"visible":false}
                 ]}"#,
@@ -197,6 +201,13 @@ mod tests {
         );
         assert_eq!(parsed.draw_calls[1].instances, 4);
         assert!(!parsed.draw_calls[1].visible);
+        // 旧报告 / 缺字段时状态是 None，面板显示占位而不是空字符串。
+        assert!(parsed.draw_calls[0]
+            .state
+            .as_deref()
+            .unwrap()
+            .contains("cull Back"));
+        assert!(parsed.draw_calls[1].state.is_none());
     }
 
     #[test]
