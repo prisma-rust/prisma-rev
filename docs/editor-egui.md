@@ -67,6 +67,12 @@ instance / device 并返回 `AshRenderState`，因此可以做到引擎的模型
   （约 1.5 s）+ 管线创建，留到第一次切 tab 才建就表现为「切 tab 卡半天」；
 - Play 时 Game view 每帧 `tick()` + 重渲染；Scene view 仍是编辑态。
 
+**Play 态的视觉提示（#500）**：播放中整窗四周有一圈绿色描边、暂停时变琥珀色；
+状态栏的 `PLAYING` / `PAUSED` 带同色底纹。检查器顶部在这期间显示横幅
+`Play mode — changes made now are discarded when Play stops.` —— 运行期的编辑仍写进
+作者文档，但 `Workspace::stop()` 会用进入 Play 前的快照原样盖回（文档、撤销栈、脏标记、
+选中），所以 Stop 之后这些改动不会留下。
+
 ## 3.1 字体与图标
 
 - 正文字体优先用系统 UI 无衬线（Segoe UI / Liberation Sans / Noto Sans），

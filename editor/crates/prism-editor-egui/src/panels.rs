@@ -1117,7 +1117,42 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
 // 检查器
 // ---------------------------------------------------------------------------
 
+/// Play 态提示色（#500）：播放中为绿色，暂停为琥珀色，与状态栏的 PLAYING / PAUSED 一致。
+///
+/// 整窗描边和 Inspector 顶部横幅共用这一个来源，避免两处颜色漂移。
+pub fn play_mode_tint(paused: bool) -> egui::Color32 {
+    if paused {
+        egui::Color32::from_rgb(230, 180, 80)
+    } else {
+        egui::Color32::from_rgb(96, 200, 120)
+    }
+}
+
+/// Play 态横幅文案；非播放态返回 `None`（不占横向空间）。
+///
+/// `playing` 传 `workspace.playing && workspace.has_play_snapshot()`：只有真的
+/// 会被 Stop 回滚的那一次播放才提示，避免控制通道里的边界状态误报。
+pub fn play_mode_banner(playing: bool) -> Option<&'static str> {
+    playing.then_some("Play mode — changes made now are discarded when Play stops.")
+}
+
 pub fn inspector(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
+    // Play 态提示（#500）：运行期的编辑会在 Stop 时被丢弃，检查器顶部要先说清楚。
+    if let Some(banner) = play_mode_banner(workspace.playing && workspace.has_play_snapshot()) {
+        let tint = play_mode_tint(workspace.paused);
+        egui::Frame::new()
+            .fill(tint.gamma_multiply(0.16))
+            .inner_margin(egui::Margin::symmetric(6, 4))
+            .show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(format!("{} {banner}", icons::INFO))
+                        .size(11.0)
+                        .color(tint),
+                );
+            });
+        ui.add_space(4.0);
+    }
+
     let indices = workspace.selection.clone();
     if indices.is_empty() {
         // 没有选中实体时，Project 面板选中的资产接管检查器（#514）。
@@ -5789,6 +5824,45 @@ mod window_smoke_tests {
         ping_asset(&mut workspace, &mut state, "assets/models/missing.gltf");
         assert!(workspace.selection.is_empty());
         assert!(state.status.contains("no object references"));
+    }
+
+    #[test]
+    fn play_mode_banner_only_appears_while_playing() {
+        // #500：非播放态不占空间，播放态给出一句「Stop 会丢弃改动」。
+        assert_eq!(play_mode_banner(false), None);
+        let banner = play_mode_banner(true).expect("playing banner");
+        assert!(banner.contains("discarded"), "{banner}");
+        // 播放 / 暂停用不同颜色，和状态栏的 PLAYING / PAUSED 对应。
+        assert_ne!(play_mode_tint(false), play_mode_tint(true));
+    }
+
+    #[test]
+    fn the_inspector_shows_the_play_banner_without_editing_the_document() {
+        let mut workspace = Workspace::sample();
+        workspace.play();
+        let mut state = UiState::new();
+        let before = workspace.document().doc.to_json_string();
+
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                inspector(ui, &mut workspace, &mut state);
+            });
+        });
+
+        assert_eq!(
+            workspace.document().doc.to_json_string(),
+            before,
+            "只是显示提示，不能碰文档"
+        );
+        assert!(workspace.undo_history().is_empty(), "也不能产生撤销步");
+
+        // Stop 之后横幅消失（文档已恢复）。
+        workspace.stop();
+        assert_eq!(
+            play_mode_banner(workspace.playing && workspace.has_play_snapshot()),
+            None
+        );
     }
 
     #[test]
