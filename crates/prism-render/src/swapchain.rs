@@ -41,7 +41,7 @@ pub struct Swapchain {
     pub pre_transform: vk::SurfaceTransformFlagsKHR,
 
     /// Presentation 众数 used when (re)creating the 交换链 Defaults to
-    /// `MAILBOX` when supported (lower 延迟 than `FIFO`), changeable via
+    /// `FIFO` when v-synced (it actually caps the frame rate), changeable via
     /// [`Swapchain::set_present_mode`].
     present_mode: vk::PresentModeKHR,
 
@@ -77,7 +77,8 @@ impl Swapchain {
     /// 创建 the 表面 and 交换链 with an explicit vsync preference.
     ///
     /// `vsync = false` prefers `IMMEDIATE` (uncapped, may tear) and falls
-    /// back to `MAILBOX` / `FIFO`; `true` prefers `MAILBOX` / `FIFO`.
+    /// back to `MAILBOX` / `FIFO`; `true` prefers `FIFO` (vblank cap) then
+    /// `MAILBOX`.
     pub fn new_with_vsync(
         context: &Arc<VulkanContext>,
         window: &dyn raw_window_handle::HasDisplayHandle,
@@ -445,12 +446,14 @@ fn choose_surface_format(available: &[vk::SurfaceFormatKHR]) -> vk::SurfaceForma
 
 /// Pick a present mode from the surface's supported list.
 ///
-/// With vsync enabled, prefer `MAILBOX` (tear-free, lower latency) then
-/// `FIFO`. With vsync disabled, prefer `IMMEDIATE` (uncapped, may tear),
-/// then `MAILBOX`, then `FIFO`. `FIFO` is always supported by the spec.
+/// With vsync enabled, prefer `FIFO` (blocks until vblank, so it actually caps
+/// the frame rate) then `MAILBOX` as a tear-free fallback. `MAILBOX` alone is
+/// not a vsync cap: the driver may present as fast as it can.
+/// With vsync disabled, prefer `IMMEDIATE` (uncapped, may tear), then
+/// `MAILBOX`, then `FIFO`. `FIFO` is always supported by the spec.
 fn pick_present_mode(modes: &[vk::PresentModeKHR], vsync: bool) -> vk::PresentModeKHR {
     let preferred: &[vk::PresentModeKHR] = if vsync {
-        &[vk::PresentModeKHR::MAILBOX, vk::PresentModeKHR::FIFO]
+        &[vk::PresentModeKHR::FIFO, vk::PresentModeKHR::MAILBOX]
     } else {
         &[
             vk::PresentModeKHR::IMMEDIATE,
@@ -535,12 +538,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn vsync_prefers_mailbox_then_fifo() {
+    fn vsync_prefers_fifo_then_mailbox() {
         assert_eq!(
             pick_present_mode(
                 &[vk::PresentModeKHR::FIFO, vk::PresentModeKHR::MAILBOX],
                 true
             ),
+            vk::PresentModeKHR::FIFO
+        );
+        assert_eq!(
+            pick_present_mode(&[vk::PresentModeKHR::MAILBOX], true),
             vk::PresentModeKHR::MAILBOX
         );
         assert_eq!(
