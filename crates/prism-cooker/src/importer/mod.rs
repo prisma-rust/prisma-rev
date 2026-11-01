@@ -566,7 +566,7 @@ fn write_mesh_intermediate(
 impl GltfImporter {
     #[allow(clippy::type_complexity)]
     fn read_gltf(path: &Path) -> Result<MeshData, ImportError> {
-        let (document, buffers, _images) = gltf::import(path)
+        let (document, buffers, images) = gltf::import(path)
             .map_err(|e| ImportError::ImportFailed(format!("glTF parse failed: {e}")))?;
 
         let mut mesh = MeshData {
@@ -574,6 +574,56 @@ impl GltfImporter {
             has_skins: document.skins().next().is_some(),
             ..Default::default()
         };
+
+        // 材质 / 图片先落 metadata（#520）：多材质渲染和贴图资产落库要改
+        // `.scene.json` 与 DrawItem，这一版只把源文件里的信息完整保留下来。
+        mesh.materials = document
+            .materials()
+            .map(|material| {
+                let pbr = material.pbr_metallic_roughness();
+                MaterialInfo {
+                    name: material.name().map(str::to_string),
+                    base_color: pbr.base_color_factor(),
+                    metallic: pbr.metallic_factor(),
+                    roughness: pbr.roughness_factor(),
+                    emissive: material.emissive_factor(),
+                    alpha_mode: format!("{:?}", material.alpha_mode()),
+                    double_sided: material.double_sided(),
+                    base_color_texture: pbr.base_color_texture().map(|t| t.texture().index()),
+                    metallic_roughness_texture: pbr
+                        .metallic_roughness_texture()
+                        .map(|t| t.texture().index()),
+                    normal_texture: material.normal_texture().map(|t| t.texture().index()),
+                    occlusion_texture: material.occlusion_texture().map(|t| t.texture().index()),
+                    emissive_texture: material.emissive_texture().map(|t| t.texture().index()),
+                }
+            })
+            .collect();
+        mesh.images = document
+            .images()
+            .map(|image| {
+                let (uri, mime_type, source_bytes) = match image.source() {
+                    gltf::image::Source::Uri { uri, mime_type } => {
+                        (Some(uri.to_string()), mime_type.map(str::to_string), 0)
+                    }
+                    gltf::image::Source::View { view, mime_type } => {
+                        (None, Some(mime_type.to_string()), view.length())
+                    }
+                };
+                let decoded = images.get(image.index());
+                ImageInfo {
+                    name: image.name().map(str::to_string),
+                    mime_type,
+                    uri,
+                    width: decoded.map(|data| data.width).unwrap_or(0),
+                    height: decoded.map(|data| data.height).unwrap_or(0),
+                    source_bytes,
+                    format: decoded
+                        .map(|data| format!("{:?}", data.format))
+                        .unwrap_or_else(|| "unknown".to_string()),
+                }
+            })
+            .collect();
 
         // 场景图：节点层级里的 TRS 直接烘进顶点，这样「一个网格资产」就是整棵树
         // 在世界空间里的样子（不再只取第一个 mesh 的第一个 primitive，#520）。
@@ -641,6 +691,50 @@ struct MeshData {
     node_count: usize,
     material_count: usize,
     has_skins: bool,
+    /// 每个 primitive 在合并后的 index buffer 里的范围与材质（#520）。
+    submeshes: Vec<SubmeshInfo>,
+    /// glTF 里声明的材质参数（#520）；这一版只进 metadata，不生成资产。
+    materials: Vec<MaterialInfo>,
+    /// glTF 里的图片尺寸 / 来源（#520）；同样只进 metadata。
+    images: Vec<ImageInfo>,
+}
+
+/// 合并网格里的一个 submesh：index 区间 + 它使用的材质。
+#[derive(Debug, Clone, serde::Serialize)]
+struct SubmeshInfo {
+    index_start: u32,
+    index_count: u32,
+    material_index: Option<usize>,
+    material: Option<String>,
+}
+
+/// glTF 材质的 PBR 参数（只保留现有 RMAT 能表达 / 将来能映射的字段）。
+#[derive(Debug, Clone, serde::Serialize)]
+struct MaterialInfo {
+    name: Option<String>,
+    base_color: [f32; 4],
+    metallic: f32,
+    roughness: f32,
+    emissive: [f32; 3],
+    alpha_mode: String,
+    double_sided: bool,
+    base_color_texture: Option<usize>,
+    metallic_roughness_texture: Option<usize>,
+    normal_texture: Option<usize>,
+    occlusion_texture: Option<usize>,
+    emissive_texture: Option<usize>,
+}
+
+/// glTF 图片的元信息。像素本身没有写进 mesh metadata（避免 JSON 膨胀）。
+#[derive(Debug, Clone, serde::Serialize)]
+struct ImageInfo {
+    name: Option<String>,
+    mime_type: Option<String>,
+    uri: Option<String>,
+    width: u32,
+    height: u32,
+    source_bytes: usize,
+    format: String,
 }
 
 impl Default for MeshData {
@@ -656,6 +750,9 @@ impl Default for MeshData {
             node_count: 0,
             material_count: 0,
             has_skins: false,
+            submeshes: Vec::new(),
+            materials: Vec::new(),
+            images: Vec::new(),
         }
     }
 }
@@ -776,6 +873,7 @@ fn push_primitive(
     }
 
     let base = out.positions.len() as u32;
+    let index_start = out.indices.len() as u32;
     let normals = normal_matrix(world);
     out.positions
         .extend(positions.iter().map(|p| transform_point(world, *p)));
@@ -828,6 +926,15 @@ fn push_primitive(
             .extend((0..positions.len() as u32).map(|index| index + base)),
     }
 
+    let index_count = out.indices.len() as u32 - index_start;
+    let material = primitive.material();
+    out.submeshes.push(SubmeshInfo {
+        index_start,
+        index_count,
+        material_index: material.index(),
+        material: material.name().map(str::to_string),
+    });
+
     out.primitive_count += 1;
 }
 
@@ -837,7 +944,9 @@ impl Importer for GltfImporter {
     }
 
     fn version(&self) -> u32 {
-        1
+        // v2: metadata 增加 submeshes / materials / images（#520），
+        // 旧的 import cache 要重新跑一遍才能拿到这些字段。
+        2
     }
 
     fn can_import(&self, path: &Path) -> bool {
@@ -868,6 +977,10 @@ impl Importer for GltfImporter {
             "primitive_count": mesh.primitive_count,
             "node_count": mesh.node_count,
             "material_count": mesh.material_count,
+            "submesh_count": mesh.submeshes.len(),
+            "submeshes": mesh.submeshes,
+            "materials": mesh.materials,
+            "images": mesh.images,
             "has_skins": mesh.has_skins,
             "intermediate_size": output_data.len(),
         });
@@ -1035,6 +1148,7 @@ impl ObjImporter {
             node_count: 1,
             material_count: materials.len(),
             has_skins: false,
+            ..Default::default()
         })
     }
 }
