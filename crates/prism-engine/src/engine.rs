@@ -631,6 +631,12 @@ fn default_schedule() -> Schedule {
         crate::scene::systems::animation::keyframe_animation_system(world, dt)
     });
 
+    // ── 骨骼动画 ────────────────────────────────────────────
+    // 采样 `Animator` → 骨骼矩阵。P0-2 只算 CPU 侧的 palette（GPU 蒙皮在 P0-3）。
+    s.add_system("animator::pose", |world, dt| {
+        crate::scene::systems::animator::animator_system(world, dt);
+    });
+
     // ── 地形 ────────────────────────────────────────────────
     // `Terrain` 只是数据：这里按高度图生成网格并登记到 `ProceduralMeshes`，
     // 资产解析器在下一帧的上传阶段就能取到（#517 Phase 1）。

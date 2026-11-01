@@ -11,6 +11,7 @@
 //! | 相机 | `collect_camera` | 读取 | Collect 相机 分量 |
 
 pub mod animation;
+pub mod animator;
 pub mod camera;
 pub mod hierarchy;
 pub mod lights;

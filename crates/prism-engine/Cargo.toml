@@ -36,6 +36,7 @@ prism-reflect = { path = "../prism-reflect" }
 prism-scene = { path = "../prism-scene", default-features = false }
 prism-render = { path = "../prism-render", default-features = false }
 prism-asset = { path = "../prism-asset", default-features = false, features = ["runtime"] }
+prism-anim = { path = "../prism-anim" }
 
 prism-audio = { path = "../prism-audio", optional = true }
 glam.workspace = true
