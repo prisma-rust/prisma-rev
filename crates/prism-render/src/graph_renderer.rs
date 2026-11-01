@@ -1979,14 +1979,22 @@ impl GraphRenderer {
             if calls.len() >= MAX_REPORTED_DRAW_CALLS {
                 return calls;
             }
-            let triangles = self
-                .mesh_manager
-                .get(item.mesh)
+            let uploaded = self.mesh_manager.get(item.mesh);
+            let triangles = uploaded
                 .map(|uploaded| {
                     let indices = item.index_count.unwrap_or(uploaded.mesh.index_count);
                     (indices as u64 / 3).max(1)
                 })
                 .unwrap_or(0);
+            // 与 `ForwardPass::pipeline_for` 的缓存键一致：混合 / 不写深度是
+            // 独立的 pipeline 变体，回放时能看出为什么换了管线。
+            let pipeline = if item.state.blends() {
+                "forward/transparent"
+            } else if item.state.z_write {
+                "forward/opaque"
+            } else {
+                "forward/opaque-no-zwrite"
+            };
             calls.push(ReportDrawCall {
                 pass: "forward".to_string(),
                 label: format!("mesh #{index} · material {}", item.material.unwrap_or(0)),
@@ -1994,6 +2002,19 @@ impl GraphRenderer {
                 triangles,
                 visible: item.visible_in_main_pass,
                 state: Some(Self::draw_state_summary(&item.state)),
+                pipeline: Some(pipeline.to_string()),
+                descriptor_sets: [
+                    "frame+materials",
+                    "bindless-textures",
+                    "ibl",
+                    "shadow",
+                    "gtao",
+                    "gi-probes",
+                ]
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect(),
+                vertices: uploaded.map(|uploaded| uploaded.vertex_count() as u64),
             });
         }
 
@@ -2018,6 +2039,12 @@ impl GraphRenderer {
                     "cull off · z-write false · {:?}/{:?} {:?}",
                     key.0, key.1, key.2
                 )),
+                pipeline: Some("sprite/batch".to_string()),
+                descriptor_sets: ["bindless-textures", "sprite-lights"]
+                    .iter()
+                    .map(|name| (*name).to_string())
+                    .collect(),
+                vertices: Some(count as u64 * 4),
             });
         }
 
@@ -2029,6 +2056,9 @@ impl GraphRenderer {
                 triangles: particle_items.len() as u64 * 2,
                 visible: true,
                 state: Some("billboard · depth test on · z-write false".to_string()),
+                pipeline: Some("particle/billboard".to_string()),
+                descriptor_sets: Vec::new(),
+                vertices: Some(particle_items.len() as u64 * 4),
             });
         }
         calls

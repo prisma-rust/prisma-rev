@@ -68,6 +68,16 @@ pub struct ReportDrawCall {
     /// 管线状态摘要（队列 / 剔除 / 深度写 / 混合）；旧报告没有该字段。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
+    /// 管线类别（`forward/opaque`、`forward/transparent`、`sprite/batch` …）；
+    /// 旧报告没有该字段（#518 Phase 2）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pipeline: Option<String>,
+    /// 这条 call 绑定的 descriptor set 名称（按 set 序号）；旧报告省略。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub descriptor_sets: Vec<String>,
+    /// 顶点数（网格是上传时的顶点数；精灵/粒子是实例数 × 4）；旧报告省略。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vertices: Option<u64>,
 }
 
 /// 报告里最多保留多少条 draw call（防止大场景把 JSON 撑爆）。
@@ -515,6 +525,9 @@ mod tests {
                 triangles: 12,
                 visible: true,
                 state: Some("queue 2000 · cull Back · z-write true · One/Zero Add".into()),
+                pipeline: Some("forward/opaque".into()),
+                descriptor_sets: vec!["frame+materials".into(), "bindless-textures".into()],
+                vertices: Some(24),
             },
             ReportDrawCall {
                 pass: "sprite".into(),
@@ -523,6 +536,9 @@ mod tests {
                 triangles: 8,
                 visible: true,
                 state: None,
+                pipeline: None,
+                descriptor_sets: Vec::new(),
+                vertices: None,
             },
         ];
         let report = RenderGraphReport::from_snapshot(&snapshot(), ReportSettings::default(), 1)
@@ -539,6 +555,20 @@ mod tests {
         );
         assert_eq!(json["drawCalls"][1]["instances"], 4);
         assert_eq!(json["drawCalls"][1]["triangles"], 8);
+        assert_eq!(json["drawCalls"][0]["pipeline"], "forward/opaque");
+        assert_eq!(
+            json["drawCalls"][0]["descriptorSets"][1],
+            "bindless-textures"
+        );
+        assert_eq!(json["drawCalls"][0]["vertices"], 24);
+        assert!(
+            json["drawCalls"][1].get("pipeline").is_none(),
+            "pipeline 为 None 时省略字段"
+        );
+        assert!(
+            json["drawCalls"][1].get("descriptorSets").is_none(),
+            "空 descriptorSets 省略字段"
+        );
     }
 
     #[test]

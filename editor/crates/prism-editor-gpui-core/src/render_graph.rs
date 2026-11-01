@@ -49,6 +49,15 @@ pub struct ReportDrawCall {
     /// 管线状态摘要（队列 / 剔除 / 深度写 / 混合）；旧报告没有该字段。
     #[serde(default)]
     pub state: Option<String>,
+    /// 管线类别（#518 Phase 2）；旧报告没有该字段。
+    #[serde(default)]
+    pub pipeline: Option<String>,
+    /// 绑定的 descriptor set 名称（按 set 序号）；旧报告是空列表。
+    #[serde(default)]
+    pub descriptor_sets: Vec<String>,
+    /// 顶点数；旧报告没有该字段。
+    #[serde(default)]
+    pub vertices: Option<u64>,
 }
 
 impl ReportDrawCall {
@@ -191,7 +200,10 @@ mod tests {
                 "drawCalls":[
                   {"pass":"forward","label":"mesh #0 · material 2","instances":1,
                    "triangles":12,"visible":true,
-                   "state":"queue 2000 · cull Back · z-write true · One/Zero Add"},
+                   "state":"queue 2000 · cull Back · z-write true · One/Zero Add",
+                   "pipeline":"forward/opaque",
+                   "descriptorSets":["frame+materials","bindless-textures"],
+                   "vertices":24},
                   {"pass":"sprite","label":"SrcAlpha / OneMinusSrcAlpha","instances":4,
                    "triangles":8,"visible":false}
                 ]}"#,
@@ -211,6 +223,15 @@ mod tests {
             .unwrap()
             .contains("cull Back"));
         assert!(parsed.draw_calls[1].state.is_none());
+        assert_eq!(
+            parsed.draw_calls[0].pipeline.as_deref(),
+            Some("forward/opaque")
+        );
+        assert_eq!(parsed.draw_calls[0].descriptor_sets.len(), 2);
+        assert_eq!(parsed.draw_calls[0].vertices, Some(24));
+        assert!(parsed.draw_calls[1].pipeline.is_none());
+        assert!(parsed.draw_calls[1].descriptor_sets.is_empty());
+        assert_eq!(parsed.draw_calls[1].vertices, None);
     }
 
     #[test]
