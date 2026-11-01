@@ -120,6 +120,15 @@ impl UiDrawList {
 #[derive(Clone, Debug, Default)]
 pub struct ExternalUiQuads(pub Vec<UiQuad>);
 
+/// 布局节点的 Canvas 缩放（#463）；坏值按 1 处理，避免 NaN 扩散到顶点。
+fn layout_scale(layout: &ComputedLayout) -> f32 {
+    if layout.scale.is_finite() && layout.scale > 0.0 {
+        layout.scale
+    } else {
+        1.0
+    }
+}
+
 /// 每帧更新 `UiDrawList` resource —— 查询所有 UI 实体生成绘制命令。
 pub fn ui_render_system(world: &mut World) {
     // (layer, order, 类型：0 = 矩形 / 1 = 文本, 序号) —— 序号让排序稳定。
@@ -153,12 +162,14 @@ pub fn ui_render_system(world: &mut World) {
         } // 完全透明跳过
 
         let seq = pending.len() as u32;
+        // #463：圆角是「设计像素」，按所在 Canvas 的缩放换算到屏幕像素。
+        let scale = layout_scale(layout);
         pending.push((
             (0, layout.order, 0, seq),
             UiDrawItem::Quad(UiQuad {
                 rect: layout.rect,
                 color: bg,
-                border_radius: style.border_radius,
+                border_radius: style.border_radius * scale,
                 layer: 0,
                 order: layout.order,
             }),
@@ -185,7 +196,8 @@ pub fn ui_render_system(world: &mut World) {
             UiDrawItem::Text(UiTextCmd {
                 rect: layout.rect,
                 content: text.content.clone(),
-                font_size: text.font_size,
+                // #463：字号同样按 Canvas 缩放，否则 4K 屏幕上文字只有一半大。
+                font_size: text.font_size * layout_scale(layout),
                 color: text.color,
                 alignment: text.alignment,
                 font: text.font.clone(),

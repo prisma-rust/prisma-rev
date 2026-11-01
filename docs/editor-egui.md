@@ -234,6 +234,15 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
   点击语义与 Unity `Clickable` 一致：在元素内按下并**在同一元素内松开**才置
   `clicked`；点击后该按钮获得键盘焦点，`Enter` / `Space` 同样提交。`Interaction`
   现在是可序列化组件，场景 / 预制体可以直接保存。
+- **UI Canvas 缩放（#463）**：给 UI 根节点加 `prism_engine::ui::Canvas`
+  （`reference_resolution` / `scale_mode` / `match_width_or_height`）后，整棵子树
+  按「设计分辨率 → 实际屏幕」等比缩放：布局在虚拟分辨率里算，写回
+  `ComputedLayout.rect` 时乘回系数，字号与圆角也一起放大。三种模式对应
+  Unity `CanvasScaler`：`ConstantPixelSize`（默认，1 屏幕像素 = 1 设计像素）、
+  `ScaleWithScreenSize`（宽高比例在对数空间按 `match` 插值）、
+  `MatchWidthOrHeight`（只用宽或高）。嵌套 Canvas 只继承最近的一层。
+  这样 1920×1080 的设计稿在 720p 与 4K 上构图一致，Game 视图选目标分辨率后
+  看到的就是真机比例。
 - **Game 视图分辨率 / 宽高比**：视口左上角下拉。默认读取工程
   `assets/settings.ini [window]` 的 `width`/`height`（例如 1600×900），
   按该分辨率离屏渲染并等比 letterbox，所以编辑器构图和打包产物一致。
