@@ -436,6 +436,16 @@ impl SnapSettings {
     }
 }
 
+/// gizmo 的枢轴模式（#416，Unity `Tools.pivotMode`）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PivotMode {
+    /// 选择集包围中心：多选时 gizmo 在中心，旋转 / 缩放带动整个组（默认）。
+    #[default]
+    Center,
+    /// 活动对象自己的轴心：gizmo 落在活动物体上，每个对象只绕自身变换。
+    Pivot,
+}
+
 /// 一次点选 / 框选对选择集的作用方式。
 ///
 /// 与 Unity 的 `SelectionType` 对齐：`Normal` = 替换，`Additive` = 并入，
@@ -508,6 +518,8 @@ pub struct Workspace {
     pub gizmo_space: GizmoSpace,
     /// gizmo 拖动的吸附步长（工具栏 `Snap (Ctrl)` 开关）。
     pub snap: SnapSettings,
+    /// gizmo 枢轴模式（工具栏 `Pivot` 开关，#416）。
+    pub pivot_mode: PivotMode,
     /// Scene View 是否画世界网格。
     pub show_grid: bool,
     /// Scene View 是否给选中对象画轮廓（#487）。选中反馈弱时唯一的线索是 gizmo，
@@ -623,6 +635,7 @@ impl Workspace {
             camera: OrbitCamera::default(),
             gizmo_space: GizmoSpace::World,
             snap: SnapSettings::default(),
+            pivot_mode: PivotMode::Center,
             show_grid: true,
             show_selection_outline: true,
             show_camera_icons: true,
@@ -2966,7 +2979,10 @@ impl Workspace {
         let ids = Self::prune_selected_descendants(&self.document().doc, &ids);
         let space = self.gizmo_space;
         let doc = &self.document().doc;
-        let center = if space == GizmoSpace::World && ids.len() > 1 {
+        let center = if self.pivot_mode == PivotMode::Center
+            && space == GizmoSpace::World
+            && ids.len() > 1
+        {
             let mut center = [0.0; 3];
             let mut count = 0.0;
             for entity_id in &ids {
@@ -3236,6 +3252,102 @@ impl Workspace {
             return;
         }
         let ids: Vec<u32> = sorted.iter().map(|(entity_id, _)| *entity_id).collect();
+        let now = now_ms();
+        let document = self.document_mut();
+        if changes.len() == 1 {
+            let (entity_id, before, after) = changes[0];
+            document
+                .undo
+                .push_transform(&mut document.doc, entity_id, before, after, now);
+        } else {
+            let key = format!("scale-group/{ids:?}");
+            document
+                .undo
+                .push_transform_batch(&mut document.doc, changes, key, now);
+        }
+        document.dirty = true;
+    }
+
+    /// 多选 gizmo 缩放（#416）：`targets` = `(实体 id, 本地缩放轴, 起始缩放)`。
+    ///
+    /// - `Center` 模式 + 世界空间：位置也按同一比例沿 gizmo 轴相对选择中心缩放
+    ///   （Unity 的群组缩放）；
+    /// - `Pivot` 模式（或局部空间）：只在各自轴心上改缩放，位置不动。
+    ///
+    /// 整次拖动一个撤销步。
+    pub fn scale_entities_gizmo(
+        &mut self,
+        targets: &[(u32, usize, f32)],
+        gizmo_axis: usize,
+        ratio: f32,
+    ) {
+        if targets.is_empty() || !ratio.is_finite() || ratio <= 0.0 {
+            return;
+        }
+        let mut sorted: Vec<(u32, usize, f32)> = targets.to_vec();
+        sorted.sort_by_key(|(entity_id, _, _)| *entity_id);
+        sorted.dedup_by_key(|(entity_id, _, _)| *entity_id);
+        let keep: Vec<u32> = sorted.iter().map(|(entity_id, _, _)| *entity_id).collect();
+        let keep = Self::prune_selected_descendants(&self.document().doc, &keep);
+        sorted.retain(|(entity_id, _, _)| keep.contains(entity_id));
+        let doc = &self.document().doc;
+        let center = if self.pivot_mode == PivotMode::Center
+            && self.gizmo_space == GizmoSpace::World
+            && sorted.len() > 1
+        {
+            let mut center = [0.0; 3];
+            let mut count = 0.0;
+            for (entity_id, _, _) in &sorted {
+                if let Some(index) = doc.index_of_id(*entity_id) {
+                    let position = world_position(doc, index);
+                    for axis in 0..3 {
+                        center[axis] += position[axis];
+                    }
+                    count += 1.0;
+                }
+            }
+            (count > 0.0).then(|| center.map(|value| value / count))
+        } else {
+            None
+        };
+        let mut axis_unit = [0.0f32; 3];
+        if gizmo_axis < 3 {
+            axis_unit[gizmo_axis] = 1.0;
+        }
+        let mut changes = Vec::new();
+        for (entity_id, local_axis, start) in &sorted {
+            let Some(index) = doc.index_of_id(*entity_id) else {
+                continue;
+            };
+            let before = doc.entities[index].transform;
+            let mut after = before;
+            after.scale[*local_axis] = (*start * ratio).clamp(0.01, 1000.0);
+            if let Some(center) = center {
+                let world = world_position(doc, index);
+                let offset = [
+                    world[0] - center[0],
+                    world[1] - center[1],
+                    world[2] - center[2],
+                ];
+                let along = (offset[0] * axis_unit[0]
+                    + offset[1] * axis_unit[1]
+                    + offset[2] * axis_unit[2])
+                    * (ratio - 1.0);
+                let target_world = [
+                    world[0] + axis_unit[0] * along,
+                    world[1] + axis_unit[1] * along,
+                    world[2] + axis_unit[2] * along,
+                ];
+                after.position = world_position_to_local(doc, index, target_world);
+            }
+            if before != after {
+                changes.push((*entity_id, before, after));
+            }
+        }
+        if changes.is_empty() {
+            return;
+        }
+        let ids: Vec<u32> = sorted.iter().map(|(entity_id, _, _)| *entity_id).collect();
         let now = now_ms();
         let document = self.document_mut();
         if changes.len() == 1 {
@@ -3986,6 +4098,29 @@ impl Workspace {
     /// 选中集合的世界包围球 `(center, radius)`；空选返回 `None`。
     pub fn selection_world_bounds(&self) -> Option<([f32; 3], f32)> {
         world_bounds(&self.document().doc, &self.selection)
+    }
+
+    /// gizmo 的落点（#416）：Center = 选择集中心；Pivot = 活动对象的轴心。
+    ///
+    /// `Pivot` 模式没有活动对象时退回选择集中心，不会让 gizmo 突然消失。
+    pub fn gizmo_center_world(&self) -> Option<[f32; 3]> {
+        let doc = &self.document().doc;
+        match self.pivot_mode {
+            PivotMode::Pivot => self
+                .primary_selection()
+                .and_then(|index| doc.entities.get(index).map(|_| world_position(doc, index)))
+                .or_else(|| self.selection_center_world()),
+            PivotMode::Center => self.selection_center_world(),
+        }
+    }
+
+    /// 当前选择集的实体 id（文档顺序，未去重；batch API 自己会去重并裁剪后代）。
+    pub fn selection_entity_ids(&self) -> Vec<u32> {
+        let doc = &self.document().doc;
+        self.selection
+            .iter()
+            .filter_map(|index| doc.id_of_index(*index))
+            .collect()
     }
 
     /// 选择集在世界空间的中心（父链累积位置）。
@@ -5498,6 +5633,91 @@ mod tests {
         for axis in 0..3 {
             assert!((actual_x[axis] - expected_x[axis]).abs() < 1e-3);
         }
+    }
+
+    #[test]
+    fn gizmo_center_switches_between_the_group_and_the_active_pivot() {
+        // #416：Center = 选择集中心；Pivot = 活动对象自己的轴心。
+        let mut workspace = Workspace::sample();
+        let cube = index_named(&workspace, "Cube");
+        let light = index_named(&workspace, "Directional Light");
+        workspace.selection = vec![cube, light];
+        workspace.selection_active = Some(light);
+
+        let center = workspace.selection_center_world().unwrap();
+        let pivot = world_position(&workspace.document().doc, light);
+        assert_eq!(workspace.gizmo_center_world(), Some(center));
+
+        workspace.pivot_mode = PivotMode::Pivot;
+        assert_eq!(workspace.gizmo_center_world(), Some(pivot));
+
+        // 没有显式活动对象时退回「最后选中」的那个，gizmo 不会消失。
+        workspace.selection_active = None;
+        assert_eq!(workspace.gizmo_center_world(), Some(pivot));
+        workspace.selection.clear();
+        assert_eq!(workspace.gizmo_center_world(), None);
+    }
+
+    #[test]
+    fn pivot_mode_rotates_in_place_while_center_mode_orbits() {
+        // #416：Pivot 模式只转自身，位置不动；Center 模式绕中心公转。
+        let mut workspace = Workspace::sample();
+        let cube = index_named(&workspace, "Cube");
+        let light = index_named(&workspace, "Directional Light");
+        let cube_id = workspace.document().doc.entities[cube].id.unwrap();
+        let light_id = workspace.document().doc.entities[light].id.unwrap();
+        let ids = [cube_id, light_id];
+        let before = [
+            world_position(&workspace.document().doc, cube),
+            world_position(&workspace.document().doc, light),
+        ];
+
+        workspace.pivot_mode = PivotMode::Pivot;
+        workspace.rotate_entities(&ids, 1, std::f32::consts::FRAC_PI_2);
+        for (index, expected) in [(cube, before[0]), (light, before[1])] {
+            let actual = world_position(&workspace.document().doc, index);
+            for axis in 0..3 {
+                assert!(
+                    (actual[axis] - expected[axis]).abs() < 1e-4,
+                    "Pivot 模式不应移动实体: {actual:?} != {expected:?}"
+                );
+            }
+        }
+        assert_ne!(
+            workspace.document().doc.entities[cube].transform.rotation,
+            [0.0, 0.0, 0.0, 1.0]
+        );
+    }
+
+    #[test]
+    fn center_mode_scale_moves_objects_away_from_the_centre() {
+        // #416：Center 模式沿 gizmo 轴把位置也按比例推开；Pivot 模式只改缩放。
+        let mut workspace = Workspace::sample();
+        let cube = index_named(&workspace, "Cube");
+        let light = index_named(&workspace, "Directional Light");
+        let cube_id = workspace.document().doc.entities[cube].id.unwrap();
+        let light_id = workspace.document().doc.entities[light].id.unwrap();
+        workspace.set_transform_vector(cube_id, "position", [-1.0, 0.0, 0.0]);
+        workspace.set_transform_vector(light_id, "position", [1.0, 0.0, 0.0]);
+        let targets = [(cube_id, 0usize, 1.0f32), (light_id, 0, 1.0)];
+
+        workspace.scale_entities_gizmo(&targets, 0, 2.0);
+        assert!((world_position(&workspace.document().doc, cube)[0] + 2.0).abs() < 1e-4);
+        assert!((world_position(&workspace.document().doc, light)[0] - 2.0).abs() < 1e-4);
+        assert!((workspace.document().doc.entities[cube].transform.scale[0] - 2.0).abs() < 1e-4);
+        assert_eq!(
+            workspace.document().undo.history().len(),
+            3,
+            "两次 set + 一次群组缩放"
+        );
+
+        // 撤销回原位，再用 Pivot 模式：位置不动，只放大。
+        workspace.undo();
+        workspace.pivot_mode = PivotMode::Pivot;
+        workspace.scale_entities_gizmo(&targets, 0, 2.0);
+        assert!((world_position(&workspace.document().doc, cube)[0] + 1.0).abs() < 1e-4);
+        assert!((world_position(&workspace.document().doc, light)[0] - 1.0).abs() < 1e-4);
+        assert!((workspace.document().doc.entities[light].transform.scale[0] - 2.0).abs() < 1e-4);
     }
 
     #[test]
