@@ -992,7 +992,7 @@ dependencies = [
 [[package]]
 name = "egui-ash"
 version = "0.4.0"
-source = "git+https://github.com/tyrypyrking/egui-ash?rev=258aee2347e66bdb3fdf2f9fc4aa76da06228b0f#258aee2347e66bdb3fdf2f9fc4aa76da06228b0f"
+source = "git+https://github.com/prisma-rust/egui-ash?rev=6b390d3e8f48d3e7025a20b1b07b46373a960b8c#6b390d3e8f48d3e7025a20b1b07b46373a960b8c"
 dependencies = [
  "anyhow",
  "ash",
