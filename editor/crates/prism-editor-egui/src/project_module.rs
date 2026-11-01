@@ -565,6 +565,8 @@ fn queue_project_quads(world: &mut prism_engine::ecs::World, quads: Vec<HostUiQu
             rect: quad.rect,
             color: quad.color,
             border_radius: quad.border_radius,
+            // 项目模块提交的四边形只有纯色，没有背景图（#591）。
+            texture: None,
             layer: quad.layer,
             order: prism_engine::ui::EXTERNAL_UI_ORDER,
         }));

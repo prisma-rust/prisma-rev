@@ -125,8 +125,17 @@ pub struct Style {
     #[serde(default)]
     pub margin: Margin,
     /// 背景色（RGBA，0..=1）。`[0;4]` = 透明。
+    ///
+    /// 配了 `image` 时这一项当**着色**（tint）用：`alpha == 0` 视为不透明白色，
+    /// 直接显示图片原色（#591）。
     #[serde(default)]
     pub background: [f32; 4],
+    /// 背景图（相对 `assets/` 的路径；空 = 无，只画 `background` 纯色）。
+    ///
+    /// 贴图按整张铺满元素矩形，用最近邻采样（与像素画一致）；`Button` 的
+    /// 交互色同样作为 tint 乘在图片上，所以图标能跟着按钮变亮/变暗（#591）。
+    #[serde(default)]
+    pub image: String,
     /// 边框圆角（px）。
     #[serde(default)]
     pub border_radius: f32,
@@ -152,6 +161,7 @@ impl Default for Style {
             pivot: Pivot::CENTER,
             margin: Margin::default(),
             background: [0.0; 4],
+            image: String::new(),
             border_radius: 0.0,
             visible: true,
         }

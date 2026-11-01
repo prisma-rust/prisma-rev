@@ -234,6 +234,11 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
   点击语义与 Unity `Clickable` 一致：在元素内按下并**在同一元素内松开**才置
   `clicked`；点击后该按钮获得键盘焦点，`Enter` / `Space` 同样提交。`Interaction`
   现在是可序列化组件，场景 / 预制体可以直接保存。
+- **UI 背景图（#591）**：`Node + Style` 加 `"image": "textures/icon.png"` 就在矩形里
+  画贴图（整张铺满、最近邻采样），`background` 改为 tint；不写 tint 时按不透明白色
+  显示图片原色。图片走场景共享的 bindless 纹理表，不需要新管线；`Button` 的交互色
+  同样会 tint 图标，所以同一个图标能跟着按钮变亮/变暗。贴图路径和精灵一样由
+  `GpuAssetResolver` 解析进 `.pak`（`UiImageRef`），资产重命名会改写引用。
 - **UI Canvas 缩放（#463）**：给 UI 根节点加 `prism_engine::ui::Canvas`
   （`reference_resolution` / `scale_mode` / `match_width_or_height`）后，整棵子树
   按「设计分辨率 → 实际屏幕」等比缩放：布局在虚拟分辨率里算，写回

@@ -17,6 +17,8 @@ struct UiVertex {
     half_size: [f32; 2],
     /// Corner radius in pixels; `< 0` = no SDF (glyph quads).
     radius: f32,
+    /// Bindless SRV slot of a background image; `u32::MAX` = glyph atlas (#591).
+    texture: u32,
 }
 
 use std::collections::HashMap;
@@ -381,6 +383,9 @@ pub struct UiOverlay {
     /// render pass 结束时的图像布局：交换链是 `PRESENT_SRC_KHR`，离屏目标
     /// 没有呈现引擎，必须留在 `COLOR_ATTACHMENT_OPTIMAL`（#597）。
     final_layout: vk::ImageLayout,
+    /// 场景共享的 bindless 纹理表布局（set 1，UI 背景图用，#591）。
+    /// 由 [`GraphRenderer`](crate::GraphRenderer) 拥有，这里只借用句柄。
+    bindless_layout: vk::DescriptorSetLayout,
     atlas: GlyphAtlas,
     device: ash::Device,
     /// One framebuffer per swapchain image view/extent, reused across frames.
@@ -403,8 +408,17 @@ impl UiOverlay {
     /// 应改用 [`UiOverlay::with_color_format`]：surface 在首选格式不可用时会
     /// 回退到 `available[0]`（Android 常见 `R8G8B8A8_*`），render pass 与
     /// image view 的格式必须一致（VUID-VkFramebufferCreateInfo-renderPass-02711）。
-    pub fn new(context: &VulkanContext, command_pool: vk::CommandPool) -> Result<Self> {
-        Self::with_color_format(context, command_pool, vk::Format::B8G8R8A8_SRGB)
+    pub fn new(
+        context: &VulkanContext,
+        command_pool: vk::CommandPool,
+        bindless_layout: vk::DescriptorSetLayout,
+    ) -> Result<Self> {
+        Self::with_color_format(
+            context,
+            command_pool,
+            vk::Format::B8G8R8A8_SRGB,
+            bindless_layout,
+        )
     }
 
     /// 用 swapchain 的实际颜色格式构造叠加层。
@@ -412,12 +426,14 @@ impl UiOverlay {
         context: &VulkanContext,
         command_pool: vk::CommandPool,
         color_format: vk::Format,
+        bindless_layout: vk::DescriptorSetLayout,
     ) -> Result<Self> {
         Self::with_color_format_and_final_layout(
             context,
             command_pool,
             color_format,
             vk::ImageLayout::PRESENT_SRC_KHR,
+            bindless_layout,
         )
     }
 
@@ -431,6 +447,7 @@ impl UiOverlay {
         command_pool: vk::CommandPool,
         color_format: vk::Format,
         final_layout: vk::ImageLayout,
+        bindless_layout: vk::DescriptorSetLayout,
     ) -> Result<Self> {
         let device = context.device.clone();
         let render_pass = Self::create_render_pass(&device, color_format, final_layout)?;
@@ -461,6 +478,7 @@ impl UiOverlay {
             render_pass,
             color_format,
             final_layout,
+            bindless_layout,
             atlas,
             device,
             framebuffers: Vec::new(),
@@ -479,6 +497,7 @@ impl UiOverlay {
         }
         // 先建新的再拆旧的，创建失败时旧 pass 仍然有效。
         let render_pass = Self::create_render_pass(&self.device, color_format, self.final_layout)?;
+        // 管线在下一次 record 时按新 render pass 重建；这里只换 pass。
         unsafe {
             if let Some(pipeline) = self.pipeline.take() {
                 self.device.destroy_pipeline(pipeline, None);
@@ -592,7 +611,8 @@ impl UiOverlay {
         if self.pipeline.is_some() {
             return Ok(());
         }
-        let (pipeline, layout) = Self::create_pipeline(device, self.render_pass, extent)?;
+        let (pipeline, layout) =
+            Self::create_pipeline(device, self.render_pass, extent, self.bindless_layout)?;
         self.pipeline = Some(pipeline);
         self.layout = Some(layout);
         Ok(())
@@ -602,6 +622,7 @@ impl UiOverlay {
         device: &ash::Device,
         render_pass: vk::RenderPass,
         _extent: vk::Extent2D,
+        bindless_layout: vk::DescriptorSetLayout,
     ) -> Result<(vk::Pipeline, vk::PipelineLayout)> {
         const VERT_SPV: &[u8] = include_bytes!("../../../../assets/shaders/ui_overlay.vert.spv");
         const FRAG_SPV: &[u8] = include_bytes!("../../../../assets/shaders/ui_overlay.frag.spv");
@@ -635,8 +656,9 @@ impl UiOverlay {
             vk::DescriptorSetLayoutCreateInfo::default().bindings(std::slice::from_ref(&binding));
         let set_layout = unsafe { device.create_descriptor_set_layout(&set_layout_info, None) }
             .context("UiOverlay: pipeline set layout")?;
-        let layout_info =
-            vk::PipelineLayoutCreateInfo::default().set_layouts(std::slice::from_ref(&set_layout));
+        // set 1 = 场景共享的 bindless 纹理表（UI 背景图，#591）。
+        let set_layouts = [set_layout, bindless_layout];
+        let layout_info = vk::PipelineLayoutCreateInfo::default().set_layouts(&set_layouts);
         let layout = unsafe { device.create_pipeline_layout(&layout_info, None) }
             .context("UiOverlay: pipeline layout")?;
         unsafe {
@@ -678,6 +700,11 @@ impl UiOverlay {
                 .location(5)
                 .format(vk::Format::R32_SFLOAT)
                 .offset(48),
+            vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(6)
+                .format(vk::Format::R32_UINT)
+                .offset(52),
         ];
         let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default()
             .vertex_binding_descriptions(std::slice::from_ref(&binding_desc))
@@ -789,6 +816,8 @@ impl UiOverlay {
         extent: vk::Extent2D,
         target_view: vk::ImageView,
         input: &UiOverlayInput,
+        // 场景 bindless 纹理表（set 1）；UI 背景图按 `UiQuad::texture` 取样。
+        bindless_set: vk::DescriptorSet,
     ) -> Result<()> {
         if input.is_empty() {
             return Ok(());
@@ -817,14 +846,21 @@ impl UiOverlay {
             let half = [width_px * 0.5, height_px * 0.5];
             let radius = (quad.border_radius * width_px.max(height_px) * 0.5)
                 .clamp(0.0, half[0].min(half[1]));
+            // 有背景图时 uv 铺满 0..1；纯色 quad 采样图集 1×1 的白点。
+            let (uv0, uv1) = if quad.texture.is_some() {
+                ([0.0, 0.0], [1.0, 1.0])
+            } else {
+                ([0.0, 0.0], [0.0, 0.0])
+            };
             emit_quad(
                 vertices,
                 [x0, y0],
                 [x1, y1],
-                [0.0, 0.0],
-                [0.0, 0.0],
+                uv0,
+                uv1,
                 [r, g, b, a],
                 Some((half, radius)),
+                quad.texture.unwrap_or(u32::MAX),
             );
         };
 
@@ -965,6 +1001,16 @@ impl UiOverlay {
                 std::slice::from_ref(&self.descriptor_set),
                 &[],
             );
+            if bindless_set != vk::DescriptorSet::null() {
+                context.device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.layout.unwrap(),
+                    1,
+                    std::slice::from_ref(&bindless_set),
+                    &[],
+                );
+            }
 
             let vp = vk::Viewport::default()
                 .x(0.0)
@@ -1075,6 +1121,7 @@ impl UiOverlay {
                     [u1, v1],
                     [r, g, b, a],
                     None,
+                    u32::MAX,
                 );
             }
             cursor_x += glyph.advance;
@@ -1091,6 +1138,7 @@ fn emit_quad(
     uv1: [f32; 2],
     color: [f32; 4],
     rounded: Option<([f32; 2], f32)>,
+    texture: u32,
 ) {
     let [x0, y0] = p0;
     let [x1, y1] = p1;
@@ -1118,6 +1166,7 @@ fn emit_quad(
             local,
             half_size,
             radius,
+            texture,
         });
     }
 }

@@ -117,6 +117,9 @@ pub fn build_scene_package(
     // 2D 精灵贴图同理：`SpriteRenderer.sprite_path` 指向的 PNG 必须按
     // 运行时期望的 RTEX 格式烘进包内，否则精灵永远解析不到贴图。
     stage_sprite_assets(asset_root, staging, &manifest)?;
+    // UI 组件的贴图 / 字体（#591 / #583）：`Style.image`、`Tilemap.tileset_path`、
+    // `Text.font` 同样得进包，否则打包后图标、瓦片和工程字体全部消失。
+    stage_ui_assets(asset_root, staging, &manifest)?;
     // 运行时生成的精灵（背景层、鱼、特效）不在场景 JSON 里，所以整个
     // `sprites/` 目录都要烘进包内——和引擎的「Assets 目录即内容」一致。
     stage_sprite_folder(asset_root, staging)?;
@@ -311,6 +314,95 @@ fn stage_sprite_assets(
     }
 
     Ok(staged.len())
+}
+
+/// 把 UI 组件引用的贴图与字体放进 staging（`#591` 背景图 / `#529` tileset / `#583` 字体）。
+///
+/// 贴图按运行时路径烘成 RTEX（与精灵一致），字体原样拷贝（fontdue 直接读字节）。
+fn stage_ui_assets(
+    asset_root: &Path,
+    staging: &Path,
+    manifest: &prism_engine::scene::SceneManifest,
+) -> Result<usize> {
+    let mut textures: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut fonts: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    for entry in &manifest.scenes {
+        let Some(doc_rel) = scene_doc_rel(&entry.path) else {
+            continue;
+        };
+        let Ok(text) = fs::read_to_string(asset_root.join(&doc_rel)) else {
+            continue;
+        };
+        let Ok(doc) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        let Some(entities) = doc.get("entities").and_then(|value| value.as_array()) else {
+            continue;
+        };
+        for entity in entities {
+            let Some(components) = entity.get("components").and_then(|value| value.as_object())
+            else {
+                continue;
+            };
+            let string_field = |component: &str, field: &str| {
+                components
+                    .get(component)
+                    .and_then(|payload| payload.get(field))
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+            };
+            for (component, field) in [
+                ("prism_engine::ui::Style", "image"),
+                ("prism_engine::scene::Tilemap", "tileset_path"),
+            ] {
+                let Some(value) = string_field(component, field) else {
+                    continue;
+                };
+                match resolve_asset_path(asset_root, &doc_rel, value) {
+                    Some(pak_path)
+                        if textures.insert(pak_path.clone())
+                            && asset_root.join(&pak_path).is_file() =>
+                    {
+                        let cooked = cook_texture(&asset_root.join(&pak_path))?;
+                        write_staged(staging, Path::new(&pak_path), &cooked)?;
+                        log::info!("packaged UI texture: {pak_path}");
+                    }
+                    Some(pak_path) => {
+                        if !asset_root.join(&pak_path).is_file() {
+                            log::warn!("UI texture {pak_path} not found; skipping");
+                        }
+                    }
+                    None => log::warn!(
+                        "UI texture '{value}' in {doc_rel} cannot be packaged (absolute or escapes assets/)"
+                    ),
+                }
+            }
+            if let Some(value) = string_field("prism_engine::ui::Text", "font") {
+                match resolve_asset_path(asset_root, &doc_rel, value) {
+                    Some(pak_path)
+                        if fonts.insert(pak_path.clone())
+                            && asset_root.join(&pak_path).is_file() =>
+                    {
+                        let bytes = fs::read(asset_root.join(&pak_path))
+                            .with_context(|| format!("read font {pak_path}"))?;
+                        write_staged(staging, Path::new(&pak_path), &bytes)?;
+                        log::info!("packaged UI font: {pak_path}");
+                    }
+                    Some(pak_path) => {
+                        if !asset_root.join(&pak_path).is_file() {
+                            log::warn!("UI font {pak_path} not found; skipping");
+                        }
+                    }
+                    None => log::warn!(
+                        "UI font '{value}' in {doc_rel} cannot be packaged (absolute or escapes assets/)"
+                    ),
+                }
+            }
+        }
+    }
+
+    Ok(textures.len() + fonts.len())
 }
 
 /// 用 cooker 的 `TextureImporter` + `TextureCooker` 把源图烘成 RTEX 字节。
@@ -564,6 +656,89 @@ mod tests {
     /// 把 JSON 文本写进 `assets/scenes.json`。
     fn write_manifest(assets: &Path, json: &str) {
         fs::write(assets.join("scenes.json"), json).unwrap();
+    }
+
+    /// 1×1 透明 PNG：够 cooker 解出一张 RTEX，不需要 image 依赖。
+    const TINY_PNG: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f,
+        0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00,
+        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49,
+        0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    /// #591 / #583 / #529：UI 贴图、tileset 与字体都要进包。
+    #[test]
+    fn ui_images_tilesets_and_fonts_are_packaged() {
+        let temp = tempfile::tempdir().unwrap();
+        let assets = temp.path().join("assets");
+        fs::create_dir_all(assets.join("scenes")).unwrap();
+        fs::create_dir_all(assets.join("textures")).unwrap();
+        fs::create_dir_all(assets.join("fonts")).unwrap();
+        fs::write(assets.join("textures/icon.png"), TINY_PNG).unwrap();
+        fs::write(assets.join("textures/tiles.png"), TINY_PNG).unwrap();
+        fs::write(assets.join("fonts/hud.ttf"), b"not-a-real-ttf").unwrap();
+        fs::write(
+            assets.join("scenes/hud.scene.json"),
+            br#"{
+                "version": 1,
+                "entities": [{
+                    "name": "HUD",
+                    "parent": null,
+                    "transform": {},
+                    "components": {
+                        "prism_engine::ui::Node": {},
+                        "prism_engine::ui::Style": { "image": "textures/icon.png" },
+                        "prism_engine::ui::Text": {
+                            "content": "HUD", "font": "fonts/hud.ttf"
+                        },
+                        "prism_engine::scene::Tilemap": {
+                            "tileset_path": "textures/tiles.png"
+                        }
+                    }
+                }]
+            }"#,
+        )
+        .unwrap();
+        write_manifest(
+            &assets,
+            r#"{"scenes":[{"name":"hud","path":"scenes/hud.scene.json","enabled":true}]}"#,
+        );
+
+        let output = temp.path().join("scenes.pak");
+        let staging = temp.path().join("cooked");
+        let summary =
+            build_scene_package(assets.join("scenes.json"), &staging, &output, 0).unwrap();
+
+        let meta_text = fs::read_to_string(summary.pack.manifest_path.clone()).unwrap();
+        let meta: serde_json::Value = serde_json::from_str(&meta_text).unwrap();
+        let paths: Vec<_> = meta["assets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|asset| asset["path"].as_str().unwrap().to_string())
+            .collect();
+        for expected in [
+            "textures/icon.png",
+            "textures/tiles.png",
+            "fonts/hud.ttf",
+            "scenes/hud.rscn",
+        ] {
+            assert!(
+                paths.iter().any(|path| path == expected),
+                "{expected} missing from pak paths: {paths:?}"
+            );
+        }
+
+        // 字体原样进包（fontdue 直接读字节），贴图被烘成 RTEX。
+        let mut rm = ResourceManager::new();
+        rm.load_package_bytes(&fs::read(&output).unwrap()).unwrap();
+        rm.load_path_manifest_from_str(&meta_text).unwrap();
+        let font_id = rm.id_by_path("fonts/hud.ttf").expect("font path");
+        assert_eq!(rm.load_with_deps_raw(font_id).unwrap(), b"not-a-real-ttf");
+        let texture_id = rm.id_by_path("textures/icon.png").expect("texture path");
+        let cooked = rm.load_with_deps_raw(texture_id).unwrap();
+        assert_ne!(cooked, TINY_PNG, "贴图必须过 cooker");
     }
 
     #[test]

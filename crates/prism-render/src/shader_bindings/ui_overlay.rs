@@ -13,3 +13,9 @@ pub const ENTRY_FRAGMENT_MAIN: &str = "fragmentMain"; // stage: FRAGMENT
 // --- descriptor set 0 ---
 pub const GLYPH_ATLAS_SET: u32 = 0;
 pub const GLYPH_ATLAS_BINDING: u32 = 0; // COMBINED_IMAGE_SAMPLER
+
+// --- descriptor set 1 ---
+pub const GLOBAL_SAMPLERS_SET: u32 = 1;
+pub const GLOBAL_SAMPLERS_BINDING: u32 = 0; // UNIFORM_BUFFER
+pub const BINDLESS_SRVS_SET: u32 = 1;
+pub const BINDLESS_SRVS_BINDING: u32 = 1; // UNIFORM_BUFFER
