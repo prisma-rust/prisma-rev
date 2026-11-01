@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
+use prism_editor_api::asset_inspect::{inspect_asset, validate_asset};
 use prism_editor_api::reflect_edit::set_component_field;
 use prism_editor_api::scene::{self, DocKind};
 use prism_editor_api::schema::{build_schema, Schema};
@@ -96,6 +97,29 @@ pub fn definitions() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
+            name: "asset_inspect",
+            description: "检查一个已 cook 的资源（RSKL/RSKN/RANI/RMES/RTEX/RMAT）：计数、摘要与校验问题。路径相对项目根，如 assets/cooked/hero.rskin。",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "相对项目根的路径" }
+                },
+                "required": ["path"]
+            }),
+        },
+        ToolDef {
+            name: "asset_validate",
+            description: "只对已 cook 的资源跑校验（权重和、joint 越界、索引/子网格区间、关键帧时间与顺序）：ok=true 表示没有问题。",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "skeleton": { "type": "string", "description": "可选：.ranim 的骨骼文件，用于检查轨道索引" }
+                },
+                "required": ["path"]
+            }),
+        },
+        ToolDef {
             name: "component_remove",
             description: "移除实体的一个组件。",
             input_schema: json!({
@@ -121,9 +145,29 @@ pub fn call(root: &Path, name: &str, args: &Value) -> Result<String, String> {
         "entity_get" => entity_get(root, args),
         "field_set" => field_set(root, args),
         "component_add" => component_add(root, args),
+        "asset_inspect" => asset_inspect(root, args),
+        "asset_validate" => asset_validate(root, args),
         "component_remove" => component_remove(root, args),
         other => Err(format!("未知工具 '{other}'")),
     }
+}
+
+fn asset_inspect(root: &Path, args: &Value) -> Result<String, String> {
+    let relative = str_arg(args, "path")?;
+    let inspection = inspect_asset(root, &relative)?;
+    serde_json::to_string_pretty(&inspection).map_err(|error| error.to_string())
+}
+
+fn asset_validate(root: &Path, args: &Value) -> Result<String, String> {
+    let relative = str_arg(args, "path")?;
+    let skeleton = args.get("skeleton").and_then(Value::as_str);
+    let problems = validate_asset(root, &relative, skeleton)?;
+    serde_json::to_string_pretty(&json!({
+        "path": relative.replace('\\', "/"),
+        "ok": problems.is_empty(),
+        "problems": problems,
+    }))
+    .map_err(|error| error.to_string())
 }
 
 fn str_arg(args: &Value, key: &str) -> Result<String, String> {

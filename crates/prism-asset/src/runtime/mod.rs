@@ -42,7 +42,10 @@ pub use hot_reload::{HotReloadError, HotReloadEvent, HotReloadWatcher};
 
 pub mod typed;
 
-pub use typed::{MaterialAsset, MeshAsset, SceneAsset, ShaderAsset, TextureAsset};
+pub use typed::{
+    AnimClipAsset, MaterialAsset, MeshAsset, SceneAsset, ShaderAsset, SkeletonAsset,
+    SkinnedMeshAsset, TextureAsset,
+};
 
 pub use crate::formats::{RmatInfo, RmesInfo};
 

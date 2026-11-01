@@ -15,6 +15,7 @@
 //!
 //! 编辑器门面层（供 `editor/` 与自动化工具消费）：
 //! - [`asset_database`]：资产数据库（枚举 / 查找 / 标识符 / 增删改 / 导入）。
+//! - [`asset_inspect`]：已 cook 资源（RSKL / RSKN / RANI / RMES …）的检查与校验。
 //! - [`asset_importer`]：按扩展名投影导入器类别 / 主资产类型。
 //! - [`prefab_utility`]：预制体操作（提取 / 实例化 / 还原 / 应用 / 解包）。
 //! - [`selection`]：实体选中集合 + 活动项 + 过滤。
@@ -32,6 +33,7 @@
 
 pub mod asset_database;
 pub mod asset_importer;
+pub mod asset_inspect;
 pub mod asset_ops;
 pub mod assets;
 pub mod build_profile;

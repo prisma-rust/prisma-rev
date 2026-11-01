@@ -12,6 +12,9 @@ use crate::core::{AssetId, AssetType};
 use crate::formats::{
     decode_rmat, decode_rmes, decode_rtex, RmatInfo, RmesInfo, RtexInfo, MATERIAL_SCALAR_COUNT,
 };
+use crate::formats_skinned::{
+    decode_ranim, decode_rskel, decode_rskin, AnimClipInfo, SkeletonInfo, SkinnedMeshInfo,
+};
 use crate::runtime::{Asset, RuntimeError};
 
 // ---------------------------------------------------------------------------
@@ -236,3 +239,91 @@ impl Asset for SceneAsset {
 #[cfg(test)]
 #[path = "typed_tests.rs"]
 mod tests;
+
+// ---------------------------------------------------------------------------
+// 骨骼 / 蒙皮 / 动画剪辑（#560 P0）
+// ---------------------------------------------------------------------------
+
+/// Cooked 骨骼（RSKL）。解码后只剩纯数据：运行时由 `Animator` / 蒙皮着色器消费。
+#[derive(Debug, Clone)]
+pub struct SkeletonAsset {
+    pub info: SkeletonInfo,
+    raw: Vec<u8>,
+}
+
+impl Asset for SkeletonAsset {
+    fn asset_type() -> AssetType {
+        AssetType::Skeleton
+    }
+
+    fn from_bytes(data: &[u8]) -> Result<Self, RuntimeError> {
+        let info = decode_rskel(data).ok_or_else(|| RuntimeError::DeserializeFailed {
+            asset_type: AssetType::Skeleton,
+            reason: "invalid RSKL data (bad magic / truncated)".into(),
+        })?;
+        Ok(Self {
+            info,
+            raw: data.to_vec(),
+        })
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        self.raw
+    }
+}
+
+/// Cooked 蒙皮网格（RSKN）：每顶点 4 骨影响 + submesh + bind pose。
+#[derive(Debug, Clone)]
+pub struct SkinnedMeshAsset {
+    pub info: SkinnedMeshInfo,
+    raw: Vec<u8>,
+}
+
+impl Asset for SkinnedMeshAsset {
+    fn asset_type() -> AssetType {
+        AssetType::SkinnedMesh
+    }
+
+    fn from_bytes(data: &[u8]) -> Result<Self, RuntimeError> {
+        let info = decode_rskin(data).ok_or_else(|| RuntimeError::DeserializeFailed {
+            asset_type: AssetType::SkinnedMesh,
+            reason: "invalid RSKN data (bad magic / truncated)".into(),
+        })?;
+        Ok(Self {
+            info,
+            raw: data.to_vec(),
+        })
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        self.raw
+    }
+}
+
+/// Cooked 动画剪辑（RANI）。
+#[derive(Debug, Clone)]
+pub struct AnimClipAsset {
+    pub info: AnimClipInfo,
+    raw: Vec<u8>,
+}
+
+impl Asset for AnimClipAsset {
+    fn asset_type() -> AssetType {
+        AssetType::AnimClip
+    }
+
+    fn from_bytes(data: &[u8]) -> Result<Self, RuntimeError> {
+        let info = decode_ranim(data).ok_or_else(|| RuntimeError::DeserializeFailed {
+            asset_type: AssetType::AnimClip,
+            reason: "invalid RANI data (bad magic / truncated)".into(),
+        })?;
+        Ok(Self {
+            info,
+            raw: data.to_vec(),
+        })
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        self.raw
+    }
+}
