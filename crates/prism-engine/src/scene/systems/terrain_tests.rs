@@ -15,6 +15,92 @@ fn ramp(cells: usize) -> Heightfield {
     Heightfield::from_raw(&bytes, cells).expect("valid ramp")
 }
 
+/// 直接塞一个运行时 `TerrainData`（跳过文件加载），供查询测试用。
+fn terrain_world(
+    field: Heightfield,
+    size: [f32; 2],
+    translation: glam::Vec3,
+) -> (prism_ecs::World, prism_ecs::Entity) {
+    let mut world = prism_ecs::World::new();
+    let entity = world.spawn();
+    world.insert(
+        entity,
+        TerrainData {
+            key: "test".to_string(),
+            field: Arc::new(field),
+            mesh_path: String::new(),
+            size,
+            height_scale: 1.0,
+        },
+    );
+    world.insert(
+        entity,
+        LocalToWorld(glam::Mat4::from_translation(translation)),
+    );
+    (world, entity)
+}
+
+#[test]
+fn terrain_raycast_hits_a_flat_field_from_above() {
+    let (world, entity) = terrain_world(Heightfield::flat(4), [10.0, 10.0], glam::Vec3::ZERO);
+    let hit = terrain_raycast(&world, [0.0, 5.0, 0.0], [0.0, -1.0, 0.0], 20.0)
+        .expect("ray must hit the flat terrain");
+    assert_eq!(hit.entity, entity);
+    assert!(
+        (hit.distance - 5.0).abs() < 1e-3,
+        "distance {}",
+        hit.distance
+    );
+    assert!(hit.point[1].abs() < 1e-3, "point {}", hit.point[1]);
+    assert!(hit.normal[1] > 0.99, "normal {:?}", hit.normal);
+}
+
+#[test]
+fn terrain_raycast_refines_a_slope() {
+    // 2×2 斜坡：中心插值到 0.5，法线应该倾斜。
+    let (world, _) = terrain_world(ramp(2), [10.0, 10.0], glam::Vec3::ZERO);
+    let hit = terrain_raycast(&world, [0.0, 5.0, 0.0], [0.0, -1.0, 0.0], 20.0).expect("hit slope");
+    assert!((hit.point[1] - 0.5).abs() < 0.02, "hit y {}", hit.point[1]);
+    assert!(hit.normal[1] < 0.99, "slope normal {:?}", hit.normal);
+    let length = glam::Vec3::from_array(hit.normal).length();
+    assert!((length - 1.0).abs() < 1e-3, "normal length {length}");
+}
+
+#[test]
+fn terrain_raycast_respects_distance_coverage_and_direction() {
+    let (world, _) = terrain_world(Heightfield::flat(4), [10.0, 10.0], glam::Vec3::ZERO);
+
+    assert!(terrain_raycast(&world, [0.0, 5.0, 0.0], [0.0, -1.0, 0.0], 3.0).is_none());
+    assert!(terrain_raycast(&world, [20.0, 5.0, 0.0], [0.0, -1.0, 0.0], 20.0).is_none());
+    assert!(terrain_raycast(&world, [0.0, 5.0, 0.0], [0.0, 1.0, 0.0], 20.0).is_none());
+    assert!(terrain_raycast(&world, [0.0, -1.0, 0.0], [0.0, -1.0, 0.0], 20.0).is_none());
+    assert!(terrain_raycast(&world, [0.0, 5.0, 0.0], [0.0, 0.0, 0.0], 20.0).is_none());
+}
+
+#[test]
+fn terrain_sample_uses_the_highest_overlapping_field() {
+    let (mut world, _) = terrain_world(Heightfield::flat(4), [10.0, 10.0], glam::Vec3::ZERO);
+    let high = world.spawn();
+    world.insert(
+        high,
+        TerrainData {
+            key: "high".to_string(),
+            field: Arc::new(Heightfield::flat(4)),
+            mesh_path: String::new(),
+            size: [10.0, 10.0],
+            height_scale: 1.0,
+        },
+    );
+    world.insert(
+        high,
+        LocalToWorld(glam::Mat4::from_translation(glam::vec3(0.0, 2.0, 0.0))),
+    );
+
+    let (entity, height, _) = terrain_sample(&world, 0.0, 0.0).expect("covered");
+    assert_eq!(entity, high);
+    assert!((height - 2.0).abs() < 1e-4);
+}
+
 #[test]
 fn a_heightmap_needs_exactly_one_float_per_cell() {
     assert!(Heightfield::from_raw(&[], 2).is_none());

@@ -6,9 +6,11 @@
 //! 资产解析器遇到 `__proc/` 前缀时直接从 [`ProceduralMeshes`] 取网格，不需要 cook。
 //!
 //! 查询接口：[`Heightfield::sample_height`] / [`Heightfield::sample_normal`] 是纯函数，
-//! [`terrain_height`] 在世界上按 `TerrainData` 找覆盖点。
+//! [`terrain_height`] / [`terrain_sample`] 在世界上按 `TerrainData` 找覆盖点，
+//! [`terrain_raycast`] 用同样的采样做解析射线查询（玩法落地 / 拾取用）。
 //!
-//! 还没做（见 issue 的 Phase 2）：多 chunk + LOD、分层 splat、植被、碰撞。
+//! 还没做（见 issue 的 Phase 2）：多 chunk + LOD、分层 splat、植被、
+//! rapier 地形碰撞体（现在是解析查询，不参与物理积分）。
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -208,7 +210,18 @@ pub struct TerrainData {
 ///
 /// 只支持平移过的地形（旋转按轴向处理，不参与插值）；多个地形重叠时取最高的那个。
 pub fn terrain_height(world: &prism_ecs::World, x: f32, z: f32) -> Option<f32> {
-    let mut best: Option<f32> = None;
+    terrain_sample(world, x, z).map(|(_, height, _)| height)
+}
+
+/// 世界坐标 `(x, z)` 上最高的地形：实体、高度（米）与世界法线。
+///
+/// 与 [`terrain_height`] 共用同一套定位规则：只看实体平移，重叠时取最高的那份。
+pub fn terrain_sample(
+    world: &prism_ecs::World,
+    x: f32,
+    z: f32,
+) -> Option<(prism_ecs::Entity, f32, [f32; 3])> {
+    let mut best: Option<(prism_ecs::Entity, f32, [f32; 3])> = None;
     for (entity, data) in world.query::<TerrainData>() {
         let origin = world
             .get::<LocalToWorld>(entity)
@@ -222,9 +235,120 @@ pub fn terrain_height(world: &prism_ecs::World, x: f32, z: f32) -> Option<f32> {
         let u = local.x / (half.x * 2.0) + 0.5;
         let v = local.y / (half.y * 2.0) + 0.5;
         let height = data.field.sample_height(u, v) * data.height_scale + origin.y;
-        best = Some(best.map_or(height, |current| current.max(height)));
+        if best.is_none_or(|(_, current, _)| height > current) {
+            let normal = data.field.sample_normal(u, v, data.height_scale);
+            best = Some((entity, height, normal));
+        }
     }
     best
+}
+
+/// 一次地形射线命中。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TerrainHit {
+    pub entity: prism_ecs::Entity,
+    /// 从射线起点算起的距离（世界单位）。
+    pub distance: f32,
+    /// 命中点的世界坐标。
+    pub point: [f32; 3],
+    /// 命中处的高度场法线（世界空间，Y 分量向上）。
+    pub normal: [f32; 3],
+}
+
+/// 对高度场地形做射线查询（#517 Phase 2 第 4 条）。
+///
+/// 先沿射线采样 `(x, z)` 处的地形高度，找到第一次从地表上方穿到下方，再用
+/// 二分细化；`max_distance` 之外、或射线起点已经在地表以下时不返回命中。
+///
+/// 和 [`terrain_height`] 一样只支持**平移**过的地形；多份地形重叠时按最高的
+/// 那份求交（与查询接口一致）。这是玩法用的解析查询，不是物理引擎的连续碰撞。
+pub fn terrain_raycast(
+    world: &prism_ecs::World,
+    origin: [f32; 3],
+    direction: [f32; 3],
+    max_distance: f32,
+) -> Option<TerrainHit> {
+    let dir = glam::Vec3::from_array(direction);
+    let length = dir.length();
+    if !length.is_finite() || length <= 1e-6 || !(max_distance > 0.0) || !max_distance.is_finite() {
+        return None;
+    }
+    let dir = dir / length;
+    let origin = glam::Vec3::from_array(origin);
+    if !origin.is_finite() {
+        return None;
+    }
+
+    let (_, start_height, _) = terrain_sample(world, origin.x, origin.z)?;
+    if origin.y < start_height {
+        // 起点已经在地表以下（例如相机埋进山里）：不做“从内部穿出”的命中。
+        return None;
+    }
+
+    // 粗采样步长：短射线更细，长射线最多 512 次采样；随后二分 16 次。
+    let step = (max_distance / 512.0).clamp(0.25, 8.0).min(max_distance);
+    let samples = ((max_distance / step).ceil() as usize).clamp(1, 4096);
+    let mut previous: Option<(f32, f32)> = if origin.y > start_height {
+        Some((0.0, origin.y - start_height))
+    } else {
+        None
+    };
+
+    for index in 1..=samples {
+        let t = index as f32 / samples as f32 * max_distance;
+        let point = origin + dir * t;
+        let Some((_, height, _)) = terrain_sample(world, point.x, point.z) else {
+            previous = None;
+            continue;
+        };
+        let gap = point.y - height;
+        if gap <= 0.0 {
+            let lo = previous.map_or(0.0, |(previous_t, _)| previous_t);
+            let (hit_t, entity, normal) = refine_terrain_hit(world, origin, dir, lo, t);
+            let point = origin + dir * hit_t;
+            return Some(TerrainHit {
+                entity,
+                distance: hit_t,
+                point: point.to_array(),
+                normal,
+            });
+        }
+        previous = Some((t, gap));
+    }
+    None
+}
+
+/// 在 `[lo, hi]` 之间二分出射线与地形的交点（`lo` 在地表上方，`hi` 在下方）。
+fn refine_terrain_hit(
+    world: &prism_ecs::World,
+    origin: glam::Vec3,
+    dir: glam::Vec3,
+    mut lo: f32,
+    mut hi: f32,
+) -> (f32, prism_ecs::Entity, [f32; 3]) {
+    let mut entity = none_entity();
+    let mut normal = [0.0, 1.0, 0.0];
+    for _ in 0..16 {
+        let mid = (lo + hi) * 0.5;
+        let point = origin + dir * mid;
+        let Some((sample_entity, height, sample_normal)) = terrain_sample(world, point.x, point.z)
+        else {
+            break;
+        };
+        entity = sample_entity;
+        normal = sample_normal;
+        if point.y > height {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    (hi, entity, normal)
+}
+
+/// 二分过程中还没采到样本时的占位实体（正常路径上一定会被真实样本覆盖）。
+fn none_entity() -> prism_ecs::Entity {
+    prism_ecs::Entity::from_raw(u32::MAX, u32::MAX)
 }
 
 /// `Terrain` 的网格参数指纹：变了就要重建网格。
