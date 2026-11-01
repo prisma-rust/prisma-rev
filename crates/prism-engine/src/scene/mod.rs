@@ -13,7 +13,8 @@ pub mod runtime_components;
 pub mod components {
     //! Scene-schema components (from `prism-scene`) plus runtime GPU refs.
     pub use super::runtime_components::{
-        MaterialRef, MaterialSlots, MeshRef, MeshSubmesh, MeshSubmeshes, SceneEntityId, SpriteRef,
+        Hidden, MaterialRef, MaterialSlots, MeshRef, MeshSubmesh, MeshSubmeshes, SceneEntityId,
+        SpriteRef,
     };
     pub use prism_scene::components::*;
 }

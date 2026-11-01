@@ -333,6 +333,8 @@ pub struct EditorApp {
     doc_hash: u64,
     /// 选中集合的哈希（Scene view 的 gizmo / 高亮跟着选择变）。
     selection_hash: u64,
+    /// Scene 可见性（隐藏集合 + Isolate）的哈希，变化时强制重绘（#417）。
+    visibility_hash: u64,
     /// 选择历史（Edit → Selection Back / Forward，#417）。
     selection_history: SelectionHistory,
     pending_doc: Option<String>,
@@ -493,6 +495,7 @@ impl EditorApp {
         let mut app = Self {
             doc_hash: 0,
             selection_hash: 0,
+            visibility_hash: 0,
             selection_history: SelectionHistory::default(),
             pending_doc: None,
             pending_since: None,
@@ -4552,11 +4555,28 @@ impl EditorApp {
             let camera = self.workspace.camera;
             let selected: Vec<usize> = self.workspace.selection.iter().copied().collect();
             let outline = self.workspace.show_selection_outline;
+            let hidden = self.workspace.hidden_entity_ids();
+            let visibility_hash = {
+                let mut hash = 0xcbf2_9ce4_8422_2325u64 ^ u64::from(self.workspace.isolate);
+                for id in &hidden {
+                    hash ^= u64::from(*id);
+                    hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+                }
+                hash
+            };
+            if visibility_hash != self.visibility_hash {
+                self.visibility_hash = visibility_hash;
+                if let Some(view) = self.scene_view.as_mut() {
+                    view.mark_dirty();
+                }
+            }
             if let Some(view) = self.scene_view.as_mut() {
                 view.host.place_editor_camera(&camera);
                 // #487：真正的网格描边走引擎 pass，投影线框只保留给
                 // 无网格对象 / 父级子级。
                 view.host.set_selection_outline(&selected, outline);
+                // #417：Active 管模拟，这个集合只管 Scene 视图的渲染 / 拾取。
+                view.host.set_scene_hidden(&hidden);
             }
         }
 

@@ -41,6 +41,27 @@ fn entity_with_all_components_yields_draw_item() {
 }
 
 #[test]
+fn a_hidden_entity_does_not_yield_a_draw_item() {
+    let mut world = World::new();
+    let e = world.spawn();
+    world.insert(
+        e,
+        LocalToWorld(glam::Mat4::from_cols_array_2d(&[[1.0; 4]; 4])),
+    );
+    world.insert(
+        e,
+        MeshRef {
+            asset_id: SceneAssetId::generate(),
+            render_handle: MeshHandle::default(),
+            generation: 1,
+        },
+    );
+    world.insert(e, Hidden(true));
+
+    assert!(scene_render_system(&world).is_empty());
+}
+
+#[test]
 fn submeshes_become_one_draw_item_each_with_their_material() {
     let mut world = World::new();
     let e = world.spawn();

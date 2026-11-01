@@ -112,3 +112,14 @@ pub struct UiImageRef {
 /// 它不参与渲染，也不进 `.scene.json`（作者文档里已经有 `id` 了）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SceneEntityId(pub u32);
+
+/// 编辑会话级隐藏标记（Unity `SceneVisibilityManager`）。
+///
+/// `Active` 是作者数据（会进 `.scene.json`，停用后不再模拟）；这个标记只在
+/// 当前编辑器进程里由 Scene 视图写入，渲染系统据此跳过实体，但物理、脚本和
+/// 文档内容都不受影响。它**不是**可挂载组件，也不参与序列化。
+///
+/// 由编辑器标记为隐藏的祖先及其子树都会被标记，这样渲染过滤不需要在热路径
+/// 上再走父链。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Hidden(pub bool);

@@ -125,6 +125,12 @@ pub struct Document {
     pub externally_modified: bool,
     /// 从场景实例打开预制体时的来源（#420）；普通打开 / 场景文档为 `None`。
     pub prefab_origin: Option<PrefabOrigin>,
+    /// Scene 视图的会话级隐藏实体 id（#417）。
+    ///
+    /// 故意不放进 [`SceneDoc`]：可见性是编辑器查看状态，不是作者数据，保存不会
+    /// 写进 `.scene.json`，也不会在场景之间串味。删除实体后残留的 id 无害，
+    /// 解析时会被忽略。
+    pub hidden_entities: HashSet<u32>,
 }
 
 impl Document {
@@ -138,6 +144,7 @@ impl Document {
             saved_stamp: None,
             externally_modified: false,
             prefab_origin: None,
+            hidden_entities: HashSet::new(),
         }
     }
 
@@ -555,6 +562,11 @@ pub struct Workspace {
     /// Scene View 是否给选中对象画轮廓（#487）。选中反馈弱时唯一的线索是 gizmo，
     /// 密集场景里容易改错对象。
     pub show_selection_outline: bool,
+    /// Scene 视图是否处于 Isolate 模式（#417）：只渲染当前选择及其子树。
+    ///
+    /// 和 [`Document::hidden_entities`] 一样是会话级状态，不进 `.scene.json`；
+    /// 切换文档时自动关闭，避免新文档因为空选择而整场变黑。
+    pub isolate: bool,
     /// Scene View 是否画相机图标 / 视锥（#416）。
     pub show_camera_icons: bool,
     /// Scene View 是否画光源图标 / 范围（#416）。
@@ -669,6 +681,7 @@ impl Workspace {
             pivot_mode: PivotMode::Center,
             show_grid: true,
             show_selection_outline: true,
+            isolate: false,
             show_camera_icons: true,
             show_light_icons: true,
             show_skybox: true,
@@ -2101,6 +2114,7 @@ impl Workspace {
             self.active = index;
             self.clear_selection();
             self.expanded.clear();
+            self.isolate = false;
         }
     }
 
@@ -2433,6 +2447,88 @@ impl Workspace {
     pub fn clear_selection(&mut self) {
         self.selection.clear();
         self.selection_active = None;
+    }
+
+    // ── Scene 可见性 / Isolate（#417） ──────────────────────────────────
+
+    /// 隐藏 / 显示一个实体及其整棵子树（Unity `SceneVisibilityManager.Hide/Show`）。
+    ///
+    /// 只写编辑器会话状态，不改文档、不产生撤销步、不标脏。隐藏父级时子树一起
+    /// 记入集合，这样之后单独显示子级不会被父级再次挡住。
+    pub fn set_entity_hidden(&mut self, index: usize, hidden: bool) {
+        let ids: Vec<u32> = {
+            let doc = &self.document().doc;
+            std::iter::once(index)
+                .chain(doc.descendants(index))
+                .filter_map(|item| doc.id_of_index(item))
+                .collect()
+        };
+        let set = &mut self.document_mut().hidden_entities;
+        for id in ids {
+            if hidden {
+                set.insert(id);
+            } else {
+                set.remove(&id);
+            }
+        }
+    }
+
+    /// 清空隐藏集合并退出 Isolate。
+    pub fn show_all_entities(&mut self) {
+        self.document_mut().hidden_entities.clear();
+        self.isolate = false;
+    }
+
+    /// 打开 / 关闭 Isolate；空选择时不允许打开（否则整场会变黑）。
+    pub fn set_isolate(&mut self, isolate: bool) {
+        if isolate && self.selection.is_empty() {
+            return;
+        }
+        self.isolate = isolate;
+    }
+
+    /// 当前文档里实际不渲染的实体 id（显式隐藏 ∪ Isolate 过滤）。
+    pub fn hidden_entity_ids(&self) -> Vec<u32> {
+        let document = self.document();
+        let doc = &document.doc;
+        let isolate_visible: Option<HashSet<u32>> = self.isolate.then(|| {
+            self.selection
+                .iter()
+                .flat_map(|root| std::iter::once(*root).chain(doc.descendants(*root)))
+                .filter_map(|index| doc.id_of_index(index))
+                .collect()
+        });
+        doc.entities
+            .iter()
+            .filter_map(|entity| entity.id)
+            .filter(|id| {
+                document.hidden_entities.contains(id)
+                    || isolate_visible
+                        .as_ref()
+                        .is_some_and(|visible| !visible.contains(id))
+            })
+            .collect()
+    }
+
+    /// 一个实体当前是否被 Scene 视图隐藏（含 Isolate）。
+    pub fn is_entity_hidden(&self, index: usize) -> bool {
+        let document = self.document();
+        let doc = &document.doc;
+        let Some(id) = doc.id_of_index(index) else {
+            return false;
+        };
+        if document.hidden_entities.contains(&id) {
+            return true;
+        }
+        if !self.isolate {
+            return false;
+        }
+        !self
+            .selection
+            .iter()
+            .flat_map(|root| std::iter::once(*root).chain(doc.descendants(*root)))
+            .filter_map(|item| doc.id_of_index(item))
+            .any(|visible| visible == id)
     }
 
     /// 活动对象：最后点击 / 右键的实体；不在选择集里时退回选择集末尾。
@@ -9250,5 +9346,60 @@ mod tests {
             .join(crate::recovery::RECOVERY_DIR)
             .join(crate::recovery::RECOVERY_FILE)
             .exists());
+    }
+}
+
+#[cfg(test)]
+mod visibility_tests {
+    use super::*;
+
+    #[test]
+    fn hiding_a_parent_hides_its_subtree_without_touching_the_document() {
+        let mut workspace = Workspace::sample();
+        // sample: 0 = Main Camera, 1 = Cube, 2 = Directional Light, 3 = Cube/Detail。
+        workspace.set_entity_hidden(1, true);
+
+        assert!(workspace.is_entity_hidden(1));
+        assert!(workspace.is_entity_hidden(3));
+        assert!(!workspace.is_entity_hidden(0));
+        assert!(!workspace.document().dirty, "可见性不是作者数据");
+
+        workspace.set_entity_hidden(3, false);
+        assert!(workspace.is_entity_hidden(1));
+        assert!(!workspace.is_entity_hidden(3), "子级可以单独重新显示");
+    }
+
+    #[test]
+    fn isolate_keeps_the_selection_and_its_subtree() {
+        let mut workspace = Workspace::sample();
+        workspace.select(1, false);
+        workspace.set_isolate(true);
+
+        assert!(!workspace.is_entity_hidden(1));
+        assert!(!workspace.is_entity_hidden(3), "选中父级时子树一起保留");
+        assert!(workspace.is_entity_hidden(0));
+        assert!(workspace.is_entity_hidden(2));
+
+        workspace.show_all_entities();
+        assert!(!workspace.isolate);
+        assert!(workspace.hidden_entity_ids().is_empty());
+    }
+
+    #[test]
+    fn isolate_requires_a_selection_and_resets_when_switching_documents() {
+        let mut workspace = Workspace::sample();
+        workspace.set_isolate(true);
+        assert!(!workspace.isolate, "空选择不能把整场隔离成黑色");
+
+        workspace.select(1, false);
+        workspace.set_isolate(true);
+        assert!(workspace.isolate);
+        workspace.docs.push(Document::new(
+            DocKind::Scene,
+            Some("assets/scenes/other.scene.json".to_string()),
+            SceneDoc::default(),
+        ));
+        workspace.set_active(1);
+        assert!(!workspace.isolate, "切文档自动退出 Isolate");
     }
 }

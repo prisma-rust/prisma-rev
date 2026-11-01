@@ -167,7 +167,12 @@ pub fn active_hierarchy_system(world: &mut World) {
 /// 渲染 / 光照 / UI 过滤用的有效激活状态：优先派生值，其次自身 [`Active`]。
 ///
 /// 派生组件缺失时（实体刚 spawn 还没跑过系统）退回自身 `Active`，与旧行为一致。
+/// 编辑器的 Scene 可见性（[`Hidden`]）在最后叠加：隐藏只影响渲染类系统，
+/// 不改 `Active` / `ActiveInHierarchy`，也不影响物理或脚本。
 pub fn is_active_in_hierarchy(world: &World, entity: Entity) -> bool {
+    if world.get::<Hidden>(entity).is_some_and(|hidden| hidden.0) {
+        return false;
+    }
     if let Some(derived) = world.get::<ActiveInHierarchy>(entity) {
         return derived.0;
     }

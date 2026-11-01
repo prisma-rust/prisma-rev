@@ -12,6 +12,7 @@
 //! `apply_asset_requests` → `apply_results` 写回 ECS，原本分属两个线程的
 //! 两段在这里串起来。
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -23,7 +24,9 @@ use prism_engine::ecs::{Entity, World};
 use prism_engine::input::InputManager;
 use prism_engine::render_settings::RenderSettings;
 use prism_engine::render_system::{extract_frame_packet_into_with_shadow, FramePacket};
-use prism_engine::scene::components::{Camera, LocalToWorld, LocalTransform};
+use prism_engine::scene::components::{
+    Camera, Hidden, LocalToWorld, LocalTransform, SceneEntityId,
+};
 use prism_engine::Engine;
 use prism_render::descriptor::FrameUBOData;
 use prism_render::{FrameInput, GraphRenderer, VulkanContext};
@@ -71,6 +74,8 @@ pub struct EngineHost {
     height: u32,
     /// Scene view 的编辑器相机是否用场景天空盒当背景（引擎默认开）。
     show_skybox: bool,
+    /// Scene 视图会话级隐藏的实体 id（#417）。Game 视图永远为空。
+    hidden_entities: HashSet<u32>,
     /// Scene view 当前是否是 2D（正交）视图（#641）。由
     /// [`Self::place_editor_camera`] 每帧同步，用来关掉侧着看的 XZ 网格。
     view_2d: bool,
@@ -139,6 +144,7 @@ impl EngineHost {
             width,
             height,
             show_skybox: true,
+            hidden_entities: HashSet::new(),
             view_2d: false,
             capture_path: None,
             simulate: false,
@@ -225,6 +231,35 @@ impl EngineHost {
     pub fn set_selection_outline(&mut self, selected: &[usize], enabled: bool) {
         let ids = selection_entity_ids(&self.entities, selected, enabled);
         self.renderer.set_outline_entities(&ids);
+    }
+
+    /// 把 Scene 视图的会话级隐藏集合同步到 ECS（#417）。
+    ///
+    /// 引擎只在渲染类系统里读 [`Hidden`]，所以物理 / 脚本 / 文档都不受影响。
+    /// 集合没变时直接返回；场景重载后会由 [`Self::apply_scene_hidden`] 重新打标。
+    pub fn set_scene_hidden(&mut self, hidden: &[u32]) {
+        let next: HashSet<u32> = hidden.iter().copied().collect();
+        if self.hidden_entities == next {
+            return;
+        }
+        self.hidden_entities = next;
+        self.apply_scene_hidden();
+    }
+
+    fn apply_scene_hidden(&mut self) {
+        let hidden = self.hidden_entities.clone();
+        let entities = self.entities.clone();
+        let world = self.engine.world_mut();
+        for entity in entities {
+            let Some(id) = world.get::<SceneEntityId>(entity).map(|id| id.0) else {
+                continue;
+            };
+            if hidden.contains(&id) {
+                world.insert(entity, Hidden(true));
+            } else {
+                world.remove::<Hidden>(entity);
+            }
+        }
     }
 
     /// 文档下标对应的 cooked mesh 局部 AABB（Scene 视图精确拾取用，#600）。
@@ -352,6 +387,7 @@ impl EngineHost {
         prism_engine::scene::systems::hierarchy::active_hierarchy_system(self.engine.world_mut());
 
         self.ensure_helper_entities();
+        self.apply_scene_hidden();
         self.accumulator = Duration::ZERO;
         self.last_tick = Instant::now();
         Ok(count)
