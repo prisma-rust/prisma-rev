@@ -5431,6 +5431,28 @@ fn render_graph_draw_calls(
         ui.label(
             RichText::new(format!(
                 "pipeline: {}",
+                call.pipeline.as_deref().unwrap_or("not recorded")
+            ))
+            .size(10.0),
+        );
+        let descriptor_sets = if call.descriptor_sets.is_empty() {
+            "none".to_string()
+        } else {
+            call.descriptor_sets.join(", ")
+        };
+        ui.label(RichText::new(format!("descriptor sets: {descriptor_sets}")).size(10.0));
+        ui.label(
+            RichText::new(format!(
+                "vertices: {}",
+                call.vertices
+                    .map(|vertices| vertices.to_string())
+                    .unwrap_or_else(|| "not recorded".to_string())
+            ))
+            .size(10.0),
+        );
+        ui.label(
+            RichText::new(format!(
+                "state: {}",
                 call.state.as_deref().unwrap_or("not recorded")
             ))
             .size(10.0),
