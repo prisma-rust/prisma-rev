@@ -3,11 +3,11 @@
 //! The main 线程 sends [`PhysicsStep`] (spawn/despawn/set-transform commands)
 //! and receives [`PhysicsResult`] 动力学 body transforms) each 帧
 //!
-//! # Initial scope
+//! # Scope
 //!
-//! * 刚体 bodies only 动力学 / 运动学 / 静态
-//! * 球体 / 盒 / capsule / trimesh colliders
-//! * No joints, no CCD, no 查询 管线
+//! * 刚体：动力学 / 运动学 / 静态，支持父子层级
+//! * 碰撞体：球 / 盒 / 胶囊（trimesh 尚未接 cook 产物）
+//! * 无关节、无 CCD；射线查询在 `prism_engine::physics::raycast`
 //!
 //! # 接线（#522）
 //!
@@ -15,10 +15,10 @@
 //! 固定步发 [`PhysicsStep`]，线程积分后回 [`PhysicsResult`]，结果在
 //! `Engine::update` 的 `hierarchy_system` 之前写回 `LocalTransform`。
 //!
-//! 第一版范围（刻意收窄）：
+//! 范围：
 //!
-//! * 只处理**无父级**的实体；有 `Parent` 的刚体跳过并 warn 一次（世界矩阵 ↔ 局部
-//!   变换的换算留到后续）。
+//! * 支持带 `Parent` 的刚体：主线程沿父链累乘 `LocalTransform` 得到世界姿势，
+//!   结果写回时再用父级世界矩阵的逆变换转回 `LocalTransform`。
 //! * 刚体 transform 由 `LocalTransform` 驱动；`Collider.center` 与实体缩放会烘进
 //!   rapier 形状。
 //! * 没有速度组件：初速度恒为 0，代码改 `LocalTransform` 的动力学实体会在下一步
@@ -297,8 +297,6 @@ pub struct PhysicsRuntime {
     result_rx: Receiver<PhysicsResult>,
     thread: Option<JoinHandle<()>>,
     bodies: HashMap<EntityId, TrackedBody>,
-    /// 有 `Parent` 的实体只 warn 一次（第一版不处理父子层级）。
-    warned_parented: std::collections::HashSet<EntityId>,
     /// 线程已退出 / 通道已断：之后 `step` 直接返回，不再刷日志。
     failed: bool,
 }
@@ -328,7 +326,6 @@ impl PhysicsRuntime {
             result_rx,
             thread,
             bodies: HashMap::new(),
-            warned_parented: std::collections::HashSet::new(),
             failed: false,
         }
     }
@@ -385,21 +382,14 @@ impl PhysicsRuntime {
             .collect();
         for key in removed {
             self.bodies.remove(&key);
-            self.warned_parented.remove(&key);
             commands.push(PhysicsCommand::DespawnBody { entity: key });
         }
 
         for (key, entity) in current {
-            if world.get::<Parent>(entity).is_some() {
-                if self.warned_parented.insert(key) {
-                    log::warn!(
-                        "physics: entity {key:#x} has a Parent; hierarchical rigid bodies are \
-                         not supported yet and will be skipped"
-                    );
-                }
+            if world.get::<LocalTransform>(entity).is_none() {
                 continue;
             }
-            let Some(transform) = world.get::<LocalTransform>(entity) else {
+            let Some(world_matrix) = world_matrix(world, entity) else {
                 continue;
             };
             let body = world.get::<Rigidbody>(entity);
@@ -407,17 +397,20 @@ impl PhysicsRuntime {
 
             let status = body.map(body_status).unwrap_or(PhysicsBodyStatus::Static);
             let settings = body.map(body_settings).unwrap_or_default();
+            // 父级缩放也要进碰撞形状；没有父级时等价于原来的 `transform.scale`。
+            let (world_scale, world_rotation, world_position) =
+                world_matrix.to_scale_rotation_translation();
             let shape = collider
-                .map(|collider| collider_desc(collider, transform.scale))
-                .unwrap_or_else(|| default_box(transform.scale));
+                .map(|collider| collider_desc(collider, world_scale))
+                .unwrap_or_else(|| default_box(world_scale));
             let desired = TrackedBody {
                 status,
                 settings,
                 shape: shape.clone(),
             };
 
-            let position = transform.position.to_array();
-            let rotation = transform.rotation.to_array();
+            let position = world_position.to_array();
+            let rotation = world_rotation.to_array();
             match self.bodies.get(&key) {
                 None => {
                     commands.push(PhysicsCommand::SpawnBody {
@@ -468,22 +461,64 @@ impl Drop for PhysicsRuntime {
     }
 }
 
+/// 沿父链累乘 `LocalTransform`，得到实体当前的世界矩阵。
+///
+/// 不依赖 `LocalToWorld`：物理固定步可能跑在 `hierarchy_system` 之前，且这里
+/// 只需要一棵很浅的父链。遇到断链 / 环时停在最后一个有效父级。
+fn world_matrix(world: &World, entity: Entity) -> Option<glam::Mat4> {
+    let local = world.get::<LocalTransform>(entity)?;
+    let mut matrix = local.to_model_matrix();
+    let mut cursor = entity;
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(entity);
+    while let Some(parent) = world.get::<Parent>(cursor).map(|parent| parent.0) {
+        if !world.is_alive(parent) || !visited.insert(parent) {
+            break;
+        }
+        let Some(parent_local) = world.get::<LocalTransform>(parent) else {
+            break;
+        };
+        matrix = parent_local.to_model_matrix() * matrix;
+        cursor = parent;
+    }
+    Some(matrix)
+}
+
 fn apply_result(world: &mut World, result: &PhysicsResult) {
     for body in &result.transforms {
         let entity = entity_from_key(body.entity);
         if !world.is_alive(entity) {
             continue;
         }
+        let mut world_position = glam::Vec3::from_array(body.position);
+        let mut world_rotation = glam::Quat::from_array(body.rotation);
+        if body.rotation.iter().all(|value| value.is_finite())
+            && world_rotation.length_squared() > 1e-8
+        {
+            world_rotation = world_rotation.normalize();
+        } else {
+            continue;
+        }
+        if !world_position.is_finite() {
+            continue;
+        }
+
+        // rapier 返回的是世界姿势；带 Parent 的实体要转回父级局部空间，
+        // 否则 hierarchy_system 下一帧会把父变换再乘一次。
+        if let Some(parent) = world.get::<Parent>(entity).map(|parent| parent.0) {
+            let Some(parent_matrix) = world_matrix(world, parent) else {
+                continue;
+            };
+            let (_, parent_rotation, _) = parent_matrix.to_scale_rotation_translation();
+            world_position = parent_matrix.inverse().transform_point3(world_position);
+            world_rotation = parent_rotation.inverse() * world_rotation;
+        }
+
         let Some(transform) = world.get_mut::<LocalTransform>(entity) else {
             continue;
         };
-        if body.position.iter().all(|value| value.is_finite()) {
-            transform.position = glam::Vec3::from_array(body.position);
-        }
-        let rotation = glam::Quat::from_array(body.rotation);
-        if body.rotation.iter().all(|value| value.is_finite()) && rotation.length_squared() > 1e-8 {
-            transform.rotation = rotation.normalize();
-        }
+        transform.position = world_position;
+        transform.rotation = world_rotation;
     }
 }
 
@@ -687,6 +722,120 @@ mod tests {
         // 删掉实体：下一次 step 发 DespawnBody，不能 panic / 卡住。
         world.despawn(entity);
         assert!(runtime.step(&mut world));
+    }
+
+    #[test]
+    fn world_matrix_accumulates_parent_rotation_and_scale() {
+        let mut world = World::new();
+        let parent = world.spawn();
+        world.insert(
+            parent,
+            LocalTransform {
+                position: glam::Vec3::new(3.0, 0.0, 0.0),
+                rotation: glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+                scale: glam::Vec3::splat(2.0),
+            },
+        );
+        let child = world.spawn();
+        world.insert(
+            child,
+            LocalTransform {
+                position: glam::Vec3::new(1.0, 0.0, 0.0),
+                ..Default::default()
+            },
+        );
+        world.insert(child, Parent(parent));
+
+        let world_position = world_matrix(&world, child)
+            .expect("world matrix")
+            .transform_point3(glam::Vec3::ZERO);
+        let expected = glam::Vec3::new(3.0, 0.0, -2.0);
+        assert!(
+            (world_position - expected).length() < 1.0e-5,
+            "expected {expected:?}, got {world_position:?}"
+        );
+    }
+
+    /// #522：带 `Parent` 的刚体用父链算世界姿势；积分结果再转回局部空间。
+    /// 静态父级（地板）在 x=10，子球从局部 y=5 落下，最终局部 y≈0.5、
+    /// 世界 x 仍为 10。
+    #[test]
+    fn parented_dynamic_body_uses_parent_world_transform() {
+        use prism_engine::scene::helpers::HierarchyHelper;
+        use prism_engine::scene::systems::hierarchy::hierarchy_system;
+
+        let mut world = World::new();
+        let parent = world.spawn();
+        world.insert(
+            parent,
+            LocalTransform {
+                position: glam::Vec3::new(10.0, 0.0, 0.0),
+                ..Default::default()
+            },
+        );
+        world.insert(
+            parent,
+            Rigidbody {
+                body_type: BodyType::Static,
+                ..Default::default()
+            },
+        );
+        world.insert(
+            parent,
+            Collider {
+                half_extents: [5.0, 0.5, 5.0],
+                center: [0.0, -0.5, 0.0],
+                ..Default::default()
+            },
+        );
+
+        let child = world.spawn();
+        world.insert(
+            child,
+            LocalTransform {
+                position: glam::Vec3::new(0.0, 5.0, 0.0),
+                ..Default::default()
+            },
+        );
+        world.insert(child, Rigidbody::default());
+        world.insert(
+            child,
+            Collider {
+                shape: ColliderShape::Sphere,
+                radius: 0.5,
+                ..Default::default()
+            },
+        );
+        HierarchyHelper::reparent(&mut world, child, Some(parent));
+
+        let mut runtime = PhysicsRuntime::spawn();
+        for _ in 0..240 {
+            assert!(runtime.step(&mut world));
+        }
+        hierarchy_system(&mut world);
+
+        let local = world
+            .get::<LocalTransform>(child)
+            .expect("child transform")
+            .position;
+        assert!(
+            (0.45..0.55).contains(&local.y),
+            "child should rest at local y≈0.5, got {local:?}"
+        );
+        assert!(
+            local.x.abs() < 1.0e-3 && local.z.abs() < 1.0e-3,
+            "world-space result must be converted back to parent-local space: {local:?}"
+        );
+
+        let world_position = world
+            .get::<prism_engine::scene::components::LocalToWorld>(child)
+            .expect("child world transform")
+            .0
+            .transform_point3(glam::Vec3::ZERO);
+        assert!(
+            (world_position.x - 10.0).abs() < 1.0e-3,
+            "child should stay under its parent at world x=10, got {world_position:?}"
+        );
     }
 
     #[test]

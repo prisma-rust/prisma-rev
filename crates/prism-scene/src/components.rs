@@ -1921,9 +1921,8 @@ impl ReflectType for BodyType {
 /// 盒用 `half_extents`，球用 `radius`，胶囊用 `radius` + `half_height`。
 /// 所有尺寸都在**本地空间**，世界空间大小再乘实体缩放。
 ///
-/// Phase 1（#522）落地的是「可创作 + 可用射线查询」：场景/编辑器里能加、
-/// 能改，引擎的 `physics::raycast` 已经按真实形状求交；rapier 刚体积分、
-/// 触发器回调、碰撞网格仍待接线。
+/// `#522` 已落地「可创作 + 射线查询 + rapier 刚体积分」：场景/编辑器里能加、
+/// 能改，引擎的 `physics::raycast` 按真实形状求交；触发器回调与碰撞网格仍待接线。
 #[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
 #[reflect(name = "prism_engine::scene::Collider")]
 #[serde(default)]
@@ -1937,7 +1936,7 @@ pub struct Collider {
     pub radius: f32,
     /// 胶囊圆柱段的半高（不含两端半球）。
     pub half_height: f32,
-    /// 触发器：参与查询但**不阻挡**刚体（还没有回调，等物理步接线）。
+    /// 触发器：参与查询但**不阻挡**刚体（rapier sensor 事件尚未接回调）。
     pub is_trigger: bool,
     pub friction: f32,
     pub restitution: f32,
@@ -1963,7 +1962,7 @@ impl Default for Collider {
 
 /// 刚体 = `Rigidbody`。
 ///
-/// 只有作者参数；真正的积分/求解（rapier 线程）还没有接到 `App`（#522）。
+/// 真正的积分/求解由 `prism-app` 的 rapier 线程完成（#522），支持父子层级；
 /// 有 `Collider` 没有 `Rigidbody` 的实体按静态障碍处理。
 #[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
 #[reflect(name = "prism_engine::scene::Rigidbody")]
