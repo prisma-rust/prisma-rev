@@ -75,6 +75,9 @@ struct GlyphAtlas {
     row_h: u32,
     /// 本帧有新的字形写入 → 需要 HOST→SHADER 屏障
     dirty: bool,
+    /// Linear tiling 的实际行跨度（字节）。驱动可能把它对齐到 `ATLAS_SIZE`
+    /// 之外；写入必须按这个 stride，不能假设 `width == pitch`（#590）。
+    row_pitch: usize,
     device: ash::Device,
 }
 
@@ -84,6 +87,15 @@ impl GlyphAtlas {
         let (image, memory) = Self::create_image(context)?;
         let view = Self::create_view(&device, image)?;
         let sampler = Self::create_sampler(&device)?;
+
+        // LINEAR tiling 的 rowPitch 由驱动决定，可能大于 ATLAS_SIZE。
+        let subresource = vk::ImageSubresource {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            mip_level: 0,
+            array_layer: 0,
+        };
+        let row_pitch =
+            unsafe { device.get_image_subresource_layout(image, subresource) }.row_pitch as usize;
 
         // UNDEFINED → GENERAL：host 侧直接 map 写（LINEAR tiling）。
         let cmd = allocate_temp_command_buffer(&device, command_pool)
@@ -156,6 +168,7 @@ impl GlyphAtlas {
             y: 0,
             row_h: 0,
             dirty: false,
+            row_pitch,
             device,
         })
     }
@@ -281,7 +294,7 @@ impl GlyphAtlas {
             let base = ptr as *mut u8;
             for row in 0..h {
                 let src = &bitmap[(row * w) as usize..((row + 1) * w) as usize];
-                let dst = base.add(((self.y + row) * ATLAS_SIZE + self.x) as usize);
+                let dst = base.add((self.y + row) as usize * self.row_pitch + self.x as usize);
                 std::ptr::copy_nonoverlapping(src.as_ptr(), dst, w as usize);
             }
             self.device.unmap_memory(self.memory);
@@ -986,7 +999,9 @@ impl UiOverlay {
             };
             if let Some([gx, gy, gw, gh]) = glyph.rect {
                 let px = cursor_x + glyph.xmin as f32;
-                let py = baseline + glyph.ymin as f32;
+                // fontdue 的 `ymin` 是 PositiveYUp 下相对基线的下边界；我们的
+                // 像素坐标 PositiveYDown，字形顶边 = baseline - ymin - height。
+                let py = baseline - glyph.ymin as f32 - gh as f32;
                 // 像素坐标（左上角原点，y 向下）→ Vulkan NDC（y=-1 屏幕顶，y=+1 屏幕底）。
                 // 两者 y 方向一致，所以不做翻转；翻一次会把文字画成倒的。
                 let x0 = (px / w) * 2.0 - 1.0;
