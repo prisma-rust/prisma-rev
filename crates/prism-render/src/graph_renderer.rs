@@ -91,6 +91,8 @@ pub struct FrameInput<'a> {
     /// ECS-authored 2D sprites for this frame (sorted back-to-front by the
     /// engine). Empty for 3D-only scenes.
     pub sprite_items: &'a [crate::render_graph::SpriteDrawItem],
+    /// `Light2D` entities for this frame, strongest first (#611).
+    pub sprite_lights: &'a [crate::render_graph::SpriteLight],
     /// World-space particle billboards for this frame (sorted back-to-front
     /// by the engine). Empty when no `ParticleSystem` emits this frame.
     pub particle_items: &'a [crate::render_graph::ParticleDrawItem],
@@ -1868,6 +1870,7 @@ impl GraphRenderer {
             draw_items,
             gizmos,
             sprite_items,
+            sprite_lights,
             particle_items,
             skybox,
             frame_data,
@@ -1933,6 +1936,7 @@ impl GraphRenderer {
                 draw_list: draw_items,
                 gizmos,
                 sprite_items,
+                sprite_lights,
                 particle_items,
                 skybox: *skybox,
                 mesh_manager: &self.mesh_manager,
@@ -2361,6 +2365,7 @@ impl GraphRenderer {
             draw_items,
             gizmos: &[],
             sprite_items: &[],
+            sprite_lights: &[],
             particle_items: &[],
             skybox: None,
             frame_data,

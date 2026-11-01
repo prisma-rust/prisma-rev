@@ -428,6 +428,7 @@ fn render_one_frame(
         draw_items,
         gizmos: &packet.gizmos,
         sprite_items: &packet.sprite_items,
+        sprite_lights: &packet.sprite_lights,
         particle_items: &packet.particle_items,
         skybox: packet.skybox,
         frame_data: &frame_data,

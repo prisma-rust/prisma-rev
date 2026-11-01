@@ -277,6 +277,12 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
   引擎把非空格子展开成 `SpriteDrawItem`，与精灵共用实例缓冲 / bindless 图集（几百格仍是一次
   draw call），并按主相机视锥逐格裁剪（#529）。检查器的 Transform 下方有网格编辑器：
   `Columns` / `Rows` 改规模，`Palette` 决定左键循环范围，左键递增、右键单格清零。
+- **2D 光照（`prism_engine::scene::Light2D`，#611）**：精灵默认不受光照；给场景加一个
+  `Light2D` 实体（`kind` = `Point` / `Ambient` / `Directional`），再把需要被照亮的
+  `SpriteRenderer.receive_lights` 勾上即可。强度是美术单位（`1.0` = 原色），点光按
+  世界 XY 距离衰减（`radius = 0` 不衰减），氛围光适合夜景最低亮度。3D 的
+  `PointLight` / `SpotLight` / `DirectionalLight` 不影响 2D，场景里只有 3D 光时会打印
+  一次提示。`Light2D` 走反射注册，Add Component 里直接可见。
 - **精灵裁剪（`SpriteRenderer.clip_enabled` / `clip_rect`）**：勾上后按**世界空间**
   矩形 `[x0, y0, x1, y1]` 逐像素裁剪（片元 `discard`，不打断 2D 的单 draw call）。
   角点顺序随便写，引擎自己排序；关闭 / 非有限 / 零面积视为不裁剪，所以刚勾上开关

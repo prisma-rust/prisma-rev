@@ -465,6 +465,103 @@ pub struct SpriteDrawItem {
     /// [`NO_CLIP`] means "draw everywhere"; anything with `max_x >= min_x`
     /// clips per-fragment in the shader.
     pub clip: [f32; 4],
+    /// Whether [`SpriteLight`]s modulate this sprite (#611).
+    ///
+    /// `false` keeps the unlit `texture × color` result, so 2D scenes that have
+    /// no lights look exactly as they did before lighting existed.
+    pub receive_lights: bool,
+}
+
+/// 2D light kinds — must match `SPRITE_LIGHT_*` in `sprites.slang`.
+pub const SPRITE_LIGHT_AMBIENT: u32 = 0;
+pub const SPRITE_LIGHT_POINT: u32 = 1;
+pub const SPRITE_LIGHT_DIRECTIONAL: u32 = 2;
+
+/// Maximum number of 2D lights uploaded per frame (#611).
+///
+/// The sprite shader loops over this many entries; extra lights are dropped by
+/// the engine (sorted by contribution so the strongest survive).
+pub const SPRITE_LIGHT_MAX: usize = 16;
+
+/// One 2D light for [`crate::sprite_pass::SpritePass`] (#611).
+///
+/// 64-byte, `std430`-friendly record (three `float4`s) mirroring
+/// `SpriteLight` in `sprites.slang`. Kept separate from [`GpuLight`], whose
+/// photometric units (candela / lux) are meaningless for 2D sprites.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SpriteLight {
+    /// `x, y` = world position; `z` = falloff radius (`0` = no falloff);
+    /// `w` = intensity.
+    pub position_range: [f32; 4],
+    /// Linear RGB colour; `w` = kind ([`SPRITE_LIGHT_AMBIENT`] / …).
+    pub color_kind: [f32; 4],
+    /// `x, y` = direction (world space); `zw` reserved.
+    pub direction: [f32; 4],
+}
+
+impl SpriteLight {
+    /// A point light at `position` with `radius` and `intensity`.
+    pub fn point(position: [f32; 2], color: [f32; 3], intensity: f32, radius: f32) -> Self {
+        Self {
+            position_range: [position[0], position[1], radius, intensity.max(0.0)],
+            color_kind: [color[0], color[1], color[2], SPRITE_LIGHT_POINT as f32],
+            direction: [0.0; 4],
+        }
+    }
+
+    /// A flat ambient light (no position / falloff).
+    pub fn ambient(color: [f32; 3], intensity: f32) -> Self {
+        Self {
+            position_range: [0.0, 0.0, 0.0, intensity.max(0.0)],
+            color_kind: [color[0], color[1], color[2], SPRITE_LIGHT_AMBIENT as f32],
+            direction: [0.0; 4],
+        }
+    }
+
+    /// A directional light (whole sprite multiplied by `color × intensity`).
+    ///
+    /// 方向会归一化；零向量 / 非有限值回落到「向下」，这样着色器读到的永远是
+    /// 一个合法单位向量。
+    pub fn directional(direction: [f32; 2], color: [f32; 3], intensity: f32) -> Self {
+        let direction = normalize_light_direction(direction);
+        Self {
+            position_range: [0.0, 0.0, 0.0, intensity.max(0.0)],
+            color_kind: [
+                color[0],
+                color[1],
+                color[2],
+                SPRITE_LIGHT_DIRECTIONAL as f32,
+            ],
+            direction: [direction[0], direction[1], 0.0, 0.0],
+        }
+    }
+
+    /// Strongest-first ordering key used when trimming to [`SPRITE_LIGHT_MAX`].
+    fn weight(&self) -> f32 {
+        let intensity = self.position_range[3].max(0.0);
+        let luma =
+            0.2126 * self.color_kind[0] + 0.7152 * self.color_kind[1] + 0.0722 * self.color_kind[2];
+        intensity * luma.max(0.0)
+    }
+}
+
+/// 把 2D 光照方向归一化；零向量 / 非有限值回落到「向下」。
+fn normalize_light_direction(direction: [f32; 2]) -> [f32; 2] {
+    let length = (direction[0] * direction[0] + direction[1] * direction[1]).sqrt();
+    if length.is_finite() && length > 1e-6 {
+        [direction[0] / length, direction[1] / length]
+    } else {
+        [0.0, -1.0]
+    }
+}
+
+/// 把 `lights` 修剪到 [`SPRITE_LIGHT_MAX`]，强度高的优先（#611）。
+pub fn trim_sprite_lights(lights: &mut Vec<SpriteLight>) {
+    if lights.len() <= SPRITE_LIGHT_MAX {
+        return;
+    }
+    lights.sort_by(|a, b| b.weight().total_cmp(&a.weight()));
+    lights.truncate(SPRITE_LIGHT_MAX);
 }
 
 /// Disabled clip rect: `max < min`, which the sprite shader treats as "no clip".
@@ -664,6 +761,8 @@ pub struct GraphFrame<'a> {
     pub gizmos: &'a [crate::gizmo::GizmoInstance],
     /// ECS-authored 2D sprites for this frame (sorted back-to-front).
     pub sprite_items: &'a [SpriteDrawItem],
+    /// `Light2D` entities for this frame, strongest first (#611).
+    pub sprite_lights: &'a [SpriteLight],
     /// World-space particle billboards for this frame (sorted back-to-front).
     pub particle_items: &'a [ParticleDrawItem],
     /// ECS-authored skybox parameters (`None` = skip the sky draw).

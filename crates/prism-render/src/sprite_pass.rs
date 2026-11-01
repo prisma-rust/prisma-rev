@@ -26,7 +26,7 @@ use ash::vk;
 use crate::buffer::{create_buffer, BufferUsage, MemoryProperties};
 use crate::context::VulkanContext;
 use crate::pipeline::{blend_factor, blend_operation, GraphicsPipeline, PipelineDesc};
-use crate::render_graph::SpriteDrawItem;
+use crate::render_graph::{SpriteDrawItem, SpriteLight, SPRITE_LIGHT_MAX};
 use crate::shader;
 use crate::shader_bindings::sprites as bindings;
 use prism_gfx::{BlendMode, BlendOp};
@@ -56,6 +56,8 @@ struct SpriteInstance {
     /// 世界空间裁剪矩形 `[min_x, min_y, max_x, max_y]`（#582）。
     /// `max < min` = 不裁剪。
     clip: [f32; 4],
+    /// 位标志：bit 0 = 接收 2D 光照（#611）。
+    flags: u32,
 }
 
 impl SpriteInstance {
@@ -66,7 +68,7 @@ impl SpriteInstance {
             .input_rate(vk::VertexInputRate::INSTANCE)
     }
 
-    fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 8] {
+    fn attribute_descriptions() -> [vk::VertexInputAttributeDescription; 9] {
         let vec4 = |location: u32, offset: u32| {
             vk::VertexInputAttributeDescription::default()
                 .location(location)
@@ -94,6 +96,11 @@ impl SpriteInstance {
                 .format(vk::Format::R32_UINT)
                 .offset(80),
             vec4(7, 96),
+            vk::VertexInputAttributeDescription::default()
+                .binding(0)
+                .location(8)
+                .format(vk::Format::R32_UINT)
+                .offset(112),
         ]
     }
 }
@@ -125,6 +132,14 @@ pub struct SpritePass {
     instance_memory: vk::DeviceMemory,
     instance_capacity: u32,
     device: Option<ash::Device>,
+
+    // ---- 2D 光照（#611）----
+    /// set 1 binding 0：`StructuredBuffer<SpriteLight>`。
+    light_layout: vk::DescriptorSetLayout,
+    light_pool: vk::DescriptorPool,
+    light_set: vk::DescriptorSet,
+    light_buffer: vk::Buffer,
+    light_memory: vk::DeviceMemory,
 }
 
 impl SpritePass {
@@ -139,6 +154,11 @@ impl SpritePass {
             instance_memory: vk::DeviceMemory::null(),
             instance_capacity: 0,
             device: None,
+            light_layout: vk::DescriptorSetLayout::null(),
+            light_pool: vk::DescriptorPool::null(),
+            light_set: vk::DescriptorSet::null(),
+            light_buffer: vk::Buffer::null(),
+            light_memory: vk::DeviceMemory::null(),
         }
     }
 }
@@ -164,10 +184,15 @@ impl SpritePass {
         bindless_layout: vk::DescriptorSetLayout,
         view_proj: &[[f32; 4]; 4],
         items: &[SpriteDrawItem],
+        lights: &[SpriteLight],
     ) -> Result<()> {
         if items.is_empty() || bindless_set == vk::DescriptorSet::null() {
             return Ok(());
         }
+        // 光照资源是懒创建的（`SpritePass::new` 不持有设备）。即使这一帧
+        // 没有灯光也要建好，否则 `light_count == 0` 的分支没有 set 1 可绑。
+        self.ensure_lights(device, context)?;
+        self.upload_lights(device, lights)?;
         if self.built_for_render_pass != Some(render_pass) {
             self.pipelines.clear();
             self.built_for_render_pass = Some(render_pass);
@@ -206,14 +231,26 @@ impl SpritePass {
                     std::slice::from_ref(&bindless_set),
                     &[],
                 );
+                device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    pipeline.layout,
+                    1,
+                    std::slice::from_ref(&self.light_set),
+                    &[],
+                );
+                let push = bindings::SpritePush {
+                    viewProj: *view_proj,
+                    lightParams: [lights.len().min(SPRITE_LIGHT_MAX) as f32, 0.0, 0.0, 0.0],
+                };
                 device.cmd_push_constants(
                     cmd,
                     pipeline.layout,
-                    vk::ShaderStageFlags::VERTEX,
+                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                     0,
                     std::slice::from_raw_parts(
-                        view_proj as *const [[f32; 4]; 4] as *const u8,
-                        size_of::<[[f32; 4]; 4]>(),
+                        &push as *const bindings::SpritePush as *const u8,
+                        size_of::<bindings::SpritePush>(),
                     ),
                 );
                 device.cmd_bind_vertex_buffers(cmd, 0, &[self.instance_buffer], &[0]);
@@ -236,6 +273,7 @@ impl SpritePass {
         if self.pipelines.contains_key(&blend) {
             return Ok(());
         }
+        let bindless_set_layout = bindless_layout;
         self.device = Some(device.clone());
 
         let vert_module =
@@ -259,9 +297,10 @@ impl SpritePass {
         let binding_descs = [SpriteInstance::binding_description()];
         let attr_descs = SpriteInstance::attribute_descriptions();
 
-        // Push constant = `SpritePush` (one mat4 = 64 bytes, vertex stage only).
+        // Push constant = `SpritePush` (view-projection + light count). The
+        // fragment stage reads `lightParams`, so both stages see the block.
         let push = [vk::PushConstantRange::default()
-            .stage_flags(vk::ShaderStageFlags::VERTEX)
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
             .offset(0)
             .size(size_of::<bindings::SpritePush>() as u32)];
 
@@ -302,7 +341,7 @@ impl SpritePass {
             shader_stages: &shader_stages,
             vertex_binding_desc: &binding_descs,
             vertex_attr_descs: &attr_descs,
-            descriptor_set_layouts: std::slice::from_ref(&bindless_layout),
+            descriptor_set_layouts: &[bindless_set_layout, self.light_layout],
             push_constant_ranges: &push,
             render_pass,
             subpass: 0,
@@ -369,6 +408,7 @@ impl SpritePass {
                 color: item.color,
                 texture: item.texture,
                 clip: item.clip,
+                flags: u32::from(item.receive_lights),
                 _pad: [0; 3],
             })
             .collect();
@@ -401,9 +441,110 @@ impl SpritePass {
                 device.free_memory(self.instance_memory, None);
                 self.instance_memory = vk::DeviceMemory::null();
             }
+            if self.light_buffer != vk::Buffer::null() {
+                device.destroy_buffer(self.light_buffer, None);
+                self.light_buffer = vk::Buffer::null();
+            }
+            if self.light_memory != vk::DeviceMemory::null() {
+                device.free_memory(self.light_memory, None);
+                self.light_memory = vk::DeviceMemory::null();
+            }
+            if self.light_pool != vk::DescriptorPool::null() {
+                device.destroy_descriptor_pool(self.light_pool, None);
+                self.light_pool = vk::DescriptorPool::null();
+            }
+            if self.light_layout != vk::DescriptorSetLayout::null() {
+                device.destroy_descriptor_set_layout(self.light_layout, None);
+                self.light_layout = vk::DescriptorSetLayout::null();
+            }
+            self.light_set = vk::DescriptorSet::null();
         }
         self.instance_capacity = 0;
         self.device = None;
+    }
+
+    /// 懒创建 2D 光照资源（set 1 = `StructuredBuffer<SpriteLight>`，#611）。
+    ///
+    /// `SpritePass::new()` 不持有 `VulkanContext`，所以第一次 `draw` 才建；
+    /// 容量固定为 [`SPRITE_LIGHT_MAX`]（16 × 48 = 768 字节），不需要增长。
+    fn ensure_lights(&mut self, device: &ash::Device, context: &VulkanContext) -> Result<()> {
+        if self.light_set != vk::DescriptorSet::null() {
+            return Ok(());
+        }
+        self.device = Some(device.clone());
+
+        let binding = vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::FRAGMENT);
+        let layout_info =
+            vk::DescriptorSetLayoutCreateInfo::default().bindings(std::slice::from_ref(&binding));
+        let layout = unsafe { device.create_descriptor_set_layout(&layout_info, None) }
+            .context("SpritePass: light descriptor set layout")?;
+
+        let pool_size = vk::DescriptorPoolSize::default()
+            .ty(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1);
+        let pool_info = vk::DescriptorPoolCreateInfo::default()
+            .pool_sizes(std::slice::from_ref(&pool_size))
+            .max_sets(1);
+        let pool = unsafe { device.create_descriptor_pool(&pool_info, None) }
+            .context("SpritePass: light descriptor pool")?;
+
+        let alloc_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(pool)
+            .set_layouts(std::slice::from_ref(&layout));
+        let sets = unsafe { device.allocate_descriptor_sets(&alloc_info) }
+            .context("SpritePass: allocate light descriptor set")?;
+        let set = sets[0];
+
+        let (buffer, memory) = create_buffer(
+            context,
+            (SPRITE_LIGHT_MAX * size_of::<SpriteLight>()) as vk::DeviceSize,
+            vk::BufferUsageFlags::STORAGE_BUFFER,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        )
+        .context("SpritePass: light storage buffer")?;
+
+        let buffer_info = vk::DescriptorBufferInfo::default()
+            .buffer(buffer)
+            .offset(0)
+            .range(vk::WHOLE_SIZE);
+        let write = vk::WriteDescriptorSet::default()
+            .dst_set(set)
+            .dst_binding(0)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .buffer_info(std::slice::from_ref(&buffer_info));
+        unsafe { device.update_descriptor_sets(std::slice::from_ref(&write), &[]) };
+
+        self.light_layout = layout;
+        self.light_pool = pool;
+        self.light_set = set;
+        self.light_buffer = buffer;
+        self.light_memory = memory;
+        Ok(())
+    }
+
+    /// 把本帧灯光写进 host-visible SSBO（最多 [`SPRITE_LIGHT_MAX`] 盏）。
+    fn upload_lights(&self, device: &ash::Device, lights: &[SpriteLight]) -> Result<()> {
+        let count = lights.len().min(SPRITE_LIGHT_MAX);
+        if count == 0 || self.light_memory == vk::DeviceMemory::null() {
+            return Ok(());
+        }
+        unsafe {
+            let ptr = device
+                .map_memory(
+                    self.light_memory,
+                    0,
+                    vk::WHOLE_SIZE,
+                    vk::MemoryMapFlags::empty(),
+                )
+                .context("SpritePass: map light buffer")?;
+            std::ptr::copy_nonoverlapping(lights.as_ptr(), ptr as *mut SpriteLight, count);
+            device.unmap_memory(self.light_memory);
+        }
+        Ok(())
     }
 }
 
@@ -417,6 +558,19 @@ impl Drop for SpritePass {
                 }
                 if self.instance_memory != vk::DeviceMemory::null() {
                     device.free_memory(self.instance_memory, None);
+                }
+                // 2D 光照资源（#611）。
+                if self.light_buffer != vk::Buffer::null() {
+                    device.destroy_buffer(self.light_buffer, None);
+                }
+                if self.light_memory != vk::DeviceMemory::null() {
+                    device.free_memory(self.light_memory, None);
+                }
+                if self.light_pool != vk::DescriptorPool::null() {
+                    device.destroy_descriptor_pool(self.light_pool, None);
+                }
+                if self.light_layout != vk::DescriptorSetLayout::null() {
+                    device.destroy_descriptor_set_layout(self.light_layout, None);
                 }
             }
         }
@@ -447,11 +601,11 @@ mod tests {
     /// 顶点布局是 Rust 与 `sprites.slang` 之间的手工契约，改一边就必须改另一边。
     #[test]
     fn the_instance_layout_matches_the_shader_locations() {
-        assert_eq!(std::mem::size_of::<SpriteInstance>(), 112);
+        assert_eq!(std::mem::size_of::<SpriteInstance>(), 116);
         let attrs = SpriteInstance::attribute_descriptions();
         let locations: Vec<u32> = attrs.iter().map(|attr| attr.location).collect();
-        assert_eq!(locations, vec![0, 1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(locations, vec![0, 1, 2, 3, 4, 5, 6, 7, 8]);
         let offsets: Vec<u32> = attrs.iter().map(|attr| attr.offset).collect();
-        assert_eq!(offsets, vec![0, 12, 24, 36, 48, 64, 80, 96]);
+        assert_eq!(offsets, vec![0, 12, 24, 36, 48, 64, 80, 96, 112]);
     }
 }

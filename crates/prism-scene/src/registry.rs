@@ -476,6 +476,8 @@ pub fn register_builtin_components(registry: &mut ComponentRegistry) {
         registry.register_reflect_serde::<LineRenderer>("prism_engine::scene::LineRenderer");
         registry.register_reflect_serde::<SpriteAnimation>("prism_engine::scene::SpriteAnimation");
         registry.register_reflect_serde::<Tilemap>("prism_engine::scene::Tilemap");
+        // #611：2D 精灵光照（与 SpriteRenderer 同组，没有精灵就没有意义）。
+        registry.register_reflect_serde::<Light2D>("prism_engine::scene::Light2D");
     }
 
     // ── 本地变换 ──

@@ -112,6 +112,21 @@ pub struct SpriteRef {
   以保证像素画调色板不被 ACES 改写；
 - 2D 场景不创建 `Skybox` / `Gizmo` 实体，相机 `clear_flags = SolidColor`。
 
+#### 2D 光照（`Light2D`，#611）
+
+精灵默认**不受光照**（`texture × color`，像素画调色板原样输出）。需要昼夜变化时：
+
+- 场景里放 `prism_engine::scene::Light2D` 实体（`kind = Point | Ambient | Directional`）；
+- 需要被照亮的 `SpriteRenderer` 打开 `receive_lights`；
+- 光照强度是**美术单位**：`1.0` = 原色，`0.5` = 暗一半，不做物理单位换算，
+  所以同一个场景从「白天」调到「黄昏」只改 `intensity` / `color` 即可。
+
+点光按世界 XY 距离衰减（`radius = 0` 表示不衰减）。氛围光（`Ambient`）常用于夜景的
+最低亮度：`color = [0.2, 0.25, 0.5]`、`intensity = 0.35`。
+
+3D 的 `PointLight` / `SpotLight` / `DirectionalLight` **不参与 2D**；场景里只有 3D 光
+时引擎会打一次 warn 指向 `Light2D`，而不是静默无效。
+
 #### 2D 帧的 pass 裁剪（后续优化，不阻塞 M0）
 
 `RenderMode` 增加 `Sprites2D`：跳过 shadow / GTAO / GI / PT / forward。M0 先接受「前向 pass 空跑」的成本，

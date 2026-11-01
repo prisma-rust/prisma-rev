@@ -684,6 +684,7 @@ impl EngineHost {
             draw_items: &self.packet.draw_items,
             gizmos: &self.packet.gizmos,
             sprite_items: &self.packet.sprite_items,
+            sprite_lights: &self.packet.sprite_lights,
             particle_items: &self.packet.particle_items,
             skybox: self.packet.skybox,
             frame_data: &frame_data,

@@ -7,7 +7,7 @@
 //! | 渲染     | `MeshRenderer`, `SpriteRenderer`, `Tilemap`, `Active` |
 //! | 动画     | `SpriteAnimation`（2D 帧）, `KeyframeAnimation`（曲线） |
 //! | 粒子     | `ParticleSystem`（世界空间 3D CPU 粒子）、`ParticleEmitter2D`（世界 XY 平面 2D 粒子） |
-//! | 光源 | `Light`（形状）, `DirectionalLight`, `PointLight`, `SpotLight`（旧） |
+//! | 光源 | `Light`（形状）, `DirectionalLight`, `PointLight`, `SpotLight`（旧）, `Light2D`（2D 精灵光照） |
 //! | 相机     | `Camera`, `FlyCameraController` |
 //! | 天空盒   | `Skybox` |
 //! | 音频     | `AudioSource`（场景内播放）, `AudioListener`（听者） |
@@ -330,6 +330,12 @@ pub struct SpriteRenderer {
     ///
     /// 启用一个零面积矩形会把整个精灵裁掉——先填好矩形再打开开关。
     pub clip_rect: [f32; 4],
+    /// 是否被 [`Light2D`] 照亮（#611）。
+    ///
+    /// 默认 `false`：2D 精灵保持引入光照之前的样子（`贴图 × color`）。
+    /// 打开后片元按世界位置累加场景里的 `Light2D`，再加上环境光——
+    /// 没有任何 `Light2D` 时仍然按 unlit 处理，所以只改这一个开关不会让画面变黑。
+    pub receive_lights: bool,
 }
 
 impl Default for SpriteRenderer {
@@ -352,6 +358,7 @@ impl Default for SpriteRenderer {
             blend_op: BlendOp::Add,
             clip_enabled: false,
             clip_rect: [0.0; 4],
+            receive_lights: false,
         }
     }
 }
@@ -1122,6 +1129,127 @@ impl ParticleEmitter2D {
 // ---------------------------------------------------------------------------
 // Lighting
 // ---------------------------------------------------------------------------
+
+/// 2D 光源类型（#611）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Light2DKind {
+    /// 均匀照亮整幅画面（夜晚的底色）。`intensity` 直接乘到颜色上。
+    Ambient,
+    /// 圆形衰减：半径内按 `(1 - d / radius)^2` 衰减。
+    #[default]
+    Point,
+    /// 平行光：没有位置 / 衰减，方向上不做阴影——2D 精灵没有法线，
+    /// 只能整体乘一个颜色，用来做「夕阳把画面染成橙色」。
+    Directional,
+}
+
+impl ReflectType for Light2DKind {
+    fn field_type() -> FieldType {
+        FieldType::U8
+    }
+
+    fn enum_variants() -> Option<&'static [&'static str]> {
+        Some(&["Ambient", "Point", "Directional"])
+    }
+
+    fn to_value(&self) -> Value {
+        Value::U64(match self {
+            Self::Ambient => 0,
+            Self::Point => 1,
+            Self::Directional => 2,
+        })
+    }
+
+    fn from_value(value: Value) -> Result<Self, ReflectError> {
+        match value.as_u64()? {
+            0 => Ok(Self::Ambient),
+            1 => Ok(Self::Point),
+            2 => Ok(Self::Directional),
+            other => Err(ReflectError::BadData(format!(
+                "invalid Light2DKind discriminant {other}"
+            ))),
+        }
+    }
+}
+
+/// 2D 光源（#611）：照亮打开了 [`SpriteRenderer::receive_lights`] 的精灵。
+///
+/// 与 3D 的 [`PointLight`] / [`DirectionalLight`] 是**两套单位**：3D 用坎德拉
+/// / lux，2D 这里 `intensity = 1.0` 就是「原色」，方便作者按画面调。
+///
+/// 2D 精灵没有法线，所以点光只做径向衰减（不做兰伯特），方向光对整个精灵
+/// 乘一个颜色。软阴影 / 光斑贴图留到后续（#611 Phase 2）。
+///
+/// 用法（夜晚灯笼）：
+///
+/// ```json
+/// "prism_engine::scene::Light2D": {
+///   "kind": "Point", "color": [1.0, 0.75, 0.45], "intensity": 1.2, "radius": 6.0
+/// }
+/// ```
+///
+/// 再放一盏 `kind = "Ambient"`, `color = [0.18, 0.2, 0.32]`, `intensity = 1.0`
+/// 做夜色底子；没有环境光时，半径外的精灵会变黑（这是 2D 光照的正常结果）。
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
+#[reflect(name = "prism_engine::scene::Light2D")]
+#[serde(default)]
+pub struct Light2D {
+    /// 光源类型（默认点光）。
+    pub kind: Light2DKind,
+    /// 线性 RGB 颜色（`intensity = 1` 时乘到精灵上的比例）。
+    pub color: [f32; 3],
+    /// 强度倍数；`0` = 关灯，负值按 0 处理。
+    pub intensity: f32,
+    /// 点光半径（世界单位）；`<= 0` / 非有限值时点光退化成「全画面」，
+    /// 便于调试时先看到效果。
+    pub radius: f32,
+    /// 方向光的照射方向（世界 XY，归一化前）。2D 没有法线，这个值只用于
+    /// 后续的方向性衰减（Phase 2），当前不影响结果。
+    pub direction: [f32; 2],
+    /// 是否参与光照。
+    pub enabled: bool,
+}
+
+impl Default for Light2D {
+    fn default() -> Self {
+        Self {
+            kind: Light2DKind::Point,
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+            radius: 5.0,
+            direction: [0.0, -1.0],
+            enabled: true,
+        }
+    }
+}
+
+impl Light2D {
+    /// 是否会给 `receive_lights` 的精灵增加亮度（关闭 / 强度非正 → `false`）。
+    pub fn contributes(&self) -> bool {
+        self.enabled
+            && self.intensity.is_finite()
+            && self.intensity > 0.0
+            && self.color.iter().any(|channel| *channel > 0.0)
+    }
+
+    /// 有效的强度（非有限 / 负值按 0）。
+    pub fn strength(&self) -> f32 {
+        if self.intensity.is_finite() && self.intensity > 0.0 {
+            self.intensity
+        } else {
+            0.0
+        }
+    }
+
+    /// 有效的半径；`0` 表示「不衰减 / 全画面」。
+    pub fn falloff_radius(&self) -> f32 {
+        if self.radius.is_finite() && self.radius > 0.0 {
+            self.radius
+        } else {
+            0.0
+        }
+    }
+}
 
 /// Directional 无限 光源
 ///
