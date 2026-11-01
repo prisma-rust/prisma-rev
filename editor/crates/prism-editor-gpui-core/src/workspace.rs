@@ -1666,11 +1666,16 @@ impl Workspace {
             .clone()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "文档尚未保存"))?;
         let doc = project::read_document(&root, &path)?;
-        let document = self.document_mut();
-        document.doc = doc;
-        document.undo.clear();
-        document.dirty = false;
+        {
+            let document = self.document_mut();
+            document.doc = doc;
+            document.undo.clear();
+            document.dirty = false;
+        }
         self.hydrate_documents();
+        // 外部文件可能比当前文档短（git checkout / 脚本重写）。选中集存的是
+        // 下标，必须在换完文档后裁掉越界项，否则检查器的 multi-select 路径会 panic。
+        self.clamp_selection();
         self.log(
             LogSource::Editor,
             LogLevel::Info,
@@ -6713,6 +6718,45 @@ mod tests {
         workspace.close_document(1);
         assert!(workspace.active < workspace.docs.len());
         assert!(!workspace.docs.is_empty());
+    }
+
+    #[test]
+    fn reloading_a_shrunken_document_clamps_selection() {
+        let project = TempProject::new("reload-selection-clamp");
+        let path = "assets/scenes/a.scene.json";
+        let five = r#"{
+            "version": 3,
+            "entities": [
+                {"id":1,"name":"A","parent":null,"transform":{"position":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},"components":{}},
+                {"id":2,"name":"B","parent":null,"transform":{"position":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},"components":{}},
+                {"id":3,"name":"C","parent":null,"transform":{"position":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},"components":{}},
+                {"id":4,"name":"D","parent":null,"transform":{"position":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},"components":{}},
+                {"id":5,"name":"E","parent":null,"transform":{"position":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},"components":{}}
+            ]
+        }"#;
+        std::fs::write(project.root.join(path), five).unwrap();
+
+        let mut workspace = Workspace::load_fixture(&fixture());
+        workspace.load_project(project.root.clone()).unwrap();
+        assert_eq!(workspace.document().doc.entities.len(), 5);
+        workspace.selection = (0..5).collect();
+
+        // 模拟 `git checkout` / 外部工具把文档换短。
+        std::fs::write(
+            project.root.join(path),
+            r#"{
+                "version": 3,
+                "entities": [
+                    {"id":1,"name":"A","parent":null,"transform":{"position":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},"components":{}},
+                    {"id":2,"name":"B","parent":null,"transform":{"position":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},"components":{}}
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        workspace.reload_active().unwrap();
+        assert_eq!(workspace.document().doc.entities.len(), 2);
+        assert_eq!(workspace.selection, vec![0, 1]);
     }
 
     #[test]
