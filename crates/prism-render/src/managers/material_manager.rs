@@ -338,6 +338,18 @@ impl RenderMaterialManager {
         self.materials.remove(handle);
     }
 
+    /// 按 **SSBO 槽位** 释放（#495 热重载 / 实体销毁）。
+    ///
+    /// 组件里存的是 `MaterialRef.material_slot`，不是渲染器的句柄，所以这里
+    /// 用槽位反查句柄再走 `unregister`（复位 GPU 数据 + 归还空闲表）。
+    pub fn unregister_slot(&mut self, slot: u32) -> bool {
+        let Some(handle) = self.slots.get(slot as usize).copied().flatten() else {
+            return false;
+        };
+        self.unregister(handle);
+        true
+    }
+
     /// 释放 every 材质 Idempotent.
     pub fn destroy(&mut self, device: &ash::Device) {
         for (_, _) in self.materials.drain() {

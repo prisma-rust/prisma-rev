@@ -1243,6 +1243,36 @@ impl GraphRenderer {
     /// 返回顺序与输入一致，调用方按实体配对写回 `World`。
     ///
     /// 输入为空时直接返回，避免无谓地创建 `BatchUploader` 命令缓冲。
+    /// 释放一组主线程判定为不再需要的 GPU 资源（#495）。
+    ///
+    /// 热重载 / 实体销毁 / 组件路径被改写时，`GpuAssetResolver` 会把旧槽位与
+    /// 句柄交回来；这里真正销毁图像、网格与材质槽，避免每次重载都泄漏一份显存。
+    /// 值已经释放过（重复请求、渲染器重启）时静默忽略。
+    pub fn release_assets(&mut self, releases: &[crate::asset_bridge::AssetRelease]) {
+        if releases.is_empty() {
+            return;
+        }
+        let device = self.runtime.context.device.clone();
+        let mut freed = 0usize;
+        for release in releases {
+            if let Some(slot) = release.texture_slot {
+                if self.texture_manager.unregister_srv(slot, &device) {
+                    freed += 1;
+                }
+            }
+            if let Some(handle) = release.mesh_handle {
+                self.mesh_manager.unregister(&device, handle);
+                freed += 1;
+            }
+            if let Some(slot) = release.material_slot {
+                if self.material_manager.unregister_slot(slot) {
+                    freed += 1;
+                }
+            }
+        }
+        log::debug!("release_assets: freed {freed} GPU resource(s)");
+    }
+
     pub fn apply_asset_requests(
         &mut self,
         requests: Vec<crate::asset_bridge::AssetResolveRequest>,

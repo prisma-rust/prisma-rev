@@ -809,6 +809,11 @@ prism-scene::rscn::encode_scene
 
 - **[G2] Cooker 输出格式与引擎对接** ✅ **场景链路已打通**：`SceneCooker` 产出 RSCN v4，`prism-engine` 的 `SceneLoader` 用同一份 `prism-scene` schema 解码；`prism-cooker` 中有真实 `.scene.json` 的 cook/decode 测试。纹理/网格的压缩数据端到端对比仍待补。
 
+- **GPU 资源回收**（#495）：`GpuAssetResolver` 记录每个 `(实体, 槽位)` 当前使用的
+  槽位 / 句柄；热重载、组件移除、实体销毁或路径改写时把记录交回
+  `GraphRenderer::release_assets`，由渲染器按 bindless 槽 / `MeshHandle` / 材质槽
+  反查并销毁（纹理还会先把该槽描述符改写成洋红回退，避免采样已释放视图）。
+  重新上传到新槽位的同一帧就释放旧的，不产生「还在采样的已释放槽位」的中间帧。
 - **[G3] ResourceManager → Engine 桥接** ✅ **部分完成**：`GpuAssetResolver` 已持 `ResourceManager` 并支持 `load_package/load_package_bytes` 与 `load_with_deps`，`App::new` 中 `load_resource_package()` 会挂载 `assets/` 下**所有** `.pak`（每个包旁有同名 `.pak.meta.json` 时一并加载路径清单），不再写死 `scenes.pak`；`Handle<T>`→`Entity` 的映射由 `GpuAssetResolver` 的引用缓存维护（`MeshRef` / `MaterialRef` /
   `SpriteRef` 持 `Handle`），全链路 `CLI build → .pak → ResourceManager → GPU` 可手动验证。
 

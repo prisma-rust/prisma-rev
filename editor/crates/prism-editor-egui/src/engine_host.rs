@@ -622,6 +622,11 @@ impl EngineHost {
         let requests = self
             .asset_resolver
             .prepare_requests(self.engine.world_mut());
+        // 失效的 GPU 资源同步释放（编辑器没有渲染线程，#495）。
+        let releases = self.asset_resolver.take_releases();
+        if !releases.is_empty() {
+            self.renderer.release_assets(&releases);
+        }
         if !requests.is_empty() {
             let (entities, stripped): (Vec<Entity>, Vec<_>) = requests.into_iter().unzip();
             let results = self.renderer.apply_asset_requests(stripped);
