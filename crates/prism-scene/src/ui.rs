@@ -193,12 +193,26 @@ pub struct ComputedLayout {
     /// 就是层级面板里看到的顺序（见 #462）。
     #[serde(default)]
     pub order: u32,
+    /// 这个节点所在 Canvas 的缩放系数（#463）。`rect` 已经是**屏幕像素**，
+    /// 这个值只用来把字号 / 圆角这类「设计像素」量换算到屏幕像素。
+    /// `1.0` = 没有 Canvas（旧行为）。
+    #[serde(default = "identity_scale")]
+    pub scale: f32,
+}
+
+/// `ComputedLayout::scale` 的 serde 默认：`1.0`（无缩放）。
+pub(crate) fn identity_scale() -> f32 {
+    1.0
 }
 
 impl ComputedLayout {
-    /// 只带矩形的布局（顺序留 0，由布局系统随后填充）。
+    /// 只带矩形的布局（顺序留 0，缩放 1，由布局系统随后填充）。
     pub fn from_rect(rect: [f32; 4]) -> Self {
-        Self { rect, order: 0 }
+        Self {
+            rect,
+            order: 0,
+            scale: 1.0,
+        }
     }
 
     pub fn left(&self) -> f32 {
@@ -285,6 +299,125 @@ impl ReflectType for TextAlign {
     }
 }
 
+// ── Canvas / 缩放 ─────────────────────────────────────────────
+
+/// Canvas 缩放模式（对齐 Unity `CanvasScaler` 的三种 Screen Match Mode）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CanvasScaleMode {
+    /// 1 屏幕像素 = 1 设计像素（默认 = 没有 Canvas 的旧行为）。
+    #[default]
+    ConstantPixelSize,
+    /// 按参考分辨率等比缩放：宽、高各自算一个比例，再按
+    /// [`Canvas::match_width_or_height`] 在对数空间插值。
+    ScaleWithScreenSize,
+    /// 只用宽或高之一：`match_width_or_height` < 0.5 取宽度，否则取高度。
+    MatchWidthOrHeight,
+}
+
+impl ReflectType for CanvasScaleMode {
+    fn field_type() -> FieldType {
+        FieldType::U8
+    }
+
+    fn enum_variants() -> Option<&'static [&'static str]> {
+        Some(&[
+            "ConstantPixelSize",
+            "ScaleWithScreenSize",
+            "MatchWidthOrHeight",
+        ])
+    }
+
+    fn to_value(&self) -> Value {
+        Value::U64(match self {
+            Self::ConstantPixelSize => 0,
+            Self::ScaleWithScreenSize => 1,
+            Self::MatchWidthOrHeight => 2,
+        })
+    }
+
+    fn from_value(value: Value) -> Result<Self, ReflectError> {
+        match value.as_u64()? {
+            0 => Ok(Self::ConstantPixelSize),
+            1 => Ok(Self::ScaleWithScreenSize),
+            2 => Ok(Self::MatchWidthOrHeight),
+            other => Err(ReflectError::BadData(format!(
+                "invalid CanvasScaleMode discriminant {other}"
+            ))),
+        }
+    }
+}
+
+/// UI 画布：把「设计分辨率」映射到实际屏幕，整棵子树等比缩放（#463）。
+///
+/// 挂在某个根节点上时，它的子节点都按 [`Canvas::scale_factor`] 换算：
+/// 布局在**虚拟分辨率**里算，写回 `ComputedLayout.rect` 时乘回缩放系数，
+/// 所以 `Style.width` / `margin` / 锚点都按设计稿数值写，1080p 和 720p
+/// 看到的是同一套布局。字号和圆角这类绝对量由渲染系统按
+/// `ComputedLayout.scale` 一起放大。
+///
+/// 嵌套 Canvas 不做多个虚拟坐标系：子节点只继承最近的 Canvas（与 Unity
+/// 的 nesting 行为不同，会在文档里说明）。
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Reflect)]
+#[reflect(name = "prism_engine::ui::Canvas")]
+#[serde(default)]
+pub struct Canvas {
+    /// 设计稿分辨率（如 1920×1080）。
+    pub reference_resolution: [f32; 2],
+    pub scale_mode: CanvasScaleMode,
+    /// `0` = 完全贴合宽度，`1` = 完全贴合高度。
+    pub match_width_or_height: f32,
+}
+
+impl Default for Canvas {
+    fn default() -> Self {
+        Self {
+            reference_resolution: [1920.0, 1080.0],
+            scale_mode: CanvasScaleMode::ScaleWithScreenSize,
+            match_width_or_height: 0.5,
+        }
+    }
+}
+
+impl Canvas {
+    /// 屏幕像素 / 设计像素 的缩放系数。
+    ///
+    /// 退化输入（0 或非有限值）按 1 处理，避免整棵 UI 变成 NaN。
+    pub fn scale_factor(&self, screen: (f32, f32)) -> f32 {
+        let width = finite_positive(screen.0, 1.0);
+        let height = finite_positive(screen.1, 1.0);
+        let reference_width = finite_positive(self.reference_resolution[0], 1920.0);
+        let reference_height = finite_positive(self.reference_resolution[1], 1080.0);
+        let by_width = width / reference_width;
+        let by_height = height / reference_height;
+        let factor = match self.scale_mode {
+            CanvasScaleMode::ConstantPixelSize => 1.0,
+            CanvasScaleMode::MatchWidthOrHeight => {
+                if self.match_width_or_height >= 0.5 {
+                    by_height
+                } else {
+                    by_width
+                }
+            }
+            CanvasScaleMode::ScaleWithScreenSize => {
+                let t = match self.match_width_or_height {
+                    t if t.is_finite() => t.clamp(0.0, 1.0),
+                    _ => 0.5,
+                };
+                (by_width.ln() * (1.0 - t) + by_height.ln() * t).exp()
+            }
+        };
+        finite_positive(factor, 1.0)
+    }
+}
+
+fn finite_positive(value: f32, fallback: f32) -> f32 {
+    if value.is_finite() && value > 0.0 {
+        value
+    } else {
+        fallback
+    }
+}
+
 // ── Interaction ───────────────────────────────────────────────
 
 /// 交互状态（由 Input System 每帧更新）。
@@ -350,7 +483,9 @@ impl Button {
 
 #[cfg(test)]
 mod tests {
-    use super::{Button, Interaction, Style, Text, TextAlign};
+    use super::{
+        Button, Canvas, CanvasScaleMode, ComputedLayout, Interaction, Style, Text, TextAlign,
+    };
 
     #[test]
     fn button_colors_follow_the_interaction_state() {
@@ -426,6 +561,60 @@ mod tests {
         let json = serde_json::to_string(&authored).unwrap();
         let back: Text = serde_json::from_str(&json).unwrap();
         assert_eq!(back.font, "assets/fonts/hud.ttf");
+    }
+
+    #[test]
+    fn canvas_scales_the_reference_resolution_to_the_screen() {
+        // #463：1920×1080 设计稿在 960×540 上应该是 0.5。
+        let canvas = Canvas::default();
+        assert_eq!(canvas.scale_mode, CanvasScaleMode::ScaleWithScreenSize);
+        assert!((canvas.scale_factor((960.0, 540.0)) - 0.5).abs() < 1e-5);
+        assert!((canvas.scale_factor((1920.0, 1080.0)) - 1.0).abs() < 1e-5);
+        assert!((canvas.scale_factor((3840.0, 2160.0)) - 2.0).abs() < 1e-5);
+
+        // 宽高比不同时，match 在 log 空间插值：960×1080 的宽比 0.5、高比 1.0。
+        let skewed = canvas.scale_factor((960.0, 1080.0));
+        assert!((skewed - 0.5f32.sqrt()).abs() < 1e-4, "{skewed}");
+
+        // 只贴合一边时直接取该边。
+        let width_only = Canvas {
+            scale_mode: CanvasScaleMode::MatchWidthOrHeight,
+            match_width_or_height: 0.0,
+            ..Canvas::default()
+        };
+        assert!((width_only.scale_factor((960.0, 1080.0)) - 0.5).abs() < 1e-5);
+        let height_only = Canvas {
+            scale_mode: CanvasScaleMode::MatchWidthOrHeight,
+            match_width_or_height: 1.0,
+            ..Canvas::default()
+        };
+        assert!((height_only.scale_factor((960.0, 1080.0)) - 1.0).abs() < 1e-5);
+
+        // ConstantPixelSize = 1，退化输入也回到 1 而不是 NaN/0。
+        let pixels = Canvas {
+            scale_mode: CanvasScaleMode::ConstantPixelSize,
+            ..Canvas::default()
+        };
+        assert_eq!(pixels.scale_factor((640.0, 360.0)), 1.0);
+        assert_eq!(pixels.scale_factor((0.0, f32::NAN)), 1.0);
+    }
+
+    #[test]
+    fn canvas_round_trips_and_legacy_layouts_default_to_scale_one() {
+        let canvas = Canvas {
+            reference_resolution: [1280.0, 720.0],
+            scale_mode: CanvasScaleMode::MatchWidthOrHeight,
+            match_width_or_height: 1.0,
+        };
+        let json = serde_json::to_string(&canvas).unwrap();
+        let back: Canvas = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.reference_resolution, [1280.0, 720.0]);
+        assert_eq!(back.scale_mode, CanvasScaleMode::MatchWidthOrHeight);
+
+        // 旧 `.scene.json` 里没有 `scale` 字段：按 1 处理，字号不被缩小。
+        let layout: ComputedLayout =
+            serde_json::from_str(r#"{"rect":[0,0,100,50],"order":3}"#).unwrap();
+        assert_eq!(layout.scale, 1.0);
     }
 
     #[test]

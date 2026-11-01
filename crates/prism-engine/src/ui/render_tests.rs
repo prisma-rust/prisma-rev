@@ -280,6 +280,69 @@ fn invisible_text_is_skipped_like_quads() {
 }
 
 #[test]
+fn canvas_scale_multiplies_font_size_and_border_radius() {
+    // #463：字体与圆角是「设计像素」，要按所在 Canvas 的缩放换算。
+    let mut world = world_with_screen();
+    let scaled = ComputedLayout {
+        rect: [0.0, 0.0, 200.0, 100.0],
+        order: 0,
+        scale: 2.0,
+    };
+
+    let text = world.spawn();
+    world.insert(text, Node {});
+    world.insert(text, Style::default());
+    world.insert(text, scaled);
+    world.insert(
+        text,
+        Text {
+            content: "HUD".to_string(),
+            font_size: 20.0,
+            ..Text::default()
+        },
+    );
+
+    let quad = world.spawn();
+    world.insert(quad, Node {});
+    world.insert(
+        quad,
+        Style {
+            background: [1.0, 1.0, 1.0, 1.0],
+            border_radius: 8.0,
+            ..Style::default()
+        },
+    );
+    world.insert(quad, scaled);
+
+    ui_render_system(&mut world);
+    let draw_list = world.get_resource::<UiDrawList>().expect("draw list");
+    let text = draw_list.texts().next().expect("one text");
+    assert_eq!(text.font_size, 40.0);
+    let quad = draw_list.quads().next().expect("one quad");
+    assert_eq!(quad.border_radius, 16.0);
+
+    // 坏值（0 / NaN）按 1 处理，不能让顶点算出 NaN。
+    let broken = ComputedLayout {
+        rect: [0.0, 0.0, 10.0, 10.0],
+        order: 0,
+        scale: f32::NAN,
+    };
+    let entity = spawn_text(&mut world, [0.0, 0.0, 10.0, 10.0], "x");
+    world.insert(entity, broken);
+    ui_render_system(&mut world);
+    let draw_list = world.get_resource::<UiDrawList>().expect("draw list");
+    let broken_text = draw_list
+        .texts()
+        .find(|text| text.content == "x")
+        .expect("broken-scale text");
+    assert_eq!(
+        broken_text.font_size,
+        Text::default().font_size,
+        "NaN 缩放不能把字号吃掉"
+    );
+}
+
+#[test]
 fn text_without_style_is_still_drawn() {
     let mut world = world_with_screen();
     let entity = world.spawn();

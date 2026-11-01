@@ -8,6 +8,13 @@
 //! - 子元素的父容器 = 父元素的 `ComputedLayout`
 //! - 锚点定义子边相对于父边的映射
 //! - 固定尺寸覆盖锚点拉伸
+//!
+//! # Canvas 缩放（#463）
+//! 带 [`Canvas`](crate::ui::components::Canvas) 的节点会给整棵子树定一个缩放
+//! 系数：布局在「虚拟分辨率」里算（`ScreenSize / scale`），写回
+//! `ComputedLayout.rect` 时再乘回 `scale`。这样作者按设计稿像素写
+//! `Style.width` / `margin` / 锚点，1080p 和 720p 得到同一套构图。
+//! `ComputedLayout.scale` 留给渲染系统换算字号和圆角。
 
 use crate::ui::components::*;
 use prism_ecs::World;
@@ -58,6 +65,23 @@ pub fn ui_layout_system(world: &mut World) {
         }
     }
 
+    // 每个节点所在 Canvas 的缩放（#463）。最近的 Canvas 祖先说了算；
+    // 没有 Canvas 时是 1.0，行为与引入 Canvas 之前一致。
+    let canvases: std::collections::HashMap<prism_ecs::Entity, Canvas> = world
+        .query::<Canvas>()
+        .map(|(entity, canvas)| (entity, *canvas))
+        .collect();
+    let parents: std::collections::HashMap<prism_ecs::Entity, prism_ecs::Entity> = layout_queue
+        .iter()
+        .filter_map(|(entity, parent)| parent.map(|parent| (*entity, parent)))
+        .collect();
+    let mut scales: std::collections::HashMap<prism_ecs::Entity, f32> =
+        std::collections::HashMap::new();
+    for (entity, _) in &layout_queue {
+        let scale = node_scale(*entity, &parents, &canvases, &screen, &mut scales, 0);
+        scales.insert(*entity, scale);
+    }
+
     // 本帧已经算出的矩形。
     //
     // `ComputedLayout` 是每帧的输出，读 `world` 里的值只能证明「组件存在」，
@@ -87,14 +111,32 @@ pub fn ui_layout_system(world: &mut World) {
                     }
                     // 父节点不是 UI 实体（没有 `Node + Style`）：沿用它的现有输出。
                     None => match world.get::<ComputedLayout>(parent_entity) {
-                        Some(layout) => layout.rect,
+                        Some(layout) => {
+                            // `ComputedLayout.rect` 是屏幕像素；换算回本节点的
+                            // 虚拟坐标（父级的缩放由它自己的 Canvas 决定）。
+                            let parent_scale = layout.scale;
+                            let parent_scale = if parent_scale.is_finite() && parent_scale > 0.0 {
+                                parent_scale
+                            } else {
+                                1.0
+                            };
+                            [
+                                layout.rect[0] / parent_scale,
+                                layout.rect[1] / parent_scale,
+                                layout.rect[2] / parent_scale,
+                                layout.rect[3] / parent_scale,
+                            ]
+                        }
                         None => {
                             next_pass.push((entity, parent_opt));
                             continue;
                         }
                     },
                 },
-                None => [0.0, 0.0, screen.width, screen.height],
+                None => {
+                    let scale = scales.get(&entity).copied().unwrap_or(1.0);
+                    [0.0, 0.0, screen.width / scale, screen.height / scale]
+                }
             };
 
             let style = match world.get::<Style>(entity) {
@@ -103,12 +145,28 @@ pub fn ui_layout_system(world: &mut World) {
             };
 
             let rect = compute_rect(&style, parent_rect);
+            let scale = scales.get(&entity).copied().unwrap_or(1.0);
+            let screen_rect = [
+                rect[0] * scale,
+                rect[1] * scale,
+                rect[2] * scale,
+                rect[3] * scale,
+            ];
 
             if let Some(layout) = world.get_mut::<ComputedLayout>(entity) {
-                layout.rect = rect;
+                layout.rect = screen_rect;
+                layout.scale = scale;
             } else {
-                world.insert(entity, ComputedLayout::from_rect(rect));
+                world.insert(
+                    entity,
+                    ComputedLayout {
+                        rect: screen_rect,
+                        order: 0,
+                        scale,
+                    },
+                );
             }
+            // 子节点用虚拟坐标继续算，缩放只在写回时应用一次。
             resolved.insert(entity, rect);
         }
 
@@ -116,6 +174,34 @@ pub fn ui_layout_system(world: &mut World) {
     }
 
     assign_draw_order(world);
+}
+
+/// 实体所在 Canvas 的缩放（#463）：最近的 Canvas 祖先决定，没有则 1.0。
+///
+/// 递归 + 记忆化；`depth` 上限防止坏层级（A 的父是 B、B 的父是 A）无限递归。
+fn node_scale(
+    entity: prism_ecs::Entity,
+    parents: &std::collections::HashMap<prism_ecs::Entity, prism_ecs::Entity>,
+    canvases: &std::collections::HashMap<prism_ecs::Entity, Canvas>,
+    screen: &ScreenSize,
+    cache: &mut std::collections::HashMap<prism_ecs::Entity, f32>,
+    depth: u32,
+) -> f32 {
+    if let Some(scale) = cache.get(&entity) {
+        return *scale;
+    }
+    if depth > 64 {
+        return 1.0;
+    }
+    let scale = if let Some(canvas) = canvases.get(&entity) {
+        canvas.scale_factor((screen.width, screen.height))
+    } else if let Some(parent) = parents.get(&entity) {
+        node_scale(*parent, parents, canvases, screen, cache, depth + 1)
+    } else {
+        1.0
+    };
+    cache.insert(entity, scale);
+    scale
 }
 
 /// 给每个 UI 实体算 `ComputedLayout::order`（绘制顺序）。

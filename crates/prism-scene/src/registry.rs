@@ -410,7 +410,7 @@ pub fn register_builtin_components(registry: &mut ComponentRegistry) {
     use crate::components::*;
     #[cfg(feature = "group-ui")]
     use crate::ui::{
-        Anchors, Button, ComputedLayout, Interaction, Margin, Node, Pivot, Style, Text,
+        Anchors, Button, Canvas, ComputedLayout, Interaction, Margin, Node, Pivot, Style, Text,
     };
 
     // ── 场景基础组件 ──
@@ -518,6 +518,8 @@ pub fn register_builtin_components(registry: &mut ComponentRegistry) {
         // #528：可交互 UI 的组件必须能在场景 / 预制体里保存。
         registry.register_reflect_serde::<Interaction>("prism_engine::ui::Interaction");
         registry.register_reflect_serde::<Button>("prism_engine::ui::Button");
+        // #463：画布缩放（参考分辨率 → 实际屏幕）。
+        registry.register_reflect_serde::<Canvas>("prism_engine::ui::Canvas");
     }
 
     // ── 嵌套类型（类型表/cook 需要）──
