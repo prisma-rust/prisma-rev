@@ -13,7 +13,9 @@ ash = { version = "0.38", default-features = false }
 ash-window = "0.13"
 egui = "0.33.3"
 egui-phosphor = { version = "0.11", default-features = true }
-egui-ash = { git = "https://github.com/tyrypyrking/egui-ash", rev = "258aee2347e66bdb3fdf2f9fc4aa76da06228b0f", features = [
+# Fork pins the upstream fix for per-image present semaphores
+# (VUID-vkQueueSubmit-pSignalSemaphores-00067, issue #581).
+egui-ash = { git = "https://github.com/prisma-rust/egui-ash", rev = "6b390d3e8f48d3e7025a20b1b07b46373a960b8c", features = [
   "gpu-allocator",
 ] }
 env_logger = "0.11"

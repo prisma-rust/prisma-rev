@@ -54,6 +54,9 @@
 - `image_available`（acquire 信号量）：按 `MAX_FRAMES_IN_FLIGHT` 轮转，fence 保证复用安全
 - `render_finished`（present 等待的信号量）：**按 swapchain image index 索引**，每 image 一个
 - 验证层的建议直接照做：`Use a separate semaphore per swapchain image`
+- 编辑器窗口的交换链由 `egui-ash` 管理，上游 rev `258aee2` 仍是 per-frame；#581 通过
+  `prisma-rust/egui-ash` 的 `prismrev` 分支（commit `6b390d3`）修正后才接入，
+  以后升级这个依赖时要重新确认 `src/presenters.rs` 仍然按 `image_index` 取信号量
 
 ## 6. 命令缓冲区必须 per-frame-in-flight
 
