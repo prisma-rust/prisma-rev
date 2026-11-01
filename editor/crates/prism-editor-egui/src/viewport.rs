@@ -70,6 +70,11 @@ fn drag_translate_step(
     desired - applied
 }
 
+/// 组件图标是否显示（#416）：相机 / 光源可以各自关掉，互不影响。
+fn icon_visible(workspace: &Workspace, is_camera: bool, is_light: bool) -> bool {
+    (is_camera && workspace.show_camera_icons) || (is_light && workspace.show_light_icons)
+}
+
 /// 方向 gizmo 的中心（视口右上角，屏幕坐标）与半径（#416）。
 fn orientation_gizmo_center(rect: Rect) -> (f32, f32) {
     (rect.max.x - 46.0, rect.min.y + 46.0)
@@ -1660,6 +1665,9 @@ impl ViewportState {
             if !is_camera && !is_light {
                 continue;
             }
+            if !icon_visible(workspace, is_camera, is_light) {
+                continue;
+            }
             let position = vm::world_position(doc, index);
             let Some((sx, sy, _)) = vm::project(position, frame, width, height) else {
                 continue;
@@ -2134,6 +2142,20 @@ mod drop_hint_tests {
 mod tests {
     use super::*;
     use egui::{Pos2, Vec2};
+
+    #[test]
+    fn component_icon_filters_are_independent() {
+        // #416：相机图标与光源图标各自开关，互不牵连。
+        let mut workspace = Workspace::sample();
+        assert!(icon_visible(&workspace, true, false));
+        assert!(icon_visible(&workspace, false, true));
+        workspace.show_camera_icons = false;
+        assert!(!icon_visible(&workspace, true, false));
+        assert!(icon_visible(&workspace, false, true));
+        workspace.show_light_icons = false;
+        assert!(!icon_visible(&workspace, false, true));
+        assert!(!icon_visible(&workspace, true, true));
+    }
 
     #[test]
     fn repeated_clicks_cycle_through_overlapping_entities() {

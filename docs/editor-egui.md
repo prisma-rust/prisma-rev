@@ -156,6 +156,10 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
 - **方向 gizmo（#416）**：Scene 视图右上角 6 个世界轴手柄（背向相机的更淡），
   点一下把相机对齐到该轴；`OrbitCamera::align_to_axis` 直接解出 yaw / pitch，
   正交视图同样可用。
+- **View… 菜单（#416）**：Scene 视图工具栏里可调编辑器相机 FOV（20–110°）与
+  `near` / `far`，并分别开关**相机图标 / 光源图标**。FOV 与裁剪面同时写进引擎相机和
+  拾取射线（`CameraFrame::fov_y_degrees`），gizmo、点选与画面不会错位；
+  `2D` 开关仍是正交 XY 视图。
 - 工具：`W` / `E` / `R` 切换移动 / 旋转 / 缩放 gizmo，`X` 切世界/局部，`G` 开关网格；
   `S` 开关 Scene view 背景（场景天空盒 / 纯色，与引擎的
   `SceneViewState.showSkybox` 同语义，默认开）；

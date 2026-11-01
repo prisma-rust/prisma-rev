@@ -494,11 +494,13 @@ pub struct CameraFrame {
     pub right: [f32; 3],
     pub up: [f32; 3],
     pub forward: [f32; 3],
-    /// 正交半高（世界单位）；`None` = 透视（沿用历史硬编码的 30° 半角）。
+    /// 正交半高（世界单位）；`None` = 透视。
     ///
     /// [#641] Scene view 的 2D 模式是正交相机，投影 / 拾取射线都要跟着换公式，
     /// 否则屏幕上的位置和引擎里画出来的对不上。
     pub ortho_half_height: Option<f32>,
+    /// 垂直视场角（度）；投影 / 拾取射线按它推导半角（#416）。
+    pub fov_y_degrees: f32,
 }
 
 pub fn camera_frame(camera: &OrbitCamera) -> CameraFrame {
@@ -513,7 +515,17 @@ pub fn camera_frame(camera: &OrbitCamera) -> CameraFrame {
         up,
         forward,
         ortho_half_height: camera.ortho_half_height(),
+        fov_y_degrees: if camera.fov_y_degrees.is_finite() {
+            camera.fov_y_degrees.clamp(10.0, 170.0)
+        } else {
+            60.0
+        },
     }
+}
+
+/// 透视相机的半角正切；`CameraFrame::fov_y_degrees` 已在构造时夹好范围。
+fn half_fov_tan(frame: &CameraFrame) -> f32 {
+    (frame.fov_y_degrees * 0.5).to_radians().tan().max(1e-4)
 }
 
 pub fn normalize(v: [f32; 3]) -> [f32; 3] {
@@ -568,7 +580,7 @@ pub fn project(
             )
         }
         None => {
-            let tan_half = 30.0f32.to_radians().tan();
+            let tan_half = half_fov_tan(frame);
             (
                 dot(delta, frame.right) / depth / tan_half / aspect,
                 dot(delta, frame.up) / depth / tan_half,
@@ -604,7 +616,7 @@ pub fn ray_from_screen(
         );
         return (add(frame.eye, offset), frame.forward);
     }
-    let tan_half = 30.0f32.to_radians().tan();
+    let tan_half = half_fov_tan(frame);
     let ndc_x = ndc_x * aspect * tan_half;
     let ndc_y = ndc_y * tan_half;
     let direction = normalize(add(
@@ -1107,6 +1119,9 @@ mod tests {
             pitch: 0.0,
             distance: 10.0,
             orthographic: false,
+            fov_y_degrees: 60.0,
+            near: 0.1,
+            far: 1000.0,
         }
     }
 
@@ -1309,6 +1324,28 @@ mod tests {
         let (x, _, _) = project([3.0, 0.0, 0.0], &frame, 800.0, 600.0).unwrap();
         let picked = pick_entity((x, 300.0), &frame, 800.0, 600.0, &entities);
         assert_eq!(picked, Some(1));
+    }
+
+    #[test]
+    fn projection_follows_the_configured_fov() {
+        // #416：窄视场把同样的世界偏移推到更靠屏幕边缘的位置。
+        let mut camera = camera();
+        let frame = camera_frame(&camera);
+        let (wide_x, _, _) = project([1.0, 0.0, 0.0], &frame, 800.0, 600.0).unwrap();
+        camera.set_fov_degrees(30.0);
+        let frame = camera_frame(&camera);
+        let (narrow_x, _, _) = project([1.0, 0.0, 0.0], &frame, 800.0, 600.0).unwrap();
+        let wide_offset = (wide_x - 400.0).abs();
+        let narrow_offset = (narrow_x - 400.0).abs();
+        assert!(
+            narrow_offset > wide_offset * 1.5,
+            "30° 偏移 {narrow_offset} 应该明显大于 60° 偏移 {wide_offset}"
+        );
+        // 拾取射线与投影互逆：同一屏幕点的射线方向一致。
+        let frame = camera_frame(&camera);
+        let (origin, direction) = ray_from_screen(narrow_x, 300.0, &frame, 800.0, 600.0);
+        assert!(origin.iter().all(|value| value.is_finite()));
+        assert!(direction.iter().all(|value| value.is_finite()));
     }
 
     #[test]
