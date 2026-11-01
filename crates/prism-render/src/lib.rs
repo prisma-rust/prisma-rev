@@ -92,6 +92,11 @@ pub mod shader_bindings;
 /// 可能被关掉（Lego 最小档）。`shadow_map_pass` 内部 re-export 同一个常量。
 pub const SHADOW_MAP_SIZE: u32 = 2048;
 
+/// 阴影贴图边长的合法范围（#526）：低于 256 基本不可用，高于 8192 在移动端 /
+/// 老桌面 GPU 上会直接分配失败。
+pub const MIN_SHADOW_MAP_SIZE: u32 = 256;
+pub const MAX_SHADOW_MAP_SIZE: u32 = 8192;
+
 /// 方向光阴影贴图 pass（Lego 砖块 `shadows`）。
 #[cfg(feature = "shadows")]
 pub mod shadow_map_pass;

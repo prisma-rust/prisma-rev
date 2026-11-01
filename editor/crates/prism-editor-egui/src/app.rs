@@ -5777,6 +5777,8 @@ fn render_settings_from_json(
         saturation: f32_field("saturation", base.saturation),
         vignette: f32_field("vignette", base.vignette),
         shadow_distance: f32_field("shadowDistance", base.shadow_distance),
+        // #526：贴图边长只在构造渲染器时生效；编辑器 UI 还没暴露滑杆时保持默认。
+        shadow_map_size: u32_field("shadowMapSize", base.shadow_map_size),
         debug_rt: u32_field("debugRt", base.debug_rt),
         render_mode: if path_trace {
             RenderMode::PathTrace

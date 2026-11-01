@@ -251,6 +251,13 @@ pub struct RenderSettings {
     /// shadow 映射表 See [`ShadowMode`].
     pub shadow_mode: ShadowMode,
 
+    /// 阴影贴图边长（texel，#526）。
+    ///
+    /// 这是**渲染图资源**大小，在创建 / 重建 shadow pass 时生效；运行中修改
+    /// 需要重建渲染图（当前 `GraphRenderer` 只在构造时读取）。会被
+    /// [`crate::MIN_SHADOW_MAP_SIZE`] / [`crate::MAX_SHADOW_MAP_SIZE`] 钳制。
+    pub shadow_map_size: u32,
+
     /// 渲染 众数 光栅化 (PBR) or PathTrace (real-time PT).
     pub render_mode: RenderMode,
 
@@ -283,6 +290,7 @@ impl Default for RenderSettings {
             sharc_capacity: 1 << 20,
             sharc_scene_scale: 1.0,
             shadow_mode: ShadowMode::Auto,
+            shadow_map_size: crate::SHADOW_MAP_SIZE,
             render_mode: RenderMode::Raster,
             pt_max_bounces: 3,
             pt_ray_max_distance: 1000.0,

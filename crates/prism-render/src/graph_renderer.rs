@@ -359,6 +359,28 @@ impl GraphRenderer {
         _env_bytes: Option<Vec<u8>>,
         vsync: bool,
     ) -> anyhow::Result<Self> {
+        Self::new_with_vsync_and_shadow_size(
+            window_extensions,
+            window,
+            window_handle,
+            _env_bytes,
+            vsync,
+            crate::SHADOW_MAP_SIZE,
+        )
+    }
+
+    /// Like [`GraphRenderer::new_with_vsync`], but with an explicit shadow-map
+    /// edge length (#526). Values outside
+    /// [`crate::MIN_SHADOW_MAP_SIZE`]..=[`crate::MAX_SHADOW_MAP_SIZE`] are
+    /// clamped; the resource is allocated when the renderer is constructed.
+    pub fn new_with_vsync_and_shadow_size(
+        window_extensions: Vec<&str>,
+        window: &dyn raw_window_handle::HasDisplayHandle,
+        window_handle: &dyn raw_window_handle::HasWindowHandle,
+        _env_bytes: Option<Vec<u8>>,
+        vsync: bool,
+        shadow_map_size: u32,
+    ) -> anyhow::Result<Self> {
         let context = Arc::new(VulkanContext::new(&window_extensions)?);
         let swapchain = Swapchain::new_with_vsync(&context, window, window_handle, vsync)?;
         let color_format = swapchain.format.format;
@@ -409,6 +431,8 @@ impl GraphRenderer {
         let resolved = RenderSettings::default().resolve_shadow(&context.rt_caps);
         let settings = RenderSettings {
             shadow_mode: resolved,
+            shadow_map_size: shadow_map_size
+                .clamp(crate::MIN_SHADOW_MAP_SIZE, crate::MAX_SHADOW_MAP_SIZE),
             ray_tracing_enabled: false,
             ..Default::default()
         };
@@ -731,8 +755,25 @@ impl GraphRenderer {
         height: u32,
         env_bytes: Option<Vec<u8>>,
     ) -> anyhow::Result<Self> {
+        Self::offscreen_new_with_shadow_size(width, height, env_bytes, crate::SHADOW_MAP_SIZE)
+    }
+
+    /// Like [`Self::offscreen_new`], but with an explicit shadow-map edge length
+    /// (#526), clamped to the supported range.
+    pub fn offscreen_new_with_shadow_size(
+        width: u32,
+        height: u32,
+        env_bytes: Option<Vec<u8>>,
+        shadow_map_size: u32,
+    ) -> anyhow::Result<Self> {
         let context = Arc::new(VulkanContext::new(&[])?);
-        Self::offscreen_new_with_context(context, width, height, env_bytes)
+        Self::offscreen_new_with_context_and_shadow_size(
+            context,
+            width,
+            height,
+            env_bytes,
+            shadow_map_size,
+        )
     }
 
     /// Like [`Self::offscreen_new`], but on a **host-provided** context.
@@ -750,6 +791,24 @@ impl GraphRenderer {
         height: u32,
         env_bytes: Option<Vec<u8>>,
     ) -> anyhow::Result<Self> {
+        Self::offscreen_new_with_context_and_shadow_size(
+            context,
+            width,
+            height,
+            env_bytes,
+            crate::SHADOW_MAP_SIZE,
+        )
+    }
+
+    /// Like [`Self::offscreen_new_with_context`], but with an explicit shadow-map
+    /// edge length (#526), clamped to the supported range.
+    pub fn offscreen_new_with_context_and_shadow_size(
+        context: Arc<VulkanContext>,
+        width: u32,
+        height: u32,
+        env_bytes: Option<Vec<u8>>,
+        shadow_map_size: u32,
+    ) -> anyhow::Result<Self> {
         let offscreen = OffscreenTarget::new(&context, width, height)?;
         let color_format = offscreen.format();
 
@@ -765,6 +824,8 @@ impl GraphRenderer {
         let resolver = RenderSettings::default().resolve_shadow(&context.rt_caps);
         let settings = RenderSettings {
             shadow_mode: resolver,
+            shadow_map_size: shadow_map_size
+                .clamp(crate::MIN_SHADOW_MAP_SIZE, crate::MAX_SHADOW_MAP_SIZE),
             ray_tracing_enabled: false,
             ..Default::default()
         };

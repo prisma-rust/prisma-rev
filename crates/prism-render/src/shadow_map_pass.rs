@@ -261,7 +261,12 @@ impl RenderPassNode for ShadowMapPass {
         "ShadowMapPass"
     }
 
-    fn setup(&mut self, graph: &mut RenderGraphBuilder, _settings: &RenderSettings) {
+    fn setup(&mut self, graph: &mut RenderGraphBuilder, settings: &RenderSettings) {
+        // #526：大小来自 RenderSettings（构造 GraphRenderer 时写入），并在安全
+        // 范围内钳制；运行中改字段不会重建已经分配好的图像。
+        self.shadow_size = settings
+            .shadow_map_size
+            .clamp(crate::MIN_SHADOW_MAP_SIZE, crate::MAX_SHADOW_MAP_SIZE);
         let size = self.shadow_size;
         self.shadow_map = SHADOW_MAP_H;
         graph.create_resource_at(
@@ -631,6 +636,35 @@ mod tests {
         assert_eq!(snapshot.passes.len(), 1);
         assert_eq!(snapshot.passes[0].outputs, vec![SHADOW_MAP_H]);
         assert!(snapshot.passes[0].inputs.is_empty());
+    }
+
+    /// #526：贴图边长由 `RenderSettings::shadow_map_size` 决定，并在安全范围内钳制。
+    #[test]
+    fn shadow_pass_honours_the_configured_map_size() {
+        for (requested, expected) in [
+            (1024u32, 1024u32),
+            (crate::MIN_SHADOW_MAP_SIZE - 1, crate::MIN_SHADOW_MAP_SIZE),
+            (crate::MAX_SHADOW_MAP_SIZE + 1, crate::MAX_SHADOW_MAP_SIZE),
+        ] {
+            let settings = RenderSettings {
+                shadow_map_size: requested,
+                ..Default::default()
+            };
+            let mut shadow_pass = ShadowMapPass::new();
+            let mut builder = RenderGraphBuilder::new().settings(&settings);
+            shadow_pass.setup(&mut builder, &settings);
+            builder.add_pass(Box::new(shadow_pass));
+            let graph = builder.build();
+
+            let resource = graph.resource(SHADOW_MAP_H).expect("shadow resource");
+            match resource.res_type {
+                ResourceType::DepthAttachment { extent, .. } => {
+                    assert_eq!(extent.width, expected, "requested {requested}");
+                    assert_eq!(extent.height, expected, "requested {requested}");
+                }
+                ref other => panic!("expected a depth attachment, got {other:?}"),
+            }
+        }
     }
 
     #[test]

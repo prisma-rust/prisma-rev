@@ -1034,10 +1034,18 @@ impl App {
     ) {
         let (shared, running) = RenderShared::new();
         let shared_clone = shared.clone();
+        let shadow_map_size = self.render_settings.shadow_map_size;
         let thread = std::thread::Builder::new()
             .name("render".into())
             .spawn(move || {
-                render_thread_main(shared_clone, target, scene_env, true, overlay_factory)
+                render_thread_main(
+                    shared_clone,
+                    target,
+                    scene_env,
+                    true,
+                    overlay_factory,
+                    shadow_map_size,
+                )
             })
             .expect("failed to spawn render thread");
 

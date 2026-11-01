@@ -98,6 +98,8 @@ pub struct RenderSettings {
     /// 这个值越大覆盖越远、每 texel 越粗（2048² 时 60 米 ≈ 2.9 cm/texel）。
     /// 没有级联（见 #526），所以它同时是「阴影能投多远」和「精度」的取舍旋钮。
     pub shadow_distance: f32,
+    /// 阴影贴图边长（texel，#526）；构造渲染器时生效，运行中改需要重建渲染图。
+    pub shadow_map_size: u32,
 }
 
 /// 默认 PBR 众数 法线 full-PBR 渲染 Reinhard 色调映射 光栅化
@@ -135,6 +137,7 @@ impl Default for RenderSettings {
             saturation: 1.0,
             vignette: 0.0,
             shadow_distance: DEFAULT_SHADOW_DISTANCE,
+            shadow_map_size: prism_render::SHADOW_MAP_SIZE,
             internal_resolution: [0, 0],
             internal_scale_mode: InternalScaleMode::Stretch,
         }
