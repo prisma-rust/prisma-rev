@@ -321,19 +321,22 @@ impl Renamer {
 /// 新增带路径的组件字段时要同步补进来 —— `asset_path_fields_cover_string_paths_in_schema`
 /// 会用 `prism-scene` 的注册表挡住漏加（不覆盖 `env_map` / `volume` / `prefab`
 /// 这类不以 `_path` 结尾的名字，所以别只靠测试）。
-const ASSET_PATH_FIELDS: [&str; 12] = [
-    "mesh_path",      // MeshRenderer
-    "material_path",  // MeshRenderer
-    "material_paths", // MeshRenderer（Vec<String>，多 submesh 材质）
-    "sprite_path",    // SpriteRenderer
-    "tileset_path",   // Tilemap
-    "hdr_path",       // Skybox
-    "sound_path",     // AudioSource
-    "heightmap",      // Terrain（不以 _path 结尾，必须显式登记）
-    "env_map",        // EnvironmentLighting
-    "volume",         // GiConfig
-    "prefab",         // PrefabInstance
-    "font",           // UI Text（工程自带字体，#583）
+const ASSET_PATH_FIELDS: [&str; 15] = [
+    "mesh_path",         // MeshRenderer
+    "material_path",     // MeshRenderer
+    "material_paths",    // MeshRenderer（Vec<String>，多 submesh 材质）
+    "sprite_path",       // SpriteRenderer
+    "tileset_path",      // Tilemap
+    "hdr_path",          // Skybox
+    "sound_path",        // AudioSource
+    "heightmap",         // Terrain（不以 _path 结尾，必须显式登记）
+    "skeleton_path",     // SkeletonRoot
+    "default_clip_path", // SkeletonRoot
+    "skinned_mesh_path", // SkinnedMeshRenderer
+    "env_map",           // EnvironmentLighting
+    "volume",            // GiConfig
+    "prefab",            // PrefabInstance
+    "font",              // UI Text（工程自带字体，#583）
 ];
 
 /// 作者 JSON 的字段名是否表示资产路径。

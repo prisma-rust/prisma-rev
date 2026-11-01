@@ -12,6 +12,7 @@
 //! | 天空盒   | `Skybox` |
 //! | 音频     | `AudioSource`（场景内播放）, `AudioListener`（听者） |
 //! | 地形     | `Terrain`（高度场 → 运行时生成网格） |
+//! | 蒙皮     | `SkeletonRoot`（骨架）, `SkinnedMeshRenderer`（蒙皮网格） |
 //! | 物理     | `Collider`（形状 + 查询层）, `Rigidbody`（Static/Kinematic/Dynamic） |
 //! | 调试     | `Gizmo` |
 //! | 场景     | `SceneMember` |
@@ -1961,6 +1962,58 @@ impl Default for Rigidbody {
             angular_damping: 0.05,
             use_gravity: true,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 蒙皮
+// ---------------------------------------------------------------------------
+
+/// 骨架根（#560）：指向一份 `.rskel`，是这个实体子树里所有
+/// [`SkinnedMeshRenderer`] 共用的骨骼 + 参考姿态。
+///
+/// 骨骼的世界矩阵由 `prism-anim` 在运行时从参考姿态 + 动画剪辑求出来，
+/// 场景文件里只存路径，不存任何逐骨骼数据。
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
+#[reflect(name = "prism_engine::scene::SkeletonRoot")]
+#[serde(default)]
+#[derive(Default)]
+pub struct SkeletonRoot {
+    /// `.rskel` 路径（相对 `assets/`）。
+    pub skeleton_path: String,
+    /// 默认动画剪辑路径（`.ranim`，可空：由代码/编辑器决定播哪条）。
+    pub default_clip_path: String,
+}
+
+impl SkeletonRoot {
+    pub fn has_skeleton(&self) -> bool {
+        !self.skeleton_path.trim().is_empty()
+    }
+}
+
+/// 蒙皮网格渲染器（#560）。
+///
+/// 与 [`MeshRenderer`] 并列而不是扩展它：`.rskin` 的顶点带着 joints/weights，
+/// 上传路径和普通 `.rmes` 不同，GPU 蒙皮（P0-3）也要走单独的管线分支。
+/// 材质、阴影、剔除这些「怎么画」的设置照抄 [`MeshRenderer`] 的语义。
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
+#[reflect(name = "prism_engine::scene::SkinnedMeshRenderer")]
+#[serde(default)]
+#[derive(Default)]
+pub struct SkinnedMeshRenderer {
+    /// `.rskin` 路径（相对 `assets/`）。
+    pub skinned_mesh_path: String,
+    /// 每个 submesh 一个材质路径；为空时用 `material_path`。
+    pub material_paths: Vec<String>,
+    /// 单材质回退路径。
+    pub material_path: String,
+    /// 阴影投射模式（与 [`MeshRenderer`] 同义）。
+    pub shadow_casting_mode: ShadowCastingMode,
+}
+
+impl SkinnedMeshRenderer {
+    pub fn has_mesh(&self) -> bool {
+        !self.skinned_mesh_path.trim().is_empty()
     }
 }
 
