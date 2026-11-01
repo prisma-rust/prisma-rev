@@ -28,6 +28,7 @@ use prism_engine::ecs::Entity;
 use prism_engine::render_system::FramePacket;
 use prism_render::asset_bridge::{AssetResolveRequest, AssetResolveResult};
 use prism_render::external_overlay::OverlayMessage;
+use prism_render::gpu_timer::GpuTimings;
 use prism_render::GraphRenderer;
 
 /// 进程启动基准时刻，仅用于启动期诊断打印。
@@ -70,6 +71,8 @@ pub struct RenderStats {
     pub fps: f32,
     /// 当前路径追踪采样数（None = 无 PT 通道）
     pub pt_frame_count: Option<u32>,
+    /// 上一帧的 per-pass GPU 计时（None = 设备不支持时间戳）
+    pub gpu_timings: Option<GpuTimings>,
 }
 
 // ---------------------------------------------------------------------------

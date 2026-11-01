@@ -330,6 +330,7 @@ pub fn render_thread_main(
         }
 
         let pt_count = renderer.pt_frame_count();
+        let gpu_timings = renderer.gpu_timings().clone();
 
         // 渲染图报告（Web 编辑器可视化）：首帧 + 低频刷新。
         if graph_report.is_enabled() {
@@ -337,7 +338,7 @@ pub fn render_thread_main(
                 &renderer.graph().snapshot(),
                 packet.settings.to_report_settings(),
                 frame_count,
-                Some(renderer.gpu_timings()),
+                Some(&gpu_timings),
                 Some(renderer.render_stats()),
                 renderer.draw_call_report(
                     &packet.draw_items,
@@ -351,6 +352,8 @@ pub fn render_thread_main(
             frame_time_ms,
             fps: smoothed_fps,
             pt_frame_count: pt_count,
+            // 不支持时间戳的设备保持 None，HUD 会明确显示「n/a」而不是拿 CPU 墙钟冒充。
+            gpu_timings: gpu_timings.supported.then_some(gpu_timings),
         });
 
         // ---- 宿主（编辑器）帧读回：只读回 PostPass 已 tonemap 的离屏图像 ----
