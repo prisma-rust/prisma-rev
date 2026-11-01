@@ -147,7 +147,9 @@ fn non_background(pixels: &[u8]) -> usize {
     // pixel is geometry.
     let corner = &pixels[0..4];
     pixels
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|pixel| *pixel != corner)
         .count()
 }
