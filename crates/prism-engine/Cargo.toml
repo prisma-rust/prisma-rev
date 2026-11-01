@@ -28,6 +28,9 @@ audio = ["dep:prism-audio"]
 
 [dependencies]
 prism-ecs = { path = "../prism-ecs" }
+# ABI 快照类型（`InputSnapshot`）。纯数据 crate、无依赖；引擎每帧把它写进
+# World resource，静态 Player 的 `GameWorld::input()` 因此有真实输入（#589）。
+prism-project-api = { path = "../prism-project-api" }
 prism-reflect = { path = "../prism-reflect" }
 # 必须 default-features = false：否则组件组开关会被 prism-scene 的默认特性重新打开。
 prism-scene = { path = "../prism-scene", default-features = false }
@@ -62,5 +65,4 @@ android-activity = { version = "0.6", features = ["game-activity"] }
 log = { workspace = true }
 
 [dev-dependencies]
-prism-project-api = { path = "../prism-project-api" }
 jni = "0.22"

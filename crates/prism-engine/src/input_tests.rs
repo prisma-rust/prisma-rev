@@ -142,3 +142,32 @@ fn begin_frame_clears_all_transient() {
     assert_eq!(s.mouse_delta(), [0.0; 2]);
     assert_eq!(s.scroll_delta(), 0.0);
 }
+
+/// #589：静态 Player 读的是 `InputSnapshot` 资源，映射必须把按键、边沿、
+/// 鼠标位置与滚轮都带上（以前 host 后端只回 `InputSnapshot::default()`）。
+#[test]
+fn snapshot_carries_cursor_keys_edges_and_scroll() {
+    use prism_project_api::keys;
+
+    let mut input = InputManager::new();
+    input.handle_mouse_move([120.0, 45.0]);
+    input.handle_mouse_button(MouseButton::Left, ElementState::Pressed);
+    input.handle_keyboard(KeyCode::Space, ElementState::Pressed);
+    input.handle_scroll(1.5);
+
+    let snapshot = input_snapshot(&input, [640.0, 360.0]);
+    assert_eq!(snapshot.cursor, [120.0, 45.0]);
+    assert_eq!(snapshot.screen, [640.0, 360.0]);
+    assert!(snapshot.left_clicked);
+    assert!(snapshot.left_held);
+    assert_eq!(snapshot.scroll, 1.5);
+    assert!(snapshot.key(keys::SPACE));
+    assert!(snapshot.key_pressed(keys::SPACE));
+
+    // 下一帧：边沿清掉，按住仍在。
+    input.begin_frame();
+    let next = input_snapshot(&input, [640.0, 360.0]);
+    assert!(next.key(keys::SPACE));
+    assert!(!next.key_pressed(keys::SPACE));
+    assert!(!next.left_clicked);
+}

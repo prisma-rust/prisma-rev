@@ -352,3 +352,67 @@ mod abi_key_tests {
         assert_eq!(KeyCode::Other(5).bit_index(), keys::OTHER_BASE + 5);
     }
 }
+
+// ---------------------------------------------------------------------------
+// 跨 ABI 的输入快照（#589）
+// ---------------------------------------------------------------------------
+
+/// 把引擎的 [`InputManager`] 折成一份 [`InputSnapshot`]。
+///
+/// `screen` 是绘图区尺寸（像素，与 `cursor` 同一坐标系）。静态 Player 的
+/// `GameWorld::input()` 和编辑器插件形态共用这一份映射，避免两边字段语义漂移。
+pub fn input_snapshot(input: &InputManager, screen: [f32; 2]) -> prism_project_api::InputSnapshot {
+    use prism_project_api::{InputSnapshot, TouchSnapshot};
+
+    let mut snapshot = InputSnapshot::default();
+    let cursor = input.mouse_position();
+    snapshot.cursor = [cursor[0] as f32, cursor[1] as f32];
+    snapshot.screen = screen;
+    snapshot.left_clicked = input.mouse_just_pressed(MouseButton::Left);
+    snapshot.left_held = input.mouse_held(MouseButton::Left);
+    snapshot.right_clicked = input.mouse_just_pressed(MouseButton::Right);
+    snapshot.right_held = input.mouse_held(MouseButton::Right);
+    snapshot.middle_clicked = input.mouse_just_pressed(MouseButton::Middle);
+    snapshot.middle_held = input.mouse_held(MouseButton::Middle);
+    let delta = input.mouse_delta();
+    snapshot.mouse_delta = [delta[0] as f32, delta[1] as f32];
+    snapshot.scroll = input.scroll_delta() as f32;
+    snapshot.pointer_locked = input.pointer_locked;
+
+    for key in input.held_keys() {
+        snapshot.set_key(key.bit_index(), true);
+    }
+    for key in input.pressed_keys() {
+        snapshot.set_key_edge(key.bit_index(), true);
+    }
+    for key in input.released_keys() {
+        snapshot.set_key_edge(key.bit_index(), false);
+    }
+
+    let touches = input.touches();
+    let count = touches.len().min(InputSnapshot::MAX_TOUCHES);
+    snapshot.touch_count = count as u32;
+    for (slot, touch) in snapshot.touches.iter_mut().zip(touches.iter()).take(count) {
+        *slot = TouchSnapshot {
+            id: touch.id,
+            position: [touch.position[0] as f32, touch.position[1] as f32],
+            phase: touch_phase_code(touch.phase),
+            _reserved: 0,
+        };
+    }
+    // `keys` 位图与 `KeyCode::bit_index` 是同一套编号（见上面的 ABI 注释）。
+    snapshot
+}
+
+/// 引擎触点阶段 → ABI 常量。
+fn touch_phase_code(phase: TouchPhase) -> u32 {
+    use prism_project_api::{
+        TOUCH_PHASE_CANCELLED, TOUCH_PHASE_ENDED, TOUCH_PHASE_MOVED, TOUCH_PHASE_STARTED,
+    };
+    match phase {
+        TouchPhase::Started => TOUCH_PHASE_STARTED,
+        TouchPhase::Moved => TOUCH_PHASE_MOVED,
+        TouchPhase::Ended => TOUCH_PHASE_ENDED,
+        TouchPhase::Cancelled => TOUCH_PHASE_CANCELLED,
+    }
+}
