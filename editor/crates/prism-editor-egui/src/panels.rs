@@ -5355,6 +5355,14 @@ pub fn preferences(
     ui.checkbox(&mut preferences.autosave, "Auto save layout");
     ui.checkbox(&mut preferences.confirm_delete, "Confirm before delete");
     ui.checkbox(&mut preferences.compact, "Compact layout");
+    ui.checkbox(
+        &mut preferences.hot_reload_assets,
+        "Rebuild scene pack when loose assets change",
+    )
+    .on_hover_text(
+        "Watch assets/ (textures, meshes, HDR, fonts…) and rerun Build Scene Pack \
+         after a change, so Play picks it up without a restart (#495)",
+    );
     ui.horizontal(|ui| {
         ui.label("Max log lines");
         let response =

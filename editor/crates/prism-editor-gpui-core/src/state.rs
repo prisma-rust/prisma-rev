@@ -24,6 +24,9 @@ pub struct Preferences {
     pub autosave: bool,
     pub confirm_delete: bool,
     pub compact: bool,
+    /// 松散资产变化后自动重打场景包（#495）。默认开：改贴图 / HDR / 网格后
+    /// 不用退出 Play 就能看到；关掉可以避免频繁重打包。
+    pub hot_reload_assets: bool,
     pub max_log_lines: f32,
     pub locale_auto: bool,
 }
@@ -34,6 +37,7 @@ impl Default for Preferences {
             autosave: true,
             confirm_delete: true,
             compact: false,
+            hot_reload_assets: true,
             max_log_lines: 5000.0,
             locale_auto: true,
         }

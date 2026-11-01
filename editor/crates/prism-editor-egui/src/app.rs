@@ -343,6 +343,10 @@ pub struct EditorApp {
     layouts_path: PathBuf,
     /// 正在跑的构建 / cook 子进程。
     build: Option<crate::build::BuildJob>,
+    /// 松散资产轮询（#495）：`assets/` 下未打包的文件变化 → 自动重打场景包。
+    loose_assets: Option<crate::loose_assets::LooseAssetWatcher>,
+    /// 下一次允许扫描松散资产的时间（1s 节流）。
+    loose_scan_at: Instant,
     /// 最近一次玩家构建的编译器诊断（Problems 面板与模块诊断并列显示）。
     build_diagnostics: Vec<crate::diagnostics::Diagnostic>,
     /// 两个视口共享的渲染设置（Console 里的「渲染图」面板可改）。
@@ -411,6 +415,10 @@ impl EditorApp {
         theme::apply(&cc.context, &workspace.colors());
 
         let project_root = workspace.project_root.clone();
+        let loose_assets = project_root
+            .as_deref()
+            .map(crate::loose_assets::LooseAssetWatcher::new);
+        let loose_scan_at = Instant::now();
         let preview_dir = project_root
             .clone()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -487,6 +495,8 @@ impl EditorApp {
             named_layouts,
             layouts_path,
             build: None,
+            loose_assets,
+            loose_scan_at,
             build_diagnostics: Vec::new(),
             // 引擎默认 `show_grid = false`（游戏里不该画网格），编辑器要从上次保存的
             // Scene 设置出发（旧存档没有这段时退回工作区默认值）。
@@ -4921,6 +4931,44 @@ impl EditorApp {
     }
 
     /// 每帧取走构建子进程的输出（写进 Console，System 来源）。
+    /// 松散资产热重载（#495 第 ② 条）。
+    ///
+    /// 每 1s（而不是每帧）扫描一次 `assets/`；检测到未打包的作者资产变化后等
+    /// 800ms 安静期，再触发一次现有的 Build Scene Pack。构建期间不叠加新任务，
+    /// 打完包后 `EngineHost::poll_asset_changes` 会重开 `.pak` 并重新解析实体。
+    ///
+    /// 关掉 Preferences 里的开关就完全不做扫描（发布版 / 低配机器）。
+    fn poll_loose_assets(&mut self) {
+        if !self.preferences.hot_reload_assets {
+            return;
+        }
+        let Some(root) = self.project_root.clone() else {
+            return;
+        };
+        let now = Instant::now();
+        if now < self.loose_scan_at {
+            return;
+        }
+        self.loose_scan_at = now + std::time::Duration::from_secs(1);
+        if self.build_job_running() {
+            // 正在打包：下一次扫描再来，避免排队一串构建。
+            return;
+        }
+        let Some(watcher) = self.loose_assets.as_mut() else {
+            return;
+        };
+        if !watcher.poll(&root, now) {
+            return;
+        }
+        self.workspace.log(
+            prism_editor_core::LogSource::System,
+            prism_editor_core::LogLevel::Info,
+            "loose assets changed — rebuilding the scene pack",
+        );
+        self.state.status = "assets changed — rebuilding scene pack".to_string();
+        self.start_build(crate::build::BuildKind::ScenePack);
+    }
+
     fn poll_build(&mut self) {
         let Some(job) = self.build.as_mut() else {
             return;
@@ -4963,6 +5011,13 @@ impl EditorApp {
                 );
             }
             self.build = None;
+            // 构建自己会写 `scenes.pak` / `.rscn`（扫描已排除），这里再对齐一次快照，
+            // 避免构建期间的外部改动被误判成「刚完成的构建」引起的循环（#495）。
+            if let (Some(root), Some(watcher)) =
+                (self.project_root.as_deref(), self.loose_assets.as_mut())
+            {
+                watcher.resync(root);
+            }
         }
         self.build_diagnostics.extend(new_diagnostics);
     }
@@ -5058,6 +5113,7 @@ impl App for EditorApp {
         }
         self.was_focused = focused;
         self.poll_build();
+        self.poll_loose_assets();
         self.poll_project_module();
         self.sync_document();
         self.handle_shortcuts(ctx);
