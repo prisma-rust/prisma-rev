@@ -65,6 +65,9 @@ pub struct ReportDrawCall {
     pub triangles: u64,
     /// 是否在相机主通道绘制（阴影专用 / 被剔除的网格为 `false`）。
     pub visible: bool,
+    /// 管线状态摘要（队列 / 剔除 / 深度写 / 混合）；旧报告没有该字段。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
 }
 
 /// 报告里最多保留多少条 draw call（防止大场景把 JSON 撑爆）。
@@ -482,6 +485,7 @@ mod tests {
                 instances: 1,
                 triangles: 12,
                 visible: true,
+                state: Some("queue 2000 · cull Back · z-write true · One/Zero Add".into()),
             },
             ReportDrawCall {
                 pass: "sprite".into(),
@@ -489,12 +493,21 @@ mod tests {
                 instances: 4,
                 triangles: 8,
                 visible: true,
+                state: None,
             },
         ];
         let report = RenderGraphReport::from_snapshot(&snapshot(), ReportSettings::default(), 1)
             .with_draw_calls(calls);
         let json = serde_json::to_value(&report).unwrap();
         assert_eq!(json["drawCalls"][0]["pass"], "forward");
+        assert!(json["drawCalls"][0]["state"]
+            .as_str()
+            .unwrap()
+            .contains("cull Back"));
+        assert!(
+            json["drawCalls"][1].get("state").is_none(),
+            "state 为 None 时省略字段"
+        );
         assert_eq!(json["drawCalls"][1]["instances"], 4);
         assert_eq!(json["drawCalls"][1]["triangles"], 8);
     }
