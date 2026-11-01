@@ -138,6 +138,12 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
 可选能力**默认关**、按 feature 打开：`prism-app/physics`、`prism-app/audio`（连带
 `prism-engine/audio` 的 `AudioSource`）、`prism-asset/async-io`。玩家树由
 `scripts/check_deps.py` 守预算（黑名单 + crate 上限），本地和 CI 都跑，别调高常量。
+- `prism-app/physics`（#522）：`App::with_subsystem(Subsystem::Physics)` 启动
+  `PhysicsRuntime`，每个固定步把 `Rigidbody` / `Collider` 送进 rapier 线程，结果在
+  `engine.update()` 的 `hierarchy_system` 之前写回 `LocalTransform`。第一版只处理
+  **无父级**实体；有 `Parent` 的刚体跳过并 warn。`Collider` 仍然是
+  `prism_engine::physics::raycast` 的查询来源（两条路径共用同一份作者数据）。
+  `LinearVelocity` / 碰撞事件 / CCD / trimesh 还没接。
 - `prism-app/audio` 的场景音频：距离衰减 + **等功率声像**。声像按听者（`AudioListener`，
   没有就用第一个相机）的右向量投影，在**开始播放时**烘焙进片段（单声道 → 立体声，
   立体声按 L/R 缩放），所以混音器仍然只需要 `set_volume`；`spatial_blend = 0` 保持纯 2D，
