@@ -25,6 +25,8 @@ serde_json = { workspace = true }
 
 prism-render = { path = "../../../crates/prism-render" }
 prism-engine = { path = "../../../crates/prism-engine" }
+# Project 面板的音频试听（#508）：与玩家共用同一套解码 / 混音器。
+prism-audio = { path = "../../../crates/prism-audio" }
 prism-scene = { path = "../../../crates/prism-scene" }
 # Game View 的 Play 执行用户项目 gameplay 代码：同构建 ABI 的动态模块宿主。
 prism-runtime-host = { path = "../../../crates/prism-runtime-host" }

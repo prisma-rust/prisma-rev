@@ -307,6 +307,14 @@ enum SaveConflictChoice {
     Cancel,
 }
 
+/// 编辑器内的音频试听（#508）：和玩家共用 `AudioEngine` / 解码器。
+struct AudioPreview {
+    engine: prism_audio::AudioEngine,
+    handle: Option<prism_audio::PlaybackHandle>,
+    /// 音频线程是否已经真正开始播放（区分「刚 play」和「播完」）。
+    started: bool,
+}
+
 pub struct EditorApp {
     pub workspace: Workspace,
     pub state: UiState,
@@ -333,6 +341,8 @@ pub struct EditorApp {
     paused: bool,
     /// 控制协议 / 自动化请求退出：跳过未保存确认。
     force_quit: bool,
+    /// Project 面板的音频试听引擎（#508）；第一次点 Play 时才创建。
+    audio_preview: Option<AudioPreview>,
     render_report: Option<String>,
     /// `render_report` 对应文件的 mtime（面板可见时按需重读）。
     render_report_mtime: Option<std::time::SystemTime>,
@@ -487,6 +497,7 @@ impl EditorApp {
             playing: false,
             paused: false,
             force_quit: false,
+            audio_preview: None,
             render_report: None,
             render_report_mtime: None,
             palette: crate::palette::Palette::new(),
@@ -1904,6 +1915,99 @@ impl EditorApp {
         }
         self.workspace.set_field(entity, &component, &path, value);
         Ok(format!("set {component}.{path}"))
+    }
+
+    /// 消费 Project 面板的试听请求，并推进音频引擎（#508）。
+    fn handle_audio_preview(&mut self) {
+        if let Some(action) = self.state.pending_audio_preview.take() {
+            match action {
+                panels::AudioPreviewAction::Play(path) => self.play_audio_preview(&path),
+                panels::AudioPreviewAction::Stop => self.stop_audio_preview(),
+            }
+        }
+
+        let mut finished = false;
+        if let Some(preview) = self.audio_preview.as_mut() {
+            preview.engine.update();
+            if let Some(handle) = preview.handle {
+                if preview.engine.is_playing(&handle) {
+                    preview.started = true;
+                } else if preview.started {
+                    preview.engine.stop(&handle);
+                    preview.handle = None;
+                    finished = true;
+                }
+            }
+        }
+        if finished {
+            self.state.audio_preview_path = None;
+            self.state.status = "audio preview finished".to_string();
+        }
+    }
+
+    fn play_audio_preview(&mut self, relative: &str) {
+        let Some(root) = self.project_root.clone() else {
+            self.state.status = "audio preview needs a project root".to_string();
+            return;
+        };
+        if self.audio_preview.is_none() {
+            match prism_audio::AudioEngine::new(prism_audio::AudioConfig::default()) {
+                Ok(engine) => {
+                    self.audio_preview = Some(AudioPreview {
+                        engine,
+                        handle: None,
+                        started: false,
+                    });
+                }
+                Err(error) => {
+                    self.state.status = format!("audio preview unavailable: {error}");
+                    return;
+                }
+            }
+        }
+
+        let result = {
+            let preview = self.audio_preview.as_mut().expect("created above");
+            if let Some(handle) = preview.handle.take() {
+                preview.engine.stop(&handle);
+            }
+            let path = root.join(relative);
+            match prism_audio::decoder::decode_file(&path) {
+                Ok(data) => {
+                    let handle = preview.engine.play(&data);
+                    if handle.is_valid() {
+                        preview.handle = Some(handle);
+                        preview.started = false;
+                        Ok(())
+                    } else {
+                        Err(format!("play {relative} failed"))
+                    }
+                }
+                Err(error) => Err(format!("decode {relative} failed: {error}")),
+            }
+        };
+
+        match result {
+            Ok(()) => {
+                self.state.audio_preview_path = Some(relative.to_string());
+                self.state.status = format!("playing {relative}");
+            }
+            Err(error) => {
+                self.state.audio_preview_path = None;
+                self.state.status = error;
+            }
+        }
+    }
+
+    fn stop_audio_preview(&mut self) {
+        if let Some(preview) = self.audio_preview.as_mut() {
+            if let Some(handle) = preview.handle.take() {
+                preview.engine.stop(&handle);
+            }
+            preview.started = false;
+        }
+        self.state.audio_preview_path = None;
+        self.state.status = "audio preview stopped".to_string();
     }
 
     /// 请求退出：有未保存改动时先弹确认，否则直接关窗口。
@@ -5448,6 +5552,8 @@ impl App for EditorApp {
             self.start_build(kind);
         }
 
+        self.handle_audio_preview();
+
         // Play 态染色（#500）：整窗一圈描边，暂停时换琥珀色。只画边框，
         // 不覆盖内容 —— 悬浮面板和弹窗仍然清晰可读。
         if self.playing {
@@ -6023,6 +6129,48 @@ mod tests {
         assert_eq!(project_window_resolution(Some(&root)), Some((1600, 900)));
         std::fs::remove_dir_all(root).unwrap();
         assert_eq!(project_window_resolution(None), None);
+    }
+
+    /// #508：编辑器试听走的就是玩家同一条「WAV 解码 → Firewheel 播放」链路。
+    #[test]
+    fn audio_preview_can_decode_and_start_a_wav() {
+        let sample_rate = 44_100u32;
+        let samples: Vec<i16> = (0..64)
+            .map(|index| if index % 2 == 0 { 1200 } else { -1200 })
+            .collect();
+        let data_len = (samples.len() * 2) as u32;
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+        wav.extend_from_slice(&sample_rate.to_le_bytes());
+        wav.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes()); // block align
+        wav.extend_from_slice(&16u16.to_le_bytes()); // bits
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_len.to_le_bytes());
+        for sample in samples {
+            wav.extend_from_slice(&sample.to_le_bytes());
+        }
+
+        let path = std::env::temp_dir().join(format!(
+            "prism-editor-audio-preview-{}.wav",
+            std::process::id()
+        ));
+        std::fs::write(&path, &wav).unwrap();
+        let clip = prism_audio::decoder::decode_file(&path).expect("wav decodes");
+        assert_eq!(clip.channels, 1);
+        assert!(clip.duration > std::time::Duration::ZERO);
+
+        let mut engine =
+            prism_audio::AudioEngine::new(prism_audio::AudioConfig::default()).expect("engine");
+        let handle = engine.play(&clip);
+        assert!(handle.is_valid(), "preview should start a real voice");
+        engine.stop(&handle);
+        let _ = std::fs::remove_file(path);
     }
 }
 
