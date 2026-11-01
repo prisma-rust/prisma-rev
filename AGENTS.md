@@ -318,7 +318,8 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   未打包的作者资产（排除 `.pak` / `.rscn` / `.spv` 与 `.scene.json` / `.prefab.json`），
   静默 800ms 后触发一次 `Build Scene Pack`，之后由 `.pak` 轮询链路自动重载 ——
   Play 中改贴图 / HDR / 网格不用退出。实现：`editor/.../src/loose_assets.rs`
-  （扫描 + debounce 有单测），接入 `EditorApp::poll_loose_assets`。
+  （扫描 + debounce 有单测），接入 `EditorApp::poll_loose_assets`。版本戳统一走
+  `prism-editor-core::project::FileStamp`（mtime + 长度），文档外部改动检测也用同一套。
 - 仍未覆盖：`.pak` 之外的资产类型（音频总线、MM DB 等）如果将来有独立 cook 步骤，
   需要在同一入口补触发；玩家侧仍只有 `.pak` 轮询。
   - 缩放是**最近邻**，像素画放大不糊；内容是窗口那一帧，不重渲染。

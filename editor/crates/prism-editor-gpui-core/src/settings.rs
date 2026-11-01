@@ -304,7 +304,7 @@ impl ProjectSettings {
     }
 }
 
-/// 面板的读盘缓存：只在「首次 / 文件 mtime 变了 / 手动重载」时解析，
+/// 面板的读盘缓存：只在「首次 / 文件内容变了 / 手动重载」时解析，
 /// 编辑中的值留在这里，显式 Apply 才落盘（#428 的 1、2、5 条）。
 pub struct SettingsCache {
     root: PathBuf,
@@ -314,7 +314,11 @@ pub struct SettingsCache {
     saved: ProjectSettings,
     /// 上次读到的问题（解析/IO），面板顶部展示。
     pub error: Option<String>,
-    mtime: Option<std::time::SystemTime>,
+    /// 上次读到的原始文本；用它判断「磁盘上的文件变了没有」。
+    ///
+    /// 只比 mtime 在粗粒度文件系统上会漏掉同一秒内的覆盖写（已知 flaky 测试就是
+    /// 这个原因）；决策面板是显式打开的，读一个 1–2 KB 的配置文件可以接受。
+    text: Option<String>,
     /// 编辑期间磁盘被改过（面板提示，但不覆盖用户输入）。
     external_change: bool,
 }
@@ -326,7 +330,7 @@ impl SettingsCache {
             settings: ProjectSettings::default(),
             saved: ProjectSettings::default(),
             error: None,
-            mtime: None,
+            text: None,
             external_change: false,
         };
         cache.reload();
@@ -348,13 +352,13 @@ impl SettingsCache {
     /// 文件在磁盘上变了就重读一次。有未保存改动时**不覆盖**编辑中的值，
     /// 只把 `external_change` 立起来让面板提示。
     pub fn refresh(&mut self) -> bool {
-        let current = mtime(&ProjectSettings::path(&self.root));
-        if current == self.mtime {
+        let current = read_settings_text(&self.root);
+        if current == self.text {
             return false;
         }
         if self.is_dirty() {
             self.external_change = true;
-            self.mtime = current;
+            self.text = current;
             return false;
         }
         self.reload();
@@ -362,7 +366,7 @@ impl SettingsCache {
     }
 
     fn reload(&mut self) {
-        self.mtime = mtime(&ProjectSettings::path(&self.root));
+        self.text = read_settings_text(&self.root);
         match ProjectSettings::read(&self.root) {
             Ok(settings) => {
                 self.settings = settings.clone();
@@ -384,7 +388,7 @@ impl SettingsCache {
         self.saved = self.settings.clone();
         self.error = None;
         self.external_change = false;
-        self.mtime = mtime(&ProjectSettings::path(&self.root));
+        self.text = read_settings_text(&self.root);
         Ok(())
     }
 
@@ -408,8 +412,17 @@ impl SettingsCache {
     }
 }
 
-fn mtime(path: &std::path::Path) -> Option<std::time::SystemTime> {
-    fs::metadata(path).and_then(|meta| meta.modified()).ok()
+/// 读 `assets/settings.ini`（缺省回退旧 `settings.toml`）的原始文本。
+fn read_settings_text(root: &std::path::Path) -> Option<String> {
+    for path in [
+        ProjectSettings::path(root),
+        ProjectSettings::legacy_path(root),
+    ] {
+        if let Ok(text) = fs::read_to_string(&path) {
+            return Some(text);
+        }
+    }
+    None
 }
 
 fn string_or(document: &IniDocument, section: &str, key: &str, fallback: &str) -> String {
@@ -510,7 +523,7 @@ mod tests {
         let mut settings = ProjectSettings::default();
         settings.app.company = "Elsewhere".into();
         settings.write(&temp.root).unwrap();
-        assert!(cache.refresh(), "mtime changed");
+        assert!(cache.refresh(), "file contents changed");
         assert_eq!(cache.settings.app.company, "Elsewhere");
         assert!(!cache.is_dirty());
     }
@@ -523,8 +536,7 @@ mod tests {
         cache.settings.app.name = "edited".into();
         assert!(cache.is_dirty());
 
-        // mtime 的分辨率取决于文件系统：同一 tick 内重写可能读回相同时间戳。
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        // 同长度 / 同一秒内的覆盖写也要能检测到（按内容比较，不看 mtime）。
         let mut other = ProjectSettings::default();
         other.app.name = "external".into();
         other.write(&temp.root).unwrap();
