@@ -206,6 +206,12 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
   双击进入），右键有 Open / Rename / New Subfolder / Copy Path / Show in Explorer /
   Delete（只能删空目录），`F2` 就地改名；**资产可拖拽**：拖到目录 = 移动并改写引用，
   拖到层级实体 = 实例化预制体，拖到检查器的路径字段 = 直接写入路径（`AssetDrag` 载荷）。
+- **Project 面板的视图 / 搜索语法 / Ping（#419）**：搜索框右侧有三个开关 —— 列表 /
+  网格视图、单列 / 两列（左目录树 + 右内容）。搜索支持 Unity 风格的 `t:` 前缀：
+  `t:texture`（英文 slug / `Texture` / 中文标签 `纹理` 都认）、`dir:sprites`，
+  多个词之间是 AND，多个 `t:` 之间是 OR。选中资产后检查器显示资产详情（类型 / 体积 /
+  GUID / 引用数 / 预览），底部的 **Ping In Scene** 和右键菜单的 `Ping In Scene` 会
+  选中第一个引用该资产的实体并在 Scene 视图里框住它 —— 资产 ↔ 场景双向定位。
 - **Problems**：项目模块与玩家构建的 error / warning 列表（`file:line:col`），
   点一行打开源码；工具栏的模块状态与第一段同源，`Ctrl+R` / `Compile` 重新编译。
 - **Docking**：拖动标签页（行为）：拖到另一个 leaf 的左/右/上/下 25% = 分屏，
