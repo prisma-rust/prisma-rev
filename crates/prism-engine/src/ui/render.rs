@@ -53,6 +53,8 @@ pub struct UiTextCmd {
     pub alignment: TextAlign,
     /// 工程自带字体的资产路径；空 = 系统默认字体（#583）。
     pub font: String,
+    /// 按矩形宽度换行（#527）；`false` = 单行。
+    pub wrap: bool,
     /// 见 [`UiQuad::layer`]。
     pub layer: i32,
     /// 见 [`UiQuad::order`]。
@@ -214,6 +216,7 @@ pub fn ui_render_system(world: &mut World) {
                 color: text.color,
                 alignment: text.alignment,
                 font: text.font.clone(),
+                wrap: text.wrap,
                 layer: 0,
                 order: layout.order,
             }),
@@ -279,6 +282,7 @@ pub fn convert_ui_draw_list_to_overlay_into(world: &World, out: &mut prism_rende
                         TextAlign::Right => prism_render::ui_overlay::UiTextAlign::Right,
                     },
                     font: (!text.font.is_empty()).then(|| text.font.clone()),
+                    wrap: text.wrap,
                 });
                 continue;
             }

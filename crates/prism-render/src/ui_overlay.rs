@@ -26,6 +26,8 @@ pub struct UiTextInput {
     pub alignment: UiTextAlign,
     /// 工程自带字体的资产路径；`None` = 系统默认字体（#583）。
     pub font: Option<String>,
+    /// 按矩形宽度换行（#527）；`false` = 单行。
+    pub wrap: bool,
 }
 
 /// 文本对齐（在 record 时按整串测量宽度决定首字符 x）。

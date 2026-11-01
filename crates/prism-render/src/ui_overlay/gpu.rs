@@ -182,6 +182,16 @@ impl GlyphAtlas {
     }
 
     /// 单行文本的基线相对矩形顶边的偏移（来自后端的行度量）。
+    /// 行高（px）：后端给出度量时用 `line_height`，否则退回 `1.2 × 字号`。
+    fn line_height(&self, font: Option<&str>, font_size: f32) -> f32 {
+        self.rasterizer
+            .as_deref()
+            .and_then(|backend| backend.line_metrics(font, font_size))
+            .map(|metrics| metrics.line_height)
+            .filter(|height| height.is_finite() && *height > 0.0)
+            .unwrap_or(font_size * 1.2)
+    }
+
     fn baseline_offset(&self, font: Option<&str>, font_size: f32) -> f32 {
         let metrics = self
             .rasterizer
@@ -1071,64 +1081,154 @@ impl UiOverlay {
 
         let font = t.font.as_deref();
 
-        // 1. 测量整串宽度（advance 求和）。
-        let mut total = 0.0f32;
-        for ch in t.content.chars() {
-            if let Some(g) = self.atlas.glyph(font, ch, t.font_size) {
-                total += g.advance;
-            }
-        }
-        if total <= 0.0 {
+        // 1. 断行（#527）：`\n` 总是换行；`wrap` 时再按矩形宽度贪心断行。
+        //    没有 `wrap` 也没有 `\n` 时就是原来的一行，行为不变。
+        let lines = if t.wrap {
+            let mut advance = |ch: char| self.advance_of(font, t.font_size, ch);
+            wrap_text(&t.content, rect_w, &mut advance)
+        } else {
+            t.content.split('\n').map(str::to_string).collect()
+        };
+        if lines.is_empty() {
             return;
         }
 
-        // 2. 对齐决定起始 x。
-        let start_x = match t.alignment {
-            UiTextAlign::Left => left,
-            UiTextAlign::Center => left + (rect_w - total) * 0.5,
-            UiTextAlign::Right => left + rect_w - total,
-        };
-
-        // 3. 逐字形发射四边形。基线来自后端行度量（ascent），拿不到时退回 0.8×字号。
-        let baseline = top + self.atlas.baseline_offset(font, t.font_size);
+        let line_height = self.atlas.line_height(font, t.font_size);
         let [r, g, b, a] = t.color;
-        let mut cursor_x = start_x;
-        for ch in t.content.chars() {
-            let Some(glyph) = self.atlas.glyph(font, ch, t.font_size) else {
-                continue;
-            };
-            if let Some([gx, gy, gw, gh]) = glyph.rect {
-                let px = cursor_x + glyph.xmin as f32;
-                // fontdue 的 `ymin` 是 PositiveYUp 下相对基线的下边界；我们的
-                // 像素坐标 PositiveYDown，字形顶边 = baseline - ymin - height。
-                let py = baseline - glyph.ymin as f32 - gh as f32;
-                // 像素坐标（左上角原点，y 向下）→ Vulkan NDC（y=-1 屏幕顶，y=+1 屏幕底）。
-                // 两者 y 方向一致，所以不做翻转；翻一次会把文字画成倒的。
-                let x0 = (px / w) * 2.0 - 1.0;
-                let y0 = pixel_y_to_ndc(py, h);
-                let x1 = ((px + gw as f32) / w) * 2.0 - 1.0;
-                let y1 = pixel_y_to_ndc(py + gh as f32, h);
-                let inv = 1.0 / ATLAS_SIZE as f32;
-                let u0 = gx as f32 * inv;
-                let v0 = gy as f32 * inv;
-                let u1 = (gx + gw) as f32 * inv;
-                let v1 = (gy + gh) as f32 * inv;
-                emit_quad(
-                    vertices,
-                    [x0, y0],
-                    [x1, y1],
-                    [u0, v0],
-                    [u1, v1],
-                    [r, g, b, a],
-                    None,
-                    u32::MAX,
-                );
+
+        for (index, line) in lines.iter().enumerate() {
+            let line_top = top + index as f32 * line_height;
+            // 超出矩形底边的行不再画（不做半个字形的裁剪）。
+            if line_top > top + rect_h {
+                break;
             }
-            cursor_x += glyph.advance;
+
+            // 2. 测量这一行的宽度（advance 求和）。
+            let mut total = 0.0f32;
+            for ch in line.chars() {
+                total += self.advance_of(font, t.font_size, ch);
+            }
+            if total <= 0.0 {
+                continue;
+            }
+
+            // 3. 对齐决定起始 x（逐行对齐，不是整段）。
+            let start_x = match t.alignment {
+                UiTextAlign::Left => left,
+                UiTextAlign::Center => left + (rect_w - total) * 0.5,
+                UiTextAlign::Right => left + rect_w - total,
+            };
+
+            // 4. 逐字形发射四边形。基线来自后端行度量（ascent）。
+            let baseline = line_top + self.atlas.baseline_offset(font, t.font_size);
+            let mut cursor_x = start_x;
+            for ch in line.chars() {
+                let Some(glyph) = self.atlas.glyph(font, ch, t.font_size) else {
+                    continue;
+                };
+                if let Some([gx, gy, gw, gh]) = glyph.rect {
+                    let px = cursor_x + glyph.xmin as f32;
+                    // fontdue 的 `ymin` 是 PositiveYUp 下相对基线的下边界；我们的
+                    // 像素坐标 PositiveYDown，字形顶边 = baseline - ymin - height。
+                    let py = baseline - glyph.ymin as f32 - gh as f32;
+                    // 像素坐标（左上角原点，y 向下）→ Vulkan NDC（y=-1 屏幕顶，y=+1 屏幕底）。
+                    // 两者 y 方向一致，所以不做翻转；翻一次会把文字画成倒的。
+                    let x0 = (px / w) * 2.0 - 1.0;
+                    let y0 = pixel_y_to_ndc(py, h);
+                    let x1 = ((px + gw as f32) / w) * 2.0 - 1.0;
+                    let y1 = pixel_y_to_ndc(py + gh as f32, h);
+                    let inv = 1.0 / ATLAS_SIZE as f32;
+                    let u0 = gx as f32 * inv;
+                    let v0 = gy as f32 * inv;
+                    let u1 = (gx + gw) as f32 * inv;
+                    let v1 = (gy + gh) as f32 * inv;
+                    emit_quad(
+                        vertices,
+                        [x0, y0],
+                        [x1, y1],
+                        [u0, v0],
+                        [u1, v1],
+                        [r, g, b, a],
+                        None,
+                        u32::MAX,
+                    );
+                }
+                cursor_x += glyph.advance;
+            }
         }
+    }
+
+    /// 单个字符的推进量（px）；字体里没有该字形时按 0 处理。
+    fn advance_of(&mut self, font: Option<&str>, font_size: f32, ch: char) -> f32 {
+        self.atlas
+            .glyph(font, ch, font_size)
+            .map(|glyph| glyph.advance)
+            .filter(|advance| advance.is_finite() && *advance > 0.0)
+            .unwrap_or(0.0)
     }
 }
 
+/// `wrap` 时最多断多少行（防御超大字符串）。
+const MAX_WRAP_LINES: usize = 4096;
+
+/// 按宽度贪心断行（#527）。
+///
+/// - `\n` 总是产生新行（保留空行，让作者能控制段落间距）；
+/// - 优先在空格处断行，单个词比整行还宽时按字符断；
+/// - 断行后行尾空格会被去掉，行首空格同理。
+fn wrap_text(content: &str, max_width: f32, advance: &mut impl FnMut(char) -> f32) -> Vec<String> {
+    let max_width = if max_width.is_finite() && max_width > 0.0 {
+        max_width
+    } else {
+        f32::MAX
+    };
+    let mut lines: Vec<String> = Vec::new();
+    'paragraphs: for paragraph in content.split('\n') {
+        let mut current = String::new();
+        let mut current_w = 0.0f32;
+        // 最近一个空格的字节下标。
+        let mut last_space: Option<usize> = None;
+
+        for ch in paragraph.chars() {
+            let step = advance(ch).max(0.0);
+            if !current.is_empty() && current_w + step > max_width {
+                match last_space.take() {
+                    Some(index) => {
+                        // 在空格处断：空格之后的部分挪到下一行。
+                        let rest = current[index + 1..].to_string();
+                        current.truncate(index);
+                        lines.push(current.trim_end().to_string());
+                        current = rest.trim_start().to_string();
+                        current_w = 0.0;
+                        for ch in current.chars() {
+                            current_w += advance(ch).max(0.0);
+                        }
+                    }
+                    None => {
+                        lines.push(std::mem::take(&mut current));
+                        current_w = 0.0;
+                    }
+                }
+                if lines.len() >= MAX_WRAP_LINES {
+                    lines.push(current);
+                    break 'paragraphs;
+                }
+            }
+            current.push(ch);
+            current_w += step;
+            if ch == ' ' {
+                last_space = Some(current.len() - 1);
+            }
+        }
+        lines.push(current);
+        if lines.len() >= MAX_WRAP_LINES {
+            break;
+        }
+    }
+    lines
+}
+
+/// 往顶点流里推一个四边形（两个三角形，顺时针）。
 /// 往顶点流里推一个四边形（两个三角形，顺时针）。
 fn emit_quad(
     out: &mut Vec<UiVertex>,
@@ -1292,7 +1392,46 @@ fn pixel_y_to_ndc(py: f32, h: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{pixel_y_to_ndc, srgb_rgba_to_linear};
+    use super::{pixel_y_to_ndc, srgb_rgba_to_linear, wrap_text};
+
+    /// 等宽 10px 的度量，测试断行只关心宽度，不依赖真实字体。
+    fn ten_px(_ch: char) -> f32 {
+        10.0
+    }
+
+    #[test]
+    fn wrapping_breaks_at_spaces_and_respects_the_width() {
+        let mut advance = ten_px;
+        let lines = wrap_text("aa bb cc", 60.0, &mut advance);
+        assert_eq!(lines, vec!["aa bb".to_string(), "cc".to_string()]);
+    }
+
+    #[test]
+    fn a_word_longer_than_the_line_breaks_by_character() {
+        let mut advance = ten_px;
+        let lines = wrap_text("abcdef", 30.0, &mut advance);
+        assert_eq!(lines, vec!["abc".to_string(), "def".to_string()]);
+    }
+
+    #[test]
+    fn newlines_always_break_and_keep_blank_lines() {
+        let mut advance = ten_px;
+        let lines = wrap_text("a\n\nb", 100.0, &mut advance);
+        assert_eq!(lines, vec!["a".to_string(), String::new(), "b".to_string()]);
+    }
+
+    #[test]
+    fn spaces_at_the_break_are_trimmed() {
+        let mut advance = ten_px;
+        let lines = wrap_text("aa  bb", 40.0, &mut advance);
+        assert_eq!(lines, vec!["aa".to_string(), "bb".to_string()]);
+    }
+
+    #[test]
+    fn wrapping_nothing_keeps_a_single_empty_line() {
+        let mut advance = ten_px;
+        assert_eq!(wrap_text("", 100.0, &mut advance), vec![String::new()]);
+    }
 
     #[test]
     fn srgb_ui_colors_are_decoded_to_linear() {

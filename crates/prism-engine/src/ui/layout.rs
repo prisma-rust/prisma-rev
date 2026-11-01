@@ -82,97 +82,127 @@ pub fn ui_layout_system(world: &mut World) {
         scales.insert(*entity, scale);
     }
 
-    // 本帧已经算出的矩形。
-    //
-    // `ComputedLayout` 是每帧的输出，读 `world` 里的值只能证明「组件存在」，
-    // 不能证明「它是本帧算的」：预插入保证组件一定存在，于是子节点排在父节点
-    // 前面时会拿上一帧（或刚插入的默认值）当父矩形，算完也不会再重算。
-    // 这里用帧内的 `resolved` 记录真正就绪的父节点，恢复「父先子后」的顺序保证。
-    let mut resolved: std::collections::HashMap<prism_ecs::Entity, [f32; 4]> =
-        std::collections::HashMap::new();
+    // 布局组的父子关系（#527）。兄弟顺序必须和绘制顺序一致：按场景 `id`
+    // （运行时 `spawn` 的实体排在后面），这样「先加的在左/上」符合直觉，
+    // 也和 `assign_draw_order` 完全同源。
     let layout_entities: std::collections::HashSet<prism_ecs::Entity> =
         layout_queue.iter().map(|(entity, _)| *entity).collect();
-
-    // 按 Parent 层级处理（先根后子）
-    let mut remaining: Vec<_> = layout_queue.into_iter().collect();
-    let mut pass = 0;
-    while !remaining.is_empty() && pass < 16 {
-        pass += 1;
-        let mut next_pass = Vec::new();
-
-        for (entity, parent_opt) in remaining.drain(..) {
-            let parent_rect = match parent_opt {
-                Some(parent_entity) => match resolved.get(&parent_entity) {
-                    Some(rect) => *rect,
-                    None if layout_entities.contains(&parent_entity) => {
-                        // 父节点本帧还没算：等它先算完。
-                        next_pass.push((entity, parent_opt));
-                        continue;
-                    }
-                    // 父节点不是 UI 实体（没有 `Node + Style`）：沿用它的现有输出。
-                    None => match world.get::<ComputedLayout>(parent_entity) {
-                        Some(layout) => {
-                            // `ComputedLayout.rect` 是屏幕像素；换算回本节点的
-                            // 虚拟坐标（父级的缩放由它自己的 Canvas 决定）。
-                            let parent_scale = layout.scale;
-                            let parent_scale = if parent_scale.is_finite() && parent_scale > 0.0 {
-                                parent_scale
-                            } else {
-                                1.0
-                            };
-                            [
-                                layout.rect[0] / parent_scale,
-                                layout.rect[1] / parent_scale,
-                                layout.rect[2] / parent_scale,
-                                layout.rect[3] / parent_scale,
-                            ]
-                        }
-                        None => {
-                            next_pass.push((entity, parent_opt));
-                            continue;
-                        }
-                    },
-                },
-                None => {
-                    let scale = scales.get(&entity).copied().unwrap_or(1.0);
-                    [0.0, 0.0, screen.width / scale, screen.height / scale]
-                }
-            };
-
-            let style = match world.get::<Style>(entity) {
-                Some(s) => s.clone(),
-                None => continue,
-            };
-
-            let rect = compute_rect(&style, parent_rect);
-            let scale = scales.get(&entity).copied().unwrap_or(1.0);
-            let screen_rect = [
-                rect[0] * scale,
-                rect[1] * scale,
-                rect[2] * scale,
-                rect[3] * scale,
-            ];
-
-            if let Some(layout) = world.get_mut::<ComputedLayout>(entity) {
-                layout.rect = screen_rect;
-                layout.scale = scale;
-            } else {
-                world.insert(
-                    entity,
-                    ComputedLayout {
-                        rect: screen_rect,
-                        order: 0,
-                        scale,
-                    },
-                );
-            }
-            // 子节点用虚拟坐标继续算，缩放只在写回时应用一次。
-            resolved.insert(entity, rect);
+    let mut children: std::collections::HashMap<prism_ecs::Entity, Vec<prism_ecs::Entity>> =
+        std::collections::HashMap::new();
+    let mut roots: Vec<prism_ecs::Entity> = Vec::new();
+    for (entity, parent) in &layout_queue {
+        match parent.filter(|parent| layout_entities.contains(parent)) {
+            Some(parent) => children.entry(parent).or_default().push(*entity),
+            None => roots.push(*entity),
         }
+    }
+    for list in children.values_mut() {
+        list.sort_by_key(|entity| sibling_key(world, *entity));
+    }
+    roots.sort_by_key(|entity| sibling_key(world, *entity));
 
-        remaining = next_pass;
+    // 父先子后的遍历顺序。`seen` 同时防住 Parent 成环。
+    let mut order: Vec<prism_ecs::Entity> = Vec::new();
+    let mut seen: std::collections::HashSet<prism_ecs::Entity> = std::collections::HashSet::new();
+    let mut stack: Vec<prism_ecs::Entity> = roots.iter().rev().copied().collect();
+    while let Some(entity) = stack.pop() {
+        if !seen.insert(entity) {
+            continue;
+        }
+        order.push(entity);
+        if let Some(kids) = children.get(&entity) {
+            for kid in kids.iter().rev() {
+                stack.push(*kid);
+            }
+        }
     }
 
+    let styles: std::collections::HashMap<prism_ecs::Entity, Style> = layout_queue
+        .iter()
+        .filter_map(|(entity, _)| {
+            world
+                .get::<Style>(*entity)
+                .map(|style| (*entity, style.clone()))
+        })
+        .collect();
+
+    // 第一遍 measure：子先父后。布局组用子元素的尺寸量出自己的内容尺寸，
+    // `fit_content` 时据此收缩（#527）。
+    let measured = measure_sizes(&order, &children, &styles);
+
+    // 第二遍 arrange：父先子后。布局组的子元素按排列顺序定位，其余节点继续
+    // 走「锚点 × 父矩形」的原有算法。
+    let mut resolved: std::collections::HashMap<prism_ecs::Entity, [f32; 4]> =
+        std::collections::HashMap::new();
+    // 每个布局组的主轴游标（虚拟坐标，相对内容区起点）。
+    let mut cursors: std::collections::HashMap<prism_ecs::Entity, f32> =
+        std::collections::HashMap::new();
+
+    for entity in &order {
+        let Some(style) = styles.get(entity) else {
+            continue;
+        };
+        let own = measured.get(entity).copied();
+        let scale = scales.get(entity).copied().unwrap_or(1.0);
+        let root_rect = [0.0, 0.0, screen.width / scale, screen.height / scale];
+
+        let parent = parents.get(entity).copied();
+        let rect = match parent {
+            // 父级不是 UI 实体（没有 Node + Style）：沿用它已有的输出矩形。
+            Some(parent) if !layout_entities.contains(&parent) => {
+                let parent_rect = world
+                    .get::<ComputedLayout>(parent)
+                    .map(|layout| {
+                        let parent_scale = if layout.scale.is_finite() && layout.scale > 0.0 {
+                            layout.scale
+                        } else {
+                            1.0
+                        };
+                        [
+                            layout.rect[0] / parent_scale,
+                            layout.rect[1] / parent_scale,
+                            layout.rect[2] / parent_scale,
+                            layout.rect[3] / parent_scale,
+                        ]
+                    })
+                    .unwrap_or(root_rect);
+                anchored_rect(style, parent_rect, own)
+            }
+            Some(parent) => {
+                let parent_rect = resolved.get(&parent).copied().unwrap_or(root_rect);
+                match styles.get(&parent) {
+                    Some(parent_style)
+                        if parent_style.layout.direction != LayoutDirection::None =>
+                    {
+                        place_in_layout(parent, parent_style.layout, parent_rect, own, &mut cursors)
+                    }
+                    _ => anchored_rect(style, parent_rect, own),
+                }
+            }
+            None => anchored_rect(style, root_rect, own),
+        };
+
+        let screen_rect = [
+            rect[0] * scale,
+            rect[1] * scale,
+            rect[2] * scale,
+            rect[3] * scale,
+        ];
+        if let Some(layout) = world.get_mut::<ComputedLayout>(*entity) {
+            layout.rect = screen_rect;
+            layout.scale = scale;
+        } else {
+            world.insert(
+                *entity,
+                ComputedLayout {
+                    rect: screen_rect,
+                    order: 0,
+                    scale,
+                },
+            );
+        }
+        resolved.insert(*entity, rect);
+    }
     assign_draw_order(world);
 }
 
@@ -237,17 +267,9 @@ pub fn assign_draw_order(world: &mut World) {
         }
     }
 
-    let key = |world: &World, entity: prism_ecs::Entity| -> (u32, u32) {
-        let scene_id = world
-            .get::<crate::scene::components::SceneEntityId>(entity)
-            .map(|id| id.0)
-            .unwrap_or(u32::MAX);
-        (scene_id, entity.id())
-    };
-
-    roots.sort_by_key(|entity| key(world, *entity));
+    roots.sort_by_key(|entity| sibling_key(world, *entity));
     for list in children.values_mut() {
-        list.sort_by_key(|entity| key(world, *entity));
+        list.sort_by_key(|entity| sibling_key(world, *entity));
     }
 
     // 深度优先前序；`depth` 只是防御 Parent 成环（环里的节点会在自己的子树里
@@ -275,6 +297,164 @@ pub fn assign_draw_order(world: &mut World) {
     }
 }
 
+/// 兄弟排序键：场景 `id` 优先，运行时实体按分配下标。
+fn sibling_key(world: &World, entity: prism_ecs::Entity) -> (u32, u32) {
+    let scene_id = world
+        .get::<crate::scene::components::SceneEntityId>(entity)
+        .map(|id| id.0)
+        .unwrap_or(u32::MAX);
+    (scene_id, entity.id())
+}
+
+/// 方向相关的 `(主轴, 交叉轴)` 尺寸。
+fn main_cross(direction: LayoutDirection, size: [f32; 2]) -> (f32, f32) {
+    match direction {
+        LayoutDirection::Row => (size[0], size[1]),
+        LayoutDirection::Column => (size[1], size[0]),
+        LayoutDirection::None => (0.0, 0.0),
+    }
+}
+
+/// measure 遍：每个节点的「内容尺寸」。
+///
+/// 非布局组节点就是显式宽/高（没写算 0）；布局组在 `fit_content` 时把自己
+/// 收缩到「子元素主轴之和 + spacing + padding」与「交叉轴最大值 + padding」。
+fn measure_sizes(
+    order: &[prism_ecs::Entity],
+    children: &std::collections::HashMap<prism_ecs::Entity, Vec<prism_ecs::Entity>>,
+    styles: &std::collections::HashMap<prism_ecs::Entity, Style>,
+) -> std::collections::HashMap<prism_ecs::Entity, [f32; 2]> {
+    /// 有限且非负；坏值按 0。
+    fn extent(value: f32) -> f32 {
+        if value.is_finite() && value > 0.0 {
+            value
+        } else {
+            0.0
+        }
+    }
+
+    let mut measured: std::collections::HashMap<prism_ecs::Entity, [f32; 2]> =
+        std::collections::HashMap::new();
+    for entity in order.iter().rev() {
+        let Some(style) = styles.get(entity) else {
+            continue;
+        };
+        let mut size = [
+            style.width.map(extent).unwrap_or(0.0),
+            style.height.map(extent).unwrap_or(0.0),
+        ];
+        let layout = style.layout;
+        if layout.direction != LayoutDirection::None {
+            let padding = layout.padding;
+            let spacing = extent(layout.spacing);
+            let mut main = 0.0;
+            let mut cross: f32 = 0.0;
+            let mut count = 0usize;
+            if let Some(kids) = children.get(entity) {
+                for kid in kids {
+                    let Some(kid_size) = measured.get(kid).copied() else {
+                        continue;
+                    };
+                    let (kid_main, kid_cross) = main_cross(layout.direction, kid_size);
+                    if count > 0 {
+                        main += spacing;
+                    }
+                    count += 1;
+                    main += kid_main;
+                    cross = cross.max(kid_cross);
+                }
+            }
+            if layout.fit_content {
+                let (content_main, content_cross) = match layout.direction {
+                    LayoutDirection::Row => (
+                        extent(padding.left) + extent(padding.right),
+                        extent(padding.top) + extent(padding.bottom),
+                    ),
+                    LayoutDirection::Column => (
+                        extent(padding.top) + extent(padding.bottom),
+                        extent(padding.left) + extent(padding.right),
+                    ),
+                    LayoutDirection::None => (0.0, 0.0),
+                };
+                let (content_w, content_h) = match layout.direction {
+                    LayoutDirection::Row => (main + content_main, cross + content_cross),
+                    LayoutDirection::Column => (cross + content_cross, main + content_main),
+                    LayoutDirection::None => (0.0, 0.0),
+                };
+                if style.width.is_none() {
+                    size[0] = content_w.max(0.0);
+                }
+                if style.height.is_none() {
+                    size[1] = content_h.max(0.0);
+                }
+            }
+        }
+        measured.insert(*entity, size);
+    }
+    measured
+}
+
+/// 把一个子元素放进父级的布局组：主轴按游标累加，交叉轴按 `child_align`。
+fn place_in_layout(
+    parent: prism_ecs::Entity,
+    layout: Layout,
+    parent_rect: [f32; 4],
+    own: Option<[f32; 2]>,
+    cursors: &mut std::collections::HashMap<prism_ecs::Entity, f32>,
+) -> [f32; 4] {
+    let padding = layout.padding;
+    let content = [
+        parent_rect[0] + padding.left,
+        parent_rect[1] + padding.top,
+        (parent_rect[2] - padding.left - padding.right).max(0.0),
+        (parent_rect[3] - padding.top - padding.bottom).max(0.0),
+    ];
+    let own = own.unwrap_or([0.0, 0.0]);
+    let (main, cross_default) = main_cross(layout.direction, own);
+    let cross_usable = match layout.direction {
+        LayoutDirection::Row => content[3],
+        LayoutDirection::Column => content[2],
+        LayoutDirection::None => 0.0,
+    };
+    let cross = if layout.child_align == ChildAlign::Stretch {
+        cross_usable
+    } else {
+        cross_default
+    };
+    let cross_offset = match layout.child_align {
+        ChildAlign::Start | ChildAlign::Stretch => 0.0,
+        ChildAlign::Center => ((cross_usable - cross) * 0.5).max(0.0),
+        ChildAlign::End => (cross_usable - cross).max(0.0),
+    };
+    let cursor = cursors.entry(parent).or_insert(0.0);
+    let rect = match layout.direction {
+        LayoutDirection::Row => [content[0] + *cursor, content[1] + cross_offset, main, cross],
+        LayoutDirection::Column => [content[0] + cross_offset, content[1] + *cursor, cross, main],
+        LayoutDirection::None => [content[0], content[1], main, cross],
+    };
+    *cursor += main
+        + if layout.spacing.is_finite() && layout.spacing > 0.0 {
+            layout.spacing
+        } else {
+            0.0
+        };
+    rect
+}
+
+/// 锚点路径：`fit_content` 的布局组没有显式宽/高时，用 measure 出的内容尺寸
+/// 覆盖，再按 anchor/pivot 重新定位。
+fn anchored_rect(style: &Style, parent: [f32; 4], measured: Option<[f32; 2]>) -> [f32; 4] {
+    if style.layout.direction != LayoutDirection::None && style.layout.fit_content {
+        let measured = measured.unwrap_or([0.0, 0.0]);
+        let size = [
+            style.width.unwrap_or(measured[0]).max(0.0),
+            style.height.unwrap_or(measured[1]).max(0.0),
+        ];
+        return compute_rect_sized(style, parent, Some(size));
+    }
+    compute_rect(style, parent)
+}
+
 /// 根据 Style 和父容器矩形计算屏幕空间矩形。
 ///
 /// 语义对齐引擎的 `anchorMin` / `anchorMax` + `pivot`：
@@ -282,6 +462,11 @@ pub fn assign_draw_order(world: &mut World) {
 ///   （否则全屏根元素会得到负的原点）；
 /// - **点锚点轴**（`min == max`）：尺寸取 `width`/`height`，位置按 `pivot` 对齐。
 fn compute_rect(style: &Style, parent: [f32; 4]) -> [f32; 4] {
+    compute_rect_sized(style, parent, None)
+}
+
+/// [`compute_rect`] 的可选尺寸覆盖（布局组 `fit_content` 用）。
+fn compute_rect_sized(style: &Style, parent: [f32; 4], size: Option<[f32; 2]>) -> [f32; 4] {
     let (px, py, pw, ph) = (parent[0], parent[1], parent[2], parent[3]);
 
     // 锚点 → 矩形四边
@@ -295,12 +480,14 @@ fn compute_rect(style: &Style, parent: [f32; 4]) -> [f32; 4] {
     let stretched_x = style.anchors.min_x != style.anchors.max_x;
     let stretched_y = style.anchors.min_y != style.anchors.max_y;
 
-    // 固定尺寸 vs 锚点拉伸
-    let w = style
-        .width
+    // 固定尺寸 vs 锚点拉伸；布局组的 `fit_content` 用调用方给的内容尺寸。
+    let w = size
+        .map(|size| size[0])
+        .or(style.width)
         .unwrap_or_else(|| (anchor_right - anchor_left) - margin.left - margin.right);
-    let h = style
-        .height
+    let h = size
+        .map(|size| size[1])
+        .or(style.height)
         .unwrap_or_else(|| (anchor_bottom - anchor_top) - margin.top - margin.bottom);
     let w = w.max(0.0);
     let h = h.max(0.0);

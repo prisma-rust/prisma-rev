@@ -96,11 +96,135 @@ impl Default for Pivot {
 /// 边距（像素）。
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, Reflect)]
 #[reflect(name = "prism_engine::ui::Margin")]
+#[serde(default)]
 pub struct Margin {
     pub left: f32,
     pub right: f32,
     pub top: f32,
     pub bottom: f32,
+}
+
+// ── 布局组（#527）─────────────────────────────────────────────
+
+/// 布局组的排列方向。
+///
+/// `None` = 不是布局组：子元素继续按各自的锚点定位（历史行为）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LayoutDirection {
+    /// 不排布子元素，按锚点定位（默认）。
+    #[default]
+    None,
+    /// 横向依次排列（左 → 右）。
+    Row,
+    /// 纵向依次排列（上 → 下）。
+    Column,
+}
+
+impl ReflectType for LayoutDirection {
+    fn field_type() -> FieldType {
+        FieldType::U8
+    }
+
+    fn enum_variants() -> Option<&'static [&'static str]> {
+        Some(&["None", "Row", "Column"])
+    }
+
+    fn to_value(&self) -> Value {
+        Value::U64(match self {
+            Self::None => 0,
+            Self::Row => 1,
+            Self::Column => 2,
+        })
+    }
+
+    fn from_value(value: Value) -> Result<Self, ReflectError> {
+        match value.as_u64()? {
+            0 => Ok(Self::None),
+            1 => Ok(Self::Row),
+            2 => Ok(Self::Column),
+            other => Err(ReflectError::BadData(format!(
+                "invalid LayoutDirection discriminant {other}"
+            ))),
+        }
+    }
+}
+
+/// 布局组里子元素在**交叉轴**上的对齐方式。
+///
+/// 主轴（`Row` 的水平方向 / `Column` 的垂直方向）由排列顺序 + `spacing` 决定，
+/// 子元素从内容区起点开始占位；交叉轴才对这里的值生效。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChildAlign {
+    /// 贴内容区起点（默认）。
+    #[default]
+    Start,
+    /// 居中。
+    Center,
+    /// 贴内容区终点。
+    End,
+    /// 拉满交叉轴。
+    Stretch,
+}
+
+impl ReflectType for ChildAlign {
+    fn field_type() -> FieldType {
+        FieldType::U8
+    }
+
+    fn enum_variants() -> Option<&'static [&'static str]> {
+        Some(&["Start", "Center", "End", "Stretch"])
+    }
+
+    fn to_value(&self) -> Value {
+        Value::U64(match self {
+            Self::Start => 0,
+            Self::Center => 1,
+            Self::End => 2,
+            Self::Stretch => 3,
+        })
+    }
+
+    fn from_value(value: Value) -> Result<Self, ReflectError> {
+        match value.as_u64()? {
+            0 => Ok(Self::Start),
+            1 => Ok(Self::Center),
+            2 => Ok(Self::End),
+            3 => Ok(Self::Stretch),
+            other => Err(ReflectError::BadData(format!(
+                "invalid ChildAlign discriminant {other}"
+            ))),
+        }
+    }
+}
+
+/// 布局组：把子元素按方向依次排布（#527）。
+///
+/// 对齐 Unity 的 `HorizontalLayoutGroup` / `VerticalLayoutGroup` 的基本形态：
+/// 只有 `direction`、`spacing`、`padding`、`childAlign` 与 `ContentSizeFitter`
+/// 式的 `fit_content`，不做 grow / shrink / 权重。
+///
+/// 语义：
+/// - 子元素在主轴上的尺寸取它自己的 `width`（`Row`）或 `height`（`Column`），
+///   没写时取它作为 `fit_content` 容器量出来的内容尺寸，再没有就是 0；
+/// - 交叉轴尺寸默认取子元素自己的宽/高（或内容尺寸），`child_align = Stretch`
+///   时拉满内容区；
+/// - `padding` 从容器矩形内缩出内容区，子元素定位相对内容区；
+/// - `fit_content` 让容器在**没有显式宽/高**的轴上收缩到内容尺寸
+///   （+ 对应两侧 padding）。
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, Reflect)]
+#[reflect(name = "prism_engine::ui::Layout")]
+#[serde(default)]
+pub struct Layout {
+    /// 排列方向；`None` = 不是布局组。
+    pub direction: LayoutDirection,
+    /// 相邻子元素间距（px）。
+    pub spacing: f32,
+    /// 内容区内边距（px）。
+    pub padding: Margin,
+    /// 交叉轴对齐。
+    pub child_align: ChildAlign,
+    /// 没有显式尺寸的轴收缩到内容尺寸。
+    pub fit_content: bool,
 }
 
 // ── Style ─────────────────────────────────────────────────────
@@ -142,6 +266,9 @@ pub struct Style {
     /// 可见性。
     #[serde(default = "default_visible")]
     pub visible: bool,
+    /// 布局组（#527）。默认 `direction = None`，子元素按锚点定位，行为不变。
+    #[serde(default)]
+    pub layout: Layout,
 }
 
 /// `Style::visible` 的 serde 默认值。
@@ -164,6 +291,7 @@ impl Default for Style {
             image: String::new(),
             border_radius: 0.0,
             visible: true,
+            layout: Layout::default(),
         }
     }
 }
@@ -258,6 +386,11 @@ pub struct Text {
     /// 字体文件是普通资产：cooker 识别为 `AssetType::Font` 原样进 `.pak`，
     /// 运行时经 `ResourceManager` 读出字节交给 UI 光栅器。
     pub font: String,
+    /// 按文本矩形宽度自动换行（#527）；`false` = 单行（历史行为）。
+    ///
+    /// 换行按空格断词，单个词超过宽度时按字符断；`\n` 始终换行。
+    #[serde(default)]
+    pub wrap: bool,
 }
 
 impl Default for Text {
@@ -268,6 +401,7 @@ impl Default for Text {
             color: [1.0; 4],
             alignment: TextAlign::Center,
             font: String::new(),
+            wrap: false,
         }
     }
 }
@@ -494,8 +628,10 @@ impl Button {
 #[cfg(test)]
 mod tests {
     use super::{
-        Button, Canvas, CanvasScaleMode, ComputedLayout, Interaction, Style, Text, TextAlign,
+        Button, Canvas, CanvasScaleMode, ChildAlign, ComputedLayout, Interaction, Layout,
+        LayoutDirection, Margin, Style, Text, TextAlign,
     };
+    use prism_reflect::ReflectType;
 
     #[test]
     fn button_colors_follow_the_interaction_state() {
@@ -654,5 +790,60 @@ mod tests {
         let text: Text = serde_json::from_str("{}").unwrap();
         assert!(text.content.is_empty());
         assert_eq!(text.font_size, Text::default().font_size);
+    }
+
+    #[test]
+    fn layout_defaults_to_no_grouping_and_round_trips() {
+        // #527：旧文档没有 `layout` → direction = None，子元素继续按锚点定位。
+        let legacy: Style = serde_json::from_str(r#"{"width":100}"#).unwrap();
+        assert_eq!(legacy.layout.direction, LayoutDirection::None);
+        assert!(!legacy.layout.fit_content);
+
+        let authored: Style = serde_json::from_str(
+            r#"{"layout":{"direction":"Row","spacing":8,"padding":{"left":4,"top":2},
+                "child_align":"Stretch","fit_content":true}}"#,
+        )
+        .unwrap();
+        assert_eq!(authored.layout.direction, LayoutDirection::Row);
+        assert_eq!(authored.layout.spacing, 8.0);
+        assert_eq!(authored.layout.padding.left, 4.0);
+        assert_eq!(authored.layout.padding.top, 2.0);
+        assert_eq!(authored.layout.child_align, ChildAlign::Stretch);
+        assert!(authored.layout.fit_content);
+
+        let json = serde_json::to_string(&Layout::default()).unwrap();
+        let back: Layout = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.direction, LayoutDirection::None);
+        assert_eq!(back.padding.left, Margin::default().left);
+    }
+
+    #[test]
+    fn layout_enums_expose_reflect_variants() {
+        assert_eq!(
+            LayoutDirection::enum_variants(),
+            Some(&["None", "Row", "Column"][..])
+        );
+        assert_eq!(
+            ChildAlign::enum_variants(),
+            Some(&["Start", "Center", "End", "Stretch"][..])
+        );
+        assert_eq!(
+            LayoutDirection::from_value(prism_reflect::Value::U64(2)).unwrap(),
+            LayoutDirection::Column
+        );
+        assert_eq!(
+            ChildAlign::from_value(prism_reflect::Value::U64(3)).unwrap(),
+            ChildAlign::Stretch
+        );
+        assert!(LayoutDirection::from_value(prism_reflect::Value::U64(9)).is_err());
+    }
+
+    #[test]
+    fn text_wrap_defaults_to_off_and_round_trips() {
+        // #527：不写 `wrap` 时保持单行；写了才换行。
+        let text: Text = serde_json::from_str(r#"{"content":"a b"}"#).unwrap();
+        assert!(!text.wrap);
+        let authored: Text = serde_json::from_str(r#"{"content":"a b","wrap":true}"#).unwrap();
+        assert!(authored.wrap);
     }
 }
