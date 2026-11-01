@@ -24,12 +24,26 @@ use prism_asset::package::{PackageBuilder, PackageReader};
 pub struct PackSummary {
     /// Number of files packed.
     pub asset_count: usize,
+    /// Number of files marked `FLAG_STREAMED`.
+    pub streamed_assets: usize,
     /// Sum of the uncompressed asset sizes.
     pub total_bytes: u64,
     /// Size of the generated `.pak`.
     pub pak_bytes: u64,
     /// Path of the human-readable manifest written alongside the `.pak`.
     pub manifest_path: PathBuf,
+}
+
+/// Packing options for [`pack_directory_with_options`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PackOptions {
+    /// zstd compression level (0–22; 0 = none).
+    pub compression: u32,
+    /// Mark files at or above this uncompressed size as `FLAG_STREAMED`.
+    ///
+    /// Streamed files are stored uncompressed so a reader can serve them
+    /// directly from their offset range. `None` disables the cutoff.
+    pub stream_threshold_bytes: Option<u64>,
 }
 
 /// Pack every file under `input` into `output` (a `.pak` file).
@@ -42,6 +56,24 @@ pub fn pack_directory(
     input: impl AsRef<Path>,
     output: impl AsRef<Path>,
     compression: u32,
+) -> Result<PackSummary> {
+    pack_directory_with_options(
+        input,
+        output,
+        PackOptions {
+            compression,
+            stream_threshold_bytes: None,
+        },
+    )
+}
+
+/// Like [`pack_directory`], but lets the caller mark large files as streamed
+/// (#509). Marked files skip compression and carry `FLAG_STREAMED` in their
+/// runtime record and `"streamed": true` in the manifest.
+pub fn pack_directory_with_options(
+    input: impl AsRef<Path>,
+    output: impl AsRef<Path>,
+    options: PackOptions,
 ) -> Result<PackSummary> {
     let input = input.as_ref();
     let output = output.as_ref();
@@ -57,7 +89,7 @@ pub fn pack_directory(
         bail!("pack input contains no files: {}", input.display());
     }
 
-    let compression = compression.min(22) as i32;
+    let compression = options.compression.min(22) as i32;
     let mut builder = PackageBuilder::new();
     builder.set_compression(compression);
     let mut entries = Vec::with_capacity(files.len());
@@ -65,11 +97,15 @@ pub fn pack_directory(
     // 句柄」，运行时会静默读到错资源 —— 宁可在构建期报错。
     let mut seen_ids: std::collections::HashMap<AssetId, String> = std::collections::HashMap::new();
     let mut total_bytes = 0u64;
+    let mut streamed_assets = 0usize;
 
     for (relative, absolute) in files {
         let data =
             fs::read(&absolute).with_context(|| format!("read asset {}", absolute.display()))?;
         total_bytes += data.len() as u64;
+        let streamed = options
+            .stream_threshold_bytes
+            .is_some_and(|limit| data.len() as u64 >= limit);
 
         let extension = absolute
             .extension()
@@ -83,8 +119,13 @@ pub fn pack_directory(
                 AssetId::from_path(&relative)
             );
         }
-        builder.add_asset(id, asset_type, data, &[]);
-        entries.push((id, relative, asset_type));
+        if streamed {
+            builder.add_streamed_asset(id, asset_type, data, &[]);
+            streamed_assets += 1;
+        } else {
+            builder.add_asset(id, asset_type, data, &[]);
+        }
+        entries.push((id, relative, asset_type, streamed));
     }
 
     let pak = builder.build().context("build .pak")?;
@@ -108,7 +149,7 @@ pub fn pack_directory(
     let reader = PackageReader::from_bytes(&pak).context("read back generated .pak")?;
     let assets: Vec<_> = entries
         .iter()
-        .map(|(id, relative, asset_type)| {
+        .map(|(id, relative, asset_type, streamed)| {
             let record = reader.find_record(*id);
             let size = record.map(|record| record.size).unwrap_or(0);
             let compressed_size = record
@@ -120,6 +161,7 @@ pub fn pack_directory(
                 "type": asset_type.label(),
                 "size": size,
                 "compressed_size": compressed_size,
+                "streamed": streamed,
             })
         })
         .collect();
@@ -129,6 +171,7 @@ pub fn pack_directory(
         "format": std::str::from_utf8(&reader.header().magic).unwrap_or("?"),
         "version": reader.header().version,
         "asset_count": reader.asset_count(),
+        "streamed_count": streamed_assets,
         "total_size": pak.len(),
         "assets": assets,
     });
@@ -140,6 +183,7 @@ pub fn pack_directory(
 
     Ok(PackSummary {
         asset_count: entries.len(),
+        streamed_assets,
         total_bytes,
         pak_bytes: pak.len() as u64,
         manifest_path,
@@ -251,6 +295,58 @@ mod tests {
             fs::read(temp.path().join("c.pak")).unwrap()
         );
         assert_eq!(again.asset_count, second.asset_count);
+    }
+
+    /// #509：超过阈值的文件带 `FLAG_STREAMED`，且即使开了压缩也保持未压缩，
+    /// 这样读取端可以直接从偏移区间流式读取。
+    #[test]
+    fn stream_threshold_marks_large_files_and_keeps_them_uncompressed() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = temp.path().join("cooked");
+        fs::create_dir_all(&input).unwrap();
+        fs::write(input.join("small.bin"), b"tiny").unwrap();
+        fs::write(input.join("large.bin"), vec![7u8; 32]).unwrap();
+
+        let output = temp.path().join("game.pak");
+        let summary = pack_directory_with_options(
+            &input,
+            &output,
+            PackOptions {
+                compression: 9,
+                stream_threshold_bytes: Some(16),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.asset_count, 2);
+        assert_eq!(summary.streamed_assets, 1);
+
+        let reader = PackageReader::from_bytes(&fs::read(&output).unwrap()).unwrap();
+        let small = AssetId::from_path("small.bin");
+        let large = AssetId::from_path("large.bin");
+        assert!(!reader.is_asset_streamed(small));
+        assert!(reader.is_asset_streamed(large));
+
+        let large_record = reader.find_record(large).unwrap();
+        assert!(!large_record.is_compressed());
+        assert_eq!(large_record.compressed_size, 0);
+        assert_eq!(large_record.size, 32);
+        // A streamed asset must still round-trip through the normal read path.
+        assert_eq!(
+            reader.read_asset_data(large).unwrap().unwrap(),
+            vec![7u8; 32]
+        );
+
+        let manifest: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(summary.manifest_path).unwrap()).unwrap();
+        assert_eq!(manifest["streamed_count"], 1);
+        let assets = manifest["assets"].as_array().unwrap();
+        let streamed: Vec<_> = assets
+            .iter()
+            .filter(|asset| asset["streamed"] == true)
+            .map(|asset| asset["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(streamed, vec!["large.bin"]);
     }
 
     #[test]

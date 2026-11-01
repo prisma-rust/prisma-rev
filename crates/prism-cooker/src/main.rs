@@ -148,6 +148,11 @@ enum Commands {
         /// 要解析的 profile 名（默认取 --platform，再退回 desktop）
         #[arg(long)]
         profile: Option<String>,
+
+        /// Mark assets at or above this many uncompressed bytes as streamed.
+        /// 按未压缩大小把资源标记为 streamed（覆盖 profile）
+        #[arg(long)]
+        stream_threshold: Option<u64>,
     },
 
     /// Validate a .pak file. 验证 .pak 文件
@@ -212,6 +217,7 @@ fn resolve_build_settings(
     platform: Option<&str>,
     profile_name: Option<&str>,
     compression: Option<u32>,
+    stream_threshold: Option<u64>,
 ) -> anyhow::Result<(String, profile::CookSettings)> {
     let profiles_dir = library_dir(root).join("Profiles");
     let mut profiles = profile::ProfileManager::new(&profiles_dir);
@@ -232,6 +238,7 @@ fn resolve_build_settings(
     let overrides = profile::CliOverrides {
         platform: platform.map(str::to_owned),
         compression_level: compression.map(|level| level.min(22) as i32),
+        streaming_threshold_bytes: stream_threshold,
         ..Default::default()
     };
     profile::ProfileManager::apply_cli_overrides(&mut settings, &overrides)?;
@@ -401,6 +408,7 @@ fn cmd_build(
     compression: Option<u32>,
     platform: &Option<String>,
     profile_name: Option<&str>,
+    stream_threshold: Option<u64>,
     _cli: &Cli,
 ) -> anyhow::Result<()> {
     if !db_path(root).exists() {
@@ -415,8 +423,13 @@ fn cmd_build(
     // Resolve the platform/profile settings *before* cooking: the texture and
     // mesh settings used by the cookers come from here, not from hardcoded
     // defaults.
-    let (resolved_profile, settings) =
-        resolve_build_settings(root, platform.as_deref(), profile_name, compression)?;
+    let (resolved_profile, settings) = resolve_build_settings(
+        root,
+        platform.as_deref(),
+        profile_name,
+        compression,
+        stream_threshold,
+    )?;
     println!(
         "  profile / 配置: {} (platform {}, compression level {})",
         resolved_profile, settings.platform, settings.compression.level
@@ -782,12 +795,14 @@ fn main() -> anyhow::Result<()> {
             compression,
             platform,
             profile,
+            stream_threshold,
         }) => cmd_build(
             &root,
             output,
             *compression,
             platform,
             profile.as_deref(),
+            *stream_threshold,
             &cli,
         ),
         Some(Commands::Validate { pak }) => cmd_validate(pak),
@@ -840,9 +855,14 @@ mod tests {
     fn build_uses_the_platform_profile() {
         // Regression for #81: `build --platform android` used to cook with
         // `CookSettings::default()` (i.e. desktop values).
-        let (name, settings) =
-            resolve_build_settings(&temp_root("build-android"), Some("android"), None, None)
-                .unwrap();
+        let (name, settings) = resolve_build_settings(
+            &temp_root("build-android"),
+            Some("android"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(name, "android");
         assert_eq!(settings.platform, "android");
@@ -860,6 +880,7 @@ mod tests {
             Some("embedded"),
             None,
             Some(9),
+            None,
         )
         .unwrap();
 
@@ -874,6 +895,7 @@ mod tests {
             Some("android"),
             Some("desktop"),
             None,
+            None,
         )
         .unwrap();
 
@@ -886,7 +908,8 @@ mod tests {
     #[test]
     fn build_falls_back_to_defaults_for_unknown_profiles() {
         let (name, settings) =
-            resolve_build_settings(&temp_root("build-unknown"), Some("haiku"), None, None).unwrap();
+            resolve_build_settings(&temp_root("build-unknown"), Some("haiku"), None, None, None)
+                .unwrap();
 
         assert_eq!(name, "haiku");
         assert_eq!(settings.platform, "haiku");
@@ -908,7 +931,7 @@ mod tests {
         )
         .unwrap();
 
-        let (name, settings) = resolve_build_settings(&root, None, Some("hq"), None).unwrap();
+        let (name, settings) = resolve_build_settings(&root, None, Some("hq"), None, None).unwrap();
 
         assert_eq!(name, "hq");
         assert_eq!(settings.texture.quality, 100);

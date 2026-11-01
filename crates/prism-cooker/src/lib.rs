@@ -22,4 +22,4 @@ pub use cooker::{
 pub use db::{AssetDatabase, AssetRecord, ImportCache};
 pub use import_settings::ImportSettings;
 pub use importer::{default_importer_registry, ImportError, ImportPipeline, Importer};
-pub use pack::{pack_directory, PackSummary};
+pub use pack::{pack_directory, pack_directory_with_options, PackOptions, PackSummary};
