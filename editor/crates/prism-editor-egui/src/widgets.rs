@@ -171,6 +171,153 @@ mod tests {
         assert!(asset_matches("label", "anything.bin"));
     }
 
+    /// 一个带两种列表的合成 schema：`points: Vec<Vec3>` 与 `nodes: Vec<Point>`。
+    fn list_schema() -> Schema {
+        Schema::from_value(&serde_json::json!({
+            "types": [
+                {
+                    "name": "test::Line",
+                    "displayName": "Line",
+                    "typeId": "test-line",
+                    "version": 1,
+                    "isComponent": true,
+                    "defaultJson": {"points": [], "nodes": []},
+                    "fields": [
+                        {
+                            "name": "points",
+                            "kind": "list",
+                            "structType": null,
+                            "arrayLen": null,
+                            "variants": null,
+                            "readOnly": false,
+                            "inner": {
+                                "name": "",
+                                "kind": "array",
+                                "structType": null,
+                                "arrayLen": 3,
+                                "variants": null,
+                                "readOnly": false,
+                                "inner": {
+                                    "name": "",
+                                    "kind": "f32",
+                                    "structType": null,
+                                    "inner": null,
+                                    "arrayLen": null,
+                                    "variants": null,
+                                    "readOnly": false
+                                }
+                            }
+                        },
+                        {
+                            "name": "nodes",
+                            "kind": "list",
+                            "structType": null,
+                            "arrayLen": null,
+                            "variants": null,
+                            "readOnly": false,
+                            "inner": {
+                                "name": "",
+                                "kind": "struct",
+                                "structType": "test::Point",
+                                "inner": null,
+                                "arrayLen": null,
+                                "variants": null,
+                                "readOnly": false
+                            }
+                        }
+                    ]
+                },
+                {
+                    "name": "test::Point",
+                    "displayName": "Point",
+                    "typeId": "test-point",
+                    "version": 1,
+                    "isComponent": false,
+                    "defaultJson": null,
+                    "fields": [
+                        {"name": "x", "kind": "f32", "structType": null, "inner": null,
+                         "arrayLen": null, "variants": null, "readOnly": false},
+                        {"name": "y", "kind": "f32", "structType": null, "inner": null,
+                         "arrayLen": null, "variants": null, "readOnly": false}
+                    ]
+                }
+            ]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn list_elements_default_from_the_schema() {
+        // #418：`+ Add` 的默认值来自元素 schema，不猜 JSON。
+        let schema = list_schema();
+        let line = schema.component("test::Line").unwrap();
+        let points = line
+            .fields
+            .iter()
+            .find(|field| field.name == "points")
+            .unwrap();
+        assert_eq!(
+            default_value_for(&schema, points.inner.as_deref().unwrap(), 0),
+            serde_json::json!([0.0, 0.0, 0.0])
+        );
+
+        let nodes = line
+            .fields
+            .iter()
+            .find(|field| field.name == "nodes")
+            .unwrap();
+        assert_eq!(
+            default_value_for(&schema, nodes.inner.as_deref().unwrap(), 0),
+            serde_json::json!({"x": 0.0, "y": 0.0})
+        );
+
+        // 递归有上限，损坏的 schema 不会栈溢出。
+        assert_eq!(
+            default_value_for(&schema, nodes.inner.as_deref().unwrap(), 99),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn list_edits_keep_indices_in_range() {
+        let mut items = vec![Value::from(1), Value::from(2), Value::from(3)];
+        list_add(&mut items, Value::from(4));
+        assert_eq!(items.len(), 4);
+
+        assert!(list_move(&mut items, 0, 2));
+        assert_eq!(items[0], Value::from(3));
+        assert_eq!(items[2], Value::from(1));
+        // 越界 / 原地移动不动数组。
+        assert!(!list_move(&mut items, 3, 9));
+        assert!(!list_move(&mut items, 1, 1));
+
+        assert!(list_remove(&mut items, 0));
+        assert!(!list_remove(&mut items, 99));
+        assert_eq!(items.len(), 3);
+    }
+
+    #[test]
+    fn list_fields_render_without_writing_to_the_document() {
+        let ctx = egui::Context::default();
+        let schema = list_schema();
+        let component = schema.component("test::Line").unwrap().clone();
+        let value = serde_json::json!({
+            "points": [[1.0, 2.0, 3.0]],
+            "nodes": [{"x": 4.0, "y": 5.0}]
+        });
+        let mut writes: Vec<(String, Value)> = Vec::new();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let mut set = |path: &str, value: Value| writes.push((path.to_owned(), value));
+                for field in &component.fields {
+                    let field_value = value.get(&field.name).unwrap();
+                    field_row_at(ui, &schema, field, field_value, "", &mut set, &[], "assets");
+                }
+            });
+        });
+        assert!(writes.is_empty(), "只是渲染，不能写文档：{writes:?}");
+    }
+
     #[test]
     fn card_actions_and_field_rows_can_render_without_gpu() {
         let ctx = egui::Context::default();
@@ -596,7 +743,7 @@ fn field_row_at(
             });
         }
         FieldWidget::List => {
-            json_row(ui, label, value);
+            list_row(ui, registry, field, value, prefix, set, assets, doc_dir);
         }
         // `Option<T>`: a checkbox says whether the value exists, then the inner
         // scalar is edited in place. Authors used to have to hand-edit JSON to
@@ -608,7 +755,9 @@ fn field_row_at(
                 set(
                     &name,
                     if enabled {
-                        inner.map(default_value).unwrap_or(Value::Null)
+                        inner
+                            .map(|inner| default_value_for(registry, inner, 0))
+                            .unwrap_or(Value::Null)
                     } else {
                         Value::Null
                     },
@@ -675,22 +824,181 @@ fn json_row(ui: &mut Ui, label: &str, value: &Value) {
     });
 }
 
-/// `Option<T>` 有值时画哪个控件；完全由 `inner.widget()` 决定，不猜 JSON 类型。
-fn default_value(field: &FieldSchema) -> Value {
+/// 字段的「新增元素」默认值；完全由 schema 决定，不猜 JSON 类型。
+///
+/// `Option<T>` 有值 / 列表追加元素都走它：`Struct` 递归问 registry，
+/// 标量用中性值，`Vec3` / `Quat` 用单位值，`Enum` 取第一个变体。
+fn default_value_for(registry: &Schema, field: &FieldSchema, depth: usize) -> Value {
+    if depth > 8 {
+        return Value::Null;
+    }
     match field.widget() {
+        FieldWidget::Struct => {
+            let Some(schema) = field
+                .struct_type
+                .as_deref()
+                .and_then(|name| registry.get(name))
+            else {
+                return Value::Null;
+            };
+            let mut map = serde_json::Map::new();
+            for child in &schema.fields {
+                map.insert(
+                    child.name.clone(),
+                    default_value_for(registry, child, depth + 1),
+                );
+            }
+            Value::Object(map)
+        }
+        // 列表默认空；`Option` 默认不存在。
+        FieldWidget::List => Value::Array(Vec::new()),
+        FieldWidget::Option => Value::Null,
+        FieldWidget::Enum { variants } => variants
+            .first()
+            .cloned()
+            .map(Value::String)
+            .unwrap_or(Value::Null),
         FieldWidget::Bool => Value::Bool(false),
         FieldWidget::Integer => Value::from(0),
         FieldWidget::Float => Value::from(0.0),
         FieldWidget::Text | FieldWidget::Multiline => Value::String(String::new()),
         FieldWidget::Vector { len } => Value::Array(vec![Value::from(0.0); len]),
         FieldWidget::Color { alpha } => {
-            let mut channels = vec![Value::from(1.0), Value::from(1.0), Value::from(1.0)];
+            let mut channels = vec![Value::from(1.0); 3];
             if alpha {
                 channels.push(Value::from(1.0));
             }
             Value::Array(channels)
         }
-        _ => Value::Null,
+        FieldWidget::Quat => Value::Array(vec![
+            Value::from(0.0),
+            Value::from(0.0),
+            Value::from(0.0),
+            Value::from(1.0),
+        ]),
+        FieldWidget::ReadOnly => Value::Null,
+    }
+}
+
+/// `Vec<T>` / 定长数组的编辑控件（#418）。
+///
+/// - 动态列表（`kind = "list"`）：每个元素一行，带 `▲` / `▼` / `✕`；底部 `+ Add`
+///   按元素 schema 生成默认值（`Vec3` → `[0,0,0]`，`Struct` → 各子字段默认值）；
+/// - 定长数组（`array_len = Some(n)`）：不提供增删，只逐项编辑；
+/// - 元素本身复用 [`field_row_at`]，所以 `Vec<Vec3>` / `Vec<Struct>` 里的字段仍然用
+///   真正的控件，路径是 `field[i]` / `field[i].child`（`prism_editor_core::schema`
+///   的 `parse_path` 支持下标）。
+///
+/// 增删 / 重排都写回**整个数组**：`set_field` 一次撤销步，和 Unity 的数组编辑一致。
+#[allow(clippy::too_many_arguments)]
+fn list_row(
+    ui: &mut Ui,
+    registry: &Schema,
+    field: &FieldSchema,
+    value: &Value,
+    prefix: &str,
+    set: &mut dyn FnMut(&str, Value),
+    assets: &[String],
+    doc_dir: &str,
+) {
+    let name = format!("{prefix}{}", field.name);
+    let items = value.as_array().cloned().unwrap_or_default();
+    let fixed = field.array_len.is_some();
+    let inner = field.inner.clone().map(|inner| *inner);
+    let mut pending: Option<Value> = None;
+
+    egui::CollapsingHeader::new(format!("{}  ({})", field.label(), items.len()))
+        .id_salt(("list", name.as_str()))
+        .default_open(true)
+        .show(ui, |ui| {
+            let mut working = items.clone();
+            for (index, item) in items.iter().enumerate() {
+                let mut element = inner.clone();
+                if let Some(element) = element.as_mut() {
+                    // 元素路径 = `field[i]`；struct 的子字段再由 `field_row_at`
+                    // 拼成 `field[i].child`。
+                    element.name = format!("[{index}]");
+                }
+                ui.horizontal(|ui| {
+                    if !fixed {
+                        if ui
+                            .small_button(icons::CARET_UP)
+                            .on_hover_text("Move up")
+                            .clicked()
+                            && list_move(&mut working, index, index.saturating_sub(1))
+                        {
+                            pending = Some(Value::Array(working.clone()));
+                        }
+                        if ui
+                            .small_button(icons::CARET_DOWN)
+                            .on_hover_text("Move down")
+                            .clicked()
+                            && list_move(&mut working, index, index + 1)
+                        {
+                            pending = Some(Value::Array(working.clone()));
+                        }
+                        if ui
+                            .small_button(icons::X)
+                            .on_hover_text("Remove element")
+                            .clicked()
+                            && list_remove(&mut working, index)
+                        {
+                            pending = Some(Value::Array(working.clone()));
+                        }
+                    }
+                    match &element {
+                        Some(element) => {
+                            field_row_at(ui, registry, element, item, &name, set, assets, doc_dir)
+                        }
+                        None => json_row(ui, &format!("[{index}]"), item),
+                    }
+                });
+            }
+            if !fixed
+                && ui
+                    .small_button(format!("{} Add", icons::PLUS))
+                    .on_hover_text("Append an element using the schema default")
+                    .clicked()
+            {
+                let element = inner
+                    .as_ref()
+                    .map(|inner| default_value_for(registry, inner, 0))
+                    .unwrap_or(Value::Null);
+                list_add(&mut working, element);
+                pending = Some(Value::Array(working.clone()));
+            }
+            if items.is_empty() {
+                ui.label(egui::RichText::new("empty list").weak().size(10.0));
+            }
+        });
+
+    if let Some(value) = pending {
+        set(&name, value);
+    }
+}
+
+/// 追加一个元素（列表编辑的唯一写入口径，方便单测）。
+fn list_add(items: &mut Vec<Value>, element: Value) {
+    items.push(element);
+}
+
+/// 删除下标 `index`；越界返回 `false`（不写回文档）。
+fn list_remove(items: &mut Vec<Value>, index: usize) -> bool {
+    if index < items.len() {
+        items.remove(index);
+        true
+    } else {
+        false
+    }
+}
+
+/// 交换两个元素；任意一端越界返回 `false`。
+fn list_move(items: &mut [Value], from: usize, to: usize) -> bool {
+    if from < items.len() && to < items.len() && from != to {
+        items.swap(from, to);
+        true
+    } else {
+        false
     }
 }
 
