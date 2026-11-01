@@ -16,6 +16,7 @@
 //! 这样启动期渲染器在渲染线程异步构建时，主线程仍可处理窗口事件（关闭/移动/缩放）。
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use prism_asset::core::AssetId;
 use prism_asset::formats::{
@@ -145,6 +146,11 @@ pub struct GpuAssetResolver {
     ///
     /// 相同路径的 submesh 共享一次材质上传，回传的槽位用这张表展开。
     pending_material_map: HashMap<Entity, Vec<Option<usize>>>,
+    /// 已经按需挂载的 `optional_*.pak`（#509）。
+    ///
+    /// 重复挂载同一个包只会让 `ResourceManager` 把每个资产 ID 当成重复项 warn
+    /// 一遍，所以按路径记一笔，`load_optional_packages` 可以安全地每关调用。
+    mounted_optional: HashSet<PathBuf>,
 }
 
 /// 引用断裂只报一次（每个路径），并且是 `error` 而不是 `warn`。
@@ -186,6 +192,7 @@ impl GpuAssetResolver {
             pending_bounds: HashMap::new(),
             pending_submeshes: HashMap::new(),
             pending_material_map: HashMap::new(),
+            mounted_optional: HashSet::new(),
         }
     }
 
@@ -401,9 +408,78 @@ impl GpuAssetResolver {
             return;
         }
 
-        let mut loaded = 0usize;
+        let loaded = self.mount_packages(&paks);
+
+        log::info!(
+            "resource packages loaded from {}: {} package(s), {} assets registered",
+            asset_dir.display(),
+            loaded.len(),
+            self.resource_manager.asset_count(),
+        );
+    }
+
+    /// #509：按需挂载 `assets/optional/` 下的分包（`optional_*.pak`）。
+    ///
+    /// 自动挂载只扫描 `assets/` 顶层，所以分包里的字节不会在启动时常驻。进入
+    /// 需要这些资源的关卡 / 玩法时显式调用；已经挂过的包会被跳过，重复调用安全。
+    ///
+    /// 返回**本次新挂载**的包数（目录不存在、为空或都已挂载时为 0）。
+    pub fn load_optional_packages(&mut self) -> usize {
+        let Some(dir) = crate::asset_paths::optional_pak_dir() else {
+            return 0;
+        };
+        let paks: Vec<PathBuf> = crate::asset_paths::pak_files_in(&dir)
+            .into_iter()
+            .filter(|pak| !self.mounted_optional.contains(pak))
+            .collect();
+        if paks.is_empty() {
+            log::debug!("no un-mounted optional packages in {}", dir.display());
+            return 0;
+        }
+
+        let loaded = self.mount_packages(&paks);
+        let count = loaded.len();
+        // 只把真正加载成功的包记下来；失败的包下次调用还会重新尝试。
+        self.mounted_optional.extend(loaded);
+        log::info!(
+            "optional resource packages loaded from {}: {count} package(s), {} assets registered",
+            dir.display(),
+            self.resource_manager.asset_count(),
+        );
+        count
+    }
+
+    /// #509：新挂载可选包后，让之前因为「路径不在包里」失败的实体重试一次。
+    ///
+    /// 失败缓存本来是「同一个坏路径只报一次」，但可选包是延迟挂载的：挂载前
+    /// 解析过的实体已经记下了失败。这里只清理**现在能解析到**的路径对应的实体，
+    /// 不动其它失败项。返回重新排队的实体数。
+    pub fn retry_failed_after_package_change(&mut self, world: &mut World) -> usize {
+        let retry: Vec<Entity> = self
+            .failed
+            .iter()
+            .filter(|(_, path)| self.resource_manager.id_by_path(path).is_some())
+            .map(|((entity, _), _)| *entity)
+            .collect();
+        let mut retried = 0usize;
+        for entity in retry {
+            self.reset_entity_refs(world, entity);
+            retried += 1;
+        }
+        if retried > 0 {
+            log::info!(
+                "resource packages: {retried} entity(ies) will retry assets from a newly mounted package"
+            );
+        }
+        retried
+    }
+
+    /// Load a list of `.pak` files plus their `<name>.pak.meta.json` manifests.
+    /// Returns the packages that were registered (failed ones are skipped).
+    fn mount_packages(&mut self, paks: &[PathBuf]) -> Vec<PathBuf> {
+        let mut loaded = Vec::new();
         for pak_path in paks {
-            if let Err(e) = self.resource_manager.load_package(&pak_path) {
+            if let Err(e) = self.resource_manager.load_package(pak_path) {
                 log::warn!(
                     "resource package {} could not be loaded: {e}; \
                      assets from it will be missing",
@@ -411,7 +487,7 @@ impl GpuAssetResolver {
                 );
                 continue;
             }
-            loaded += 1;
+            loaded.push(pak_path.clone());
 
             // 每个包旁边有 `<name>.pak.meta.json`（路径清单）时一并加载。
             let manifest_path = pak_path.with_extension("pak.meta.json");
@@ -431,12 +507,7 @@ impl GpuAssetResolver {
                 );
             }
         }
-
-        log::info!(
-            "resource packages loaded from {}: {loaded} package(s), {} assets registered",
-            asset_dir.display(),
-            self.resource_manager.asset_count(),
-        );
+        loaded
     }
 
     /// 从内存资源加载 `.pak` 及其路径 manifest。
@@ -1418,6 +1489,46 @@ mod tests {
             "缺失的字体只报一次，不返回字节"
         );
         assert!(resolver.prepare_ui_fonts(&world).is_empty());
+    }
+
+    /// #509：可选包是延迟挂载的——挂载前解析失败的实体必须能在挂载后重试，
+    /// 否则「同一个坏路径只报一次」的失败缓存会把它们永久挡住。
+    #[test]
+    fn failed_entities_retry_after_an_optional_package_is_mounted() {
+        let mut resolver = GpuAssetResolver::new();
+        let mut world = World::new();
+        let entity = world.spawn();
+        world.insert(
+            entity,
+            SpriteRenderer {
+                sprite_path: "textures/late.png".to_string(),
+                ..Default::default()
+            },
+        );
+
+        // 模拟延迟包挂载前的那次失败。
+        resolver.record_failure(entity, AssetSlot::Sprite, "textures/late.png");
+        assert_eq!(
+            resolver.retry_failed_after_package_change(&mut world),
+            0,
+            "the path still has no package, so nothing may retry"
+        );
+        assert!(!resolver.failed.is_empty());
+
+        let (pak, manifest) = tiny_pak(&[(
+            "textures/late.png",
+            prism_asset::core::AssetType::Texture,
+            b"rtex",
+        )]);
+        resolver
+            .load_resource_package_bytes(&pak, Some(&manifest))
+            .expect("load optional pak");
+
+        assert_eq!(resolver.retry_failed_after_package_change(&mut world), 1);
+        assert!(
+            resolver.failed.is_empty(),
+            "the now-resolvable path must leave the failure cache"
+        );
     }
 
     /// #495：句柄记账 / 释放。返回一个已经「上传完成」的精灵实体。

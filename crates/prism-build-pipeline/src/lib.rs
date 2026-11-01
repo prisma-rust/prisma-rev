@@ -18,5 +18,6 @@ pub use bake_gi::BakeGiConfig;
 pub use heightmap::{generate_eroded_heightmap, generate_terrain, ErosionParams, Heightmap};
 pub use migrate::{migrate_legacy_config, resolve_scene_manifest, MigrationSummary};
 pub use scene_pack::{
-    build_scene_package, build_scene_package_with_options, ScenePackSummary, SCENE_MANIFEST_NAME,
+    build_scene_package, build_scene_package_split, build_scene_package_with_options,
+    ScenePackSummary, SCENE_MANIFEST_NAME,
 };

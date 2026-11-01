@@ -130,3 +130,27 @@ fn pak_files_lists_every_package_sorted() {
     // 排序稳定；只认文件、只认 `.pak` 扩展名。
     assert_eq!(found, vec!["assets.pak", "scenes.pak"]);
 }
+
+/// #509：分包写在 `assets/optional/` 子目录，顶层自动扫描不会带出它们；
+/// 想挂载的一方用 `optional_pak_files()` / `load_optional_packages()` 显式取。
+#[test]
+fn optional_packages_stay_out_of_the_top_level_scan() {
+    let tree = TempTree::new("optional-pak");
+    let dir = tree.dir("assets");
+    let optional = tree.dir("assets/optional");
+    std::fs::write(dir.join("game.pak"), b"base").unwrap();
+    std::fs::write(optional.join("optional_audio.pak"), b"audio").unwrap();
+    std::fs::write(optional.join("optional_audio.pak.meta.json"), b"{}").unwrap();
+
+    let top: Vec<String> = pak_files_in(&dir)
+        .iter()
+        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(top, vec!["game.pak"]);
+
+    let split: Vec<String> = pak_files_in(&optional)
+        .iter()
+        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(split, vec!["optional_audio.pak"]);
+}

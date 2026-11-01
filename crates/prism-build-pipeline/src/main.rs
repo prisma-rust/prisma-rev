@@ -64,6 +64,10 @@ enum Command {
         /// Mark assets at or above this many uncompressed bytes as streamed
         #[arg(long)]
         stream_threshold: Option<u64>,
+        /// Split this staged directory into `optional/optional_<name>.pak`.
+        /// Repeatable; uses the packaged layout (`textures`, `env`, …).
+        #[arg(long = "optional-dir", value_name = "DIR")]
+        optional_dirs: Vec<String>,
     },
     /// Build a .pak resource package from a directory of cooked files
     Pack {
@@ -78,6 +82,10 @@ enum Command {
         /// Mark files at or above this many uncompressed bytes as streamed
         #[arg(long)]
         stream_threshold: Option<u64>,
+        /// Split this input-relative directory into `optional/optional_<name>.pak`
+        /// instead of the base package. Repeatable; longest prefix wins.
+        #[arg(long = "optional-dir", value_name = "DIR")]
+        optional_dirs: Vec<String>,
     },
     /// Generate a procedural heightmap (fbm terrain + hydraulic/thermal erosion)
     ///
@@ -187,6 +195,7 @@ fn main() -> Result<()> {
             output,
             compression,
             stream_threshold,
+            optional_dirs,
         } => {
             let manifest = prism_build_pipeline::resolve_scene_manifest(&manifest)?;
             log::info!(
@@ -195,7 +204,7 @@ fn main() -> Result<()> {
                 staging.display(),
                 output.display()
             );
-            let summary = prism_build_pipeline::build_scene_package_with_options(
+            let summary = prism_build_pipeline::build_scene_package_split(
                 &manifest,
                 &staging,
                 &output,
@@ -203,6 +212,7 @@ fn main() -> Result<()> {
                     compression,
                     stream_threshold_bytes: stream_threshold,
                 },
+                &optional_dirs,
             )?;
             log::info!(
                 "build-scenes: {} scene(s), {} skipped; {} files ({} streamed), {} bytes -> {}; manifest {}",
@@ -214,6 +224,15 @@ fn main() -> Result<()> {
                 summary.pack.pak_bytes,
                 summary.pack.manifest_path.display()
             );
+            for optional in &summary.optional {
+                log::info!(
+                    "build-scenes: optional '{}' -> {} ({} files, {} bytes)",
+                    optional.group,
+                    optional.pak_path.display(),
+                    optional.pack.asset_count,
+                    optional.pack.pak_bytes
+                );
+            }
             Ok(())
         }
         Command::Pack {
@@ -221,24 +240,43 @@ fn main() -> Result<()> {
             output,
             compression,
             stream_threshold,
+            optional_dirs,
         } => {
             log::info!("pack: {input:?} -> {output:?}");
-            let summary = prism_cooker::pack_directory_with_options(
-                &input,
-                &output,
-                prism_cooker::PackOptions {
-                    compression,
-                    stream_threshold_bytes: stream_threshold,
-                },
-            )?;
-            log::info!(
-                "pack: {} files ({} streamed), {} bytes uncompressed -> {} bytes; manifest {}",
-                summary.asset_count,
-                summary.streamed_assets,
-                summary.total_bytes,
-                summary.pak_bytes,
-                summary.manifest_path.display()
-            );
+            let options = prism_cooker::PackOptions {
+                compression,
+                stream_threshold_bytes: stream_threshold,
+            };
+            if optional_dirs.is_empty() {
+                let summary = prism_cooker::pack_directory_with_options(&input, &output, options)?;
+                log::info!(
+                    "pack: {} files ({} streamed), {} bytes uncompressed -> {} bytes; manifest {}",
+                    summary.asset_count,
+                    summary.streamed_assets,
+                    summary.total_bytes,
+                    summary.pak_bytes,
+                    summary.manifest_path.display()
+                );
+            } else {
+                let summary =
+                    prism_cooker::pack_directory_split(&input, &output, options, &optional_dirs)?;
+                log::info!(
+                    "pack: base {} files ({} streamed), {} bytes; manifest {}",
+                    summary.base.asset_count,
+                    summary.base.streamed_assets,
+                    summary.base.pak_bytes,
+                    summary.base.manifest_path.display()
+                );
+                for optional in &summary.optional {
+                    log::info!(
+                        "pack: optional '{}' -> {} ({} files, {} bytes)",
+                        optional.group,
+                        optional.pak_path.display(),
+                        optional.pack.asset_count,
+                        optional.pack.pak_bytes
+                    );
+                }
+            }
             Ok(())
         }
         Command::Heightmap {
