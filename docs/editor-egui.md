@@ -402,7 +402,11 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
 控制通道（`src/control.rs`）：启动时在 `127.0.0.1:0` 上监听并把端口写进
 `<项目根>/target/editor-egui/control.port`，一行 JSON 一问一答：
 `ping` / `status` / `play` / `stop` / `pause` / `logs` / `input` / `capture` /
-`ui.snapshot` / `ui.click` / `ui.move` / `ui.wheel` / `ui.drag` / `ui.set` / `quit`。
+`ui.snapshot` / `ui.click` / `ui.move` / `ui.wheel` / `ui.drag` / `ui.set` /
+`quit` / `quit.confirm` / `quit.cancel`。
+`quit` 是自动化用的强制退出（不写恢复快照、不弹确认）；`quit.confirm` 走用户点窗口 ×
+的路径——有未保存文档时返回 `closing:false` / `pending:"unsaved"` 并弹出三选一，
+`quit.cancel` 关掉该对话框。
 `logs` 读 Console 的同一份缓冲（`since` 增量、`limit` 条数），自动化因此能拿到引擎日志、
 工程模块的 `project:` 日志和 panic 栈。
 

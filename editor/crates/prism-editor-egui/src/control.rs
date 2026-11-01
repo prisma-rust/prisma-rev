@@ -17,7 +17,8 @@
 //! ← {"ok":true,"path":"...","width":1440,"height":900}
 //! ```
 //!
-//! 支持的 `cmd`：`ping` / `status` / `capture` / `quit`。
+//! 支持的 `cmd`：`ping` / `status` / `capture` / `quit` / `quit.confirm` /
+//! `quit.cancel`（后两者走「未保存改动」三选一，不强制退出）。
 //!
 //! 请求从 socket 线程 push 进 `mpsc`，UI 线程每帧开头 `drain()` 一次并在
 //! 同一帧内完成截图（窗口截图取的是上一帧呈现结果），结果用回执 channel 送回。
