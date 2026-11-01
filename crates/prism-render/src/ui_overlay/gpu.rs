@@ -316,6 +316,9 @@ pub struct UiOverlay {
     /// 创建 `render_pass` 时使用的颜色格式；swapchain 格式变化时用来判断
     /// 是否需要重建（见 [`UiOverlay::set_color_format`]）。
     color_format: vk::Format,
+    /// render pass 结束时的图像布局：交换链是 `PRESENT_SRC_KHR`，离屏目标
+    /// 没有呈现引擎，必须留在 `COLOR_ATTACHMENT_OPTIMAL`（#597）。
+    final_layout: vk::ImageLayout,
     atlas: GlyphAtlas,
     device: ash::Device,
     /// One framebuffer per swapchain image view/extent, reused across frames.
@@ -348,8 +351,27 @@ impl UiOverlay {
         command_pool: vk::CommandPool,
         color_format: vk::Format,
     ) -> Result<Self> {
+        Self::with_color_format_and_final_layout(
+            context,
+            command_pool,
+            color_format,
+            vk::ImageLayout::PRESENT_SRC_KHR,
+        )
+    }
+
+    /// 用显式的最终布局构造叠加层。
+    ///
+    /// 交换链用 [`vk::ImageLayout::PRESENT_SRC_KHR`]；离屏目标（编辑器视口）
+    /// 没有呈现引擎，必须用 [`vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL`]，
+    /// 否则 render pass 会留下非法布局（#597）。
+    pub fn with_color_format_and_final_layout(
+        context: &VulkanContext,
+        command_pool: vk::CommandPool,
+        color_format: vk::Format,
+        final_layout: vk::ImageLayout,
+    ) -> Result<Self> {
         let device = context.device.clone();
-        let render_pass = Self::create_render_pass(&device, color_format)?;
+        let render_pass = Self::create_render_pass(&device, color_format, final_layout)?;
         let atlas = GlyphAtlas::new(context, command_pool)?;
 
         let init_vertices = 1024u32;
@@ -376,6 +398,7 @@ impl UiOverlay {
             vertex_capacity: init_vertices,
             render_pass,
             color_format,
+            final_layout,
             atlas,
             device,
             framebuffers: Vec::new(),
@@ -393,7 +416,7 @@ impl UiOverlay {
             return Ok(());
         }
         // 先建新的再拆旧的，创建失败时旧 pass 仍然有效。
-        let render_pass = Self::create_render_pass(&self.device, color_format)?;
+        let render_pass = Self::create_render_pass(&self.device, color_format, self.final_layout)?;
         unsafe {
             if let Some(pipeline) = self.pipeline.take() {
                 self.device.destroy_pipeline(pipeline, None);
@@ -467,6 +490,7 @@ impl UiOverlay {
     fn create_render_pass(
         device: &ash::Device,
         color_format: vk::Format,
+        final_layout: vk::ImageLayout,
     ) -> Result<vk::RenderPass> {
         let color_attachment = vk::AttachmentDescription::default()
             .format(color_format)
@@ -474,7 +498,7 @@ impl UiOverlay {
             .load_op(vk::AttachmentLoadOp::LOAD)
             .store_op(vk::AttachmentStoreOp::STORE)
             .initial_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
+            .final_layout(final_layout);
 
         let color_ref = vk::AttachmentReference::default()
             .attachment(0)
