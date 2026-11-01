@@ -822,7 +822,7 @@ prism-scene::rscn::encode_scene
 
 - **[G5] CookProfile 集成到引擎设置** ⏳ **配置已就绪**：`CookProfile` 5 档 + `settings_hash` 已实现，`--profile` CLI 透传待接入 `AppConfig` 启动参数。
 
-- **[G6] 热重载管道** ✅ **实现 已接线**：`ResourceManager::on_pak_changed` + `HotReloadWatcher`（`hot-reload` feature）已实现轮询，`prism-engine::hot_reload` 预留模块已预留，编辑器 `HotReloadWatcher` 启动后 `.pak` 变更可原地刷新驻留槽（`Handle` 保持有效）。
+- **[G6] 热重载管道** ✅ **编辑器 + 播放器都已接线**：`ResourceManager::on_pak_changed` 换掉陈旧 reader（`Handle` 保持有效），`HotReloadWatcher` 总是随 `runtime` 编译。编辑器在 500ms 轮询里重开重建的 `.pak` 并 `invalidate_assets`；播放器（`prism-app`）在 `PRISMREV_HOT_RELOAD=1` 时做同一件事（发布版默认关，不起线程也不 stat）。剩余：旧 GPU 句柄按句柄回收、松散资产（`assets/` 下未打包的文件）热重载、播放器侧端到端画面验证。
 
 > **里程碑建议**：G1+G2+G3 为"闭环 MVP"✅ 实现 已打通（可手动端到端），G4+G5 为"开发体验完善"⏳，G6 为"编辑器体验"✅ 实现。
 

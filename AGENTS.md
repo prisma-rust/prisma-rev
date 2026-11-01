@@ -291,6 +291,14 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   - `PRISMREV_SCREENSHOT_FRAME=<n>`：抓第几帧，默认 90（等资源上传/动画稳定）。
   - `PRISMREV_SCREENSHOT_SIZE=1920x1080`：输出分辨率（`x` / `X` / `,` 分隔都行）。
   - `PRISMREV_SCREENSHOT_SCALE=2`：按窗口分辨率倍数放大（`SIZE` 优先）。
+
+## 开发期资产热重载（`PRISMREV_HOT_RELOAD`）
+- `PRISMREV_HOT_RELOAD=1`（也接受 `true` / `yes` / `on`）让**播放器**轮询 `assets/` 下
+  所有 `.pak`：重建包后自动 `on_pak_changed` → 重载路径清单 → `invalidate_assets`，
+  实体下一帧重新解析，不用退出再进游戏（#495）。未设置 / `0` / 空串时完全关：
+  不建线程、不 stat 文件（发布版默认如此）。
+- 已知代价：渲染器还没有按句柄回收的接口，被替换的旧纹理 / 网格槽会一直占着，
+  所以只适合开发期反复迭代；松散资产（未进包的文件）仍然需要重新 cook。
   - 缩放是**最近邻**，像素画放大不糊；内容是窗口那一帧，不重渲染。
 - 实现方式：`execute` 在图像回到 `PRESENT_SRC_KHR` 后插入
   `vkCmdCopyImageToBuffer`（`PRESENT_SRC → TRANSFER_SRC → PRESENT_SRC`），
