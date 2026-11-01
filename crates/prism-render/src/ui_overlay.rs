@@ -10,6 +10,8 @@ pub struct UiQuad {
     pub rect: [f32; 4],
     pub color: [f32; 4],
     pub border_radius: f32,
+    /// Bindless SRV slot of a background image (`None` = flat colour, #591).
+    pub texture: Option<u32>,
 }
 
 /// 文本绘制命令 — screen-space pixel 矩形 (top-left origin) + 内容.

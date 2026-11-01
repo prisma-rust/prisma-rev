@@ -1975,6 +1975,9 @@ impl GraphRenderer {
         if record.is_ok() {
             let has_ui = ui_overlay.is_some_and(|o| !o.quads.is_empty() || !o.texts.is_empty());
             if has_ui {
+                // UI 背景图（#591）从场景共享的 bindless 表取样。
+                let bindless_set = self.texture_manager.bindless().set;
+                let bindless_layout = self.texture_manager.bindless().layout;
                 if let Some(sw) = self.swapchain.as_ref() {
                     // The overlay render pass must use the swapchain's actual
                     // color format; surfaces fall back to `available[0]`
@@ -1986,6 +1989,7 @@ impl GraphRenderer {
                             &self.runtime.context,
                             self.runtime.command_pool,
                             color_format,
+                            bindless_layout,
                         )
                         .context("create ui overlay")?;
                         apply_ui_fonts(&self.ui_fonts, &mut gpu);
@@ -2030,6 +2034,7 @@ impl GraphRenderer {
                                 extent,
                                 sw.views[image_index as usize],
                                 ui_overlay.unwrap(),
+                                bindless_set,
                             )
                             .context("ui overlay record");
                     }
@@ -2053,6 +2058,7 @@ impl GraphRenderer {
                                 self.runtime.command_pool,
                                 color_format,
                                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                                bindless_layout,
                             )
                             .context("create offscreen ui overlay")?;
                         apply_ui_fonts(&self.ui_fonts, &mut gpu);
@@ -2100,6 +2106,7 @@ impl GraphRenderer {
                                 target_extent,
                                 view,
                                 ui_overlay.unwrap(),
+                                bindless_set,
                             )
                             .context("offscreen ui overlay record");
                     }

@@ -18,6 +18,8 @@ pub struct UiQuad {
     pub color: [f32; 4],
     /// 圆角半径（px）
     pub border_radius: f32,
+    /// 背景图 bindless 槽位（#591）；`None` = 纯色填充。
+    pub texture: Option<u32>,
     /// 绘制层级（z-index）。层级内再按 [`UiQuad::order`] 排。
     ///
     /// 普通 UI 节点都是 0；需要「永远压在某层之上」的东西（雨滴粒子、调试
@@ -33,6 +35,7 @@ impl Default for UiQuad {
             rect: [0.0; 4],
             color: [0.0; 4],
             border_radius: 0.0,
+            texture: None,
             layer: 0,
             order: EXTERNAL_UI_ORDER,
         }
@@ -153,11 +156,20 @@ pub fn ui_render_system(world: &mut World) {
         }
         // #528：`Button` 按交互状态换色，没有 `Button` 时继续用
         // `Style::background`（两者可以共存，按钮优先）。
-        let bg = match world.get::<Button>(entity) {
+        let texture = world
+            .get::<crate::scene::runtime_components::UiImageRef>(entity)
+            .filter(|image| image.generation > 0)
+            .map(|image| image.texture_slot);
+        let mut bg = match world.get::<Button>(entity) {
             Some(button) => button.color(world.get::<Interaction>(entity)),
             None => style.background,
         };
-        if bg[3] <= 0.0 {
+        // #591：有背景图时 `background` 只当作 tint；整掉 alpha 说明作者没写
+        // tint，就按不透明白色显示图片原色。
+        if texture.is_some() && bg[3] <= 0.0 {
+            bg = [1.0, 1.0, 1.0, 1.0];
+        }
+        if bg[3] <= 0.0 && texture.is_none() {
             continue;
         } // 完全透明跳过
 
@@ -170,6 +182,7 @@ pub fn ui_render_system(world: &mut World) {
                 rect: layout.rect,
                 color: bg,
                 border_radius: style.border_radius * scale,
+                texture,
                 layer: 0,
                 order: layout.order,
             }),
@@ -291,6 +304,7 @@ pub fn convert_ui_draw_list_to_overlay_into(world: &World, out: &mut prism_rende
             rect: [x0, y0, x1, y1], // NDC [xmin, ymin, xmax, ymax]
             color: q.color,
             border_radius: br_ndc,
+            texture: q.texture,
         });
     }
 }

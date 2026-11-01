@@ -91,6 +91,80 @@ fn buttons_draw_their_interaction_colors() {
 }
 
 #[test]
+fn a_style_image_becomes_a_textured_quad_with_the_background_as_tint() {
+    // #591：`Style.image` 解析出 bindless 槽位后，这一格用图片 + `background` tint。
+    let mut world = world_with_screen();
+    let entity = spawn_quad(&mut world, [0.0, 0.0, 64.0, 64.0]);
+    world.get_mut::<Style>(entity).unwrap().image = "textures/icon.png".into();
+    world.get_mut::<Style>(entity).unwrap().background = [0.5, 1.0, 0.5, 1.0];
+    world.insert(
+        entity,
+        crate::scene::runtime_components::UiImageRef {
+            asset_id: prism_scene::SceneAssetId::generate(),
+            texture_slot: 7,
+            size: [64, 64],
+            generation: 1,
+        },
+    );
+
+    ui_render_system(&mut world);
+    let overlay = convert_ui_draw_list_to_overlay(&world);
+    let quad = overlay.quads.first().expect("one quad");
+    assert_eq!(quad.texture, Some(7));
+    assert_eq!(quad.color, [0.5, 1.0, 0.5, 1.0], "background 当 tint");
+}
+
+#[test]
+fn an_image_with_a_transparent_background_draws_in_its_own_colours() {
+    // 作者只写 `image` 不写 `background` 时，alpha 为 0 被当作不透明白色 tint。
+    let mut world = world_with_screen();
+    let entity = spawn_quad(&mut world, [0.0, 0.0, 32.0, 32.0]);
+    let style = world.get_mut::<Style>(entity).unwrap();
+    style.image = "textures/icon.png".into();
+    style.background = [0.0; 4];
+    world.insert(
+        entity,
+        crate::scene::runtime_components::UiImageRef {
+            asset_id: prism_scene::SceneAssetId::generate(),
+            texture_slot: 3,
+            size: [32, 32],
+            generation: 1,
+        },
+    );
+
+    ui_render_system(&mut world);
+    let overlay = convert_ui_draw_list_to_overlay(&world);
+    let quad = overlay
+        .quads
+        .first()
+        .expect("image quads are never skipped");
+    assert_eq!(quad.texture, Some(3));
+    assert_eq!(quad.color, [1.0, 1.0, 1.0, 1.0]);
+}
+
+#[test]
+fn an_unresolved_image_falls_back_to_the_flat_colour() {
+    let mut world = world_with_screen();
+    let entity = spawn_quad(&mut world, [0.0, 0.0, 16.0, 16.0]);
+    world.get_mut::<Style>(entity).unwrap().image = "textures/missing.png".into();
+    world.insert(
+        entity,
+        crate::scene::runtime_components::UiImageRef {
+            asset_id: prism_scene::SceneAssetId::generate(),
+            texture_slot: 0,
+            size: [0, 0],
+            generation: 0,
+        },
+    );
+
+    ui_render_system(&mut world);
+    let overlay = convert_ui_draw_list_to_overlay(&world);
+    let quad = overlay.quads.first().expect("背景色仍然要画");
+    assert_eq!(quad.texture, None);
+    assert_eq!(quad.color, [1.0, 0.0, 0.0, 1.0]);
+}
+
+#[test]
 fn border_radius_is_normalised_by_the_quad_size() {
     let mut world = world_with_screen();
     let entity = spawn_quad(&mut world, [100.0, 100.0, 200.0, 100.0]);
