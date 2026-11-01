@@ -339,6 +339,11 @@ pub fn render_thread_main(
                 frame_count,
                 Some(renderer.gpu_timings()),
                 Some(renderer.render_stats()),
+                renderer.draw_call_report(
+                    &packet.draw_items,
+                    &packet.sprite_items,
+                    &packet.particle_items,
+                ),
             );
         }
 

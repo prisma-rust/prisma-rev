@@ -5102,6 +5102,7 @@ pub fn render_graph(
             if let Some(parsed) = &parsed {
                 render_graph_timings(ui, parsed);
                 render_graph_stats(ui, parsed);
+                render_graph_draw_calls(ui, parsed);
             }
             ui.collapsing("Raw JSON", |ui| {
                 egui::ScrollArea::both()
@@ -5123,6 +5124,52 @@ pub fn render_graph(
         }
     }
     changed
+}
+
+/// Frame Debugger 的数据段（#518 Phase 2）：本帧的 draw call 列表。
+///
+/// 只读展示（不含回放）；被剔除的网格用弱化颜色标出，便于解释“为什么没画”。
+fn render_graph_draw_calls(
+    ui: &mut Ui,
+    report: &prism_editor_core::render_graph::RenderGraphReport,
+) {
+    if report.draw_calls.is_empty() {
+        return;
+    }
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Draw calls").strong());
+        ui.label(
+            RichText::new(format!("{} recorded", report.draw_calls.len()))
+                .weak()
+                .size(10.0),
+        );
+    });
+    egui::ScrollArea::vertical()
+        .id_salt("graph-draw-calls")
+        .max_height(160.0)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            egui::Grid::new("graph-draw-call-grid")
+                .num_columns(3)
+                .spacing([12.0, 3.0])
+                .show(ui, |ui| {
+                    ui.label(RichText::new("Call").weak().size(10.0));
+                    ui.label(RichText::new("Inst.").weak().size(10.0));
+                    ui.label(RichText::new("Tris").weak().size(10.0));
+                    ui.end_row();
+                    for call in &report.draw_calls {
+                        let mut text = RichText::new(call.summary()).size(11.0);
+                        if !call.visible {
+                            text = text.weak().italics();
+                        }
+                        ui.label(text);
+                        ui.label(RichText::new(call.instances.to_string()).size(11.0));
+                        ui.label(RichText::new(call.triangles.to_string()).size(11.0));
+                        ui.end_row();
+                    }
+                });
+        });
 }
 
 /// 资源统计（#518 Phase 2）：纹理 / 网格 / 材质的驻留量与估算字节。
@@ -6432,7 +6479,13 @@ mod window_smoke_tests {
         });
         let report = r#"{"generatedAtMs":1,"frame":2,"passes":[],"resources":[],
             "stats":{"textures":3,"textureBytes":1024,"meshes":2,"meshBytes":2048,
-                     "materials":4,"materialBytes":384}}"#;
+                     "materials":4,"materialBytes":384},
+            "drawCalls":[
+              {"pass":"forward","label":"mesh #0 · material 0","instances":1,
+               "triangles":12,"visible":true},
+              {"pass":"sprite","label":"SrcAlpha / OneMinusSrcAlpha","instances":4,
+               "triangles":8,"visible":false}
+            ]}"#;
         run_frame(|ui, _workspace, _state| {
             let mut settings = prism_engine::render_settings::RenderSettings::default();
             let mut viewport_scale = 1.0;

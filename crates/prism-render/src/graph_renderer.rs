@@ -1864,6 +1864,71 @@ impl GraphRenderer {
         &self.gpu_timings
     }
 
+    /// 本帧的 draw call 记录（#518 Phase 2 的数据层，不含回放）。
+    ///
+    /// 网格按 `draw_items` 顺序逐条记录（即使被剔除也记下来，`visible=false`
+    /// 让面板能解释“为什么没画”）；精灵与粒子按实际批次合并（与 `SpritePass`
+    /// 的连续相同混合状态分批一致）。超过 [`MAX_REPORTED_DRAW_CALLS`] 的部分
+    /// 直接丢弃，避免大场景把报告撑到无法阅读。
+    pub fn draw_call_report(
+        &self,
+        draw_items: &[crate::render_graph::DrawItem],
+        sprite_items: &[crate::render_graph::SpriteDrawItem],
+        particle_items: &[crate::render_graph::ParticleDrawItem],
+    ) -> Vec<crate::render_graph_report::ReportDrawCall> {
+        use crate::render_graph_report::{ReportDrawCall, MAX_REPORTED_DRAW_CALLS};
+        let mut calls: Vec<ReportDrawCall> = Vec::new();
+
+        for (index, item) in draw_items.iter().enumerate() {
+            if calls.len() >= MAX_REPORTED_DRAW_CALLS {
+                return calls;
+            }
+            let triangles = self
+                .mesh_manager
+                .get(item.mesh)
+                .map(|uploaded| (uploaded.mesh.index_count as u64 / 3).max(1))
+                .unwrap_or(0);
+            calls.push(ReportDrawCall {
+                pass: "forward".to_string(),
+                label: format!("mesh #{index} · material {}", item.material.unwrap_or(0)),
+                instances: 1,
+                triangles,
+                visible: item.visible_in_main_pass,
+            });
+        }
+
+        let mut cursor = 0;
+        while cursor < sprite_items.len() && calls.len() < MAX_REPORTED_DRAW_CALLS {
+            let blend = |item: &crate::render_graph::SpriteDrawItem| {
+                (item.src_blend, item.dst_blend, item.blend_op)
+            };
+            let key = blend(&sprite_items[cursor]);
+            let start = cursor;
+            while cursor < sprite_items.len() && blend(&sprite_items[cursor]) == key {
+                cursor += 1;
+            }
+            let count = cursor - start;
+            calls.push(ReportDrawCall {
+                pass: "sprite".to_string(),
+                label: format!("{:?} / {:?}", key.0, key.1),
+                instances: count,
+                triangles: count as u64 * 2,
+                visible: true,
+            });
+        }
+
+        if !particle_items.is_empty() && calls.len() < MAX_REPORTED_DRAW_CALLS {
+            calls.push(ReportDrawCall {
+                pass: "particle".to_string(),
+                label: "billboards".to_string(),
+                instances: particle_items.len(),
+                triangles: particle_items.len() as u64 * 2,
+                visible: true,
+            });
+        }
+        calls
+    }
+
     /// 纹理 / 网格 / 材质的实时驻留统计（#518 Phase 2）。
     pub fn render_stats(&self) -> crate::render_graph_report::ReportStats {
         let (textures, texture_bytes) = self.texture_manager.stats();

@@ -48,6 +48,28 @@ impl ReportStats {
     }
 }
 
+/// 一帧里的一次 draw call 记录（#518 Phase 2 Frame Debugger 的数据层）。
+///
+/// 只记录 CPU 侧就能确定的信息（pass / 批量标签 / 实例数 / 三角形数 / 是否在主
+/// 通道可见），不包含 pipeline 句柄或 descriptor set —— 回放留给后续。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportDrawCall {
+    /// `forward` / `sprite` / `particle`。
+    pub pass: String,
+    /// 人类可读标签（网格序号 + 材质槽 / 混合状态 / 粒子组）。
+    pub label: String,
+    /// 实例数（网格通常是 1，精灵 / 粒子是同一批次的实例数）。
+    pub instances: usize,
+    /// 三角形数（实例已乘进去）。
+    pub triangles: u64,
+    /// 是否在相机主通道绘制（阴影专用 / 被剔除的网格为 `false`）。
+    pub visible: bool,
+}
+
+/// 报告里最多保留多少条 draw call（防止大场景把 JSON 撑爆）。
+pub const MAX_REPORTED_DRAW_CALLS: usize = 256;
+
 /// `RenderGraphSnapshot` 的 JSON 形状。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -68,6 +90,9 @@ pub struct RenderGraphReport {
     /// 纹理 / 网格 / 材质的实时驻留统计（#518 Phase 2）；旧报告没有该字段。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stats: Option<ReportStats>,
+    /// 本帧的 draw call 列表（#518 Phase 2）；空 / 旧报告时省略。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub draw_calls: Vec<ReportDrawCall>,
 }
 
 /// 报告里的渲染设置子集（与编辑器 `RenderSettingsData` 对齐）。
@@ -255,12 +280,19 @@ impl RenderGraphReport {
                 .map(|timings| timings.total_ms)
                 .filter(|total| *total > 0.0),
             stats: None,
+            draw_calls: Vec::new(),
         }
     }
 
     /// 附带管理器侧的资源统计（#518 Phase 2）。
     pub fn with_stats(mut self, stats: ReportStats) -> Self {
         self.stats = Some(stats);
+        self
+    }
+
+    /// 附带本帧的 draw call 列表（#518 Phase 2 Frame Debugger）。
+    pub fn with_draw_calls(mut self, calls: Vec<ReportDrawCall>) -> Self {
+        self.draw_calls = calls;
         self
     }
 
@@ -319,7 +351,7 @@ impl ReportWriter {
         settings: ReportSettings,
         frame: u64,
     ) {
-        self.maybe_write_with_timings(snapshot, settings, frame, None, None);
+        self.maybe_write_with_timings(snapshot, settings, frame, None, None, Vec::new());
     }
 
     /// 同 [`Self::maybe_write`]，附带 per-pass GPU 时间（#518）。
@@ -330,6 +362,7 @@ impl ReportWriter {
         frame: u64,
         timings: Option<&crate::gpu_timer::GpuTimings>,
         stats: Option<ReportStats>,
+        draw_calls: Vec<ReportDrawCall>,
     ) {
         let Some(path) = self.path.as_deref() else {
             return;
@@ -347,6 +380,9 @@ impl ReportWriter {
             RenderGraphReport::from_snapshot_with_timings(snapshot, settings, frame, timings);
         if let Some(stats) = stats {
             report = report.with_stats(stats);
+        }
+        if !draw_calls.is_empty() {
+            report = report.with_draw_calls(draw_calls);
         }
         if let Err(error) = report.write_json(path) {
             log::warn!(
@@ -427,6 +463,40 @@ mod tests {
         assert_eq!(report.settings.render_mode, "raster");
         let json = serde_json::to_value(&report).unwrap();
         assert_eq!(json["passes"][0]["kind"], "forward");
+    }
+
+    #[test]
+    fn draw_calls_are_optional_and_serialize_in_camel_case() {
+        let plain = RenderGraphReport::from_snapshot(&snapshot(), ReportSettings::default(), 1);
+        assert!(plain.draw_calls.is_empty());
+        let json = serde_json::to_value(&plain).unwrap();
+        assert!(
+            json.get("drawCalls").is_none(),
+            "旧报告不该凭空多出 drawCalls"
+        );
+
+        let calls = vec![
+            ReportDrawCall {
+                pass: "forward".into(),
+                label: "mesh #0 · material 2".into(),
+                instances: 1,
+                triangles: 12,
+                visible: true,
+            },
+            ReportDrawCall {
+                pass: "sprite".into(),
+                label: "SrcAlpha / OneMinusSrcAlpha".into(),
+                instances: 4,
+                triangles: 8,
+                visible: true,
+            },
+        ];
+        let report = RenderGraphReport::from_snapshot(&snapshot(), ReportSettings::default(), 1)
+            .with_draw_calls(calls);
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["drawCalls"][0]["pass"], "forward");
+        assert_eq!(json["drawCalls"][1]["instances"], 4);
+        assert_eq!(json["drawCalls"][1]["triangles"], 8);
     }
 
     #[test]
