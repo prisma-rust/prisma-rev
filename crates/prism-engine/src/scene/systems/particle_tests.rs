@@ -546,6 +546,27 @@ fn spawn_box_collider(world: &mut World, half: f32, translation: [f32; 3]) -> En
     entity
 }
 
+fn spawn_flat_terrain(world: &mut World, height: f32, size: f32) -> Entity {
+    let entity = world.spawn();
+    world.insert(
+        entity,
+        TerrainData {
+            key: "test-terrain".to_string(),
+            field: Arc::new(Heightfield::flat(4)),
+            mesh_path: String::new(),
+            size: [size, size],
+            height_scale: 1.0,
+        },
+    );
+    world.insert(
+        entity,
+        LocalToWorld(glam::Mat4::from_translation(glam::Vec3::new(
+            0.0, height, 0.0,
+        ))),
+    );
+    entity
+}
+
 /// #501：开碰撞后粒子被静态盒挡住，停在顶面上方；关碰撞时直接穿过去。
 #[test]
 fn collision_stops_particles_on_a_static_box() {
@@ -575,6 +596,45 @@ fn collision_stops_particles_on_a_static_box() {
     assert!(
         (1.2..1.4).contains(&y),
         "particle should rest above the box top (y≈1.25), got {y}"
+    );
+    assert!(
+        particles[0].velocity.y.abs() < 0.1,
+        "normal velocity should be absorbed, got {:?}",
+        particles[0].velocity
+    );
+}
+
+/// #501：地形高度场也参与碰撞（#517 的解析高度场）。
+#[test]
+fn collision_stops_particles_on_a_terrain_heightfield() {
+    let mut world = World::new();
+    spawn_flat_terrain(&mut world, 1.0, 20.0);
+    let emitter = spawn_emitter(
+        &mut world,
+        ParticleSystem {
+            collision: true,
+            collision_bounce: 0.0,
+            collision_friction: 1.0,
+            emission_rate: 0.0,
+            burst: 1,
+            lifetime: [10.0, 10.0],
+            start_speed: [0.0, 0.0],
+            start_size: [0.25, 0.25],
+            gravity: [0.0, -9.81, 0.0],
+            drag: 0.0,
+            shape: ParticleShape::Point,
+            ..fire()
+        },
+        [0.0, 5.0, 0.0],
+    );
+    run(&mut world, 1.5);
+
+    let particles = particles_of(&world, emitter);
+    assert_eq!(particles.len(), 1);
+    let y = particles[0].position.y;
+    assert!(
+        (1.2..1.4).contains(&y),
+        "particle should rest above the terrain surface (y≈1.25), got {y}"
     );
     assert!(
         particles[0].velocity.y.abs() < 0.1,

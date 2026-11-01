@@ -14,8 +14,8 @@
 //!   颜色 / 尺寸 / 速度偏移都按年龄在作者曲线上求值（提取或积分时算，不在模拟里
 //!   存曲线状态，这样改作者数据立刻生效）；
 //! - 可选碰撞（#501）：`collision = true` 时，粒子按自身半径被推出带
-//!   [`Collider`] 的实体表面（盒 / 球 / 胶囊），法向按 `collision_bounce`
-//!   反弹、切向按 `collision_friction` 衰减；地形高度场还不是碰撞体；
+//!   [`Collider`] 的实体表面（盒 / 球 / 胶囊）和 [`TerrainData`] 高度场，
+//!   法向按 `collision_bounce` 反弹、切向按 `collision_friction` 衰减；
 //! - 随机源是每个发射器独立的 `xorshift32`（种子 = 实体 id），所以同一场景
 //!   每次加载的粒子分布一致——比 `rand` 依赖更轻，也让单测可复现；
 //! - `dt` 上限 0.1s：编辑器卡一下不会让粒子瞬移穿过整个场景。
@@ -28,6 +28,8 @@ use prism_ecs::{Entity, World};
 use crate::physics::WorldShape;
 use crate::scene::components::{Collider, LocalToWorld, ParticleShape, ParticleSystem};
 use crate::scene::systems::hierarchy::is_active_in_hierarchy;
+use crate::scene::systems::terrain::{Heightfield, TerrainData};
+use std::sync::Arc;
 
 /// 单帧最大模拟步长（秒）。更大的 `dt` 被截断，避免卡顿后粒子瞬移。
 pub const MAX_STEP: f32 = 0.1;
@@ -212,6 +214,8 @@ pub fn particle_system(world: &mut World, dt: f32) -> usize {
                 .map(|transform| WorldShape::new(collider, &transform.0))
         })
         .collect();
+    // #501：地形高度场用同样的每帧快照；`TerrainData` 由地形运行时系统写入。
+    let terrains = TerrainShape::from_world(world);
 
     let mut alive = 0usize;
     for entity in entities {
@@ -244,18 +248,97 @@ pub fn particle_system(world: &mut World, dt: f32) -> usize {
             continue;
         };
 
-        step(&system, &mut emitter, origin, rotation, dt, &colliders);
+        step(
+            &system,
+            &mut emitter,
+            origin,
+            rotation,
+            dt,
+            &colliders,
+            &terrains,
+        );
         alive += emitter.particles.len();
         world.insert(entity, emitter);
     }
     alive
 }
 
+/// 本帧快照的一块地形高度场（#501）。`TerrainData` 已经解析好 `.raw`，
+/// 这里只保留采样需要的 `Arc` 和世界变换，避免在粒子循环里反复读 ECS。
+#[derive(Clone)]
+struct TerrainShape {
+    origin: glam::Vec3,
+    half: glam::Vec2,
+    field: Arc<Heightfield>,
+    height_scale: f32,
+}
+
+impl TerrainShape {
+    fn from_world(world: &World) -> Vec<Self> {
+        world
+            .query::<TerrainData>()
+            .filter_map(|(entity, data)| {
+                let half = glam::Vec2::new(data.size[0] * 0.5, data.size[1] * 0.5);
+                if !half.is_finite() || half.x <= 0.0 || half.y <= 0.0 {
+                    return None;
+                }
+                let origin = world
+                    .get::<LocalToWorld>(entity)
+                    .map(|transform| transform.0.w_axis.truncate())
+                    .unwrap_or(glam::Vec3::ZERO);
+                Some(Self {
+                    origin,
+                    half,
+                    field: data.field.clone(),
+                    height_scale: data.height_scale,
+                })
+            })
+            .collect()
+    }
+
+    /// 粒子在地形覆盖范围内且低于地表时，沿高度场法线推出到地表上方。
+    /// 只处理水平覆盖范围（与 `terrain_sample` 一致，不支持旋转地形）。
+    fn push_out(&self, point: glam::Vec3, radius: f32) -> Option<(glam::Vec3, glam::Vec3)> {
+        let local = glam::Vec2::new(point.x - self.origin.x, point.z - self.origin.z);
+        if local.x.abs() > self.half.x || local.y.abs() > self.half.y {
+            return None;
+        }
+        let u = local.x / (self.half.x * 2.0) + 0.5;
+        let v = local.y / (self.half.y * 2.0) + 0.5;
+        let height = self.field.sample_height(u, v) * self.height_scale + self.origin.y;
+        if point.y - radius >= height {
+            return None;
+        }
+        let normal = glam::Vec3::from_array(self.field.sample_normal(u, v, self.height_scale));
+        Some((glam::Vec3::new(point.x, height + radius, point.z), normal))
+    }
+}
+
+fn apply_contact(
+    particle: &mut Particle,
+    position: glam::Vec3,
+    normal: glam::Vec3,
+    bounce: f32,
+    friction: f32,
+) {
+    particle.position = position;
+    let normal_speed = particle.velocity.dot(normal);
+    if normal_speed < 0.0 {
+        let tangential = particle.velocity - normal * normal_speed;
+        particle.velocity = tangential * (1.0 - friction) - normal * normal_speed * bounce;
+    }
+}
+
 /// 把一个粒子推出所有相交的碰撞体，并按法向 / 切向分别处理弹跳与摩擦。
 ///
 /// 多次推出是必要的：角落 / 凹槽里可能同时碰到两个形状；每次推出都会用新的
 /// 位置继续测试，直到所有形状都满足（形状数很少，不做空间索引）。
-fn collide_particle(system: &ParticleSystem, particle: &mut Particle, colliders: &[WorldShape]) {
+fn collide_particle(
+    system: &ParticleSystem,
+    particle: &mut Particle,
+    colliders: &[WorldShape],
+    terrains: &[TerrainShape],
+) {
     let bounce = if system.collision_bounce.is_finite() {
         system.collision_bounce.clamp(0.0, 1.0)
     } else {
@@ -266,17 +349,18 @@ fn collide_particle(system: &ParticleSystem, particle: &mut Particle, colliders:
     } else {
         0.2
     };
+    let radius = particle.size.max(0.0);
     for shape in colliders {
-        let Some((position, normal)) = shape.push_out(particle.position, particle.size.max(0.0))
-        else {
+        let Some((position, normal)) = shape.push_out(particle.position, radius) else {
             continue;
         };
-        particle.position = position;
-        let normal_speed = particle.velocity.dot(normal);
-        if normal_speed < 0.0 {
-            let tangential = particle.velocity - normal * normal_speed;
-            particle.velocity = tangential * (1.0 - friction) - normal * normal_speed * bounce;
-        }
+        apply_contact(particle, position, normal, bounce, friction);
+    }
+    for terrain in terrains {
+        let Some((position, normal)) = terrain.push_out(particle.position, radius) else {
+            continue;
+        };
+        apply_contact(particle, position, normal, bounce, friction);
     }
 }
 
@@ -287,6 +371,7 @@ fn step(
     rotation: glam::Quat,
     dt: f32,
     colliders: &[WorldShape],
+    terrains: &[TerrainShape],
 ) {
     if !system.playing {
         // 暂停：粒子停在原地，也不再积累发射计数。
@@ -310,8 +395,8 @@ fn step(
         // 让“风速”变成永久加速度。
         let drift = particle_velocity_offset(system, particle);
         particle.position += (particle.velocity + drift) * dt;
-        if system.collision && !colliders.is_empty() {
-            collide_particle(system, particle, colliders);
+        if system.collision && (!colliders.is_empty() || !terrains.is_empty()) {
+            collide_particle(system, particle, colliders, terrains);
         }
     }
     emitter.particles.retain(|p| p.age < p.lifetime);
