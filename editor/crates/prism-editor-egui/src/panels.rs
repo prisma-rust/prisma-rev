@@ -11,8 +11,10 @@ use prism_editor_core::{
     format_bytes, AssetKind, AssetPreview, EntityJson, Locale, LogLevel, LogSource, Preferences,
     ProjectSettings, SceneDoc, Workspace, THEME_PRESETS,
 };
+use prism_engine::scene::systems::terrain::SculptMode;
 use serde_json::{json, Value};
 
+use crate::viewport::{set_terrain_brush_settings, terrain_brush_settings};
 use crate::{diagnostics::Diagnostic, theme, widgets};
 use egui_phosphor::regular as icons;
 
@@ -3603,6 +3605,36 @@ pub fn terrain_heightmap_stats(
 ///
 /// 通用 reflect 卡片已经能改字段；这里只补运行时才会知道的信息，并把
 /// 「文件缺失 / 字节数不匹配 / 不是方形」翻译成和 `load_heightfield` 一致的提示。
+/// Terrain 笔刷参数（#517）：参数存 egui 临时数据，Scene 视口的 Sculpt 模式读取。
+fn terrain_sculpt_controls(ui: &mut Ui) {
+    ui.separator();
+    ui.label(RichText::new("Sculpt brush").strong().size(11.0));
+    ui.label(
+        RichText::new("Enable Sculpt in the toolbar, then drag in the Scene view.")
+            .weak()
+            .size(10.0),
+    );
+    let mut brush = terrain_brush_settings(ui);
+    ui.horizontal(|ui| {
+        ui.label("Mode");
+        for (mode, label) in [
+            (SculptMode::Raise, "Raise"),
+            (SculptMode::Lower, "Lower"),
+            (SculptMode::Smooth, "Smooth"),
+            (SculptMode::Flatten, "Flatten"),
+        ] {
+            ui.selectable_value(&mut brush.mode, mode, label);
+        }
+    });
+    ui.add(egui::Slider::new(&mut brush.radius, 0.01..=1.0).text("Radius"));
+    ui.add(
+        egui::Slider::new(&mut brush.strength, 0.01..=100.0)
+            .logarithmic(true)
+            .text("Strength"),
+    );
+    set_terrain_brush_settings(ui, brush);
+}
+
 fn terrain_editor(ui: &mut Ui, workspace: &Workspace, value: &Value) {
     let heightmap = value
         .get("heightmap")
@@ -3674,6 +3706,7 @@ fn terrain_editor(ui: &mut Ui, workspace: &Workspace, value: &Value) {
                     ui.label(format!("world {x:.1} × {z:.1} m"));
                 }
             }
+            terrain_sculpt_controls(ui);
         }
         Err(error) => {
             ui.colored_label(

@@ -17,6 +17,8 @@ use egui::{Align, Layout, Rect, Sense, Vec2};
 use egui_ash::ImageRegistry;
 use prism_editor_core::{viewport_math as vm, SelectMode, TransformJson, Workspace};
 use prism_engine::input::{ElementState, KeyCode, MouseButton};
+use prism_engine::scene::systems::terrain::{Heightfield, SculptMode};
+use serde_json::Value;
 
 use crate::engine_host::{EngineHost, ViewKind};
 use crate::ui_gizmo::{
@@ -431,6 +433,183 @@ impl GizmoTool {
     }
 }
 
+/// Terrain 笔刷参数，存在 egui 的临时数据里，检查器和视口共用（#517）。
+#[derive(Debug, Clone, Copy)]
+pub struct TerrainBrushSettings {
+    pub mode: SculptMode,
+    pub radius: f32,
+    pub strength: f32,
+}
+
+impl Default for TerrainBrushSettings {
+    fn default() -> Self {
+        Self {
+            mode: SculptMode::Raise,
+            radius: 0.1,
+            strength: 1.0,
+        }
+    }
+}
+
+const TERRAIN_BRUSH_ID: &str = "prism-terrain-brush-settings";
+
+/// 读取检查器里设置的笔刷参数（没有时用默认值）。
+pub fn terrain_brush_settings(ui: &egui::Ui) -> TerrainBrushSettings {
+    ui.data(|data| data.get_temp(egui::Id::new(TERRAIN_BRUSH_ID)))
+        .unwrap_or_default()
+}
+
+/// 保存检查器里设置的笔刷参数。
+pub fn set_terrain_brush_settings(ui: &mut egui::Ui, settings: TerrainBrushSettings) {
+    ui.data_mut(|data| data.insert_temp(egui::Id::new(TERRAIN_BRUSH_ID), settings));
+}
+
+/// 一次视口笔刷操作的结果：场景实体 id + 受影响格子数。
+type TerrainSculptResult = Result<Option<(u32, usize)>, String>;
+
+/// 用相机射线命中选中地形的 `.raw` 高度场，在命中点应用一次笔刷。
+///
+/// 只支持平移过的地形（和 `terrain_sample` 的运行时限制一致）；没有选中
+/// Terrain 或射线没命中时返回 `Ok(None)`，不打扰用户。
+fn sculpt_terrain_at_ray(
+    workspace: &Workspace,
+    ray: ([f32; 3], [f32; 3]),
+    settings: TerrainBrushSettings,
+) -> TerrainSculptResult {
+    let Some(index) = workspace.primary_selection() else {
+        return Ok(None);
+    };
+    let doc = &workspace.document().doc;
+    let Some(entity) = doc.entities.get(index) else {
+        return Ok(None);
+    };
+    let Some(terrain) = entity
+        .components
+        .get("prism_engine::scene::Terrain")
+        .and_then(Value::as_object)
+    else {
+        return Ok(None);
+    };
+    let heightmap = terrain
+        .get("heightmap")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if heightmap.is_empty() {
+        return Ok(None);
+    }
+    let size = terrain
+        .get("size")
+        .and_then(Value::as_array)
+        .and_then(|size| {
+            Some([
+                size.first()?.as_f64()? as f32,
+                size.get(1)?.as_f64()? as f32,
+            ])
+        })
+        .unwrap_or([100.0, 100.0]);
+    let height_scale = terrain
+        .get("height_scale")
+        .and_then(Value::as_f64)
+        .unwrap_or(1.0) as f32;
+    let resolution = terrain
+        .get("resolution")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
+
+    let root = workspace
+        .project_root
+        .as_ref()
+        .ok_or_else(|| "no project root; cannot edit the terrain heightmap".to_string())?;
+    let relative = heightmap.strip_prefix("assets/").unwrap_or(heightmap);
+    let path = root.join("assets").join(relative);
+    let bytes =
+        std::fs::read(&path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    let mut field = if resolution == 0 {
+        Heightfield::from_raw_auto(&bytes)
+    } else {
+        Heightfield::from_raw(&bytes, resolution)
+    }
+    .ok_or_else(|| format!("{} is not a valid heightmap", path.display()))?;
+
+    let Some((u, v)) = terrain_hit_uv(
+        &field,
+        vm::world_position(doc, index),
+        size,
+        height_scale,
+        ray,
+    ) else {
+        return Ok(None);
+    };
+    let affected = field.sculpt(u, v, settings.radius, settings.strength, settings.mode);
+    if affected == 0 {
+        return Ok(None);
+    }
+    std::fs::write(&path, field.to_raw_bytes())
+        .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
+    Ok(Some((doc.id_of_index(index).unwrap_or(0), affected)))
+}
+
+/// 射线与平移地形的高度场求交，返回命中点的归一化 `(u, v)`。
+fn terrain_hit_uv(
+    field: &Heightfield,
+    terrain_origin: [f32; 3],
+    size: [f32; 2],
+    height_scale: f32,
+    ray: ([f32; 3], [f32; 3]),
+) -> Option<(f32, f32)> {
+    let half = [size[0].max(0.001) * 0.5, size[1].max(0.001) * 0.5];
+    let (ray_origin, direction) = ray;
+    let along = |t: f32| {
+        [
+            ray_origin[0] + direction[0] * t,
+            ray_origin[1] + direction[1] * t,
+            ray_origin[2] + direction[2] * t,
+        ]
+    };
+    let sample = |point: [f32; 3]| -> Option<(f32, f32)> {
+        let x = point[0] - terrain_origin[0];
+        let z = point[2] - terrain_origin[2];
+        if x.abs() > half[0] || z.abs() > half[1] {
+            return None;
+        }
+        Some((x / (half[0] * 2.0) + 0.5, z / (half[1] * 2.0) + 0.5))
+    };
+
+    let max_distance = 5000.0;
+    let samples = 1024;
+    let mut previous: Option<f32> = None;
+    for step in 1..=samples {
+        let t = max_distance * step as f32 / samples as f32;
+        let point = along(t);
+        let Some((u, v)) = sample(point) else {
+            previous = None;
+            continue;
+        };
+        let height = field.sample_height(u, v) * height_scale + terrain_origin[1];
+        if point[1] <= height {
+            let mut lo = previous.unwrap_or(0.0);
+            let mut hi = t;
+            for _ in 0..12 {
+                let mid = (lo + hi) * 0.5;
+                let point = along(mid);
+                let Some((u, v)) = sample(point) else {
+                    break;
+                };
+                let height = field.sample_height(u, v) * height_scale + terrain_origin[1];
+                if point[1] > height {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            return sample(along((lo + hi) * 0.5));
+        }
+        previous = Some(t);
+    }
+    None
+}
+
 struct GizmoDrag {
     /// 本次拖动作用的整组实体（#416：多选时批量变换）。
     targets: Vec<u32>,
@@ -482,6 +661,9 @@ pub struct ViewportState {
     fps_window_frames: u32,
     /// 当前 gizmo 工具（W / E / R）。
     pub tool: GizmoTool,
+    /// Terrain 笔刷模式（工具栏 Sculpt 开关）；开启时左键拖动不再选物体。
+    pub sculpt: bool,
+    sculpt_last: Option<Instant>,
     gizmo: Option<GizmoDrag>,
     ui_drag: Option<UiAnchorDrag>,
     /// UI 锚点拖动时只写 anchors，不补偿 margin / 宽高（#429 raw mode）。
@@ -540,6 +722,8 @@ impl ViewportState {
             fps_window_started: Instant::now(),
             fps_window_frames: 0,
             tool: GizmoTool::Translate,
+            sculpt: false,
+            sculpt_last: None,
             gizmo: None,
             ui_drag: None,
             raw_ui_edit: false,
@@ -1247,6 +1431,38 @@ impl ViewportState {
         //    · 滚轮 → 缩放；双击 → 聚焦选中项
         let alt = ui.input(|input| input.modifiers.alt);
         let local_of = |pos: egui::Pos2| (pos.x - rect.min.x, pos.y - rect.min.y);
+        let sculpting = self.kind() == ViewKind::Scene && self.sculpt && !alt;
+
+        // Terrain 笔刷：左键拖动时用相机射线命中选中地形的 `.raw`，改完让
+        // 引擎丢掉 `TerrainData`，下一帧从磁盘重建网格（#517）。
+        if sculpting
+            && (response.drag_started_by(egui::PointerButton::Primary)
+                || response.dragged_by(egui::PointerButton::Primary)
+                || response.clicked())
+        {
+            let due = self
+                .sculpt_last
+                .is_none_or(|last| last.elapsed() >= std::time::Duration::from_millis(50));
+            if due {
+                if let Some(pos) = response.interact_pointer_pos() {
+                    let local = local_of(pos);
+                    let frame = vm::camera_frame(&workspace.camera);
+                    let ray =
+                        vm::ray_from_screen(local.0, local.1, &frame, rect.width(), rect.height());
+                    let settings = terrain_brush_settings(ui);
+                    match sculpt_terrain_at_ray(workspace, ray, settings) {
+                        Ok(Some((scene_id, _affected))) => {
+                            self.host.reload_terrain_heightmap(scene_id);
+                            self.error = None;
+                            self.dirty = true;
+                        }
+                        Ok(None) => {}
+                        Err(error) => self.error = Some(error),
+                    }
+                    self.sculpt_last = Some(Instant::now());
+                }
+            }
+        }
 
         if response.dragged() {
             // 相机 / gizmo 一旦被动过，上一次点击的候选集就过期了。
@@ -1256,6 +1472,7 @@ impl ViewportState {
         if response.drag_started_by(egui::PointerButton::Primary)
             && self.kind() == ViewKind::Scene
             && !alt
+            && !sculpting
         {
             if let Some(pos) = response.interact_pointer_pos() {
                 let local = local_of(pos);
@@ -1292,6 +1509,7 @@ impl ViewportState {
         let ctrl = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
         if response.dragged_by(egui::PointerButton::Primary)
             && !(self.kind() == ViewKind::Scene && alt)
+            && !sculpting
         {
             if let Some(pos) = response.interact_pointer_pos() {
                 let local = local_of(pos);
@@ -1457,7 +1675,7 @@ impl ViewportState {
             workspace.frame_selection();
             self.dirty = true;
         }
-        if response.clicked() {
+        if !sculpting && response.clicked() {
             if let Some(pos) = response.interact_pointer_pos() {
                 let local = local_of(pos);
                 if self.kind() == ViewKind::Scene {
@@ -2959,5 +3177,52 @@ mod interaction_tests {
             scene_drag_intent(false, false, false),
             SceneDragIntent::None
         );
+    }
+
+    #[test]
+    fn terrain_ray_hits_the_flat_field_and_maps_to_normalized_uv() {
+        let field = Heightfield::flat(17);
+        let hit = terrain_hit_uv(
+            &field,
+            [0.0, 0.0, 0.0],
+            [10.0, 10.0],
+            1.0,
+            ([0.0, 5.0, 0.0], [0.0, -1.0, 0.0]),
+        )
+        .expect("vertical ray hits the flat terrain");
+        assert!((hit.0 - 0.5).abs() < 1e-4);
+        assert!((hit.1 - 0.5).abs() < 1e-4);
+
+        let hit = terrain_hit_uv(
+            &field,
+            [0.0, 0.0, 0.0],
+            [10.0, 10.0],
+            1.0,
+            ([2.5, 5.0, -2.5], [0.0, -1.0, 0.0]),
+        )
+        .expect("offset ray hits");
+        assert!((hit.0 - 0.75).abs() < 1e-4);
+        assert!((hit.1 - 0.25).abs() < 1e-4);
+    }
+
+    #[test]
+    fn terrain_ray_misses_outside_the_footprint_and_upward() {
+        let field = Heightfield::flat(17);
+        assert!(terrain_hit_uv(
+            &field,
+            [0.0, 0.0, 0.0],
+            [10.0, 10.0],
+            1.0,
+            ([20.0, 5.0, 0.0], [0.0, -1.0, 0.0]),
+        )
+        .is_none());
+        assert!(terrain_hit_uv(
+            &field,
+            [0.0, 0.0, 0.0],
+            [10.0, 10.0],
+            1.0,
+            ([0.0, 5.0, 0.0], [0.0, 1.0, 0.0]),
+        )
+        .is_none());
     }
 }

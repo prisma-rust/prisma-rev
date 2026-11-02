@@ -345,6 +345,19 @@ impl EngineHost {
         self.engine.world()
     }
 
+    /// 编辑器笔刷改过高度图后，丢掉运行时的 `TerrainData`，让地形系统下一帧
+    /// 从磁盘重新生成网格（#517）。
+    pub fn reload_terrain_heightmap(&mut self, scene_id: u32) {
+        let world = self.engine.world_mut();
+        let entity = world
+            .query::<SceneEntityId>()
+            .find(|(_, id)| id.0 == scene_id)
+            .map(|(entity, _)| entity);
+        if let Some(entity) = entity {
+            world.remove::<prism_engine::scene::systems::terrain::TerrainData>(entity);
+        }
+    }
+
     pub fn entities(&self) -> &[Entity] {
         &self.entities
     }

@@ -42,9 +42,10 @@ pub struct Heightfield {
 }
 
 /// 高度场笔刷模式（#517 Phase 2 雕刻基础层）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SculptMode {
     /// 在笔刷范围内加高：`h += strength * falloff`（strength 是高度场单位）。
+    #[default]
     Raise,
     /// 在笔刷范围内降低：`h -= strength * falloff`。
     Lower,
