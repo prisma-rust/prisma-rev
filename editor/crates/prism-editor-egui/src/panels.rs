@@ -6569,6 +6569,23 @@ pub fn render_graph(
                 .changed();
             ui.end_row();
 
+            ui.label("Motion Blur");
+            changed |= ui
+                .add(egui::Slider::new(&mut settings.motion_blur, 0.0..=1.0))
+                .on_hover_text("Camera motion-blur strength; 0 disables it.")
+                .changed();
+            ui.end_row();
+
+            ui.label("Motion Trail");
+            changed |= ui
+                .add(egui::Slider::new(
+                    &mut settings.motion_blur_max_pixels,
+                    0.0..=64.0,
+                ))
+                .on_hover_text("Largest motion-blur trail in pixels.")
+                .changed();
+            ui.end_row();
+
             ui.label("Bloom");
             changed |= ui.checkbox(&mut settings.bloom, "Enable").changed();
             ui.end_row();

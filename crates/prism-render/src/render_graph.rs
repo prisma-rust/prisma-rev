@@ -749,7 +749,9 @@ pub fn post_destination(
 /// - `dof_focus_distance`: depth-of-field focus plane in metres;
 /// - `dof_aperture`: depth-of-field strength in `0..=1` (`0.0` = off);
 /// - `dof_max_blur`: largest depth-of-field blur radius in pixels;
-/// - `lut_strength`: blend toward the sampled 3D LUT in `0..=1` (`0.0` = off).
+/// - `lut_strength`: blend toward the sampled 3D LUT in `0..=1` (`0.0` = off);
+/// - `motion_blur`: camera motion-blur strength in `0..=1` (`0.0` = off);
+/// - `motion_blur_max_pixels`: largest motion-blur trail in pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PostGrade {
     pub contrast: f32,
@@ -765,6 +767,8 @@ pub struct PostGrade {
     pub dof_aperture: f32,
     pub dof_max_blur: f32,
     pub lut_strength: f32,
+    pub motion_blur: f32,
+    pub motion_blur_max_pixels: f32,
 }
 
 impl Default for PostGrade {
@@ -783,6 +787,8 @@ impl Default for PostGrade {
             dof_aperture: 0.0,
             dof_max_blur: 8.0,
             lut_strength: 0.0,
+            motion_blur: 0.0,
+            motion_blur_max_pixels: 16.0,
         }
     }
 }
@@ -861,6 +867,16 @@ impl PostGrade {
                 self.lut_strength.clamp(0.0, 1.0)
             } else {
                 0.0
+            },
+            motion_blur: if self.motion_blur.is_finite() {
+                self.motion_blur.clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
+            motion_blur_max_pixels: if self.motion_blur_max_pixels.is_finite() {
+                self.motion_blur_max_pixels.clamp(0.0, 64.0)
+            } else {
+                16.0
             },
         }
     }

@@ -49,6 +49,8 @@ fn a_global_volume_overrides_the_base_parameters() {
         volume.dof_focus_distance = 4.0;
         volume.dof_aperture = 0.5;
         volume.dof_max_blur = 12.0;
+        volume.motion_blur = 0.7;
+        volume.motion_blur_max_pixels = 24.0;
     });
     let grade = resolve_post_grade(&world, Vec3::splat(999.0), base());
     assert!((grade.contrast - 1.5).abs() < 1e-6);
@@ -58,6 +60,8 @@ fn a_global_volume_overrides_the_base_parameters() {
     assert!((grade.dof_focus_distance - 4.0).abs() < 1e-6);
     assert!((grade.dof_aperture - 0.5).abs() < 1e-6);
     assert!((grade.dof_max_blur - 12.0).abs() < 1e-6);
+    assert!((grade.motion_blur - 0.7).abs() < 1e-6);
+    assert!((grade.motion_blur_max_pixels - 24.0).abs() < 1e-6);
 }
 
 #[test]

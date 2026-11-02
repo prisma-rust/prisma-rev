@@ -136,6 +136,12 @@ pub struct RenderSettings {
     pub lut: String,
     /// LUT 混合强度（`0.0` = 关闭，`1.0` = 完全使用 LUT）。
     pub lut_strength: f32,
+    /// 相机运动模糊强度（`0.0` = 关闭，`1.0` = 最强，#502 Phase 2）。
+    ///
+    /// 关闭时后处理完全跳过上一帧矩阵与深度重建，默认路径逐位不变。
+    pub motion_blur: f32,
+    /// 运动模糊最大拖影长度（像素，0–64）。
+    pub motion_blur_max_pixels: f32,
     /// 内部渲染分辨率 `[宽, 高]`（#613）；`[0, 0]` = 关闭。
     ///
     /// 开启后场景按这个尺寸渲染，`PostPass` 再放大到窗口；相机的宽高比也跟着
@@ -177,6 +183,8 @@ impl RenderSettings {
             dof_aperture: self.dof_aperture,
             dof_max_blur: self.dof_max_blur,
             lut_strength: self.lut_strength,
+            motion_blur: self.motion_blur,
+            motion_blur_max_pixels: self.motion_blur_max_pixels,
         }
     }
 
@@ -226,6 +234,8 @@ impl Default for RenderSettings {
             dof_max_blur: 8.0,
             lut: String::new(),
             lut_strength: 0.0,
+            motion_blur: 0.0,
+            motion_blur_max_pixels: 16.0,
             shadow_distance: DEFAULT_SHADOW_DISTANCE,
             shadow_map_size: prism_render::SHADOW_MAP_SIZE,
             shadow_cascade_count: 1,
@@ -291,12 +301,16 @@ mod tests {
         settings.dof_focus_distance = 3.5;
         settings.dof_aperture = 0.6;
         settings.dof_max_blur = 12.0;
+        settings.motion_blur = 0.7;
+        settings.motion_blur_max_pixels = 24.0;
         let grade = settings.post_grade();
         assert_eq!(grade.temperature, -0.4);
         assert_eq!(grade.tint, 0.25);
         assert_eq!(grade.dof_focus_distance, 3.5);
         assert_eq!(grade.dof_aperture, 0.6);
         assert_eq!(grade.dof_max_blur, 12.0);
+        assert_eq!(grade.motion_blur, 0.7);
+        assert_eq!(grade.motion_blur_max_pixels, 24.0);
     }
 
     #[test]

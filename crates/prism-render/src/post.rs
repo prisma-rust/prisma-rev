@@ -47,6 +47,21 @@ const _: () = assert!(
         == shader_bindings::post::PUSH_CONSTANT_SIZE
 );
 
+/// Camera matrices for the camera-motion-blur effect (#502 Phase 2).
+///
+/// `invViewProj` reconstructs world space from the current depth buffer;
+/// `prevViewProj` projects that point into the previous frame. `resolution`
+/// converts the normalized velocity into pixels for the trail clamp. Laid out
+/// to match `MotionBlurData` in `post.slang`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct MotionBlurUniform {
+    inv_view_proj: [[f32; 4]; 4],
+    prev_view_proj: [[f32; 4]; 4],
+    resolution: [f32; 2],
+    _pad: [f32; 2],
+}
+
 /// Fullscreen-triangle 色调映射 pass 高动态范围 scene 颜色 -> sRGB 交换链
 pub struct PostPass {
     render_pass: Option<vk::RenderPass>,
@@ -94,6 +109,12 @@ pub struct PostPass {
     /// Edge length of the bound LUT, forwarded to the shader for texel-centre
     /// sampling. A loaded `.cube` may have any size in `2..=128`.
     lut_size: u32,
+    /// Motion-blur matrix UBOs (set 0 binding 3), one per frame in flight.
+    motion_buffers: Vec<vk::Buffer>,
+    motion_memories: Vec<vk::DeviceMemory>,
+    /// Previous frame's view-projection, used to reproject static pixels.
+    /// `None` on the first frame (velocity is zero).
+    prev_view_proj: Option<[[f32; 4]; 4]>,
     device: Option<ash::Device>,
 }
 
@@ -183,6 +204,11 @@ impl PostPass {
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(shader_bindings::post::MOTION_BINDING)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         ];
         let ds_layout = unsafe {
             device.create_descriptor_set_layout(
@@ -197,11 +223,17 @@ impl PostPass {
             device.create_descriptor_pool(
                 &vk::DescriptorPoolCreateInfo::default()
                     .max_sets(fif)
-                    .pool_sizes(&[vk::DescriptorPoolSize {
-                        ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                        // One colour + one depth + one LUT view per frame-in-flight.
-                        descriptor_count: fif * 3,
-                    }]),
+                    .pool_sizes(&[
+                        vk::DescriptorPoolSize {
+                            ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                            // One colour + one depth + one LUT per frame-in-flight.
+                            descriptor_count: fif * 3,
+                        },
+                        vk::DescriptorPoolSize {
+                            ty: vk::DescriptorType::UNIFORM_BUFFER,
+                            descriptor_count: fif,
+                        },
+                    ]),
                 None,
             )
         }
@@ -236,6 +268,49 @@ impl PostPass {
                 .image_info(std::slice::from_ref(&info));
             unsafe { device.update_descriptor_sets(&[write], &[]) };
         }
+        // Motion-blur UBO: one host-visible buffer per frame in flight. The
+        // descriptor never changes; `set_motion_blur` only rewrites the bytes.
+        let motion_size = std::mem::size_of::<MotionBlurUniform>() as vk::DeviceSize;
+        let mut motion_buffers = Vec::with_capacity(fif as usize);
+        let mut motion_memories = Vec::with_capacity(fif as usize);
+        for _ in 0..fif {
+            let (buffer, memory) = crate::buffer::create_buffer(
+                context,
+                motion_size,
+                crate::buffer::BufferUsage::UNIFORM_BUFFER,
+                crate::buffer::MemoryProperties::HOST_VISIBLE
+                    | crate::buffer::MemoryProperties::HOST_COHERENT,
+            )
+            .context("PostPass: create motion-blur UBO")?;
+            let ptr =
+                unsafe { device.map_memory(memory, 0, motion_size, vk::MemoryMapFlags::empty()) }
+                    .context("PostPass: map motion-blur UBO")?;
+            unsafe { std::ptr::write_bytes(ptr as *mut u8, 0, motion_size as usize) };
+            unsafe { device.unmap_memory(memory) };
+            motion_buffers.push(buffer);
+            motion_memories.push(memory);
+        }
+        let motion_infos: Vec<vk::DescriptorBufferInfo> = motion_buffers
+            .iter()
+            .map(|buffer| {
+                vk::DescriptorBufferInfo::default()
+                    .buffer(*buffer)
+                    .offset(0)
+                    .range(motion_size)
+            })
+            .collect();
+        let motion_writes: Vec<vk::WriteDescriptorSet> = descriptor_sets
+            .iter()
+            .zip(motion_infos.iter())
+            .map(|(set, info)| {
+                vk::WriteDescriptorSet::default()
+                    .dst_set(*set)
+                    .dst_binding(shader_bindings::post::MOTION_BINDING)
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    .buffer_info(std::slice::from_ref(info))
+            })
+            .collect();
+        unsafe { device.update_descriptor_sets(&motion_writes, &[]) };
 
         let render_pass = create_render_pass(device, color_format, final_layout)?;
 
@@ -263,6 +338,9 @@ impl PostPass {
             lut_view,
             lut_memory,
             lut_size: identity.size,
+            motion_buffers,
+            motion_memories,
+            prev_view_proj: None,
             device: Some(device.clone()),
         })
     }
@@ -462,6 +540,43 @@ impl PostPass {
         unsafe { device.update_descriptor_sets(&[write], &[]) };
     }
 
+    /// Upload the camera matrices used by camera motion blur (#502 Phase 2).
+    fn set_motion_blur(
+        &mut self,
+        device: &ash::Device,
+        frame_index: u32,
+        inv_view_proj: [[f32; 4]; 4],
+        prev_view_proj: [[f32; 4]; 4],
+        resolution: [f32; 2],
+    ) -> anyhow::Result<()> {
+        if self.motion_memories.is_empty() {
+            return Ok(());
+        }
+        let index = (frame_index as usize) % self.motion_memories.len();
+        let memory = self.motion_memories[index];
+        if memory == vk::DeviceMemory::null() {
+            return Ok(());
+        }
+        let uniform = MotionBlurUniform {
+            inv_view_proj,
+            prev_view_proj,
+            resolution,
+            _pad: [0.0; 2],
+        };
+        let size = std::mem::size_of::<MotionBlurUniform>() as vk::DeviceSize;
+        let ptr = unsafe { device.map_memory(memory, 0, size, vk::MemoryMapFlags::empty()) }
+            .context("PostPass::set_motion_blur: map")?;
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                &uniform as *const MotionBlurUniform as *const u8,
+                ptr as *mut u8,
+                size as usize,
+            );
+            device.unmap_memory(memory);
+        }
+        Ok(())
+    }
+
     /// Record the PostPass into `cmd`. Must run AFTER ForwardPass (which leaves
     /// the 高动态范围 颜色 in COLOR_ATTACHMENT_OPTIMAL). The 调用者 barriers the
     /// 交换链 to PRESENT_SRC_KHR (or the external overlay handles it) after this.
@@ -657,6 +772,16 @@ impl PostPass {
             device.destroy_image(self.lut_image, None);
             device.free_memory(self.lut_memory, None);
         }
+        for buffer in self.motion_buffers.drain(..) {
+            if buffer != vk::Buffer::null() {
+                unsafe { device.destroy_buffer(buffer, None) };
+            }
+        }
+        for memory in self.motion_memories.drain(..) {
+            if memory != vk::DeviceMemory::null() {
+                unsafe { device.free_memory(memory, None) };
+            }
+        }
         self.device = None;
     }
 }
@@ -784,6 +909,38 @@ impl RenderPassNode for PostPass {
             self.set_depth_input(ctx.device, ctx.frame_index, depth_view);
         }
 
+        // Camera motion blur (#502 Phase 2). Keep the previous VP up to date
+        // even when the effect is off, so enabling it does not smear a jump
+        // from an arbitrarily old camera. Multi-camera composites and path
+        // tracing have no single valid previous view; they disable the effect.
+        let current_view_proj = ctx.frame.view_proj;
+        let prev_view_proj = self
+            .prev_view_proj
+            .replace(current_view_proj)
+            .unwrap_or(current_view_proj);
+        let inv_view_proj = crate::math::mat_inverse(&current_view_proj);
+        let motion_extent = if ctx.render_extent.width > 0 && ctx.render_extent.height > 0 {
+            ctx.render_extent
+        } else {
+            ctx.extent
+        };
+        self.set_motion_blur(
+            ctx.device,
+            ctx.frame_index,
+            inv_view_proj,
+            prev_view_proj,
+            [motion_extent.width as f32, motion_extent.height as f32],
+        )?;
+        let motion_blur = if ctx.frame.debug_rt == 0
+            && ctx.frame.render_mode == RenderMode::Raster
+            && ctx.frame.cameras.len() <= 1
+            && depth_view.is_some()
+        {
+            ctx.frame.grade.motion_blur
+        } else {
+            0.0
+        };
+
         // The generated PostPush carries tonemapMode (Reinhard / ACES /
         // passthrough), aaMode (0 = off, 1 = FXAA) and invTexelSize (one texel in
         // UV units, used by the FXAA taps). debug_rt, proj22/proj32, near/far
@@ -836,6 +993,8 @@ impl RenderPassNode for PostPass {
                 0.0
             },
             lutSize: self.lut_size as f32,
+            motionBlur: motion_blur,
+            motionBlurMaxPixels: ctx.frame.grade.motion_blur_max_pixels,
             // #613：FXAA 采样的是**内部渲染目标**，一个 texel 的 UV 尺寸按它的
             // 分辨率算；用交换链尺寸会在内部分辨率缩小时把采样步长算小。
             invTexelSize: [
@@ -1309,8 +1468,37 @@ mod tests {
         // #502 3D LUT: strength plus the edge length used for texel centres.
         assert_eq!(std::mem::offset_of!(PostPush, lutStrength), 72);
         assert_eq!(std::mem::offset_of!(PostPush, lutSize), 76);
-        assert_eq!(std::mem::size_of::<PostPush>(), 80);
-        assert_eq!(PUSH_CONSTANT_SIZE, 80);
+        // #502 camera motion blur: strength then pixel cap.
+        assert_eq!(std::mem::offset_of!(PostPush, motionBlur), 80);
+        assert_eq!(std::mem::offset_of!(PostPush, motionBlurMaxPixels), 84);
+        assert_eq!(std::mem::size_of::<PostPush>(), 88);
+        assert_eq!(PUSH_CONSTANT_SIZE, 88);
+    }
+
+    #[test]
+    fn test_motion_blur_is_clamped_and_off_by_default() {
+        use crate::render_graph::PostGrade;
+        assert!(PostGrade::default().is_neutral());
+        assert_eq!(PostGrade::default().motion_blur, 0.0);
+        assert_eq!(std::mem::size_of::<MotionBlurUniform>(), 144);
+
+        let clamped = PostGrade {
+            motion_blur: 2.0,
+            motion_blur_max_pixels: 100.0,
+            ..PostGrade::default()
+        }
+        .sanitized();
+        assert_eq!(clamped.motion_blur, 1.0);
+        assert_eq!(clamped.motion_blur_max_pixels, 64.0);
+
+        let broken = PostGrade {
+            motion_blur: f32::NAN,
+            motion_blur_max_pixels: f32::NEG_INFINITY,
+            ..PostGrade::default()
+        }
+        .sanitized();
+        assert_eq!(broken.motion_blur, 0.0);
+        assert_eq!(broken.motion_blur_max_pixels, 16.0);
     }
 
     #[test]

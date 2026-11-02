@@ -41,6 +41,9 @@ pub struct FrameOptions {
     pub wireframe: bool,
     pub shaded_wireframe: bool,
     pub grade: PostGrade,
+    /// Override the fixed camera position (default `[0, 0, 3]`) for tests that
+    /// need two frames with different camera matrices (motion blur).
+    pub camera_position: Option<[f32; 3]>,
 }
 
 /// One deterministic offscreen scene plus the real render graph.
@@ -109,8 +112,9 @@ impl FrameHarness {
 
     /// Render the fixed scene once and return tightly packed RGBA8 pixels.
     pub fn render(&mut self, options: FrameOptions) -> Vec<u8> {
-        let (view_proj, view) = camera();
-        let frame_data = frame_data(view_proj, view, self.size);
+        let camera_position = options.camera_position.unwrap_or([0.0, 0.0, 3.0]);
+        let (view_proj, view) = camera_at(camera_position);
+        let frame_data = frame_data(view_proj, view, self.size, camera_position);
         let item = draw_item(self.mesh);
 
         self.renderer
@@ -147,13 +151,13 @@ impl FrameHarness {
     }
 }
 
-/// Fixed camera: at `(0, 0, 3)` looking down `-Z` at a unit box.
-fn camera() -> ([[f32; 4]; 4], [[f32; 4]; 4]) {
+/// Fixed camera looking down `-Z` at a unit box, positioned by the caller.
+fn camera_at(position: [f32; 3]) -> ([[f32; 4]; 4], [[f32; 4]; 4]) {
     let view = [
         [1.0, 0.0, 0.0, 0.0],
         [0.0, 1.0, 0.0, 0.0],
         [0.0, 0.0, 1.0, 0.0],
-        [0.0, 0.0, -3.0, 1.0],
+        [-position[0], -position[1], -position[2], 1.0],
     ];
     let near = 0.1_f32;
     let far = 100.0_f32;
@@ -168,10 +172,20 @@ fn camera() -> ([[f32; 4]; 4], [[f32; 4]; 4]) {
     (mul(&proj, &view), view)
 }
 
-fn frame_data(view_proj: [[f32; 4]; 4], view: [[f32; 4]; 4], size: usize) -> FrameUBOData {
+fn frame_data(
+    view_proj: [[f32; 4]; 4],
+    view: [[f32; 4]; 4],
+    size: usize,
+    camera_position: [f32; 3],
+) -> FrameUBOData {
     FrameUBOData {
         view_proj,
-        camera_position: [0.0, 0.0, 3.0, 0.0],
+        camera_position: [
+            camera_position[0],
+            camera_position[1],
+            camera_position[2],
+            0.0,
+        ],
         light_direction: [0.3, 0.8, 0.5, 0.8],
         light_color: [1.0, 0.98, 0.95, 0.25],
         view,
