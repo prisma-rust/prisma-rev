@@ -9,6 +9,8 @@
 //   set 0, binding 1 - current scene depth (Sampler2D, D32_SFLOAT)
 //   set 0, binding 2 - previous-frame HDR history (Sampler2D)
 //   set 0, binding 3 - TaaParams uniform buffer
+//   set 0, binding 4 - current screen-space velocity (Sampler2D, RG16F)
+//   set 0, binding 5 - view-space normal + reactive mask (Sampler2D)
 //
 // Compile:
 //   slangc taa.slang -profile spirv_1_4 -target spirv \
@@ -32,6 +34,12 @@ struct TaaParams
 };
 [[vk::binding(3, 0)]]
 ConstantBuffer<TaaParams> params;
+// #883 Phase 2: per-object motion vectors from ForwardPass SV_Target2.
+[[vk::binding(4, 0)]]
+Sampler2D velocityTex;
+// #883 Phase 2: normal.w is 1 for transparent/reactive pixels.
+[[vk::binding(5, 0)]]
+Sampler2D normalTex;
 
 struct VertexOut
 {
@@ -97,14 +105,31 @@ float4 fragmentMain(VertexOut input) : SV_Target
     if (params.validHistory < 0.5 || params.strength <= 0.0)
         return float4(current, 1.0);
 
+    // #883 Phase 2: prefer the rasterized per-object velocity. It already
+    // includes camera motion and rigid-object motion; the camera-only
+    // reprojection remains the fallback for pixels the forward pass did not
+    // cover (e.g. skybox / no motion vector).
+    float2 velocity = velocityTex.Sample(uv).rg;
+    float reactive = normalTex.Sample(uv).a;
+    if (reactive > 0.5)
+        return float4(current, 1.0); // transparent: do not reuse history
+
     float2 prevUv = reproject(uv, depth);
+    if (any(abs(velocity) > 1e-7))
+        prevUv = uv - velocity;
     if (any(prevUv < 0.0) || any(prevUv > 1.0))
         return float4(current, 1.0);
 
     // Reject history when the reprojected depth disagrees (disocclusion).
-    float prevDepth = depthTex.Sample(prevUv).r;
-    if (abs(prevDepth - depth) > 0.02)
-        return float4(current, 1.0);
+    // Skip this test for fast-moving pixels: the current depth at their
+    // previous location may legitimately belong to a different surface.
+    float2 motionPixels = velocity * params.resolution;
+    if (length(motionPixels) < 0.5)
+    {
+        float prevDepth = depthTex.Sample(prevUv).r;
+        if (abs(prevDepth - depth) > 0.02)
+            return float4(current, 1.0);
+    }
 
     float3 history = historyTex.Sample(prevUv).rgb;
     history = clamp(history, neighborhoodMin(uv), neighborhoodMax(uv));

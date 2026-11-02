@@ -200,6 +200,9 @@ impl ParticlePass {
             vk::PipelineColorBlendAttachmentState::default()
                 .color_write_mask(vk::ColorComponentFlags::empty())
                 .blend_enable(false),
+            vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::empty())
+                .blend_enable(false),
         ];
 
         let pipeline = GraphicsPipeline::new(&PipelineDesc {

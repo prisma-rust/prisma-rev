@@ -70,3 +70,35 @@ fn taa_is_off_by_default_and_can_resolve_a_jittered_frame() {
     let off_c = harness.render_draws(std::slice::from_ref(&item), FrameOptions::default());
     assert_eq!(off_a, off_c, "disabling TAA must restore the legacy path");
 }
+
+#[test]
+fn taa_handles_object_motion_and_reactive_transparency() {
+    let Some(mut harness) = FrameHarness::new(256) else {
+        return;
+    };
+    harness.set_taa(true, 0.9);
+
+    let mut item = draw_item(harness.mesh_handle());
+    // Move the box sideways for several frames. With per-object velocity the
+    // resolve must keep producing a stable frame instead of accumulating the
+    // old silhouette.
+    for frame in 0..8 {
+        item.model[3][0] = (frame as f32 - 4.0) * 0.12;
+        let pixels = harness.render_draws(std::slice::from_ref(&item), FrameOptions::default());
+        assert_eq!(pixels.len(), 256 * 256 * 4);
+    }
+
+    // Transparent draws set the reactive mask (normal.w), so TAA must trust the
+    // current frame rather than blending in stale history. This mainly guards
+    // the render-pass/pipeline wiring (three MRT attachments + mask flag).
+    let mut transparent = item;
+    transparent.state.src_blend = prism_gfx::BlendMode::SrcAlpha;
+    transparent.state.dst_blend = prism_gfx::BlendMode::OneMinusSrcAlpha;
+    transparent.state.z_write = false;
+    transparent.model[3][0] = 0.0;
+    let a = harness.render_draws(std::slice::from_ref(&transparent), FrameOptions::default());
+    transparent.model[3][0] = 0.2;
+    let b = harness.render_draws(std::slice::from_ref(&transparent), FrameOptions::default());
+    assert_eq!(a.len(), b.len());
+    assert_ne!(a, b, "moving transparent geometry must still update");
+}

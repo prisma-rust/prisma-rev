@@ -1,11 +1,11 @@
 use super::*;
 
 #[test]
-fn frame_ubo_data_size_is_352() {
+fn frame_ubo_data_size_is_416() {
     // std140: legacy fields through _pad2 end at 272, then the CSM tail
     // (`lightViewProj1` mat4 @ 272, shadowSplit @ 336, cascade count @ 340,
-    // pad to 352) matches the Slang `FrameUBO` mirror in common.slang.
-    assert_eq!(std::mem::size_of::<FrameUBOData>(), 352);
+    // pad + previous VP) matches the Slang `FrameUBO` mirror in common.slang.
+    assert_eq!(std::mem::size_of::<FrameUBOData>(), 416);
 }
 
 #[test]

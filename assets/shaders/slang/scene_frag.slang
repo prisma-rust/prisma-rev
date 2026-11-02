@@ -495,19 +495,26 @@ float3 eval_clearcoat(GpuMaterial mat, float3 n, float3 v, float3 l, float3 h,
 
 // ---- MRT output struct -------------------------------------------------
 // SV_Target0 = HDR lit color (post-tonemap, written to the swapchain).
-// SV_Target1 = view-space normal (xyz unit, w=0), sampled by the GTAO pass.
-//              View-space normal = (float3x3)frame.view * worldNormal. The
-//              upper-left 3x3 of a rigid view matrix is orthonormal so the
-//              result stays unit-length after normalize().
+// SV_Target1 = view-space normal (xyz unit, w=reactive), sampled by the GTAO
+//              pass. View-space normal = (float3x3)frame.view * worldNormal.
+//              The upper-left 3x3 of a rigid view matrix is orthonormal so the
+//              result stays unit-length after normalize(). w=1 marks a
+//              transparent/reactive pixel so TAA drops stale history (#883).
+// SV_Target2 = screen-space motion vector (currentUV - previousUV), RG16F.
 struct SceneOutput
 {
     float4 color     : SV_Target0;
     float4 viewNormal: SV_Target1;
+    float2 velocity  : SV_Target2;
 };
 
 [shader("fragment")]
 SceneOutput fragmentMain(MeshVaryings in)
 {
+    // Transparent draws write 1 into normal.w. TaaPass uses this as a
+    // reactive mask and trusts the current frame instead of history.
+    float reactive = float(pc._padding.z);
+
     // ---- Skin-weight heatmap (#560) -------------------------------------
     // The vertex stage already resolved the dominant joint into a colour, so
     // this is a straight unlit pass-through. Handled before the material is
@@ -518,7 +525,8 @@ SceneOutput fragmentMain(MeshVaryings in)
         SceneOutput heat;
         heat.color = float4(in.skinHeat, 1.0);
         heat.viewNormal = float4(
-            normalize(mul((float3x3)frame.view, normalize(in.worldNormal))), 0.0);
+            normalize(mul((float3x3)frame.view, normalize(in.worldNormal))), reactive);
+        heat.velocity = in.velocity;
         return heat;
     }
 
@@ -815,7 +823,8 @@ SceneOutput fragmentMain(MeshVaryings in)
         SceneOutput o;
         o.color = float4(isolated, 1.0);
         float3 vn = normalize(mul((float3x3)frame.view, n));
-        o.viewNormal = float4(vn, 0.0);
+        o.viewNormal = float4(vn, reactive);
+        o.velocity = in.velocity;
         return o;
     }
 
@@ -841,9 +850,9 @@ SceneOutput fragmentMain(MeshVaryings in)
     SceneOutput o;
     o.color = float4(color, 1.0);
     // View-space normal for the GTAO pass: rotate the world-space shading
-    // normal into view space. alpha=0 so the GTAO shader can distinguish a
-    // written texel from a cleared one if needed.
+    // normal into view space. alpha carries the TAA reactive mask (#883).
     float3 vn = normalize(mul((float3x3)frame.view, n));
-    o.viewNormal = float4(vn, 0.0);
+    o.viewNormal = float4(vn, reactive);
+    o.velocity = in.velocity;
     return o;
 }

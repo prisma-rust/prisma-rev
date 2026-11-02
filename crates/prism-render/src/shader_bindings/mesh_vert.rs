@@ -17,6 +17,8 @@ pub const FRAME_SET: u32 = 0;
 pub const FRAME_BINDING: u32 = 0; // UNIFORM_BUFFER
 pub const BONES_SET: u32 = 0;
 pub const BONES_BINDING: u32 = 3; // UNIFORM_BUFFER
+pub const PREV_MODELS_SET: u32 = 0;
+pub const PREV_MODELS_BINDING: u32 = 4; // UNIFORM_BUFFER
 
 /// Push-constant struct (auto-generated from Slang `MeshPush`).
 ///

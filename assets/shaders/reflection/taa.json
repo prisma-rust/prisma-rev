@@ -232,6 +232,46 @@
                     {"kind": "descriptorTableSlot", "value": 1}
                 ]
             }
+        },
+        {
+            "name": "velocityTex",
+            "binding": {"kind": "descriptorTableSlot", "index": 4},
+            "type": {
+                "kind": "resource",
+                "baseShape": "texture2D",
+                "combined": true,
+                "resultType": {
+                    "kind": "vector",
+                    "elementCount": 4,
+                    "elementType": {
+                        "kind": "scalar",
+                        "scalarType": "float32"
+                    }
+                },
+                "sizes": [
+                    {"kind": "descriptorTableSlot", "value": 1}
+                ]
+            }
+        },
+        {
+            "name": "normalTex",
+            "binding": {"kind": "descriptorTableSlot", "index": 5},
+            "type": {
+                "kind": "resource",
+                "baseShape": "texture2D",
+                "combined": true,
+                "resultType": {
+                    "kind": "vector",
+                    "elementCount": 4,
+                    "elementType": {
+                        "kind": "scalar",
+                        "scalarType": "float32"
+                    }
+                },
+                "sizes": [
+                    {"kind": "descriptorTableSlot", "value": 1}
+                ]
+            }
         }
     ],
     "globalScope": {
@@ -468,6 +508,46 @@
                         {"kind": "descriptorTableSlot", "value": 1}
                     ]
                 }
+            },
+            {
+                "name": "velocityTex",
+                "binding": {"kind": "descriptorTableSlot", "index": 4},
+                "type": {
+                    "kind": "resource",
+                    "baseShape": "texture2D",
+                    "combined": true,
+                    "resultType": {
+                        "kind": "vector",
+                        "elementCount": 4,
+                        "elementType": {
+                            "kind": "scalar",
+                            "scalarType": "float32"
+                        }
+                    },
+                    "sizes": [
+                        {"kind": "descriptorTableSlot", "value": 1}
+                    ]
+                }
+            },
+            {
+                "name": "normalTex",
+                "binding": {"kind": "descriptorTableSlot", "index": 5},
+                "type": {
+                    "kind": "resource",
+                    "baseShape": "texture2D",
+                    "combined": true,
+                    "resultType": {
+                        "kind": "vector",
+                        "elementCount": 4,
+                        "elementType": {
+                            "kind": "scalar",
+                            "scalarType": "float32"
+                        }
+                    },
+                    "sizes": [
+                        {"kind": "descriptorTableSlot", "value": 1}
+                    ]
+                }
             }
         ]
     },
@@ -565,6 +645,14 @@
                 {
                     "name": "params",
                     "binding": {"kind": "descriptorTableSlot", "index": 3}
+                },
+                {
+                    "name": "velocityTex",
+                    "binding": {"kind": "descriptorTableSlot", "index": 4}
+                },
+                {
+                    "name": "normalTex",
+                    "binding": {"kind": "descriptorTableSlot", "index": 5}
                 }
             ]
         },
@@ -702,6 +790,14 @@
                 {
                     "name": "params",
                     "binding": {"kind": "descriptorTableSlot", "index": 3}
+                },
+                {
+                    "name": "velocityTex",
+                    "binding": {"kind": "descriptorTableSlot", "index": 4}
+                },
+                {
+                    "name": "normalTex",
+                    "binding": {"kind": "descriptorTableSlot", "index": 5}
                 }
             ]
         }

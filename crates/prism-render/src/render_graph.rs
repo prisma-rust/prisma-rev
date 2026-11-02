@@ -47,6 +47,9 @@ pub const SHADOW_MAP_H: ResourceHandle = ResourceHandle(1004);
 /// TAA-resolved HDR color (#883). Written by `TaaPass`, read by `PostPass`
 /// instead of `FORWARD_COLOR_H` when `RenderSettings::taa` is enabled.
 pub const TAA_COLOR_H: ResourceHandle = ResourceHandle(1005);
+/// Per-pixel screen-space motion vectors (#883 Phase 2). Written by
+/// `ForwardPass` (SV_Target2) and sampled by `TaaPass` for object motion.
+pub const FORWARD_VELOCITY_H: ResourceHandle = ResourceHandle(1006);
 
 impl ResourceHandle {
     pub const INVALID: ResourceHandle = ResourceHandle(u32::MAX);

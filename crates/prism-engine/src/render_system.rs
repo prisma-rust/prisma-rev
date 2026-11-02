@@ -763,6 +763,12 @@ pub fn render_system(
         shadow_strength: *shadow_strength,
         _pad2: [0.0; 3],
         _pad3: [0.0; 2],
+        prev_view_proj: [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
     };
 
     // 2.5. 扩展脏检测：draw_items 内容变化（矩阵 / mesh / material / 阴影标志）
