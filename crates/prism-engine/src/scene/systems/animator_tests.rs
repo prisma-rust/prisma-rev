@@ -1,6 +1,6 @@
 use super::*;
 use glam::{Mat4, Quat, Vec3};
-use prism_anim::{Joint, JointTransform, Track, Vec3Key};
+use prism_anim::{ClipNotify, Joint, JointTransform, Track, Vec3Key};
 use prism_scene::components::SkeletonRoot;
 
 fn two_bone_skeleton() -> Skeleton {
@@ -48,6 +48,7 @@ fn bend_clip() -> Clip {
             ],
             scale: Vec::new(),
         }],
+        ..Default::default()
     }
 }
 
@@ -205,6 +206,7 @@ fn bent_90_clip(name: &str) -> Clip {
             }],
             scale: Vec::new(),
         }],
+        ..Default::default()
     }
 }
 
@@ -560,6 +562,7 @@ fn the_library_reports_clip_key_times_for_the_timeline() {
             ],
             ..Default::default()
         }],
+        ..Default::default()
     };
     library.insert_clip("char/walk.ranim", clip);
     assert_eq!(
@@ -567,4 +570,106 @@ fn the_library_reports_clip_key_times_for_the_timeline() {
         vec![0.0, 1.25, 2.0]
     );
     assert!(library.clip_key_times("char/missing.ranim").is_empty());
+}
+
+fn clip_with_notify(time: f32, name: &str) -> Clip {
+    let mut clip = bend_clip();
+    clip.duration = 1.0;
+    clip.looped = true;
+    clip.notifies = vec![ClipNotify {
+        time,
+        name: name.to_string(),
+    }];
+    clip
+}
+
+#[test]
+fn a_notify_fires_once_when_the_playhead_crosses_it() {
+    let (mut world, entity) = world_with_animator("");
+    world
+        .get_resource_mut::<SkeletonLibrary>()
+        .unwrap()
+        .insert_clip("bend.ranim", clip_with_notify(0.5, "Footstep.L"));
+
+    // 第一帧只建立播放头：不该把整段剪辑的事件一次性播出来。
+    animator_system(&mut world, 0.0);
+    assert!(world.get_resource::<AnimEvents>().unwrap().is_empty());
+
+    // 0 → 0.4：还没到。
+    animator_system(&mut world, 0.4);
+    assert!(world.get_resource::<AnimEvents>().unwrap().is_empty());
+
+    // 0.4 → 0.8：跨过 0.5，触发一次。
+    animator_system(&mut world, 0.4);
+    let events = world.get_resource::<AnimEvents>().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events.events[0].entity, entity);
+    assert_eq!(events.events[0].name, "Footstep.L");
+    assert!((events.events[0].time - 0.5).abs() < 1e-6);
+    assert_eq!(
+        events.names_for(entity).collect::<Vec<_>>(),
+        vec!["Footstep.L"]
+    );
+
+    // 再走一帧（没跨过任何时间点）：事件表被重建为空，不会重复播。
+    animator_system(&mut world, 0.1);
+    assert!(world.get_resource::<AnimEvents>().unwrap().is_empty());
+}
+
+#[test]
+fn a_notify_at_the_wrap_point_fires_on_the_next_loop() {
+    let (mut world, _entity) = world_with_animator("");
+    world
+        .get_resource_mut::<SkeletonLibrary>()
+        .unwrap()
+        .insert_clip("bend.ranim", clip_with_notify(0.95, "Footstep.R"));
+
+    animator_system(&mut world, 0.0);
+    animator_system(&mut world, 0.9); // 到 0.9
+    assert!(world.get_resource::<AnimEvents>().unwrap().is_empty());
+
+    // 0.9 → 1.0 → 回绕到 0.0：这一段跨过 0.95。
+    animator_system(&mut world, 0.1);
+    let names: Vec<String> = world
+        .get_resource::<AnimEvents>()
+        .unwrap()
+        .events
+        .iter()
+        .map(|event| event.name.clone())
+        .collect();
+    assert_eq!(names, vec!["Footstep.R".to_string()]);
+}
+
+#[test]
+fn a_paused_animator_does_not_fire_notifies() {
+    let (mut world, entity) = world_with_animator("");
+    world
+        .get_resource_mut::<SkeletonLibrary>()
+        .unwrap()
+        .insert_clip("bend.ranim", clip_with_notify(0.5, "Footstep.L"));
+    animator_system(&mut world, 0.0);
+    animator_system(&mut world, 0.4);
+
+    world.get_mut::<Animator>(entity).unwrap().playing = false;
+    animator_system(&mut world, 0.4);
+    assert!(
+        world.get_resource::<AnimEvents>().unwrap().is_empty(),
+        "暂停时时间不推进，也就不该有事件"
+    );
+}
+
+#[test]
+fn a_reversed_animator_does_not_fire_notifies() {
+    let (mut world, entity) = world_with_animator("");
+    world
+        .get_resource_mut::<SkeletonLibrary>()
+        .unwrap()
+        .insert_clip("bend.ranim", clip_with_notify(0.5, "Footstep.L"));
+    animator_system(&mut world, 0.0);
+    animator_system(&mut world, 0.9);
+
+    world.get_mut::<Animator>(entity).unwrap().speed = -1.0;
+    // 0.9 → 0.5 倒着跨过 0.5：倒放不触发（宁可少一次，也不倒着播）。
+    animator_system(&mut world, 0.4);
+    assert!(world.get_resource::<AnimEvents>().unwrap().is_empty());
 }

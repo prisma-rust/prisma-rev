@@ -423,7 +423,26 @@ cook 阶段把 glTF 的 `skins` / `JOINTS_0` / `WEIGHTS_0` / `animations` 烘成
 关键帧，鼠标悬停时刻度加粗并显示 `Jump to this keyframe`；点空白处不跳，避免拖时间轴时
 被吸到某个关键帧。
 
-还不支持：视口里直接拖关节做 IK（P2 的 IK 另立）。
+**关键帧事件（Notify，#560 P1）**：`.ranim` v2 在剪辑末尾追加事件表（`time` + 名字），
+引擎每帧把「这一帧跨过的时间点」写进 `AnimEvents` 资源（整体重建，不是累加）：
+
+```rust
+for event in world.get_resource::<AnimEvents>().map(|e| e.drain()).unwrap_or_default() {
+    match event.name.as_str() {
+        "Footstep.L" => play_footstep(Footstep::Left),
+        _ => {}
+    }
+}
+```
+
+- 区间是 `(上一帧本地时间, 这一帧本地时间]`，循环回绕时把 `[0, 当前]` 也算上，所以
+  「0.9 → 1.0 → 0.1」能同时触发 0.95 和 0.05 两个事件；
+- 起点开区间：事件在恰好等于上一帧时间的那一帧已经触发过，停在上面不会反复播；
+- **刚创建 / 刚换剪辑 / 暂停 / 倒放都不触发**（倒放需要反向扫区间，暂时宁可不播）；
+- 编辑器目前没有 Notify 的编辑界面，glTF 也没有事件通道 —— 事件得靠作者数据
+  （下一步：侧车文件或时间轴打点）。
+
+还不支持：视口里直接拖关节做 IK（P2 的 IK 另立）、Notify 的编写界面。
 
 ## 4.4 内置截图与控制通道
 

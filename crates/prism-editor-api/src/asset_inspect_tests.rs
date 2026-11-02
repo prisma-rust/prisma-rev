@@ -59,6 +59,7 @@ fn clip() -> AnimClipInfo {
         fps: 30.0,
         looped: true,
         additive: false,
+        notifies: Vec::new(),
         tracks: vec![AnimTrackInfo {
             joint: 1,
             positions: vec![Vec3KeyInfo {

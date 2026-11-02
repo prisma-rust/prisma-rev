@@ -215,6 +215,30 @@ fn inspect_clip(
                     }
                 }
             }
+            // 关键帧事件（#560 P1 Notify）：时间必须落在剪辑范围内，名字不能为空。
+            for (index, notify) in clip.notifies.iter().enumerate() {
+                if notify.name.trim().is_empty() {
+                    problems.push(format!("notify {index} has an empty name"));
+                }
+                if !notify.time.is_finite() || notify.time < 0.0 {
+                    problems.push(format!(
+                        "notify {index} ('{}') has an invalid time {}",
+                        notify.name, notify.time
+                    ));
+                } else if clip.duration > 0.0 && notify.time > clip.duration + 1e-3 {
+                    problems.push(format!(
+                        "notify {index} ('{}') at {:.3}s is past the duration {:.3}s",
+                        notify.name, notify.time, clip.duration
+                    ));
+                }
+            }
+            if clip
+                .notifies
+                .windows(2)
+                .any(|pair| pair[1].time < pair[0].time)
+            {
+                problems.push("notifies are not sorted by time".into());
+            }
             for (index, track) in clip.tracks.iter().enumerate() {
                 for (label, times) in [
                     (
@@ -257,6 +281,10 @@ fn inspect_clip(
                     track.positions.len() + track.rotations.len() + track.scales.len()
                 }).sum::<usize>(),
                 "joints": clip.tracks.iter().map(|track| track.joint).collect::<Vec<_>>(),
+                "notifies": clip.notifies.iter().map(|notify| json!({
+                    "time": notify.time,
+                    "name": notify.name,
+                })).collect::<Vec<_>>(),
             })
         }
         None => {

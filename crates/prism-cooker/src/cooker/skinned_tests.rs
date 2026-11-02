@@ -69,6 +69,7 @@ fn walk_clip() -> AnimClipInfo {
         fps: 30.0,
         looped: true,
         additive: false,
+        notifies: Vec::new(),
         tracks: vec![AnimTrackInfo {
             joint: 1,
             // 故意乱序：编码器要按时间排好。
@@ -233,4 +234,41 @@ fn trailing_bytes_are_rejected() {
     let mut mesh = encode_rskin(&quad_mesh()).expect("encode");
     mesh.push(0);
     assert!(decode_rskin(&mesh).is_none());
+}
+
+#[test]
+fn ranim_v2_round_trips_notifies_and_reads_v1_clips() {
+    use prism_asset::formats_skinned::{decode_ranim, AnimNotifyInfo};
+
+    // v2：事件表按时间排序写出。
+    let mut clip = walk_clip();
+    clip.notifies = vec![
+        AnimNotifyInfo {
+            time: 0.8,
+            name: "Footstep.R".into(),
+        },
+        AnimNotifyInfo {
+            time: 0.2,
+            name: "Footstep.L".into(),
+        },
+    ];
+    let bytes = encode_ranim(&clip).expect("encode");
+    assert_eq!(bytes[4], RANI_VERSION, "版本号要写成 v2");
+    let decoded = decode_ranim(&bytes).expect("decode v2");
+    let names: Vec<&str> = decoded
+        .notifies
+        .iter()
+        .map(|notify| notify.name.as_str())
+        .collect();
+    assert_eq!(names, vec!["Footstep.L", "Footstep.R"], "编码时按时间排序");
+    assert!((decoded.notifies[0].time - 0.2).abs() < 1e-6);
+
+    // v1 兼容：同样的数据去掉末尾事件表、版本号写回 1，仍然能解出剪辑。
+    let mut legacy = encode_ranim(&walk_clip()).expect("encode");
+    let len = legacy.len();
+    legacy.truncate(len - 4); // 去掉 notify_count
+    legacy[4] = SKINNED_FORMAT_VERSION;
+    let decoded = decode_ranim(&legacy).expect("decode v1");
+    assert!(decoded.notifies.is_empty(), "v1 剪辑没有事件");
+    assert_eq!(decoded.name, "walk");
 }

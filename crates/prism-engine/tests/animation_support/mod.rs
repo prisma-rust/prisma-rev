@@ -191,6 +191,7 @@ pub fn pose_fixture(looped: bool) -> Clip {
                 ],
             },
         ],
+        ..Default::default()
     }
 }
 

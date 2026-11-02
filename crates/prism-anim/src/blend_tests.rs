@@ -145,6 +145,7 @@ fn clip(name: &str, duration: f32, translation: Vec3) -> Arc<Clip> {
             ],
             ..Default::default()
         }],
+        ..Default::default()
     })
 }
 
@@ -241,6 +242,7 @@ fn the_phase_is_normalised_so_clips_of_different_lengths_stay_aligned() {
                         ],
                         ..Default::default()
                     }],
+                    ..Default::default()
                 }),
             },
             BlendSample {
@@ -265,6 +267,7 @@ fn the_phase_is_normalised_so_clips_of_different_lengths_stay_aligned() {
                         ],
                         ..Default::default()
                     }],
+                    ..Default::default()
                 }),
             },
         ],
