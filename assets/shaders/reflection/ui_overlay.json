@@ -15,6 +15,37 @@
                     }
                 }
             }
+        },
+        {
+            "name": "globalSamplers",
+            "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 0},
+            "type": {
+                "kind": "array",
+                "elementCount": 0,
+                "elementType": {
+                    "kind": "samplerState"
+                }
+            }
+        },
+        {
+            "name": "bindlessSrvs",
+            "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 1},
+            "type": {
+                "kind": "array",
+                "elementCount": 0,
+                "elementType": {
+                    "kind": "resource",
+                    "baseShape": "texture2D",
+                    "resultType": {
+                        "kind": "vector",
+                        "elementCount": 4,
+                        "elementType": {
+                            "kind": "scalar",
+                            "scalarType": "float32"
+                        }
+                    }
+                }
+            }
         }
     ],
     "entryPoints": [
@@ -25,7 +56,7 @@
                 {
                     "name": "in",
                     "stage": "vertex",
-                    "binding": {"kind": "varyingInput", "index": 0, "count": 3},
+                    "binding": {"kind": "varyingInput", "index": 0, "count": 7},
                     "type": {
                         "kind": "struct",
                         "name": "UiVertexIn",
@@ -71,6 +102,58 @@
                                 "stage": "vertex",
                                 "binding": {"kind": "varyingInput", "index": 2},
                                 "semanticName": "COLOR"
+                            },
+                            {
+                                "name": "local",
+                                "type": {
+                                    "kind": "vector",
+                                    "elementCount": 2,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    }
+                                },
+                                "stage": "vertex",
+                                "binding": {"kind": "varyingInput", "index": 3},
+                                "semanticName": "TEXCOORD",
+                                "semanticIndex": 1
+                            },
+                            {
+                                "name": "halfSize",
+                                "type": {
+                                    "kind": "vector",
+                                    "elementCount": 2,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    }
+                                },
+                                "stage": "vertex",
+                                "binding": {"kind": "varyingInput", "index": 4},
+                                "semanticName": "TEXCOORD",
+                                "semanticIndex": 2
+                            },
+                            {
+                                "name": "radius",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                },
+                                "stage": "vertex",
+                                "binding": {"kind": "varyingInput", "index": 5},
+                                "semanticName": "TEXCOORD",
+                                "semanticIndex": 3
+                            },
+                            {
+                                "name": "texture",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint32"
+                                },
+                                "stage": "vertex",
+                                "binding": {"kind": "varyingInput", "index": 6},
+                                "semanticName": "TEXCOORD",
+                                "semanticIndex": 4
                             }
                         ]
                     }
@@ -78,7 +161,7 @@
             ],
             "result": {
                 "stage": "vertex",
-                "binding": {"kind": "varyingOutput", "index": 0, "count": 2},
+                "binding": {"kind": "varyingOutput", "index": 0, "count": 6},
                 "type": {
                     "kind": "struct",
                     "name": "UiVaryings",
@@ -122,6 +205,58 @@
                             "stage": "vertex",
                             "binding": {"kind": "varyingOutput", "index": 1},
                             "semanticName": "COLOR"
+                        },
+                        {
+                            "name": "local",
+                            "type": {
+                                "kind": "vector",
+                                "elementCount": 2,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                }
+                            },
+                            "stage": "vertex",
+                            "binding": {"kind": "varyingOutput", "index": 2},
+                            "semanticName": "TEXCOORD",
+                            "semanticIndex": 1
+                        },
+                        {
+                            "name": "halfSize",
+                            "type": {
+                                "kind": "vector",
+                                "elementCount": 2,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                }
+                            },
+                            "stage": "vertex",
+                            "binding": {"kind": "varyingOutput", "index": 3},
+                            "semanticName": "TEXCOORD",
+                            "semanticIndex": 2
+                        },
+                        {
+                            "name": "radius",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "float32"
+                            },
+                            "stage": "vertex",
+                            "binding": {"kind": "varyingOutput", "index": 4},
+                            "semanticName": "TEXCOORD",
+                            "semanticIndex": 3
+                        },
+                        {
+                            "name": "texture",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "uint32"
+                            },
+                            "stage": "vertex",
+                            "binding": {"kind": "varyingOutput", "index": 5},
+                            "semanticName": "TEXCOORD",
+                            "semanticIndex": 4
                         }
                     ]
                 }
@@ -130,6 +265,14 @@
                 {
                     "name": "glyphAtlas",
                     "binding": {"kind": "descriptorTableSlot", "index": 0}
+                },
+                {
+                    "name": "globalSamplers",
+                    "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 0}
+                },
+                {
+                    "name": "bindlessSrvs",
+                    "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 1}
                 }
             ]
         },
@@ -140,7 +283,7 @@
                 {
                     "name": "in",
                     "stage": "fragment",
-                    "binding": {"kind": "varyingInput", "index": 0, "count": 2},
+                    "binding": {"kind": "varyingInput", "index": 0, "count": 6},
                     "type": {
                         "kind": "struct",
                         "name": "UiVaryings",
@@ -184,6 +327,58 @@
                                 "stage": "fragment",
                                 "binding": {"kind": "varyingInput", "index": 1},
                                 "semanticName": "COLOR"
+                            },
+                            {
+                                "name": "local",
+                                "type": {
+                                    "kind": "vector",
+                                    "elementCount": 2,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    }
+                                },
+                                "stage": "fragment",
+                                "binding": {"kind": "varyingInput", "index": 2},
+                                "semanticName": "TEXCOORD",
+                                "semanticIndex": 1
+                            },
+                            {
+                                "name": "halfSize",
+                                "type": {
+                                    "kind": "vector",
+                                    "elementCount": 2,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    }
+                                },
+                                "stage": "fragment",
+                                "binding": {"kind": "varyingInput", "index": 3},
+                                "semanticName": "TEXCOORD",
+                                "semanticIndex": 2
+                            },
+                            {
+                                "name": "radius",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                },
+                                "stage": "fragment",
+                                "binding": {"kind": "varyingInput", "index": 4},
+                                "semanticName": "TEXCOORD",
+                                "semanticIndex": 3
+                            },
+                            {
+                                "name": "texture",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint32"
+                                },
+                                "stage": "fragment",
+                                "binding": {"kind": "varyingInput", "index": 5},
+                                "semanticName": "TEXCOORD",
+                                "semanticIndex": 4
                             }
                         ]
                     }
@@ -206,6 +401,14 @@
                 {
                     "name": "glyphAtlas",
                     "binding": {"kind": "descriptorTableSlot", "index": 0}
+                },
+                {
+                    "name": "globalSamplers",
+                    "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 0}
+                },
+                {
+                    "name": "bindlessSrvs",
+                    "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 1}
                 }
             ]
         }

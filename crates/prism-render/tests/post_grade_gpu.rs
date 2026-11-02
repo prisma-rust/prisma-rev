@@ -66,6 +66,7 @@ fn render_graded(renderer: &mut GraphRenderer, grade: PostGrade) -> Vec<u8> {
             grade,
             false,
             false,
+            &[], // bone matrices
         )
         .expect("headless render failed");
     renderer

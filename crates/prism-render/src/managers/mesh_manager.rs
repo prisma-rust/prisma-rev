@@ -17,7 +17,7 @@ use ash::vk;
 use slotmap::{new_key_type, SlotMap};
 
 use crate::context::VulkanContext;
-use crate::mesh::Mesh;
+use crate::mesh::{Mesh, SkinVertex};
 
 // 局部 handle. The engine 层 translates 资源 网格 handles into
 // this when it calls `RenderMeshManager::register` so the 渲染
@@ -52,10 +52,52 @@ impl MeshUploadInput {
     }
 }
 
+/// 蒙皮属性（#560 P0-3）：每顶点最多 4 个关节下标 + 权重。
+///
+/// 单独于 [`MeshUploadInput`] 存在是有意的：绝大多数网格没有蒙皮，把它们
+/// 塞进同一个结构会让每个构造点都要写两个空 `Vec`。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SkinAttributes {
+    pub joints: Vec<[u16; 4]>,
+    pub weights: Vec<[f32; 4]>,
+}
+
+impl SkinAttributes {
+    pub fn is_empty(&self) -> bool {
+        self.joints.is_empty() || self.weights.is_empty()
+    }
+
+    /// 顶点数是否和网格对齐（不一致时调用方必须放弃蒙皮，而不是读越界）。
+    pub fn matches_vertex_count(&self, vertex_count: usize) -> bool {
+        self.joints.len() == vertex_count && self.weights.len() == vertex_count
+    }
+}
+
 /// One GPU-uploaded 网格 plus the data the 渲染器 needs to 绘制 it.
 pub struct UploadedMesh {
     /// The underlying Vulkan 缓冲区 + 内存 owned here.
     pub mesh: Mesh,
+    /// Optional per-vertex skinning buffer (binding 1, #560 P0-3).
+    ///
+    /// Only skinned meshes allocate it: the static-mesh pipeline does not
+    /// declare binding 1, so unskinned meshes keep their old memory profile.
+    pub skin: Option<SkinBuffer>,
+}
+
+/// Device-local `SkinVertex` array owned by an [`UploadedMesh`].
+pub struct SkinBuffer {
+    pub buffer: vk::Buffer,
+    pub memory: vk::DeviceMemory,
+    pub vertex_count: u32,
+}
+
+impl SkinBuffer {
+    fn destroy(&self, device: &ash::Device) {
+        unsafe {
+            device.destroy_buffer(self.buffer, None);
+            device.free_memory(self.memory, None);
+        }
+    }
 }
 
 impl UploadedMesh {
@@ -151,7 +193,7 @@ impl RenderMeshManager {
             indices_opt,
         )
         .context("RenderMeshManager::register: Mesh::new failed")?;
-        let handle = self.meshes.insert(UploadedMesh { mesh });
+        let handle = self.meshes.insert(UploadedMesh { mesh, skin: None });
         Ok(handle)
     }
 
@@ -159,11 +201,54 @@ impl RenderMeshManager {
     /// [`BatchUploader`](crate::batch::BatchUploader) so many meshes can be
     /// uploaded with a single submit + 围栏 The 调用者 must finish the
     /// uploader before 绘制
+    /// `register` 的蒙皮版本（#560 P0-3）：顶点数据完全相同，另外把
+    /// `SkinAttributes` 传成第二个顶点缓冲（binding 1）。
+    pub fn register_skinned(
+        &mut self,
+        context: &VulkanContext,
+        command_pool: vk::CommandPool,
+        graphics_queue: vk::Queue,
+        input: &MeshUploadInput,
+        skin: &SkinAttributes,
+    ) -> anyhow::Result<MeshHandle> {
+        let vertices = build_vertices(input);
+        let indices_opt: Option<&[u32]> = if input.indices.is_empty() {
+            None
+        } else {
+            Some(&input.indices)
+        };
+        let mesh = crate::mesh::Mesh::new(
+            context,
+            command_pool,
+            graphics_queue,
+            &vertices,
+            indices_opt,
+        )
+        .context("RenderMeshManager::register_skinned: Mesh::new failed")?;
+        let skin_buffer =
+            upload_skin_vertices(context, command_pool, graphics_queue, skin, vertices.len())?;
+        Ok(self.meshes.insert(UploadedMesh {
+            mesh,
+            skin: skin_buffer,
+        }))
+    }
+
     pub fn register_into(
         &mut self,
         context: &VulkanContext,
         uploader: &mut crate::batch::BatchUploader<'_>,
         input: &MeshUploadInput,
+    ) -> anyhow::Result<MeshHandle> {
+        self.register_skinned_into(context, uploader, input, None)
+    }
+
+    /// [`Self::register_into`] 的蒙皮版本：`None` = 普通网格。
+    pub fn register_skinned_into(
+        &mut self,
+        context: &VulkanContext,
+        uploader: &mut crate::batch::BatchUploader<'_>,
+        input: &MeshUploadInput,
+        skin: Option<&SkinAttributes>,
     ) -> anyhow::Result<MeshHandle> {
         let vertices = build_vertices(input);
         let indices_opt: Option<&[u32]> = if input.indices.is_empty() {
@@ -173,7 +258,17 @@ impl RenderMeshManager {
         };
         let mesh = Mesh::new_into(context, uploader, &vertices, indices_opt)
             .context("RenderMeshManager::register_into: Mesh::new_into failed")?;
-        let handle = self.meshes.insert(UploadedMesh { mesh });
+        // 蒙皮缓冲走与顶点缓冲相同的共享 uploader（一次 submit/围栏）。
+        let skin_buffer = match skin {
+            Some(skin) if !skin.is_empty() => {
+                upload_skin_vertices_into(context, uploader, skin, vertices.len())?
+            }
+            _ => None,
+        };
+        let handle = self.meshes.insert(UploadedMesh {
+            mesh,
+            skin: skin_buffer,
+        });
         Ok(handle)
     }
 
@@ -195,6 +290,9 @@ impl RenderMeshManager {
     /// this 调用 the 管理器 is 空
     pub fn destroy(&mut self, device: &ash::Device) {
         for (_, mut uploaded) in self.meshes.drain() {
+            if let Some(skin) = uploaded.skin.as_ref() {
+                skin.destroy(device);
+            }
             unsafe { uploaded.mesh.destroy(device) };
         }
         self.destroyed = true;
@@ -244,6 +342,106 @@ fn build_vertices(input: &MeshUploadInput) -> Vec<crate::mesh::Vertex> {
         });
     }
     out
+}
+
+/// 把 `SkinAttributes` 展开成 `SkinVertex` 交错数组并上传（device-local）。
+///
+/// 顶点数不匹配时返回 `None`：宁可不蒙皮，也不要读到别的顶点的权重。
+fn skin_vertices(
+    skin: &SkinAttributes,
+    vertex_count: usize,
+) -> Option<Vec<crate::mesh::SkinVertex>> {
+    if !skin.matches_vertex_count(vertex_count) {
+        log::warn!(
+            "mesh_manager: skin attributes cover {} vertices, mesh has {vertex_count}; \
+             dropping skinning",
+            skin.joints.len()
+        );
+        return None;
+    }
+    Some(
+        skin.joints
+            .iter()
+            .zip(skin.weights.iter())
+            .map(|(joints, weights)| SkinVertex {
+                joints: *joints,
+                weights: *weights,
+            })
+            .collect(),
+    )
+}
+
+fn upload_skin_vertices(
+    context: &VulkanContext,
+    command_pool: vk::CommandPool,
+    graphics_queue: vk::Queue,
+    skin: &SkinAttributes,
+    vertex_count: usize,
+) -> anyhow::Result<Option<SkinBuffer>> {
+    let Some(vertices) = skin_vertices(skin, vertex_count) else {
+        return Ok(None);
+    };
+    let bytes = unsafe {
+        std::slice::from_raw_parts(
+            vertices.as_ptr() as *const u8,
+            std::mem::size_of_val(vertices.as_slice()),
+        )
+    };
+    let (buffer, memory) = crate::buffer::create_buffer(
+        context,
+        bytes.len() as vk::DeviceSize,
+        crate::buffer::BufferUsage::VERTEX_BUFFER,
+        crate::buffer::MemoryProperties::DEVICE_LOCAL,
+    )
+    .context("mesh_manager: create skin buffer")?;
+    unsafe {
+        crate::buffer::upload_to_buffer(
+            context,
+            command_pool,
+            graphics_queue,
+            buffer,
+            bytes.len() as u64,
+            bytes,
+        )
+    }
+    .context("mesh_manager: upload skin buffer")?;
+    Ok(Some(SkinBuffer {
+        buffer,
+        memory,
+        vertex_count: vertices.len() as u32,
+    }))
+}
+
+fn upload_skin_vertices_into(
+    context: &VulkanContext,
+    uploader: &mut crate::batch::BatchUploader<'_>,
+    skin: &SkinAttributes,
+    vertex_count: usize,
+) -> anyhow::Result<Option<SkinBuffer>> {
+    let Some(vertices) = skin_vertices(skin, vertex_count) else {
+        return Ok(None);
+    };
+    let bytes = unsafe {
+        std::slice::from_raw_parts(
+            vertices.as_ptr() as *const u8,
+            std::mem::size_of_val(vertices.as_slice()),
+        )
+    };
+    let (buffer, memory) = crate::buffer::create_buffer(
+        context,
+        bytes.len() as vk::DeviceSize,
+        crate::buffer::BufferUsage::VERTEX_BUFFER,
+        crate::buffer::MemoryProperties::DEVICE_LOCAL,
+    )
+    .context("mesh_manager: create skin buffer")?;
+    uploader
+        .upload_buffer(buffer, bytes.len() as vk::DeviceSize, bytes)
+        .context("mesh_manager: stage skin buffer")?;
+    Ok(Some(SkinBuffer {
+        buffer,
+        memory,
+        vertex_count: vertices.len() as u32,
+    }))
 }
 
 #[cfg(test)]

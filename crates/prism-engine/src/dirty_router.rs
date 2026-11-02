@@ -172,6 +172,7 @@ mod tests {
             cast_shadow: true,
             visible_in_main_pass: true,
             cast_shadow_two_sided: false,
+            bone_offset: None,
             state: Default::default(),
             world_bounds: None,
             index_start: 0,
