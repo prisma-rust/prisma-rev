@@ -6157,6 +6157,20 @@ pub fn render_graph(
                 .changed();
             ui.end_row();
 
+            ui.label("Temperature");
+            changed |= ui
+                .add(egui::Slider::new(&mut settings.temperature, -1.0..=1.0))
+                .on_hover_text("White balance: negative is cooler (blue), positive is warmer (orange).")
+                .changed();
+            ui.end_row();
+
+            ui.label("Tint");
+            changed |= ui
+                .add(egui::Slider::new(&mut settings.tint, -1.0..=1.0))
+                .on_hover_text("White balance: negative is green, positive is magenta.")
+                .changed();
+            ui.end_row();
+
             ui.label("Bloom");
             changed |= ui.checkbox(&mut settings.bloom, "Enable").changed();
             ui.end_row();

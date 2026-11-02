@@ -143,10 +143,32 @@
                                 ]
                             },
                             "binding": {"kind": "uniform", "offset": 40, "size": 4, "elementStride": 0}
+                        },
+                        {
+                            "name": "temperature",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "float32",
+                                "sizes": [
+                                    {"kind": "uniform", "value": 4, "alignment": 4}
+                                ]
+                            },
+                            "binding": {"kind": "uniform", "offset": 44, "size": 4, "elementStride": 0}
+                        },
+                        {
+                            "name": "tint",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "float32",
+                                "sizes": [
+                                    {"kind": "uniform", "value": 4, "alignment": 4}
+                                ]
+                            },
+                            "binding": {"kind": "uniform", "offset": 48, "size": 4, "elementStride": 0}
                         }
                     ],
                     "sizes": [
-                        {"kind": "uniform", "value": 48, "alignment": 8}
+                        {"kind": "uniform", "value": 56, "alignment": 8}
                     ]
                 },
                 "containerVarLayout": {
@@ -270,13 +292,35 @@
                                     ]
                                 },
                                 "binding": {"kind": "uniform", "offset": 40, "size": 4, "elementStride": 0}
+                            },
+                            {
+                                "name": "temperature",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32",
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 4, "alignment": 4}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 44, "size": 4, "elementStride": 0}
+                            },
+                            {
+                                "name": "tint",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32",
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 4, "alignment": 4}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 48, "size": 4, "elementStride": 0}
                             }
                         ],
                         "sizes": [
-                            {"kind": "uniform", "value": 48, "alignment": 8}
+                            {"kind": "uniform", "value": 56, "alignment": 8}
                         ]
                     },
-                    "binding": {"kind": "uniform", "offset": 0, "size": 48, "elementStride": 0}
+                    "binding": {"kind": "uniform", "offset": 0, "size": 56, "elementStride": 0}
                 },
                 "sizes": [
                     {"kind": "pushConstantBuffer", "value": 1}
@@ -429,10 +473,32 @@
                                     ]
                                 },
                                 "binding": {"kind": "uniform", "offset": 40, "size": 4, "elementStride": 0}
+                            },
+                            {
+                                "name": "temperature",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32",
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 4, "alignment": 4}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 44, "size": 4, "elementStride": 0}
+                            },
+                            {
+                                "name": "tint",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32",
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 4, "alignment": 4}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 48, "size": 4, "elementStride": 0}
                             }
                         ],
                         "sizes": [
-                            {"kind": "uniform", "value": 48, "alignment": 8}
+                            {"kind": "uniform", "value": 56, "alignment": 8}
                         ]
                     },
                     "containerVarLayout": {
@@ -556,13 +622,35 @@
                                         ]
                                     },
                                     "binding": {"kind": "uniform", "offset": 40, "size": 4, "elementStride": 0}
+                                },
+                                {
+                                    "name": "temperature",
+                                    "type": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32",
+                                        "sizes": [
+                                            {"kind": "uniform", "value": 4, "alignment": 4}
+                                        ]
+                                    },
+                                    "binding": {"kind": "uniform", "offset": 44, "size": 4, "elementStride": 0}
+                                },
+                                {
+                                    "name": "tint",
+                                    "type": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32",
+                                        "sizes": [
+                                            {"kind": "uniform", "value": 4, "alignment": 4}
+                                        ]
+                                    },
+                                    "binding": {"kind": "uniform", "offset": 48, "size": 4, "elementStride": 0}
                                 }
                             ],
                             "sizes": [
-                                {"kind": "uniform", "value": 48, "alignment": 8}
+                                {"kind": "uniform", "value": 56, "alignment": 8}
                             ]
                         },
-                        "binding": {"kind": "uniform", "offset": 0, "size": 48, "elementStride": 0}
+                        "binding": {"kind": "uniform", "offset": 0, "size": 56, "elementStride": 0}
                     },
                     "sizes": [
                         {"kind": "pushConstantBuffer", "value": 1}

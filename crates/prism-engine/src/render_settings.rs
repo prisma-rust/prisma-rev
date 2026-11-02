@@ -112,6 +112,13 @@ pub struct RenderSettings {
     /// 在色调映射、调色与暗角之后叠加显示空间单色噪声；默认 0 与旧画面
     /// 逐位一致。
     pub film_grain: f32,
+    /// 白平衡色温（#502 Phase 1）：`-1.0` = 冷，`0.0` = 中性，`1.0` = 暖。
+    ///
+    /// 在调色阶段按 RGB 增益移动白点；`0.0` 时增益精确为 `(1, 1, 1)`，
+    /// 默认路径与旧画面逐位一致。
+    pub temperature: f32,
+    /// 白平衡色调（#502 Phase 1）：`-1.0` = 偏绿，`0.0` = 中性，`1.0` = 偏品红。
+    pub tint: f32,
     /// 内部渲染分辨率 `[宽, 高]`（#613）；`[0, 0]` = 关闭。
     ///
     /// 开启后场景按这个尺寸渲染，`PostPass` 再放大到窗口；相机的宽高比也跟着
@@ -147,6 +154,8 @@ impl RenderSettings {
             bloom_threshold: self.bloom_threshold,
             chromatic_aberration: self.chromatic_aberration,
             film_grain: self.film_grain,
+            temperature: self.temperature,
+            tint: self.tint,
         }
     }
 
@@ -189,6 +198,8 @@ impl Default for RenderSettings {
             bloom_threshold: 1.0,
             chromatic_aberration: 0.0,
             film_grain: 0.0,
+            temperature: 0.0,
+            tint: 0.0,
             shadow_distance: DEFAULT_SHADOW_DISTANCE,
             shadow_map_size: prism_render::SHADOW_MAP_SIZE,
             shadow_cascade_count: 1,
@@ -248,6 +259,12 @@ mod tests {
 
         settings.film_grain = 0.5;
         assert_eq!(settings.post_grade().film_grain, 0.5);
+
+        settings.temperature = -0.4;
+        settings.tint = 0.25;
+        let grade = settings.post_grade();
+        assert_eq!(grade.temperature, -0.4);
+        assert_eq!(grade.tint, 0.25);
     }
 
     #[test]

@@ -665,6 +665,8 @@ impl RenderPassNode for PostPass {
             bloomThreshold: ctx.frame.grade.bloom_threshold,
             chromaticAberration: ctx.frame.grade.chromatic_aberration,
             filmGrain: ctx.frame.grade.film_grain,
+            temperature: ctx.frame.grade.temperature,
+            tint: ctx.frame.grade.tint,
             // #613：FXAA 采样的是**内部渲染目标**，一个 texel 的 UV 尺寸按它的
             // 分辨率算；用交换链尺寸会在内部分辨率缩小时把采样步长算小。
             invTexelSize: [
@@ -885,8 +887,34 @@ mod tests {
         assert_eq!(std::mem::offset_of!(PostPush, bloomThreshold), 32);
         assert_eq!(std::mem::offset_of!(PostPush, chromaticAberration), 36);
         assert_eq!(std::mem::offset_of!(PostPush, filmGrain), 40);
-        assert_eq!(std::mem::size_of::<PostPush>(), 44);
-        assert_eq!(PUSH_CONSTANT_SIZE, 44);
+        // #502 white balance rides after the Phase 2 effects.
+        assert_eq!(std::mem::offset_of!(PostPush, temperature), 44);
+        assert_eq!(std::mem::offset_of!(PostPush, tint), 48);
+        assert_eq!(std::mem::size_of::<PostPush>(), 52);
+        assert_eq!(PUSH_CONSTANT_SIZE, 52);
+    }
+
+    #[test]
+    fn test_white_balance_is_clamped_and_neutral_at_zero() {
+        use crate::render_graph::PostGrade;
+        assert!(PostGrade::default().is_neutral());
+        let clamped = PostGrade {
+            temperature: 2.0,
+            tint: -3.0,
+            ..PostGrade::default()
+        }
+        .sanitized();
+        assert_eq!(clamped.temperature, 1.0);
+        assert_eq!(clamped.tint, -1.0);
+
+        let broken = PostGrade {
+            temperature: f32::NAN,
+            tint: f32::INFINITY,
+            ..PostGrade::default()
+        }
+        .sanitized();
+        assert_eq!(broken.temperature, 0.0);
+        assert_eq!(broken.tint, 0.0);
     }
 
     #[test]
