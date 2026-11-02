@@ -383,8 +383,15 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
                         }
                     }
                 }
-                match evaluator.evaluate(&library, &skeleton, dt) {
-                    Ok(pose) => {
+                match evaluator.evaluate_with_events(&library, &skeleton, dt) {
+                    Ok((pose, graph_events)) => {
+                        for event in graph_events {
+                            events.push(AnimEvent {
+                                entity,
+                                name: event.name,
+                                time: event.time,
+                            });
+                        }
                         let mut playhead = world
                             .get::<AnimatorPlayhead>(entity)
                             .cloned()

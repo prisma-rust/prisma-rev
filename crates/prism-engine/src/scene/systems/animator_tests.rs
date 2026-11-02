@@ -1257,3 +1257,33 @@ fn a_missing_graph_falls_back_to_the_clip_path() {
         "tip {tip:?}"
     );
 }
+
+#[test]
+fn graph_notifies_reach_the_engine_event_queue() {
+    let (mut world, entity) = world_with_animator("");
+    let mut foot = bend_clip();
+    foot.notifies.push(ClipNotify {
+        time: 0.5,
+        name: "Footstep.L".into(),
+    });
+    world
+        .get_resource_mut::<SkeletonLibrary>()
+        .unwrap()
+        .insert_clip("foot.ranim", foot);
+    world.insert_resource(AnimGraphLibrary::new());
+    world
+        .get_resource_mut::<AnimGraphLibrary>()
+        .unwrap()
+        .insert("hero.rag", single_clip_graph("foot.ranim"));
+    {
+        let animator = world.get_mut::<Animator>(entity).unwrap();
+        animator.anim_graph_path = "hero.rag".into();
+        animator.time = 0.0;
+    }
+
+    animator_system(&mut world, 0.6);
+    let events = world.get_resource::<AnimEvents>().expect("events resource");
+    assert_eq!(events.len(), 1, "{:?}", events.events);
+    assert_eq!(events.events[0].name, "Footstep.L");
+    assert!((events.events[0].time - 0.5).abs() < 1e-5);
+}
