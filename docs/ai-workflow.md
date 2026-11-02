@@ -347,6 +347,13 @@ Started/Stopped `PhysicsEvents`，并提供 `assert_position_within` /
 `assert_world_position_within` 等带显式容差的断言。示例见
 `crates/prism-app/tests/physics_harness.rs`。
 
+资产管线测试优先复用 `crates/prism-cooker/tests/support` 的 `AssetHarness`：
+在临时项目里写 scene / prefab / mesh / texture 源文件，用真实 importer →
+`CookPipeline` → `PackageBuilder` 生成 `.pak`，再通过 `ResourceManager` 加载并
+比较 RSCN 实体 / 组件、RMES 顶点数与包围盒、RTEX 尺寸 / mip / 像素以及 pak
+记录。`recook_scene` 用同一个 `AssetId` 重烘场景，覆盖 schema 变化后的重新导入。
+示例见 `crates/prism-cooker/tests/asset_harness.rs`。
+
 需要比较多个 kernel 配置时，用 `GpuHarness::dispatch_repeated` 在**一次提交**里重复
 dispatch 并返回 `TimedDispatch { outputs, elapsed }`；每个候选先校验 readback，再按
 `elapsed / repeats` 选最快。kernel 必须是幂等的（例如读 A 写 B），因为后一次 dispatch
