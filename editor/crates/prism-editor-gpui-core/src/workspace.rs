@@ -155,7 +155,7 @@ impl Document {
             self.externally_modified = false;
             return;
         };
-        self.saved_stamp = project::file_stamp(root, path);
+        self.saved_stamp = project::file_content_stamp(root, path);
         self.externally_modified = false;
     }
 
@@ -1727,7 +1727,7 @@ impl Workspace {
             return Some(path.to_string());
         }
         let saved = document.saved_stamp?;
-        match project::file_stamp(root, path) {
+        match project::file_content_stamp(root, path) {
             Some(current) if current == saved => None,
             _ => Some(path.to_string()),
         }
@@ -1748,7 +1748,10 @@ impl Workspace {
             let Some(path) = document.path.clone() else {
                 continue;
             };
-            let differs = match (document.saved_stamp, project::file_stamp(&root, &path)) {
+            let differs = match (
+                document.saved_stamp,
+                project::file_content_stamp(&root, &path),
+            ) {
                 (None, None) => false,
                 (Some(saved), Some(current)) => saved != current,
                 _ => true,
