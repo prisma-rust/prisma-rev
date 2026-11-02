@@ -11,7 +11,7 @@ pub const ENTRY_VERTEX_MAIN: &str = "vertexMain"; // stage: VERTEX
 pub const ENTRY_FRAGMENT_MAIN: &str = "fragmentMain"; // stage: FRAGMENT
 
 /// Push-constant block size in bytes (reflected).
-pub const PUSH_CONSTANT_SIZE: u32 = 84;
+pub const PUSH_CONSTANT_SIZE: u32 = 88;
 
 // --- descriptor set 0 ---
 pub const DEPTH_TEX_SET: u32 = 0;
@@ -25,10 +25,18 @@ pub const NORMAL_TEX_BINDING: u32 = 0; // COMBINED_IMAGE_SAMPLER
 pub const NORMAL_SAMPLER_SET: u32 = 1;
 pub const NORMAL_SAMPLER_BINDING: u32 = 1; // COMBINED_IMAGE_SAMPLER
 
+// --- descriptor set 2 ---
+pub const HISTORY_TEX_SET: u32 = 2;
+pub const HISTORY_TEX_BINDING: u32 = 0; // COMBINED_IMAGE_SAMPLER
+pub const VELOCITY_TEX_SET: u32 = 2;
+pub const VELOCITY_TEX_BINDING: u32 = 1; // COMBINED_IMAGE_SAMPLER
+pub const TEMPORAL_SAMPLER_SET: u32 = 2;
+pub const TEMPORAL_SAMPLER_BINDING: u32 = 2; // COMBINED_IMAGE_SAMPLER
+
 /// Push-constant struct (auto-generated from Slang `GtaoPush`).
 ///
 /// Field offsets are the reflected std140 ones — alignment holes are emitted as
-/// explicit `_pad_*` fillers, so `size_of` is 84 bytes and every field sits
+/// explicit `_pad_*` fillers, so `size_of` is 88 bytes and every field sits
 /// where the shader expects it.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -42,5 +50,7 @@ pub struct GtaoPush {
     /// offset 76, size 4
     pub mode: u32,
     /// offset 80, size 4
-    pub _pad0: u32,
+    pub historyStrength: f32,
+    /// offset 84, size 4
+    pub validHistory: f32,
 }
