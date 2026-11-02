@@ -6,7 +6,7 @@
 //! # Scope
 //!
 //! * 刚体：动力学 / 运动学 / 静态，支持父子层级
-//! * 碰撞体：球 / 盒 / 胶囊（trimesh 尚未接 cook 产物）
+//! * 碰撞体：球 / 盒 / 胶囊 + `TerrainData` 自动生成的静态 heightfield（#517）
 //! * Started/Stopped 碰撞与 sensor 事件：每步写入 ECS `PhysicsEvents` 资源
 //! * 无关节、无 CCD；射线查询在 `prism_engine::physics::raycast`
 //!
@@ -33,9 +33,10 @@ use prism_engine::physics::{PhysicsEvent, PhysicsEventKind, PhysicsEvents};
 use prism_engine::scene::components::{
     BodyType, Collider, ColliderShape, LocalTransform, Parent, Rigidbody,
 };
+use prism_engine::scene::systems::terrain::TerrainData;
 use rapier3d::dynamics::{
-    CCDSolver, IntegrationParameters, IslandManager, RigidBodyBuilder, RigidBodyHandle,
-    RigidBodySet, RigidBodyType,
+    CCDSolver, ImpulseJointSet, IntegrationParameters, IslandManager, MultibodyJointSet,
+    RigidBodyBuilder, RigidBodyHandle, RigidBodySet, RigidBodyType,
 };
 use rapier3d::geometry::{
     BroadPhaseBvh, ColliderBuilder, ColliderHandle, ColliderSet, CollisionEvent,
@@ -73,6 +74,22 @@ pub enum PhysicsCommand {
         entity: EntityId,
         position: [f32; 3],
         rotation: [f32; 4],
+    },
+    /// 地形高度场（#517）：`TerrainData` 自动生成的静态 rapier heightfield。
+    ///
+    /// 地形没有 `Rigidbody` / `Collider` 组件，所以不和 `SpawnBody` 共用路径：
+    /// 物理线程只建一个 fixed body + heightfield collider，不向 ECS 回写姿势。
+    SpawnTerrain {
+        entity: EntityId,
+        position: [f32; 3],
+        /// 行优先 `cells × cells`，已经乘过 `height_scale`（米）。
+        heights: Vec<f32>,
+        cells: usize,
+        /// 世界尺寸 `[x, z]`（米）。
+        size: [f32; 2],
+    },
+    DespawnTerrain {
+        entity: EntityId,
     },
 }
 
@@ -155,6 +172,40 @@ fn rapier_status(status: PhysicsBodyStatus) -> RigidBodyType {
     }
 }
 
+/// 删除一个地形 body 及其 heightfield collider（#517）。
+///
+/// 收在一个结构里而不是八个参数：调用点是热路径上的两条分支，参数一多
+/// 很容易把 `collider_set` / `rigid_body_set` 的顺序写反。
+struct TerrainBodies<'a> {
+    bodies: &'a mut HashMap<EntityId, RigidBodyHandle>,
+    colliders: &'a mut HashMap<EntityId, ColliderHandle>,
+    collider_entities: &'a mut HashMap<ColliderHandle, Entity>,
+    rigid_bodies: &'a mut RigidBodySet,
+    collider_set: &'a mut ColliderSet,
+    islands: &'a mut IslandManager,
+    impulse_joints: &'a mut ImpulseJointSet,
+    multibody_joints: &'a mut MultibodyJointSet,
+}
+
+impl TerrainBodies<'_> {
+    fn remove(&mut self, entity: EntityId) {
+        if let Some(handle) = self.bodies.remove(&entity) {
+            // 删除 body 会连带删除挂在它下面的 collider。
+            self.rigid_bodies.remove(
+                handle,
+                self.islands,
+                self.collider_set,
+                self.impulse_joints,
+                self.multibody_joints,
+                true,
+            );
+        }
+        if let Some(collider) = self.colliders.remove(&entity) {
+            self.collider_entities.remove(&collider);
+        }
+    }
+}
+
 // ── 线程 entry point ────────────────────────────────────────────────
 
 pub fn physics_thread_main(step_rx: Receiver<PhysicsStep>, result_tx: Sender<PhysicsResult>) {
@@ -176,6 +227,9 @@ pub fn physics_thread_main(step_rx: Receiver<PhysicsStep>, result_tx: Sender<Phy
     let mut entity_map: HashMap<EntityId, RigidBodyHandle> = HashMap::new();
     let mut body_colliders: HashMap<EntityId, ColliderHandle> = HashMap::new();
     let mut collider_entities: HashMap<ColliderHandle, Entity> = HashMap::new();
+    // 地形是固定的 heightfield body，不参与 `entity_map` 的姿势回写（#517）。
+    let mut terrain_bodies: HashMap<EntityId, RigidBodyHandle> = HashMap::new();
+    let mut terrain_colliders: HashMap<EntityId, ColliderHandle> = HashMap::new();
 
     // rapier 在 step 内通过 EventHandler 报告 Started/Stopped；这里用官方
     // ChannelEventCollector 把事件排到通道，step 后统一映射回实体。
@@ -273,6 +327,64 @@ pub fn physics_thread_main(step_rx: Receiver<PhysicsStep>, result_tx: Sender<Phy
                         }
                     }
                 }
+                PhysicsCommand::SpawnTerrain {
+                    entity,
+                    position,
+                    heights,
+                    cells,
+                    size,
+                } => {
+                    // 换高度图 / 移动地形时先拆旧 body，避免留下两份碰撞体。
+                    TerrainBodies {
+                        bodies: &mut terrain_bodies,
+                        colliders: &mut terrain_colliders,
+                        collider_entities: &mut collider_entities,
+                        rigid_bodies: &mut rigid_body_set,
+                        collider_set: &mut collider_set,
+                        islands: &mut island_manager,
+                        impulse_joints: &mut impulse_joint_set,
+                        multibody_joints: &mut multibody_joint_set,
+                    }
+                    .remove(entity);
+                    // rapier 的 heightfield 行 = z、列 = x；它的 `Array2` 底层是
+                    // 列优先（`index = row + col * nrows`），而 `Heightfield` 是行优先
+                    // `(z * cells + x)`，所以这里必须转置一次。
+                    let mut grid = vec![0.0f32; cells * cells];
+                    for z in 0..cells {
+                        for x in 0..cells {
+                            grid[z + x * cells] = heights[z * cells + x];
+                        }
+                    }
+                    let grid = rapier3d::geometry::Array2::new(cells, cells, grid);
+                    let collider = ColliderBuilder::heightfield(
+                        grid,
+                        Vector::new(size[0].max(1.0e-3), 1.0, size[1].max(1.0e-3)),
+                    )
+                    .active_events(ActiveEvents::COLLISION_EVENTS)
+                    .build();
+                    let body = RigidBodyBuilder::fixed()
+                        .translation(Vector::from(position))
+                        .build();
+                    let body_handle = rigid_body_set.insert(body);
+                    let collider_handle =
+                        collider_set.insert_with_parent(collider, body_handle, &mut rigid_body_set);
+                    terrain_bodies.insert(entity, body_handle);
+                    terrain_colliders.insert(entity, collider_handle);
+                    collider_entities.insert(collider_handle, entity_from_key(entity));
+                }
+                PhysicsCommand::DespawnTerrain { entity } => {
+                    TerrainBodies {
+                        bodies: &mut terrain_bodies,
+                        colliders: &mut terrain_colliders,
+                        collider_entities: &mut collider_entities,
+                        rigid_bodies: &mut rigid_body_set,
+                        collider_set: &mut collider_set,
+                        islands: &mut island_manager,
+                        impulse_joints: &mut impulse_joint_set,
+                        multibody_joints: &mut multibody_joint_set,
+                    }
+                    .remove(entity);
+                }
             }
         }
 
@@ -356,6 +468,8 @@ pub struct PhysicsRuntime {
     result_rx: Receiver<PhysicsResult>,
     thread: Option<JoinHandle<()>>,
     bodies: HashMap<EntityId, TrackedBody>,
+    /// 已同步的地形 heightfield（#517）。
+    terrains: HashMap<EntityId, TrackedTerrain>,
     /// 上一步动态刚体的休眠状态（仅用于无窗口的观测 / 测试）。
     sleeping: HashMap<EntityId, bool>,
     /// 线程已退出 / 通道已断：之后 `step` 直接返回，不再刷日志。
@@ -368,6 +482,20 @@ struct TrackedBody {
     settings: BodySettings,
     shape: ColliderDesc,
     sensor: bool,
+}
+
+/// 地形 collider 的变更指纹（#517）。
+///
+/// `TerrainData.key` 覆盖高度图路径 / 尺寸 / 高度倍数 / 分辨率；`position` 覆盖
+/// 实体移动。高度数组本身不进指纹——它只会在重建 `TerrainData` 时变化，而重建
+/// 必然换 `key`。
+#[derive(Clone, PartialEq)]
+struct TrackedTerrain {
+    key: String,
+    position: [f32; 3],
+    size: [f32; 2],
+    height_scale: f32,
+    cells: usize,
 }
 
 impl PhysicsRuntime {
@@ -388,6 +516,7 @@ impl PhysicsRuntime {
             result_rx,
             thread,
             bodies: HashMap::new(),
+            terrains: HashMap::new(),
             sleeping: HashMap::new(),
             failed: false,
         }
@@ -524,6 +653,79 @@ impl PhysicsRuntime {
                 Some(_) => {}
             }
             self.bodies.insert(key, desired);
+        }
+
+        // 地形高度场（#517）：`TerrainData` 是运行时系统生成的分量，没有
+        // `Rigidbody` / `Collider`，所以单独同步成静态 heightfield collider。
+        let mut current_terrains: HashMap<EntityId, Entity> = HashMap::new();
+        for (entity, _) in world.query::<TerrainData>() {
+            current_terrains.insert(entity_key(entity), entity);
+        }
+        let removed_terrains: Vec<EntityId> = self
+            .terrains
+            .keys()
+            .filter(|key| !current_terrains.contains_key(key))
+            .copied()
+            .collect();
+        for key in removed_terrains {
+            self.terrains.remove(&key);
+            commands.push(PhysicsCommand::DespawnTerrain { entity: key });
+        }
+        for (key, entity) in current_terrains {
+            let Some(data) = world.get::<TerrainData>(entity) else {
+                continue;
+            };
+            let cells = data.field.cells();
+            if cells < 2 {
+                continue;
+            }
+            let Some(position) =
+                world_matrix(world, entity).map(|matrix| matrix.w_axis.truncate().to_array())
+            else {
+                continue;
+            };
+            if !position.iter().all(|value| value.is_finite()) {
+                continue;
+            }
+            let desired = TrackedTerrain {
+                key: data.key.clone(),
+                position,
+                size: data.size,
+                height_scale: data.height_scale,
+                cells,
+            };
+            if self.terrains.get(&key) == Some(&desired) {
+                continue;
+            }
+            if self.terrains.contains_key(&key) {
+                commands.push(PhysicsCommand::DespawnTerrain { entity: key });
+            }
+            let scale = if data.height_scale.is_finite() {
+                data.height_scale
+            } else {
+                1.0
+            };
+            let heights = data
+                .field
+                .heights()
+                .iter()
+                .map(|height| {
+                    let value = height * scale;
+                    if value.is_finite() {
+                        value
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
+            commands.push(PhysicsCommand::SpawnTerrain {
+                entity: key,
+                position,
+                heights,
+                cells,
+                size: data.size,
+            });
+            self.terrains.insert(key, desired);
         }
 
         commands
@@ -739,6 +941,73 @@ mod tests {
             (0.45..0.55).contains(&y),
             "sphere should rest on the floor (center y≈0.5), got {y}"
         );
+    }
+
+    /// #517：`TerrainData` 自动变成静态 heightfield collider，动态球落在地形上。
+    ///
+    /// 高度用 2.0 而不是 0：如果高度数组根本没传给 rapier，球会停在 y≈0.5，
+    /// 这个断言就会失败（同时覆盖 height_scale = 1 的米制语义）。
+    #[test]
+    fn dynamic_sphere_rests_on_a_terrain_heightfield() {
+        use prism_engine::scene::systems::terrain::Heightfield;
+        use std::sync::Arc;
+
+        let cells = 33;
+        let mut raw = Vec::with_capacity(cells * cells * 4);
+        for _ in 0..cells * cells {
+            raw.extend_from_slice(&2.0f32.to_le_bytes());
+        }
+        let field = Heightfield::from_raw(&raw, cells).expect("heightfield");
+
+        let mut world = World::new();
+        let terrain = world.spawn();
+        world.insert(terrain, LocalTransform::default());
+        world.insert(
+            terrain,
+            TerrainData {
+                key: "test-raised".into(),
+                field: Arc::new(field),
+                mesh_path: String::new(),
+                size: [20.0, 20.0],
+                height_scale: 1.0,
+            },
+        );
+
+        let ball = world.spawn();
+        world.insert(ball, Rigidbody::default());
+        world.insert(
+            ball,
+            Collider {
+                shape: ColliderShape::Sphere,
+                radius: 0.5,
+                ..Default::default()
+            },
+        );
+        world.insert(
+            ball,
+            LocalTransform {
+                position: glam::Vec3::new(0.0, 5.0, 0.0),
+                ..Default::default()
+            },
+        );
+
+        let mut runtime = PhysicsRuntime::spawn();
+        for _ in 0..300 {
+            assert!(runtime.step(&mut world));
+        }
+        let y = world
+            .get::<LocalTransform>(ball)
+            .expect("ball transform")
+            .position
+            .y;
+        assert!(
+            (2.45..2.55).contains(&y),
+            "sphere should rest on the raised terrain heightfield (center y≈2.5), got {y}"
+        );
+
+        // 地形被销毁后下一步安全 despawn。
+        world.despawn(terrain);
+        assert!(runtime.step(&mut world));
     }
 
     /// 作者的 `center` 与实体缩放都要烘进 rapier 形状。
