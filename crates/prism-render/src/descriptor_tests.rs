@@ -1,12 +1,11 @@
 use super::*;
 
 #[test]
-fn frame_ubo_data_size_is_272() {
-    // std140 tail 填充 tonemap_mode(u32 @ 240) + viewport_size([f32;2] @ 244)
-    // + exposure(f32 @ 252) + shadow_strength(f32 @ 256) + _pad2([f32;3] @ 260)
-    // = 272 字节 总计 (16-byte aligned, matching the Slang `FrameUBO` mirror
-    // in common.slang).
-    assert_eq!(std::mem::size_of::<FrameUBOData>(), 272);
+fn frame_ubo_data_size_is_352() {
+    // std140: legacy fields through _pad2 end at 272, then the CSM tail
+    // (`lightViewProj1` mat4 @ 272, shadowSplit @ 336, cascade count @ 340,
+    // pad to 352) matches the Slang `FrameUBO` mirror in common.slang.
+    assert_eq!(std::mem::size_of::<FrameUBOData>(), 352);
 }
 
 #[test]
@@ -37,4 +36,11 @@ fn frame_ubo_data_offsets() {
     assert_eq!(std::mem::offset_of!(FrameUBOData, exposure), 252);
     assert_eq!(std::mem::offset_of!(FrameUBOData, shadow_strength), 256);
     assert_eq!(std::mem::offset_of!(FrameUBOData, _pad2), 260);
+    assert_eq!(std::mem::offset_of!(FrameUBOData, light_view_proj1), 272);
+    assert_eq!(std::mem::offset_of!(FrameUBOData, shadow_split), 336);
+    assert_eq!(
+        std::mem::offset_of!(FrameUBOData, shadow_cascade_count),
+        340
+    );
+    assert_eq!(std::mem::offset_of!(FrameUBOData, _pad3), 344);
 }

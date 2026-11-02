@@ -10,7 +10,8 @@ module common;
 
 // Per-frame uniform data. Mirrors Rust `FrameUBOData` (set 0, binding 0).
 // std140: mat4(64) + vec4(16)*3 + mat4(64) + mat4(64) + uint(4) + vec2(8) +
-//         float(4) + float3(12) = 268, padded to 272.
+//         float(4) + float(4) + float3(12) + mat4(64) + float(4) + uint(4) +
+//         float2(8) = 344, padded to 352.
 public struct FrameUBO
 {
     public float4x4 viewProj;        // offset   0
@@ -18,13 +19,18 @@ public struct FrameUBO
     public float4   lightDirection;  // offset  80  (xyz = dir TO light, w = pre-scaled radiance = lux/(10000*PI))
     public float4   lightColor;      // offset  96  (rgb = color, w = ambient factor)
     public float4x4 view;            // offset 112  (world -> view)
-    public float4x4 lightViewProj;   // offset 176  (light-space VP for shadow map)
+    public float4x4 lightViewProj;   // offset 176  (near cascade light-space VP)
     public uint     tonemapMode;     // offset 240 (0 = Reinhard, 1 = ACES)
     public float    viewportW;       // offset 244 - scene colour viewport width, px
     public float    viewportH;       // offset 248 - scene colour viewport height, px
     public float    exposure;        // offset 252 (multiplies all light radiance pre-tonemap)
     public float    shadowStrength;      // offset 256 (Light.shadowStrength; 0 = no shadow)
-    public float3   _pad2;           // offset 260..271 (std140 tail pad to 272)
+    public float3   _pad2;           // offset 260..271 (std140 tail pad)
+    // #526 CSM: the second cascade lives in the right half of the atlas.
+    public float4x4 lightViewProj1;  // offset 272 (far cascade light-space VP)
+    public float    shadowSplit;     // offset 336 (camera-forward distance of the split)
+    public uint     shadowCascadeCount; // offset 340 (1 = single map, 2 = atlas)
+    public float2   _pad3;           // offset 344..351 (std140 tail pad to 352)
 };
 
 // Vertex stream matching mesh.vert input locations 0..4.

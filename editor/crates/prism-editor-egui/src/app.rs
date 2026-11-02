@@ -606,7 +606,14 @@ impl EditorApp {
             return true;
         }
         let size = (1280u32, 720u32);
-        let created = ViewportState::new(kind, self.gpu.context.clone(), size.0, size.1);
+        let created = ViewportState::new(
+            kind,
+            self.gpu.context.clone(),
+            size.0,
+            size.1,
+            self.render_settings.shadow_map_size,
+            self.render_settings.shadow_cascade_count,
+        );
         match created {
             Ok(mut view) => {
                 // 新视口启动设置：Scene 从编辑器当前设置出发（网格 / 天空盒），
@@ -5935,6 +5942,7 @@ fn render_settings_json(
         "bloomThreshold": settings.bloom_threshold,
         "chromaticAberration": settings.chromatic_aberration,
         "shadowDistance": settings.shadow_distance,
+        "shadowCascadeCount": settings.shadow_cascade_count,
         "debugRt": settings.debug_rt,
         "wireframe": settings.wireframe,
         "shadedWireframe": settings.shaded_wireframe,
@@ -5988,6 +5996,8 @@ fn render_settings_from_json(
         shadow_distance: f32_field("shadowDistance", base.shadow_distance),
         // #526：贴图边长只在构造渲染器时生效；编辑器 UI 还没暴露滑杆时保持默认。
         shadow_map_size: u32_field("shadowMapSize", base.shadow_map_size),
+        shadow_cascade_count: u32_field("shadowCascadeCount", base.shadow_cascade_count)
+            .clamp(1, 2),
         debug_rt: u32_field("debugRt", base.debug_rt),
         wireframe: value
             .get("wireframe")
@@ -6339,6 +6349,7 @@ mod tests {
         settings.bloom_threshold = 2.5;
         settings.chromatic_aberration = 0.25;
         settings.shadow_distance = 90.0;
+        settings.shadow_cascade_count = 2;
         settings.shaded_wireframe = true;
         let value = render_settings_json(&settings);
         let loaded = render_settings_from_json(&value, false);
@@ -6353,6 +6364,7 @@ mod tests {
         assert_eq!(loaded.bloom_threshold, 2.5);
         assert_eq!(loaded.chromatic_aberration, 0.25);
         assert_eq!(loaded.shadow_distance, 90.0);
+        assert_eq!(loaded.shadow_cascade_count, 2);
         assert!(loaded.shaded_wireframe);
         assert_eq!(
             render_settings_from_json(&serde_json::json!({}), true).show_grid,

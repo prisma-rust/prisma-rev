@@ -258,6 +258,10 @@ pub struct RenderSettings {
     /// [`crate::MIN_SHADOW_MAP_SIZE`] / [`crate::MAX_SHADOW_MAP_SIZE`] 钳制。
     pub shadow_map_size: u32,
 
+    /// 方向光级联数（#526）：`1` = 单张方形阴影图，`2` = 2×1 atlas。
+    /// 与 `shadow_map_size` 一样在构造渲染图时生效。
+    pub shadow_cascade_count: u32,
+
     /// 渲染 众数 光栅化 (PBR) or PathTrace (real-time PT).
     pub render_mode: RenderMode,
 
@@ -291,6 +295,7 @@ impl Default for RenderSettings {
             sharc_scene_scale: 1.0,
             shadow_mode: ShadowMode::Auto,
             shadow_map_size: crate::SHADOW_MAP_SIZE,
+            shadow_cascade_count: 1,
             render_mode: RenderMode::Raster,
             pt_max_bounces: 3,
             pt_ray_max_distance: 1000.0,
@@ -833,6 +838,13 @@ pub struct GraphFrame<'a> {
     /// Light-space view-projection 正交 used by the shadow pass and
     /// by the lighting pass to project 世界 positions into the shadow 映射表
     pub light_view_proj: [[f32; 4]; 4],
+    /// Far-cascade light-space VP (#526 CSM); ignored when
+    /// `shadow_cascade_count <= 1`.
+    pub light_view_proj1: [[f32; 4]; 4],
+    /// Camera-forward distance of the near/far cascade split.
+    pub shadow_split: f32,
+    /// 1 = single shadow map, 2 = two-cascade atlas.
+    pub shadow_cascade_count: u32,
     /// Effective shadow 众数 for this 帧 (after 能力 分辨率
     pub shadow_mode: ShadowMode,
     /// PBR 分量 toggle bitmask (15 bits, see `scene_frag.slang`

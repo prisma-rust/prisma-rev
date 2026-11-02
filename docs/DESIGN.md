@@ -129,7 +129,7 @@
   不再依赖 pass 内显式手工 barrier。状态追踪按 `(handle, image_index, layer_count)` 分帧，
   swapchain recreate 时重置全部 tracked state。
   第一阶段可先过渡：手动依赖表排顺序 + pass 内显式 barrier，行为不变后再启用自动屏障。
-- `ShadowMapPass` 已正确实现 `RenderPassNode`，作为参照，**不动**。
+- `ShadowMapPass` 已正确实现 `RenderPassNode`，作为参照。**#526 CSM**：`shadow_cascade_count = 1` 时分配旧的 `shadow_size²` 单张阴影图；`= 2` 时分配 `2 × shadow_size` 的 2×1 atlas，左右 tile 分别是近/远级联，片元按相机前向深度选级联。atlas 尺寸在构造渲染图时确定，运行中改设置需要重建。
 
 ### 6.3 Pass 拓扑（重构后）
 

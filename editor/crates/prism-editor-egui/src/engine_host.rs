@@ -23,7 +23,7 @@ use prism_engine::asset_resolver::GpuAssetResolver;
 use prism_engine::ecs::{Entity, World};
 use prism_engine::input::InputManager;
 use prism_engine::render_settings::RenderSettings;
-use prism_engine::render_system::{extract_frame_packet_into_with_shadow, FramePacket};
+use prism_engine::render_system::{extract_frame_packet_into_with_shadow_cascades, FramePacket};
 use prism_engine::scene::components::{
     Camera, Hidden, LocalToWorld, LocalTransform, Parent, SceneEntityId,
 };
@@ -118,6 +118,8 @@ impl EngineHost {
         context: Arc<VulkanContext>,
         width: u32,
         height: u32,
+        shadow_map_size: u32,
+        shadow_cascade_count: u32,
     ) -> anyhow::Result<Self> {
         let mut engine = Engine::empty();
         engine.runtime_initialize();
@@ -127,8 +129,15 @@ impl EngineHost {
 
         let width = width.max(1);
         let height = height.max(1);
-        let renderer = GraphRenderer::offscreen_new_with_context(context, width, height, None)
-            .context("create offscreen renderer")?;
+        let renderer = GraphRenderer::offscreen_new_with_context_and_shadow_size(
+            context,
+            width,
+            height,
+            None,
+            shadow_map_size,
+            shadow_cascade_count,
+        )
+        .context("create offscreen renderer")?;
 
         Ok(Self {
             kind,
@@ -837,11 +846,12 @@ impl EngineHost {
         let aspect = self
             .settings
             .render_aspect(self.width as f32 / self.height.max(1) as f32);
-        extract_frame_packet_into_with_shadow(
+        extract_frame_packet_into_with_shadow_cascades(
             self.engine.world_mut(),
             aspect,
             &Mat4::IDENTITY,
             self.settings.shadow_distance,
+            self.settings.shadow_cascade_count,
             &mut self.packet,
         );
         self.packet.settings = self.settings.clone();
@@ -860,11 +870,15 @@ impl EngineHost {
             light_color: scene.light_color.to_array(),
             view: scene.view.to_cols_array_2d(),
             light_view_proj: scene.light_view_proj.to_cols_array_2d(),
+            light_view_proj1: scene.light_view_proj1.to_cols_array_2d(),
+            shadow_split: scene.shadow_split,
+            shadow_cascade_count: scene.shadow_cascade_count,
             tonemap_mode: self.settings.tonemap_mode,
             viewport_size: [extent.width as f32, extent.height as f32],
             exposure: scene.exposure,
             shadow_strength: scene.shadow_strength,
             _pad2: [0.0; 3],
+            _pad3: [0.0; 2],
         };
 
         let input = FrameInput {
@@ -877,6 +891,9 @@ impl EngineHost {
             skybox: self.packet.skybox,
             frame_data: &frame_data,
             light_view_proj: scene.light_view_proj.to_cols_array_2d(),
+            light_view_proj1: scene.light_view_proj1.to_cols_array_2d(),
+            shadow_split: scene.shadow_split,
+            shadow_cascade_count: scene.shadow_cascade_count,
             inv_projection: scene.inv_projection.to_cols_array_2d(),
             debug_flags: self.settings.debug_flags,
             wireframe: self.settings.wireframe,

@@ -75,6 +75,15 @@ fn frame_data(view_proj: [[f32; 4]; 4], view: [[f32; 4]; 4]) -> FrameUBOData {
         exposure: 1.0,
         shadow_strength: 0.0,
         _pad2: [0.0; 3],
+        light_view_proj1: [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        shadow_split: 0.0,
+        shadow_cascade_count: 1,
+        _pad3: [0.0; 2],
     }
 }
 

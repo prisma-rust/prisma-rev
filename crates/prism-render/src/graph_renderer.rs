@@ -105,6 +105,12 @@ pub struct FrameInput<'a> {
     pub skybox: Option<crate::skybox_pass::SkyboxSettings>,
     pub frame_data: &'a FrameUBOData,
     pub light_view_proj: [[f32; 4]; 4],
+    /// Far-cascade light-space VP (#526 CSM).
+    pub light_view_proj1: [[f32; 4]; 4],
+    /// Camera-forward distance of the near/far cascade split.
+    pub shadow_split: f32,
+    /// 1 = single shadow map, 2 = two-cascade atlas.
+    pub shadow_cascade_count: u32,
     pub inv_projection: [[f32; 4]; 4],
     pub debug_flags: u32,
     /// 前向管线线框模式（#431）；设备不支持 `fillModeNonSolid` 时被忽略。
@@ -378,6 +384,7 @@ impl GraphRenderer {
             _env_bytes,
             vsync,
             crate::SHADOW_MAP_SIZE,
+            1,
         )
     }
 
@@ -392,6 +399,7 @@ impl GraphRenderer {
         _env_bytes: Option<Vec<u8>>,
         vsync: bool,
         shadow_map_size: u32,
+        shadow_cascade_count: u32,
     ) -> anyhow::Result<Self> {
         let context = Arc::new(VulkanContext::new(&window_extensions)?);
         let swapchain = Swapchain::new_with_vsync(&context, window, window_handle, vsync)?;
@@ -445,6 +453,7 @@ impl GraphRenderer {
             shadow_mode: resolved,
             shadow_map_size: shadow_map_size
                 .clamp(crate::MIN_SHADOW_MAP_SIZE, crate::MAX_SHADOW_MAP_SIZE),
+            shadow_cascade_count: shadow_cascade_count.clamp(1, 2),
             ray_tracing_enabled: false,
             ..Default::default()
         };
@@ -768,7 +777,7 @@ impl GraphRenderer {
         height: u32,
         env_bytes: Option<Vec<u8>>,
     ) -> anyhow::Result<Self> {
-        Self::offscreen_new_with_shadow_size(width, height, env_bytes, crate::SHADOW_MAP_SIZE)
+        Self::offscreen_new_with_shadow_size(width, height, env_bytes, crate::SHADOW_MAP_SIZE, 1)
     }
 
     /// Like [`Self::offscreen_new`], but with an explicit shadow-map edge length
@@ -778,6 +787,7 @@ impl GraphRenderer {
         height: u32,
         env_bytes: Option<Vec<u8>>,
         shadow_map_size: u32,
+        shadow_cascade_count: u32,
     ) -> anyhow::Result<Self> {
         let context = Arc::new(VulkanContext::new(&[])?);
         Self::offscreen_new_with_context_and_shadow_size(
@@ -786,6 +796,7 @@ impl GraphRenderer {
             height,
             env_bytes,
             shadow_map_size,
+            shadow_cascade_count,
         )
     }
 
@@ -810,6 +821,7 @@ impl GraphRenderer {
             height,
             env_bytes,
             crate::SHADOW_MAP_SIZE,
+            1,
         )
     }
 
@@ -821,6 +833,7 @@ impl GraphRenderer {
         height: u32,
         env_bytes: Option<Vec<u8>>,
         shadow_map_size: u32,
+        shadow_cascade_count: u32,
     ) -> anyhow::Result<Self> {
         let offscreen = OffscreenTarget::new(&context, width, height)?;
         let color_format = offscreen.format();
@@ -839,6 +852,7 @@ impl GraphRenderer {
             shadow_mode: resolver,
             shadow_map_size: shadow_map_size
                 .clamp(crate::MIN_SHADOW_MAP_SIZE, crate::MAX_SHADOW_MAP_SIZE),
+            shadow_cascade_count: shadow_cascade_count.clamp(1, 2),
             ray_tracing_enabled: false,
             ..Default::default()
         };
@@ -2173,6 +2187,9 @@ impl GraphRenderer {
             skybox,
             frame_data,
             light_view_proj,
+            light_view_proj1,
+            shadow_split,
+            shadow_cascade_count,
             inv_projection,
             debug_flags,
             wireframe,
@@ -2201,6 +2218,9 @@ impl GraphRenderer {
         #[cfg(not(feature = "ui"))]
         let _ = ui_overlay;
         let light_view_proj = *light_view_proj;
+        let light_view_proj1 = *light_view_proj1;
+        let shadow_split = *shadow_split;
+        let shadow_cascade_count = *shadow_cascade_count;
         let inv_projection = *inv_projection;
         let debug_flags = *debug_flags;
         let tonemap_mode = *tonemap_mode;
@@ -2247,6 +2267,9 @@ impl GraphRenderer {
                 skybox: *skybox,
                 mesh_manager: &self.mesh_manager,
                 light_view_proj,
+                light_view_proj1,
+                shadow_split,
+                shadow_cascade_count,
                 // 场景里没有投阴影的方向光时整帧跳过阴影 pass。
                 shadow_mode: if *shadows_enabled {
                     self.settings.shadow_mode
@@ -2673,6 +2696,13 @@ impl GraphRenderer {
             Some(c) => c,
             None => return Ok(false),
         };
+        // The shadow atlas was allocated at construction time; clamp the frame
+        // request so a runtime settings edit cannot make the shader sample a
+        // cascade that was never allocated.
+        let mut frame_data = *frame_data;
+        frame_data.shadow_cascade_count = frame_data
+            .shadow_cascade_count
+            .clamp(1, self.settings.shadow_cascade_count.clamp(1, 2));
         let input = FrameInput {
             draw_items,
             gizmos: &[],
@@ -2681,8 +2711,11 @@ impl GraphRenderer {
             particle_items: &[],
             bone_matrices,
             skybox: None,
-            frame_data,
+            frame_data: &frame_data,
             light_view_proj,
+            light_view_proj1: frame_data.light_view_proj1,
+            shadow_split: frame_data.shadow_split,
+            shadow_cascade_count: frame_data.shadow_cascade_count,
             inv_projection,
             debug_flags,
             wireframe,

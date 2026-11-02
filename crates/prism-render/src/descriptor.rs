@@ -288,11 +288,19 @@ pub struct FrameUBOData {
     pub exposure: f32, // offset 252
     /// 阴影强度 = `Light.shadowStrength`（0 = 无阴影，1 = 全强度）。
     ///
-    /// 复用原来的 `_pad2` 槽位，`FrameUBO` 仍是 272 字节；着色器在
-    /// `sample_shadow` 末尾用 `lerp(1, shadow, shadowStrength)` 应用。
+    /// 着色器在 `sample_shadow` 末尾用 `lerp(1, shadow, shadowStrength)` 应用。
     pub shadow_strength: f32, // offset 256
-    /// 补到 272 字节（std140 要求 16 字节对齐）。
+    /// std140 tail pad before the CSM fields.
     pub _pad2: [f32; 3], // offset 260..271
+    /// Far cascade light-space VP (#526 CSM). The shadow map is a 2×1 atlas;
+    /// cascade 0 occupies the left half and this matrix the right half.
+    pub light_view_proj1: [[f32; 4]; 4], // offset 272..335
+    /// Camera-forward distance where cascade 0 ends and cascade 1 starts.
+    pub shadow_split: f32, // offset 336
+    /// 1 = single shadow map (legacy), 2 = two-cascade atlas.
+    pub shadow_cascade_count: u32, // offset 340
+    /// 补到 352 字节（std140 要求 16 字节对齐）。
+    pub _pad3: [f32; 2], // offset 344..351
 }
 
 /// Per-frame UBO 缓冲区 and its 描述符 集合
@@ -308,7 +316,7 @@ pub struct FrameUBO {
 impl FrameUBO {
     /// 创建 a UBO 缓冲区 and 更新 the 描述符 集合 to point to it.
     pub fn new(context: &VulkanContext, descriptor_set: vk::DescriptorSet) -> anyhow::Result<Self> {
-        let size = std::mem::size_of::<FrameUBOData>() as vk::DeviceSize; // 272
+        let size = std::mem::size_of::<FrameUBOData>() as vk::DeviceSize; // 352
 
         let (buffer, memory) = buffer::create_buffer(
             context,
