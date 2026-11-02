@@ -180,6 +180,11 @@ def crate_test_command(crate: str) -> list[str]:
     if has_bin:
         command.append("--bins")
     command.append("--tests")
+    if crate == "prism-render":
+        # 每个 GPU 集成测试都在同一个二进制里自建 `VkInstance` / `VkDevice`。
+        # 并行初始化在 lavapipe 上偶发 SIGSEGV（#847），二进制内串行化；
+        # 其他 crate 仍保持默认并行，避免整体自检变慢。
+        command.extend(["--", "--test-threads=1"])
     return command
 
 

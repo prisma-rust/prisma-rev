@@ -258,12 +258,24 @@ jobs:
           cargo build --locked
           -p prism-ecs -p prism-gfx -p prism-render -p prism-engine -p prism-platform
 
+      # Every GPU integration test creates its own `VkInstance` / `VkDevice`
+      # inside the test binary. On lavapipe, letting several of them initialise
+      # at once intermittently SIGSEGVs at process start, with no Rust stack to
+      # debug (#847). Run `prism-render` tests one at a time inside each binary;
+      # Cargo already runs the binaries sequentially, so the other crates keep
+      # their normal parallelism.
       - name: Test (desktop crates)
         env:
           PRISM_REQUIRE_VALIDATION: "1"
         run: >
           cargo test --locked
-          -p prism-ecs -p prism-gfx -p prism-render -p prism-engine -p prism-platform
+          -p prism-ecs -p prism-gfx -p prism-engine -p prism-platform
+
+      - name: Test (prism-render, serialized GPU tests)
+        env:
+          PRISM_REQUIRE_VALIDATION: "1"
+        run: >
+          cargo test --locked -p prism-render -- --test-threads=1
 
       - name: Upload golden-frame mismatch artifacts
         if: failure()
