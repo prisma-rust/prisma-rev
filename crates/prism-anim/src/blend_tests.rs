@@ -430,3 +430,74 @@ fn an_additive_layer_only_touches_the_joints_it_shares() {
         "未覆盖的关节保持不动"
     );
 }
+
+fn ramp_clip(name: &str, end_x: f32, markers: Vec<f32>) -> Arc<Clip> {
+    Arc::new(Clip {
+        name: name.into(),
+        duration: 1.0,
+        fps: 30.0,
+        looped: true,
+        additive: false,
+        tracks: vec![Track {
+            joint: 0,
+            translation: vec![
+                Vec3Key {
+                    time: 0.0,
+                    value: Vec3::ZERO,
+                },
+                Vec3Key {
+                    time: 1.0,
+                    value: Vec3::new(end_x, 0.0, 0.0),
+                },
+            ],
+            ..Default::default()
+        }],
+        sync_markers: markers,
+        ..Default::default()
+    })
+}
+
+#[test]
+fn blend_space_sync_markers_remap_each_samples_phase() {
+    let reference = Pose::from_locals(vec![JointTransform::IDENTITY]);
+    let mut space = BlendSpace1D::new(
+        vec![
+            BlendSample {
+                position: 0.0,
+                clip: ramp_clip("a", 10.0, vec![0.0, 0.5]),
+            },
+            BlendSample {
+                position: 1.0,
+                clip: ramp_clip("b", 20.0, vec![0.25, 0.75]),
+            },
+        ],
+        reference.clone(),
+    );
+    let mut out = Pose::default();
+    // 只采样 follower：领跑剪辑的 0.25 映射到 follower 的 0.5，所以 x = 20 * 0.5。
+    assert!(space.evaluate_into(1.0, 0.25, &mut out));
+    let x = out.local(0).unwrap().translation.x;
+    assert!((x - 10.0).abs() < 1e-4, "x={x}");
+}
+
+#[test]
+fn blend_space_without_complete_sync_markers_keeps_the_shared_phase() {
+    let reference = Pose::from_locals(vec![JointTransform::IDENTITY]);
+    let mut space = BlendSpace1D::new(
+        vec![
+            BlendSample {
+                position: 0.0,
+                clip: ramp_clip("a", 10.0, vec![0.0, 0.5]),
+            },
+            BlendSample {
+                position: 1.0,
+                clip: ramp_clip("b", 20.0, Vec::new()),
+            },
+        ],
+        reference,
+    );
+    let mut out = Pose::default();
+    assert!(space.evaluate_into(1.0, 0.25, &mut out));
+    let x = out.local(0).unwrap().translation.x;
+    assert!((x - 5.0).abs() < 1e-4, "x={x}");
+}

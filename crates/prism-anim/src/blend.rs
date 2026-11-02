@@ -21,6 +21,7 @@ use glam::{Quat, Vec3};
 use crate::clip::Clip;
 use crate::pose::Pose;
 use crate::skeleton::JointTransform;
+use crate::sync::SyncGroup;
 
 /// 把 `t` 规范化到 `[0, 1]`（NaN → 0）。
 fn clamp_weight(t: f32) -> f32 {
@@ -163,6 +164,8 @@ pub struct BlendSpace1D {
     /// `samples` 的位置轴（与 `samples` 同步排序），每帧求值不再现算一遍。
     positions: Vec<f32>,
     reference: Pose,
+    /// 所有样本都有同步标记时，用第一个样本做领跑剪辑映射相位。
+    sync: Option<SyncGroup>,
     scratch: [Pose; 2],
 }
 
@@ -175,12 +178,29 @@ impl BlendSpace1D {
             .collect();
         samples.sort_by(|a, b| a.position.total_cmp(&b.position));
         let positions = samples.iter().map(|sample| sample.position).collect();
+        let sync = samples
+            .iter()
+            .map(|sample| sample.clip.sync_marker_set())
+            .collect::<Option<Vec<_>>>()
+            .and_then(SyncGroup::new)
+            .filter(|group| group.len() == samples.len());
         Self {
             samples,
             positions,
             reference,
+            sync,
             scratch: [Pose::default(), Pose::default()],
         }
+    }
+
+    /// 样本 `index` 实际使用的归一化相位。
+    ///
+    /// 有同步组时以第一个样本为领跑剪辑，把 phase 映射到每个样本自己的步幅；
+    /// 没有标记 / 标记结构不一致时所有样本共用同一个 phase。
+    fn phase_for(&self, index: usize, phase: f32) -> f32 {
+        self.sync
+            .as_ref()
+            .map_or(phase, |group| group.map_phase(0, index, phase))
     }
 
     /// 采样前重置用的姿态。
@@ -213,6 +233,7 @@ impl BlendSpace1D {
 
         if left == right {
             self.scratch[0].copy_from(&self.reference);
+            let phase = self.phase_for(left, phase);
             if !sample_at_phase(&self.samples[left].clip, phase, &mut self.scratch[0]) {
                 return false;
             }
@@ -222,10 +243,12 @@ impl BlendSpace1D {
 
         self.scratch[0].copy_from(&self.reference);
         self.scratch[1].copy_from(&self.reference);
-        if !sample_at_phase(&self.samples[left].clip, phase, &mut self.scratch[0]) {
+        let left_phase = self.phase_for(left, phase);
+        let right_phase = self.phase_for(right, phase);
+        if !sample_at_phase(&self.samples[left].clip, left_phase, &mut self.scratch[0]) {
             return false;
         }
-        if !sample_at_phase(&self.samples[right].clip, phase, &mut self.scratch[1]) {
+        if !sample_at_phase(&self.samples[right].clip, right_phase, &mut self.scratch[1]) {
             return false;
         }
         blend_into(out, &self.scratch[0], &self.scratch[1], t);

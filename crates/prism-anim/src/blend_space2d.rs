@@ -21,6 +21,7 @@ use std::sync::Arc;
 use crate::blend::{blend_into, sample_at_phase};
 use crate::clip::Clip;
 use crate::pose::Pose;
+use crate::sync::SyncGroup;
 
 /// 二维混合空间的一个采样点：`position` 是参数平面上的坐标，`clip` 是对应剪辑。
 #[derive(Debug, Clone)]
@@ -40,6 +41,8 @@ pub struct BlendSpace2D {
     /// 三角化结果，元素是 `samples` 的下标，三角形按逆时针排列。
     triangles: Vec<[usize; 3]>,
     reference: Pose,
+    /// 所有样本都有同步标记时，用第一个样本做领跑剪辑映射相位。
+    sync: Option<SyncGroup>,
     /// 三个样本姿态 + 一个累加缓冲；每帧复用，避免求值时分配。
     scratch: [Pose; 4],
 }
@@ -66,12 +69,26 @@ impl BlendSpace2D {
             .map(|sample| [sample.position[0] as f64, sample.position[1] as f64])
             .collect();
         let triangles = triangulate(&points);
+        let sync = unique
+            .iter()
+            .map(|sample| sample.clip.sync_marker_set())
+            .collect::<Option<Vec<_>>>()
+            .and_then(SyncGroup::new)
+            .filter(|group| group.len() == unique.len());
         Self {
             samples: unique,
             triangles,
             reference,
+            sync,
             scratch: std::array::from_fn(|_| Pose::default()),
         }
+    }
+
+    /// 样本 `index` 实际使用的归一化相位（同 [`BlendSpace1D`](crate::blend::BlendSpace1D)）。
+    fn phase_for(&self, index: usize, phase: f32) -> f32 {
+        self.sync
+            .as_ref()
+            .map_or(phase, |group| group.map_phase(0, index, phase))
     }
 
     pub fn reference(&self) -> &Pose {
@@ -104,6 +121,7 @@ impl BlendSpace2D {
         for (slot, vertex) in vertices.iter().enumerate() {
             self.scratch[slot].copy_from(&self.reference);
             let sample = &self.samples[*vertex];
+            let phase = self.phase_for(*vertex, phase);
             if !sample_at_phase(&sample.clip, phase, &mut self.scratch[slot]) {
                 return false;
             }
