@@ -2091,6 +2091,15 @@ pub struct Animator {
     pub blend_positions: Vec<f32>,
     /// 混合参数（游戏侧每帧写，通常就是速度）。范围外夹到两端。
     pub blend_parameter: f32,
+    /// 二维混合空间的剪辑路径（#560 P1）。至少 3 项且 `blend_2d_positions`
+    /// 长度一致时**优先于**一维混合空间与 `clip_path`：姿态由参数平面上的
+    /// 位置在样本点之间三角化插值得到。
+    pub blend_2d_clip_paths: Vec<String>,
+    /// 与 [`Self::blend_2d_clip_paths`] 一一对应的参数平面坐标
+    /// （`[x, y]`，通常 x = 速度、y = 方向）。不必排序。
+    pub blend_2d_positions: Vec<[f32; 2]>,
+    /// 二维混合空间的第二个参数轴（y）。范围外夹到样本凸包边界。
+    pub blend_parameter_y: f32,
     /// 叠加（additive）剪辑路径（#560 P1）。空 = 没有叠加层。
     ///
     /// 叠加剪辑的局部变换相对 reference（bind）姿态求差后再按
@@ -2120,6 +2129,9 @@ impl Default for Animator {
             blend_clip_paths: Vec::new(),
             blend_positions: Vec::new(),
             blend_parameter: 0.0,
+            blend_2d_clip_paths: Vec::new(),
+            blend_2d_positions: Vec::new(),
+            blend_parameter_y: 0.0,
             additive_clip_path: String::new(),
             additive_weight: 1.0,
             // 0.2s ≈ UE 的默认混合时间：短到不拖沓，又能盖住大部分姿势差。
@@ -2136,6 +2148,13 @@ impl Animator {
     /// 是否应该走一维混合空间（至少两个剪辑 + 至少两个位置）。
     pub fn uses_blend_space(&self) -> bool {
         self.blend_clip_paths.len() >= 2 && self.blend_positions.len() >= 2
+    }
+
+    /// 是否应该走二维混合空间（至少三个剪辑 + 至少三个位置，且能拼成三角形）。
+    ///
+    /// 只有两个点 / 全部共线时三角化没有面积，运行时会让给一维混合空间。
+    pub fn uses_blend_space_2d(&self) -> bool {
+        self.blend_2d_clip_paths.len() >= 3 && self.blend_2d_positions.len() >= 3
     }
 }
 

@@ -959,3 +959,86 @@ fn a_missing_state_machine_falls_back_to_the_component_clip() {
     let tip = child_tip(&world, entity);
     assert!((tip.y - 1.0).abs() < 1e-4, "回落到 clip_path，得到 {tip:?}");
 }
+
+/// 把实体切成二维混合空间：`(0,0)` = bend（0°）、`(1,0)` / `(0,1)` = bent90（90°）。
+fn use_blend_space_2d(world: &mut World, entity: Entity, x: f32, y: f32) {
+    let animator = world.get_mut::<Animator>(entity).unwrap();
+    animator.blend_2d_clip_paths = vec![
+        "bend.ranim".into(),
+        "bent90.ranim".into(),
+        "bent90.ranim".into(),
+    ];
+    animator.blend_2d_positions = vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
+    animator.blend_parameter = x;
+    animator.blend_parameter_y = y;
+    animator.time = 0.0;
+    animator.playing = false;
+}
+
+#[test]
+fn a_two_dimensional_blend_space_interpolates_on_the_parameter_plane() {
+    let (mut world, entity) = world_with_animator("");
+    install_bent90(&mut world);
+
+    // 原点样本 = bend 的 0s（0°）。
+    use_blend_space_2d(&mut world, entity, 0.0, 0.0);
+    animator_system(&mut world, 0.0);
+    assert_eq!(
+        world.get::<AnimatorPlayhead>(entity).unwrap().clip_path,
+        BLEND_SPACE_2D_KEY,
+        "二维混合空间用自己的播放键"
+    );
+    let tip = child_tip(&world, entity);
+    assert!((tip.y - 1.0).abs() < 1e-4, "样本原点该是 0°，得到 {tip:?}");
+
+    // 沿 x 轴中点：0° 与 90° 各一半 → 45°。
+    use_blend_space_2d(&mut world, entity, 0.5, 0.0);
+    animator_system(&mut world, 0.0);
+    let tip = child_tip(&world, entity);
+    let angle = std::f32::consts::FRAC_PI_4;
+    assert!(
+        (tip.x - (2.0 - angle.sin())).abs() < 1e-3,
+        "x 轴中点该在 45°，得到 {tip:?}"
+    );
+
+    // 两个 90° 样本的边上：仍然是 90°。
+    use_blend_space_2d(&mut world, entity, 0.5, 0.5);
+    animator_system(&mut world, 0.0);
+    let tip = child_tip(&world, entity);
+    assert!((tip.x - 1.0).abs() < 1e-3, "对边该是 90°，得到 {tip:?}");
+}
+
+#[test]
+fn a_two_dimensional_blend_space_needs_an_area_and_falls_back() {
+    let (mut world, entity) = world_with_animator("");
+    install_bent90(&mut world);
+
+    // 只有两个样本：没有三角形，退回单剪辑。
+    {
+        let animator = world.get_mut::<Animator>(entity).unwrap();
+        animator.blend_2d_clip_paths = vec!["bend.ranim".into(), "bent90.ranim".into()];
+        animator.blend_2d_positions = vec![[0.0, 0.0], [1.0, 0.0]];
+        animator.playing = false;
+    }
+    animator_system(&mut world, 0.0);
+    assert_eq!(
+        world.get::<AnimatorPlayhead>(entity).unwrap().clip_path,
+        "bend.ranim"
+    );
+
+    // 三个共线样本：三角化失败，同样退回单剪辑。
+    {
+        let animator = world.get_mut::<Animator>(entity).unwrap();
+        animator.blend_2d_clip_paths = vec![
+            "bend.ranim".into(),
+            "bent90.ranim".into(),
+            "bend.ranim".into(),
+        ];
+        animator.blend_2d_positions = vec![[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]];
+    }
+    animator_system(&mut world, 0.0);
+    assert_eq!(
+        world.get::<AnimatorPlayhead>(entity).unwrap().clip_path,
+        "bend.ranim"
+    );
+}

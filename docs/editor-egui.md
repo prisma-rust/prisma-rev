@@ -418,6 +418,13 @@ cook 阶段把 glTF 的 `skins` / `JOINTS_0` / `WEIGHTS_0` / `animations` 烘成
   16px 条带：灰线是每个样本的位置、金色圆点是**当前参数**，点一下或拖动就直接改
   `blend_parameter`（一次撤销步），拖的同时场景里的角色跟着变 —— 这是唯一能看出「现在落在
   哪两个样本之间」的地方。
+- **二维混合空间**：`blend_2d_clip_paths` / `blend_2d_positions`（`[x, y]` 与剪辑一一对应）/
+  `blend_parameter` / `blend_parameter_y` 组成参数平面（x 通常是速度、y 是方向）。至少 3 个
+  样本且不共线时按 Delaunay 三角化 + 重心插值求姿态，**优先于一维混合空间与 `clip_path`**；
+  参数落在样本凸包外时负权重夹到 0 再归一化（投到最近的边界），不会把角色弹回某个样本。
+  样本不足 / 共线 / 坐标非有限时安静退回一维或单剪辑。检查器里画一块 120px 的参数平面：
+  灰点是样本、金色圆点是当前参数，点 / 拖直接改 `blend_parameter` + `blend_parameter_y`
+  （一次撤销步）。`blend_2d_clip_paths` 已进资产重命名清单。
 - **视口叠加**：工具栏 `Bones`（`Outline` 右边）控制，默认开。选中蒙皮实体时按
   `BonePalette` 还原关节世界位置（`world = palette × inverse_bind⁻¹`），画父 → 子 1.6px
   连线 + 关节圆点（根关节更大）。拖时间轴时叠加层跟着动，因为它读的就是动画系统当帧的

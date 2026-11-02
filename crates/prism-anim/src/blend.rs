@@ -267,7 +267,7 @@ pub fn blend_space_weights(positions: &[f32], at: f32) -> Option<(usize, usize, 
 }
 
 /// 按归一化相位采样一个剪辑（越界循环，`phase` 非有限时当 0）。
-fn sample_at_phase(clip: &Clip, phase: f32, out: &mut Pose) -> bool {
+pub(crate) fn sample_at_phase(clip: &Clip, phase: f32, out: &mut Pose) -> bool {
     let phase = if phase.is_finite() { phase } else { 0.0 };
     let wrapped = phase - phase.floor();
     clip.sample_wrapped_into(clip.duration * wrapped, out)

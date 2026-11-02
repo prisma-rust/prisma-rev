@@ -13,8 +13,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use prism_anim::{
-    palette_to_arrays, AnimParameters, BlendSample, BlendSpace1D, Clip, Pose, Skeleton,
-    StateMachine,
+    palette_to_arrays, AnimParameters, BlendSample, BlendSample2D, BlendSpace1D, BlendSpace2D,
+    Clip, Pose, Skeleton, StateMachine,
 };
 use prism_ecs::{Entity, World};
 use prism_scene::components::{Animator, SkeletonRoot};
@@ -238,6 +238,10 @@ impl AnimatorPlayhead {
 /// 不可能与真实资产路径冲突的标记，进出混合空间就自然地触发一次交叉淡入。
 pub const BLEND_SPACE_KEY: &str = "<blend-space>";
 
+/// 二维混合空间的播放头占位键。与一维的键分开：在一维 / 二维之间切换同样要
+/// 触发一次交叉淡入（它们的姿态来源完全不同）。
+pub const BLEND_SPACE_2D_KEY: &str = "<blend-space-2d>";
+
 /// 推进所有 `Animator` 并重算骨骼矩阵，返回更新过的实体数。
 pub fn animator_system(world: &mut World, dt: f32) -> usize {
     let Some(library) = world.get_resource::<SkeletonLibrary>() else {
@@ -336,10 +340,32 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
             animator.looped
         };
 
-        // 一维混合空间优先（#560 P1）：作者列出的剪辑里至少要有两个真的加载了，
-        // 否则退回单剪辑 —— 少一个样本就少一个自由度，总比整个实体不动好。
+        // 二维混合空间优先（#560 P1）：至少三个样本且能三角化才生效，坐标
+        // 非有限 / 共线时退回一维或单剪辑 —— 少一个自由度总比实体不动好。
+        let mut space_2d: Option<BlendSpace2D> = None;
+        if animator.uses_blend_space_2d() {
+            let samples: Vec<BlendSample2D> = animator
+                .blend_2d_clip_paths
+                .iter()
+                .zip(animator.blend_2d_positions.iter())
+                .filter_map(|(path, position)| {
+                    library.clip(path).map(|clip| BlendSample2D {
+                        position: *position,
+                        clip,
+                    })
+                })
+                .collect();
+            let candidate = BlendSpace2D::new(samples, skeleton.rest_pose());
+            if !candidate.is_empty() {
+                space_2d = Some(candidate);
+            }
+        }
+        let blend_space_2d = space_2d.is_some();
+
+        // 一维混合空间（#560 P1）：作者列出的剪辑里至少要有两个真的加载了，
+        // 否则退回单剪辑。二维生效时不再构建一维样本，避免白算。
         let mut samples: Vec<BlendSample> = Vec::new();
-        if animator.uses_blend_space() {
+        if !blend_space_2d && animator.uses_blend_space() {
             samples = animator
                 .blend_clip_paths
                 .iter()
@@ -352,8 +378,8 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
                 })
                 .collect();
         }
-        let blend_space = samples.len() >= 2;
-        let clip = if blend_space {
+        let blend_space = !blend_space_2d && samples.len() >= 2;
+        let clip = if blend_space_2d || blend_space {
             None
         } else {
             match library.clip(&single_path) {
@@ -361,7 +387,9 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
                 None => continue,
             }
         };
-        let playback_key = if blend_space {
+        let playback_key = if blend_space_2d {
+            BLEND_SPACE_2D_KEY.to_string()
+        } else if blend_space {
             BLEND_SPACE_KEY.to_string()
         } else {
             single_path.clone()
@@ -403,11 +431,19 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
         // 混合空间没有自己的时长：取最长的那条剪辑，短的自然会循环追上。
         let duration = match &clip {
             Some(clip) => clip.duration.max(0.0),
-            None => samples
-                .iter()
-                .map(|sample| sample.clip.duration)
-                .fold(0.0f32, f32::max)
-                .max(0.0),
+            None => {
+                let mut longest = 0.0f32;
+                if let Some(space) = &space_2d {
+                    for sample in space.samples() {
+                        longest = longest.max(sample.clip.duration);
+                    }
+                } else {
+                    for sample in &samples {
+                        longest = longest.max(sample.clip.duration);
+                    }
+                }
+                longest.max(0.0)
+            }
         };
         // 上一帧已经在这个播放内容上时的本地时间：只有它存在才触发 notify ——
         // 刚创建 / 刚换剪辑的第一帧不该把整段剪辑的事件一次性播出来。
@@ -455,8 +491,19 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
                 } else {
                     0.0
                 };
-                let mut space = BlendSpace1D::new(samples.clone(), skeleton.rest_pose());
-                space.evaluate_into(animator.blend_parameter, phase, &mut pose);
+                match &mut space_2d {
+                    Some(space) => {
+                        space.evaluate_into(
+                            [animator.blend_parameter, animator.blend_parameter_y],
+                            phase,
+                            &mut pose,
+                        );
+                    }
+                    None => {
+                        let mut space = BlendSpace1D::new(samples.clone(), skeleton.rest_pose());
+                        space.evaluate_into(animator.blend_parameter, phase, &mut pose);
+                    }
+                }
             }
         }
 
