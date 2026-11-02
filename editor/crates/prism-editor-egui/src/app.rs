@@ -5573,8 +5573,16 @@ impl EditorApp {
         };
 
         let durations: std::collections::HashMap<String, f32> = wanted_clips
+            .iter()
+            .filter_map(|path| library.clip(path).map(|clip| (path.clone(), clip.duration)))
+            .collect();
+        // 时间轴刻度：一次性把关键帧时间点也取过来（剪辑数量很少）。
+        let keys: std::collections::HashMap<String, Vec<f32>> = wanted_clips
             .into_iter()
-            .filter_map(|path| library.clip(&path).map(|clip| (path, clip.duration)))
+            .map(|path| {
+                let times = library.clip_key_times(&path);
+                (path, times)
+            })
             .collect();
         let skeletons: std::collections::HashMap<String, Vec<SkeletonJointRow>> = wanted_skeletons
             .into_iter()
@@ -5592,6 +5600,7 @@ impl EditorApp {
             })
             .collect();
         self.state.clip_durations = durations;
+        self.state.clip_keys = keys;
         self.state.skeleton_joints = skeletons;
     }
 }
