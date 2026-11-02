@@ -79,3 +79,25 @@ nodes: count × {
 
 `flags`：bit0 = looped，bit1 = additive。所有计数都有上限；截断、非法 magic /
 version、未知 kind / flags、越界节点下标和尾随字节都会让解码返回 `None`。
+
+## 运行时求值
+
+`prism_anim::AnimGraphEvaluator` 把 `AnimGraphInfo` 求成 `Pose`：
+
+```rust
+struct Assets { /* 已解码的 Clip / StateMachine */ }
+impl AnimGraphSource for Assets {
+    fn clip(&self, path: &str) -> Option<Arc<Clip>> { /* ... */ }
+    fn state_machine(&self, path: &str) -> Option<Arc<StateMachine>> { /* ... */ }
+}
+
+let mut evaluator = AnimGraphEvaluator::new(graph_info);
+evaluator.parameters_mut().set_float("speed", 4.0);
+let pose = evaluator.evaluate(&assets, &skeleton, dt)?;
+```
+
+- 每个节点每帧只求值一次；ClipPlayer / BlendSpace / StateMachine 各自推进时间。
+- `BlendStack` / `LayeredBlend` 的第一个输入是 base，其余输入按 weight 与骨骼遮罩叠加。
+- `Slot` / `CachedPose` / `Output` 当前是透明传递；Slot 的 Montage 队列是后续切片。
+- StateMachine 节点内部维护当前状态、状态时间和转移交叉淡入；Trigger 按状态机语义消耗。
+- 剪辑 / 状态机缺失、空混合空间、空状态机、成环都返回 `GraphEvalError`，不会 panic。
