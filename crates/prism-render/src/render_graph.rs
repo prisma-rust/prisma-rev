@@ -736,7 +736,8 @@ pub fn post_destination(
 /// - `saturation`: Rec.709 luma interpolation (`1.0` = unchanged, `0.0` = grey);
 /// - `vignette`: corner falloff strength (`0.0` = off, `1.0` = corners black);
 /// - `bloom_intensity`: additive bloom strength (`0.0` = off);
-/// - `bloom_threshold`: HDR luminance above which pixels start blooming.
+/// - `bloom_threshold`: HDR luminance above which pixels start blooming;
+/// - `chromatic_aberration`: radial red/blue split strength (`0.0` = off).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PostGrade {
     pub contrast: f32,
@@ -744,6 +745,7 @@ pub struct PostGrade {
     pub vignette: f32,
     pub bloom_intensity: f32,
     pub bloom_threshold: f32,
+    pub chromatic_aberration: f32,
 }
 
 impl Default for PostGrade {
@@ -754,6 +756,7 @@ impl Default for PostGrade {
             vignette: 0.0,
             bloom_intensity: 0.0,
             bloom_threshold: 1.0,
+            chromatic_aberration: 0.0,
         }
     }
 }
@@ -792,6 +795,11 @@ impl PostGrade {
                 self.bloom_threshold.max(0.0)
             } else {
                 1.0
+            },
+            chromatic_aberration: if self.chromatic_aberration.is_finite() {
+                self.chromatic_aberration.clamp(0.0, 1.0)
+            } else {
+                0.0
             },
         }
     }

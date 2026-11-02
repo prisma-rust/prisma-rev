@@ -11,8 +11,8 @@
 //
 // Push constants: PostPush - `tonemapMode` (0 = Reinhard, 1 = ACES,
 // 2 = passthrough for 2D scenes so the sprite palette survives untouched),
-// `aaMode` (FXAA), `invTexelSize`, the color-grading knobs, and the HDR bloom
-// controls (#502).
+// `aaMode` (FXAA), `invTexelSize`, the color-grading knobs, HDR bloom controls,
+// and the Phase 2 chromatic-aberration strength (#502).
 //
 // Compile:
 //   slangc post.slang -profile spirv_1_5 -target spirv \
@@ -46,6 +46,9 @@ public struct PostPush
     // HDR bloom (#502). `bloomIntensity == 0` skips the extra taps entirely.
     public float bloomIntensity;
     public float bloomThreshold;
+    // Lens chromatic aberration (#502 Phase 2). `0` skips the extra taps and is
+    // bit-identical to the pre-effect path; `1` is the strongest useful amount.
+    public float chromaticAberration;
 };
 [[vk::push_constant]]
 PostPush pc;
@@ -136,7 +139,22 @@ float3 bloom(float2 uv)
 // after this shader, so the values written back are still linear).
 float3 shade(float2 uv)
 {
-    float3 hdr = hdrTex.Sample(uv).rgb;
+    float3 hdr;
+    if (pc.chromaticAberration > 0.0)
+    {
+        // Radial R/B split: zero at the centre, growing toward the frame edge,
+        // like a real lens. The green channel stays centred so the image does
+        // not shift. 0.01 keeps the maximum displacement at ~1% of the frame.
+        float2 offset = (uv - 0.5) * pc.chromaticAberration * 0.01;
+        hdr = float3(
+            hdrTex.Sample(uv + offset).r,
+            hdrTex.Sample(uv).g,
+            hdrTex.Sample(uv - offset).b);
+    }
+    else
+    {
+        hdr = hdrTex.Sample(uv).rgb;
+    }
     if (pc.bloomIntensity > 0.0)
         hdr += bloom(uv) * pc.bloomIntensity;
     return grade(saturate(tonemap(hdr)));

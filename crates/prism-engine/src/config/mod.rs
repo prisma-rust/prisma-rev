@@ -58,6 +58,8 @@ pub struct RenderConfig {
     pub bloom_intensity: Option<f32>,
     /// bloom 亮度阈值（HDR 亮度）。
     pub bloom_threshold: Option<f32>,
+    /// 镜头色差强度（`0.0` = 关，`1.0` = 最强，#502 Phase 2）。
+    pub chromatic_aberration: Option<f32>,
     /// 0 = HDR tonemap, 1 = depth, 2 = view-space normal。
     pub debug_rt: Option<u32>,
     /// 前向管线线框模式（#431）。
@@ -142,6 +144,9 @@ impl RenderConfig {
         if let Some(value) = self.bloom_threshold {
             settings.bloom_threshold = value.max(0.0);
         }
+        if let Some(value) = self.chromatic_aberration {
+            settings.chromatic_aberration = value.clamp(0.0, 1.0);
+        }
         if let Some(rt) = self.debug_rt {
             settings.debug_rt = rt;
         }
@@ -187,6 +192,7 @@ impl RenderConfig {
             bloom: ini.get_bool("render", "bloom"),
             bloom_intensity: ini.get_f32("render", "bloom_intensity"),
             bloom_threshold: ini.get_f32("render", "bloom_threshold"),
+            chromatic_aberration: ini.get_f32("render", "chromatic_aberration"),
             debug_rt: ini.get_u32("render", "debug_rt"),
             wireframe: ini.get_bool("render", "wireframe"),
             shaded_wireframe: ini.get_bool("render", "shaded_wireframe"),
@@ -414,6 +420,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "bloom",
             "bloom_intensity",
             "bloom_threshold",
+            "chromatic_aberration",
             "debug_rt",
             "wireframe",
             "shaded_wireframe",
@@ -535,7 +542,7 @@ mod tests {
         use crate::render_settings::{RenderMode, RenderSettings};
 
         let cfg = AppConfig::from_ini(
-            "[render]\nrender_mode = \"path_trace\"\ntonemap_mode = 1\naa_mode = 1\ncontrast = 1.4\nsaturation = 0.6\nvignette = 0.3\nbloom = true\nbloom_intensity = 0.4\nbloom_threshold = 2.5\nshadow_distance = 120.0\nshadow_map_size = 1024\nwireframe = true\nshaded_wireframe = true\npt_max_bounces = 7\n",
+            "[render]\nrender_mode = \"path_trace\"\ntonemap_mode = 1\naa_mode = 1\ncontrast = 1.4\nsaturation = 0.6\nvignette = 0.3\nbloom = true\nbloom_intensity = 0.4\nbloom_threshold = 2.5\nchromatic_aberration = 0.25\nshadow_distance = 120.0\nshadow_map_size = 1024\nwireframe = true\nshaded_wireframe = true\npt_max_bounces = 7\n",
         );
         let mut settings = RenderSettings::default();
         cfg.render.apply(&mut settings);
@@ -549,6 +556,7 @@ mod tests {
         assert!(settings.bloom);
         assert_eq!(settings.bloom_intensity, 0.4);
         assert_eq!(settings.bloom_threshold, 2.5);
+        assert_eq!(settings.chromatic_aberration, 0.25);
         assert_eq!(settings.pt_max_bounces, 7);
         // #526：阴影覆盖距离与贴图边长都是可配置的质量旋钮。
         assert_eq!(settings.shadow_distance, 120.0);
