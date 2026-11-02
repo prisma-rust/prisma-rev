@@ -216,3 +216,70 @@ fn casters_outside_the_light_frustum_are_not_submitted() {
         "the caster outside the light frustum should be counted as culled"
     );
 }
+
+/// #491：两个相同 mesh / 剔除模式的静态 caster 合并成一次实例化 draw。
+///
+/// `last_casters` 仍是逻辑 caster 数（2），`last_shadow_draw_calls` 必须是 1；
+/// 如果实例化没有生效，这里会是 2。
+#[test]
+fn identical_static_casters_share_one_shadow_draw_call() {
+    let Some(mut renderer) = try_create() else {
+        return;
+    };
+
+    let cube = prism_render::primitives::builtin("__builtin/cube").expect("builtin cube");
+    let mesh = renderer.register_mesh(&cube).expect("register cube");
+
+    let mut left = caster(mesh);
+    left.entity_id = 1;
+    left.model[3] = [-0.5, 0.0, 0.0, 1.0];
+    let mut right = caster(mesh);
+    right.entity_id = 2;
+    right.model[3] = [0.5, 0.0, 0.0, 1.0];
+
+    let mut data = frame_data();
+    data.light_view_proj = IDENTITY;
+    data.light_view_proj1 = IDENTITY;
+    data.shadow_cascade_count = 1;
+
+    renderer
+        .render(
+            &[left, right],
+            &data,
+            IDENTITY,
+            IDENTITY,
+            0,
+            2,
+            0,
+            0,
+            1.0,
+            0.0,
+            &[],
+            RenderMode::Raster,
+            0,
+            0.0,
+            0,
+            1.0,
+            &[],
+            PostGrade::default(),
+            false,
+            false,
+            &[],
+        )
+        .expect("shadow instancing render failed");
+
+    let shadow_pass = renderer
+        .graph()
+        .pass_ref::<ShadowMapPass>()
+        .expect("shadow pass is registered");
+    assert_eq!(
+        shadow_pass.last_casters(),
+        (2, 0),
+        "both static casters are logically submitted"
+    );
+    assert_eq!(
+        shadow_pass.last_shadow_draw_calls(),
+        1,
+        "identical casters should share one instanced draw"
+    );
+}

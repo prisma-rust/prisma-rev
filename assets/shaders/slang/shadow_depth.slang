@@ -64,9 +64,15 @@ float4x4 blendBones(uint4 joints, float4 weights)
 }
 
 [shader("vertex")]
-float4 vertexMain(MeshVertexIn in) : SV_Position
+float4 vertexMain(MeshVertexIn in, uint instanceID : SV_InstanceID) : SV_Position
 {
-    float4 worldPos = mul(push.model, float4(in.position, 1.0));
+    // #491: static shadow casters can share one instanced draw. Instance
+    // matrices are packed after the bone palette in the same SSBO; `_pad.y`
+    // is the instance count, so 0 keeps the per-draw push model.
+    float4x4 model = push.model;
+    if (push._pad.y > 0u)
+        model = bones[push._pad.x + instanceID];
+    float4 worldPos = mul(model, float4(in.position, 1.0));
     return mul(push.lightViewProj, worldPos);
 }
 
