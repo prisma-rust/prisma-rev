@@ -265,6 +265,14 @@ jobs:
           cargo test --locked
           -p prism-ecs -p prism-gfx -p prism-render -p prism-engine -p prism-platform
 
+      - name: Upload golden-frame mismatch artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-frame-artifacts
+          path: target/golden-frames/
+          if-no-files-found: ignore
+
   # ---------------------------------------------------------------------------
   # 3. Slang shaders: compile to SPIR-V + reflection, then verify the committed
   #    Rust bindings match freshly-generated ones (drift guard).

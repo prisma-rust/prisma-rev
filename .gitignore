@@ -28,6 +28,7 @@ android/app/src/main/jniLibs/
 *.png
 !launcher/src-tauri/icons/*.png
 !launcher/src-tauri/gen/android/app/src/main/res/**/*.png
+!crates/prism-render/tests/goldens/*.png
 # User-project art assets are build inputs too (fishing slice sprites).
 # Fishing art is generated locally by scripts/gen_placeholder_sprites.py, which
 # reads its file list from assets/lake_layers.json; run it with `--check` to

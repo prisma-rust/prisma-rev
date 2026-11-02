@@ -602,8 +602,8 @@ impl ForwardPass {
         self.frame_sets.clear();
 
         let fif_count = frame_ubo_buffers.len();
-        // 池 needs: UNIFORM_BUFFER fif_count, STORAGE_BUFFER for materials fif_count,
-        // STORAGE_BUFFER for lights fif_count = 2*fif_count 总计 STORAGE_BUFFER.
+        // 池 needs: UNIFORM_BUFFER fif_count, plus three STORAGE_BUFFER
+        // bindings per set (materials, point lights, bone palette).
         let frame_pool = unsafe {
             device.create_descriptor_pool(
                 &vk::DescriptorPoolCreateInfo::default()
@@ -615,7 +615,7 @@ impl ForwardPass {
                         },
                         vk::DescriptorPoolSize {
                             ty: vk::DescriptorType::STORAGE_BUFFER,
-                            descriptor_count: (fif_count * 2) as u32,
+                            descriptor_count: (fif_count * 3) as u32,
                         },
                     ]),
                 None,
