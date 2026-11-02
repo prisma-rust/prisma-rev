@@ -1974,6 +1974,9 @@ pub struct Rigidbody {
     pub linear_damping: f32,
     pub angular_damping: f32,
     pub use_gravity: bool,
+    /// 连续碰撞检测（CCD）：快速移动的刚体也不会穿过薄碰撞体。
+    /// 只对 `Dynamic` 刚体有意义；默认关闭。
+    pub ccd: bool,
 }
 
 impl Default for Rigidbody {
@@ -1984,6 +1987,7 @@ impl Default for Rigidbody {
             linear_damping: 0.0,
             angular_damping: 0.05,
             use_gravity: true,
+            ccd: false,
         }
     }
 }

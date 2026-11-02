@@ -83,6 +83,7 @@ pub struct BodySettings {
     pub linear_damping: f32,
     pub angular_damping: f32,
     pub use_gravity: bool,
+    pub ccd: bool,
 }
 
 impl Default for BodySettings {
@@ -92,6 +93,7 @@ impl Default for BodySettings {
             linear_damping: 0.0,
             angular_damping: 0.05,
             use_gravity: true,
+            ccd: false,
         }
     }
 }
@@ -196,7 +198,8 @@ pub fn physics_thread_main(step_rx: Receiver<PhysicsStep>, result_tx: Sender<Phy
                         .pose(array_to_pose(position, rotation))
                         .linear_damping(settings.linear_damping.max(0.0))
                         .angular_damping(settings.angular_damping.max(0.0))
-                        .gravity_scale(if settings.use_gravity { 1.0 } else { 0.0 });
+                        .gravity_scale(if settings.use_gravity { 1.0 } else { 0.0 })
+                        .ccd_enabled(settings.ccd);
                     if body_status == PhysicsBodyStatus::Dynamic {
                         // Collider density is 0 for dynamic bodies, so the authored
                         // mass is the whole mass (instead of volume + mass).
@@ -611,6 +614,7 @@ fn body_settings(body: &Rigidbody) -> BodySettings {
         linear_damping: body.linear_damping,
         angular_damping: body.angular_damping,
         use_gravity: body.use_gravity,
+        ccd: body.ccd,
     }
 }
 
@@ -904,6 +908,67 @@ mod tests {
         assert!(
             (world_position.x - 10.0).abs() < 1.0e-3,
             "child should stay under its parent at world x=10, got {world_position:?}"
+        );
+    }
+
+    /// #522：CCD 让高速下落的球不会穿过薄地板。
+    #[test]
+    fn ccd_stops_a_fast_body_on_a_thin_floor() {
+        let mut world = World::new();
+        let floor = world.spawn();
+        world.insert(floor, LocalTransform::default());
+        world.insert(
+            floor,
+            Rigidbody {
+                body_type: BodyType::Static,
+                ..Default::default()
+            },
+        );
+        world.insert(
+            floor,
+            Collider {
+                half_extents: [5.0, 0.02, 5.0],
+                ..Default::default()
+            },
+        );
+
+        let ball = world.spawn();
+        world.insert(
+            ball,
+            LocalTransform {
+                position: glam::Vec3::new(0.0, 20.0, 0.0),
+                ..Default::default()
+            },
+        );
+        world.insert(
+            ball,
+            Rigidbody {
+                ccd: true,
+                ..Default::default()
+            },
+        );
+        world.insert(
+            ball,
+            Collider {
+                shape: ColliderShape::Sphere,
+                radius: 0.2,
+                ..Default::default()
+            },
+        );
+
+        let mut runtime = PhysicsRuntime::spawn();
+        for _ in 0..360 {
+            assert!(runtime.step(&mut world));
+        }
+
+        let y = world
+            .get::<LocalTransform>(ball)
+            .expect("ball transform")
+            .position
+            .y;
+        assert!(
+            (0.1..0.5).contains(&y),
+            "CCD should stop the ball on the thin floor, got y={y}"
         );
     }
 
