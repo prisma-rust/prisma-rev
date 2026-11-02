@@ -225,6 +225,87 @@ fn sculpt_ignores_invalid_parameters_and_raw_round_trips() {
 }
 
 #[test]
+fn vegetation_scatter_follows_the_heightfield_and_shares_one_mesh() {
+    let mut world = prism_ecs::World::new();
+    let entity = world.spawn();
+    world.insert(
+        entity,
+        Terrain {
+            size: [10.0, 10.0],
+            chunks: 1,
+            lod_distances: Vec::new(),
+            vegetation_density: 100.0,
+            vegetation_size: 2.0,
+            ..Terrain::default()
+        },
+    );
+    world.insert(entity, MeshRenderer::default());
+
+    terrain_system(&mut world);
+
+    let plants: Vec<(prism_ecs::Entity, TerrainVegetation)> = world
+        .query::<TerrainVegetation>()
+        .map(|(plant_entity, plant)| (plant_entity, plant.clone()))
+        .collect();
+    assert_eq!(plants.len(), 100, "density 100 × 100 m² / 100");
+    let meshes = world.get_resource::<ProceduralMeshes>().expect("meshes");
+    let mesh_path = plants[0].1.mesh_path.clone();
+    assert!(meshes.get(&mesh_path).is_some());
+    for (plant_entity, plant) in &plants {
+        assert_eq!(plant.mesh_path, mesh_path, "all instances share one mesh");
+        let transform = world
+            .get::<LocalTransform>(*plant_entity)
+            .expect("plant transform");
+        assert!(transform.position.y.abs() < 1e-5, "flat terrain");
+        assert!((1.5..=2.5).contains(&transform.scale.x));
+        assert!(world.get::<MeshRef>(*plant_entity).is_some());
+    }
+
+    // 参数变化：重建，数量跟着密度走，旧实例回收。
+    world.get_mut::<Terrain>(entity).unwrap().vegetation_density = 50.0;
+    terrain_system(&mut world);
+    assert_eq!(world.query::<TerrainVegetation>().count(), 50);
+}
+
+#[test]
+fn vegetation_and_its_procedural_mesh_are_removed_with_the_terrain() {
+    let mut world = prism_ecs::World::new();
+    let entity = world.spawn();
+    world.insert(
+        entity,
+        Terrain {
+            chunks: 1,
+            lod_distances: Vec::new(),
+            vegetation_density: 20.0,
+            ..Terrain::default()
+        },
+    );
+    terrain_system(&mut world);
+    let path = world
+        .query::<TerrainVegetation>()
+        .next()
+        .map(|(_, plant)| plant.mesh_path.clone())
+        .expect("plants");
+
+    world.despawn(entity);
+    terrain_system(&mut world);
+
+    assert_eq!(world.query::<TerrainVegetation>().count(), 0);
+    assert!(world
+        .get_resource::<ProceduralMeshes>()
+        .is_none_or(|meshes| meshes.get(&path).is_none()));
+}
+
+#[test]
+fn the_default_vegetation_mesh_is_a_unit_cross_quad() {
+    let mesh = vegetation_cross_mesh();
+    assert_eq!(mesh.positions.len(), 8);
+    assert_eq!(mesh.indices.len(), 12);
+    assert!(mesh.positions.iter().all(|position| position[1] >= 0.0));
+    assert!(mesh.positions.iter().any(|position| position[1] == 1.0));
+}
+
+#[test]
 fn the_terrain_key_changes_with_the_parameters() {
     let base = Terrain::default();
     let key = terrain_key(1, &base);
