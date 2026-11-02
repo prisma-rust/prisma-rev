@@ -25,8 +25,9 @@ use prism_engine::input::InputManager;
 use prism_engine::render_settings::RenderSettings;
 use prism_engine::render_system::{extract_frame_packet_into_with_shadow, FramePacket};
 use prism_engine::scene::components::{
-    Camera, Hidden, LocalToWorld, LocalTransform, SceneEntityId,
+    Camera, Hidden, LocalToWorld, LocalTransform, Parent, SceneEntityId,
 };
+use prism_engine::ui::ComputedLayout;
 use prism_engine::Engine;
 use prism_render::descriptor::FrameUBOData;
 use prism_render::{FrameInput, GraphRenderer, VulkanContext};
@@ -296,6 +297,23 @@ impl EngineHost {
 
     pub fn entities(&self) -> &[Entity] {
         &self.entities
+    }
+
+    /// 文档下标对应的 UI 屏幕矩形，以及它用来定位的父矩形（#429）。
+    ///
+    /// 两者都在离屏目标的像素空间里，和引擎 `ComputedLayout` 同一套坐标。
+    /// 父级不是 UI 节点（没有 `ComputedLayout`）时退回整个屏幕；根节点同理。
+    pub fn ui_rect(&self, index: usize) -> Option<([f32; 4], [f32; 4])> {
+        let world = self.engine.world();
+        let entity = *self.entities.get(index)?;
+        let layout = world.get::<ComputedLayout>(entity)?;
+        let root = [0.0, 0.0, self.width as f32, self.height as f32];
+        let parent = world
+            .get::<Parent>(entity)
+            .and_then(|parent| world.get::<ComputedLayout>(parent.0))
+            .map(|layout| layout.rect)
+            .unwrap_or(root);
+        Some((layout.rect, parent))
     }
 
     /// 离屏渲染目标尺寸（Game view 的「绘图区像素」，与面板逻辑像素不同）。
@@ -760,11 +778,17 @@ impl EngineHost {
         // 那两步：层级传播 + 资产上传。否则 `LocalToWorld` 停在加载时的值，
         // `SpriteRef::generation == 0` 又会让 2D 渲染系统把所有精灵过滤掉 ——
         // 编辑态的 Scene / Game 视图就只剩清屏色（#579）。
+        self.engine
+            .world_mut()
+            .insert_resource(prism_engine::ui::ScreenSize::new(self.width, self.height));
         if !self.simulate {
             prism_engine::scene::systems::hierarchy::hierarchy_system(self.engine.world_mut());
             prism_engine::scene::systems::hierarchy::active_hierarchy_system(
                 self.engine.world_mut(),
             );
+            // 编辑态不跑 `update()`，但 Scene 视图的锚点手柄需要最新的
+            // `ComputedLayout`（#429）。布局是派生数据，重算不会改文档。
+            prism_engine::ui::ui_layout_system(self.engine.world_mut());
         }
         self.pump_assets();
         // #613：内部渲染分辨率与游戏进程走同一条路径，编辑器 Game 视图看到的

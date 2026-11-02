@@ -19,6 +19,9 @@ use prism_editor_core::{viewport_math as vm, SelectMode, TransformJson, Workspac
 use prism_engine::input::{ElementState, KeyCode, MouseButton};
 
 use crate::engine_host::{EngineHost, ViewKind};
+use crate::ui_gizmo::{
+    anchor_handles, anchors_from_drag, hit_handle, UiAnchorHandle, HANDLE_RADIUS,
+};
 
 fn pan_camera(camera: &mut prism_editor_core::workspace::OrbitCamera, dx: f32, dy: f32) {
     let (sin_yaw, cos_yaw) = camera.yaw.sin_cos();
@@ -420,6 +423,20 @@ struct GizmoDrag {
     applied: f32,
 }
 
+/// Scene 视图里正在拖动的 UI 锚点手柄（#429）。
+///
+/// 拖动过程只改这里的 `anchors` 预览；松开时才写一次文档（一个撤销步），
+/// 避免每帧都往撤销栈里塞一条。
+struct UiAnchorDrag {
+    index: usize,
+    handle: UiAnchorHandle,
+    anchors: [f32; 4],
+    start_anchors: [f32; 4],
+    /// 父矩形 / 元素当前矩形（引擎像素空间），用来补偿边距。
+    parent: [f32; 4],
+    rect: [f32; 4],
+}
+
 /// 一个视口面板的状态。
 pub struct ViewportState {
     pub host: EngineHost,
@@ -438,6 +455,7 @@ pub struct ViewportState {
     /// 当前 gizmo 工具（W / E / R）。
     pub tool: GizmoTool,
     gizmo: Option<GizmoDrag>,
+    ui_drag: Option<UiAnchorDrag>,
     orbit_last_pos: Option<egui::Pos2>,
     /// 框选起点 / 当前点（视口局部坐标）。
     box_start: Option<egui::Pos2>,
@@ -484,6 +502,7 @@ impl ViewportState {
             fps_window_frames: 0,
             tool: GizmoTool::Translate,
             gizmo: None,
+            ui_drag: None,
             orbit_last_pos: None,
             box_start: None,
             box_current: None,
@@ -1168,6 +1187,8 @@ impl ViewportState {
             // sprite 的真实矩形（#643）：AABB 描边对 2D 物体太大，这里按
             // `frame_size / pixels_per_unit` 与轴心画出真正会被绘制的那块。
             self.draw_sprite_rects(&painter, rect, workspace, &frame);
+            // UI 元素没有世界包围盒：画它在屏幕上的真实矩形与锚点手柄（#429）。
+            self.draw_ui_rects(&painter, rect, workspace, self.extent);
             // 引擎的 SceneView Gizmos：相机画视锥、光源画图标（点选图标 = 选中对象）。
             icon_hits = self.draw_component_icons(&painter, rect, workspace, &frame);
             self.draw_gizmo(&painter, rect, workspace, &frame);
@@ -1194,7 +1215,10 @@ impl ViewportState {
         {
             if let Some(pos) = response.interact_pointer_pos() {
                 let local = local_of(pos);
-                if !self.begin_gizmo_drag(workspace, &frame, rect, local)
+                // UI 锚点手柄优先于世界 gizmo / 框选（#429）。
+                self.ui_drag = self.ui_handle_at(workspace, rect, self.extent, pos);
+                if self.ui_drag.is_none()
+                    && !self.begin_gizmo_drag(workspace, &frame, rect, local)
                     && !alt
                     && response.dragged_by(egui::PointerButton::Primary)
                 {
@@ -1211,7 +1235,12 @@ impl ViewportState {
         {
             if let Some(pos) = response.interact_pointer_pos() {
                 let local = local_of(pos);
-                if self.gizmo.is_some() {
+                let extent = self.extent;
+                if let Some(drag) = self.ui_drag.as_mut() {
+                    let parent_rect = Self::ui_rect_to_viewport(drag.parent, rect, extent);
+                    drag.anchors =
+                        anchors_from_drag(drag.handle, pos, parent_rect, drag.anchors, ctrl);
+                } else if self.gizmo.is_some() {
                     if self.gizmo_drag_step(
                         workspace,
                         &frame,
@@ -1290,6 +1319,20 @@ impl ViewportState {
         }
 
         if response.drag_stopped_by(egui::PointerButton::Primary) {
+            // UI 锚点拖动只在松手时写一次文档：一个撤销步，不会每帧压栈（#429）。
+            if let Some(drag) = self.ui_drag.take() {
+                if drag.anchors != drag.start_anchors
+                    && workspace.set_ui_anchors_preserving_rect(
+                        drag.index,
+                        drag.anchors,
+                        drag.parent,
+                        drag.rect,
+                    )
+                {
+                    document_changed = true;
+                    self.dirty = true;
+                }
+            }
             // 框选落定：一次写入选中集合（与引擎的矩形选择一致）。
             if let (Some(start), Some(end)) = (self.box_start.take(), self.box_current.take()) {
                 let selection_rect = egui::Rect::from_two_pos(start, end);
@@ -1442,6 +1485,149 @@ impl ViewportState {
         );
 
         ViewportResponse { document_changed }
+    }
+
+    /// 文档里的 UI `Style`（只处理真的有该组件的实体）。
+    fn ui_style<'a>(
+        &self,
+        workspace: &'a Workspace,
+        index: usize,
+    ) -> Option<&'a serde_json::Value> {
+        workspace
+            .document()
+            .doc
+            .entities
+            .get(index)?
+            .components
+            .get("prism_engine::ui::Style")
+    }
+
+    /// 当前锚点，缺字段时用引擎 `Style` 的默认值（STRETCH）。
+    fn ui_anchors(style: &serde_json::Value) -> [f32; 4] {
+        let number = |field: &str, fallback: f32| {
+            style
+                .get("anchors")
+                .and_then(|anchors| anchors.get(field))
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(fallback as f64) as f32
+        };
+        [
+            number("min_x", 0.0),
+            number("min_y", 0.0),
+            number("max_x", 1.0),
+            number("max_y", 1.0),
+        ]
+    }
+
+    /// 引擎像素空间 → 视口 points。
+    fn ui_rect_to_viewport(ui_rect: [f32; 4], rect: Rect, extent: (u32, u32)) -> Rect {
+        let sx = rect.width() / extent.0.max(1) as f32;
+        let sy = rect.height() / extent.1.max(1) as f32;
+        Rect::from_min_size(
+            rect.min + egui::vec2(ui_rect[0] * sx, ui_rect[1] * sy),
+            egui::vec2(ui_rect[2] * sx, ui_rect[3] * sy),
+        )
+    }
+
+    /// 光标命中的 UI 锚点手柄（#429）。只查选中的 UI 元素。
+    fn ui_handle_at(
+        &self,
+        workspace: &Workspace,
+        rect: Rect,
+        extent: (u32, u32),
+        pointer: egui::Pos2,
+    ) -> Option<UiAnchorDrag> {
+        if self.kind() != ViewKind::Scene {
+            return None;
+        }
+        for index in &workspace.selection {
+            if workspace.is_entity_hidden(*index) {
+                continue;
+            }
+            let Some(style) = self.ui_style(workspace, *index) else {
+                continue;
+            };
+            let Some((ui_rect, parent)) = self.host.ui_rect(*index) else {
+                continue;
+            };
+            let parent_rect = Self::ui_rect_to_viewport(parent, rect, extent);
+            let anchors = self
+                .ui_drag
+                .as_ref()
+                .filter(|drag| drag.index == *index)
+                .map(|drag| drag.anchors)
+                .unwrap_or_else(|| Self::ui_anchors(style));
+            let handles = anchor_handles(anchors, parent_rect);
+            let Some(handle) = hit_handle(&handles, pointer) else {
+                continue;
+            };
+            return Some(UiAnchorDrag {
+                index: *index,
+                handle,
+                anchors,
+                start_anchors: anchors,
+                parent,
+                rect: ui_rect,
+            });
+        }
+        None
+    }
+
+    /// 选中 UI 元素的矩形 + 锚点手柄（#429）。
+    fn draw_ui_rects(
+        &self,
+        painter: &egui::Painter,
+        rect: Rect,
+        workspace: &Workspace,
+        extent: (u32, u32),
+    ) {
+        use egui::Color32;
+
+        if workspace.selection.is_empty() || self.kind() != ViewKind::Scene {
+            return;
+        }
+        let accent = Color32::from_rgb(90, 200, 255);
+        let active = Color32::from_rgb(255, 196, 90);
+        let stroke = egui::Stroke::new(1.2_f32, accent);
+
+        for index in &workspace.selection {
+            if workspace.is_entity_hidden(*index) {
+                continue;
+            }
+            let Some(style) = self.ui_style(workspace, *index) else {
+                continue;
+            };
+            let Some((ui_rect, parent)) = self.host.ui_rect(*index) else {
+                continue;
+            };
+            let active_drag = self.ui_drag.as_ref().filter(|drag| drag.index == *index);
+            let anchors = active_drag
+                .map(|drag| drag.anchors)
+                .unwrap_or_else(|| Self::ui_anchors(style));
+            let view_rect = Self::ui_rect_to_viewport(ui_rect, rect, extent);
+            let parent_rect = Self::ui_rect_to_viewport(parent, rect, extent);
+
+            painter.rect_stroke(
+                view_rect,
+                egui::CornerRadius::ZERO,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            for (handle, position) in anchor_handles(anchors, parent_rect) {
+                let selected = active_drag.is_some_and(|drag| drag.handle == handle);
+                let color = if selected { active } else { accent };
+                let size = HANDLE_RADIUS * 2.0;
+                let handle_rect =
+                    egui::Rect::from_center_size(position, egui::vec2(size, size));
+                painter.rect_filled(handle_rect, egui::CornerRadius::ZERO, color);
+                painter.rect_stroke(
+                    handle_rect,
+                    egui::CornerRadius::ZERO,
+                    egui::Stroke::new(1.0_f32, Color32::from_gray(24)),
+                    egui::StrokeKind::Inside,
+                );
+            }
+        }
     }
 
     /// 选中对象的包围盒线框（#487 的低成本版）。
@@ -2402,6 +2588,17 @@ mod tests {
 
         let middle = game_cursor(rect, rect.center(), extent);
         assert_eq!(middle, [extent.0 as f32 / 2.0, extent.1 as f32 / 2.0]);
+    }
+
+    #[test]
+    fn ui_rects_map_from_engine_pixels_to_panel_points() {
+        let panel = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(400.0, 200.0));
+        let mapped =
+            ViewportState::ui_rect_to_viewport([100.0, 50.0, 200.0, 100.0], panel, (800, 400));
+        assert_eq!(
+            mapped,
+            Rect::from_min_size(Pos2::new(60.0, 45.0), Vec2::new(100.0, 50.0))
+        );
     }
 
     #[test]

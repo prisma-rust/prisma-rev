@@ -21,6 +21,7 @@ mod project_module;
 mod screenshot;
 mod selection_history;
 mod theme;
+mod ui_gizmo;
 mod ui_tree;
 mod viewport;
 mod widgets;

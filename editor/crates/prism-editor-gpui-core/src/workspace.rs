@@ -3280,6 +3280,117 @@ impl Workspace {
         document.dirty = true;
     }
 
+    /// 改 UI 锚点，同时补偿边距 / 固定尺寸，让元素**视觉矩形不动**（#429）。
+    ///
+    /// Unity 的非 raw 模式就是这个语义：拖锚点只改变「相对父级的定位规则」，
+    /// 不会让已经摆好的元素跳走。`rect` / `parent` 都是引擎 `ComputedLayout`
+    /// 的像素空间；点锚点轴没有显式宽/高时，把当前宽度写成固定值，
+    /// 否则布局系统会按「锚点间距 - 边距」算出 0。
+    pub fn set_ui_anchors_preserving_rect(
+        &mut self,
+        index: usize,
+        anchors: [f32; 4],
+        parent: [f32; 4],
+        rect: [f32; 4],
+    ) -> bool {
+        const STYLE: &str = "prism_engine::ui::Style";
+        if parent[2] <= 0.0 || parent[3] <= 0.0 {
+            return false;
+        }
+        let [min_x, min_y, max_x, max_y] = anchors.map(|value| value.clamp(0.0, 1.0));
+        self.edit("调整 UI 锚点", |document| {
+            let Some(style) = document
+                .doc
+                .entities
+                .get_mut(index)
+                .and_then(|entity| entity.components.get_mut(STYLE))
+            else {
+                return false;
+            };
+            if !style.is_object() {
+                *style = serde_json::json!({});
+            }
+            let object = style.as_object_mut().expect("style object");
+
+            let width = object
+                .get("width")
+                .and_then(Value::as_f64)
+                .map(|value| value as f32);
+            let height = object
+                .get("height")
+                .and_then(Value::as_f64)
+                .map(|value| value as f32);
+            let pivot = |axis: &str| {
+                object
+                    .get("pivot")
+                    .and_then(|pivot| pivot.get(axis))
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.5) as f32
+            };
+            let (pivot_x, pivot_y) = (pivot("x"), pivot("y"));
+
+            let anchor_left = parent[0] + min_x * parent[2];
+            let anchor_right = parent[0] + max_x * parent[2];
+            let anchor_top = parent[1] + min_y * parent[3];
+            let anchor_bottom = parent[1] + max_y * parent[3];
+            let stretched_x = (max_x - min_x).abs() > 1e-6;
+            let stretched_y = (max_y - min_y).abs() > 1e-6;
+
+            let (margin_left, margin_right, new_width) = if stretched_x {
+                (
+                    rect[0] - anchor_left,
+                    anchor_right - (rect[0] + rect[2]),
+                    width,
+                )
+            } else {
+                let width = width.unwrap_or(rect[2]);
+                (rect[0] - anchor_left + pivot_x * width, 0.0, Some(width))
+            };
+            let (margin_top, margin_bottom, new_height) = if stretched_y {
+                (
+                    rect[1] - anchor_top,
+                    anchor_bottom - (rect[1] + rect[3]),
+                    height,
+                )
+            } else {
+                let height = height.unwrap_or(rect[3]);
+                (rect[1] - anchor_top + pivot_y * height, 0.0, Some(height))
+            };
+
+            if let Some(width) = new_width {
+                object.insert("width".to_string(), serde_json::json!(width));
+            }
+            if let Some(height) = new_height {
+                object.insert("height".to_string(), serde_json::json!(height));
+            }
+
+            let anchors_value = object
+                .entry("anchors".to_string())
+                .or_insert_with(|| serde_json::json!({}));
+            if !anchors_value.is_object() {
+                *anchors_value = serde_json::json!({});
+            }
+            let anchors_value = anchors_value.as_object_mut().expect("anchors object");
+            anchors_value.insert("min_x".to_string(), serde_json::json!(min_x));
+            anchors_value.insert("min_y".to_string(), serde_json::json!(min_y));
+            anchors_value.insert("max_x".to_string(), serde_json::json!(max_x));
+            anchors_value.insert("max_y".to_string(), serde_json::json!(max_y));
+
+            let margin = object
+                .entry("margin".to_string())
+                .or_insert_with(|| serde_json::json!({}));
+            if !margin.is_object() {
+                *margin = serde_json::json!({});
+            }
+            let margin = margin.as_object_mut().expect("margin object");
+            margin.insert("left".to_string(), serde_json::json!(margin_left));
+            margin.insert("right".to_string(), serde_json::json!(margin_right));
+            margin.insert("top".to_string(), serde_json::json!(margin_top));
+            margin.insert("bottom".to_string(), serde_json::json!(margin_bottom));
+            true
+        })
+    }
+
     /// 某个组件的预设名（按保存顺序）。
     pub fn component_preset_names(&self, component: &str) -> Vec<String> {
         self.component_presets
@@ -5271,6 +5382,99 @@ mod tests {
             workspace.document().doc.entities[0].components["test::Rig"]["speed"],
             serde_json::json!(9.0)
         );
+    }
+
+    #[test]
+    fn dragging_a_point_anchor_preserves_the_visual_rect() {
+        let mut workspace = Workspace::sample();
+        workspace.document_mut().doc.entities[0].components.insert(
+            "prism_engine::ui::Style".to_string(),
+            json!({
+                "width": 100.0,
+                "height": 50.0,
+                "anchors": {"min_x": 0.5, "min_y": 0.5, "max_x": 0.5, "max_y": 0.5},
+                "pivot": {"x": 0.5, "y": 0.5},
+                "margin": {"left": 0.0, "right": 0.0, "top": 0.0, "bottom": 0.0}
+            }),
+        );
+        let undo_before = workspace.undo_history().len();
+
+        assert!(workspace.set_ui_anchors_preserving_rect(
+            0,
+            [0.25, 0.25, 0.25, 0.25],
+            [0.0, 0.0, 1000.0, 500.0],
+            [450.0, 225.0, 100.0, 50.0],
+        ));
+
+        let style = &workspace.document().doc.entities[0].components
+            ["prism_engine::ui::Style"];
+        assert_eq!(style["anchors"]["min_x"], json!(0.25));
+        assert_eq!(style["anchors"]["max_x"], json!(0.25));
+        assert_eq!(style["margin"]["left"], json!(250.0));
+        assert_eq!(style["margin"]["top"], json!(125.0));
+        assert_eq!(style["margin"]["right"], json!(0.0));
+        assert_eq!(style["margin"]["bottom"], json!(0.0));
+        assert_eq!(workspace.undo_history().len(), undo_before + 1);
+
+        workspace.undo();
+        let style = &workspace.document().doc.entities[0].components
+            ["prism_engine::ui::Style"];
+        assert_eq!(style["anchors"]["min_x"], json!(0.5));
+        assert_eq!(style["margin"]["left"], json!(0.0));
+    }
+
+    #[test]
+    fn dragging_to_a_stretched_anchor_uses_margins_for_both_edges() {
+        let mut workspace = Workspace::sample();
+        workspace.document_mut().doc.entities[0].components.insert(
+            "prism_engine::ui::Style".to_string(),
+            json!({
+                "width": 100.0,
+                "height": 50.0,
+                "anchors": {"min_x": 0.5, "min_y": 0.5, "max_x": 0.5, "max_y": 0.5},
+                "pivot": {"x": 0.5, "y": 0.5}
+            }),
+        );
+
+        assert!(workspace.set_ui_anchors_preserving_rect(
+            0,
+            [0.25, 0.25, 0.75, 0.75],
+            [0.0, 0.0, 1000.0, 500.0],
+            [450.0, 225.0, 100.0, 50.0],
+        ));
+
+        let style = &workspace.document().doc.entities[0].components
+            ["prism_engine::ui::Style"];
+        assert_eq!(style["margin"]["left"], json!(200.0));
+        assert_eq!(style["margin"]["right"], json!(200.0));
+        assert_eq!(style["margin"]["top"], json!(100.0));
+        assert_eq!(style["margin"]["bottom"], json!(100.0));
+        assert_eq!(style["width"], json!(100.0), "显式宽度不被锚点覆盖");
+    }
+
+    #[test]
+    fn point_anchor_writes_a_width_when_the_style_had_none() {
+        let mut workspace = Workspace::sample();
+        workspace.document_mut().doc.entities[0].components.insert(
+            "prism_engine::ui::Style".to_string(),
+            json!({
+                "anchors": {"min_x": 0.5, "min_y": 0.5, "max_x": 0.5, "max_y": 0.5}
+            }),
+        );
+
+        assert!(workspace.set_ui_anchors_preserving_rect(
+            0,
+            [0.5, 0.5, 0.5, 0.5],
+            [0.0, 0.0, 1000.0, 500.0],
+            [450.0, 225.0, 100.0, 50.0],
+        ));
+
+        let style = &workspace.document().doc.entities[0].components
+            ["prism_engine::ui::Style"];
+        assert_eq!(style["width"], json!(100.0));
+        assert_eq!(style["height"], json!(50.0));
+        assert_eq!(style["margin"]["left"], json!(0.0));
+        assert_eq!(style["margin"]["top"], json!(0.0));
     }
 
     #[test]
