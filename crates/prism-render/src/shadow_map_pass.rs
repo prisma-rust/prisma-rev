@@ -12,6 +12,7 @@ use anyhow::Result;
 use ash::vk;
 
 use crate::context::VulkanContext;
+use crate::culling::{Aabb, Frustum};
 use crate::mesh::{SkinVertex, Vertex};
 use crate::pipeline::{GraphicsPipeline, PipelineDesc};
 use crate::render_graph::{
@@ -69,6 +70,9 @@ pub struct ShadowMapPass {
     /// 上一帧实际提交的 caster 数：`(静态, 蒙皮)`。只用于诊断与测试 ——
     /// 证明蒙皮分支确实走到了，而不是被静默跳过（#560 P0-3c）。
     last_casters: (u32, u32),
+    /// 上一帧被光源视锥剔掉的 caster 数（#491）。只统计第一级联，避免
+    /// 多级联时同一实体重复计数；用于诊断与 GPU 回归测试。
+    last_culled_casters: u32,
     /// 每帧在飞的调色板缓冲（host-visible）+ 对应描述符集。
     bone_buffers: Vec<vk::Buffer>,
     bone_memories: Vec<vk::DeviceMemory>,
@@ -98,6 +102,7 @@ impl ShadowMapPass {
             bone_layout: None,
             bone_pool: None,
             last_casters: (0, 0),
+            last_culled_casters: 0,
             bone_buffers: Vec::new(),
             bone_memories: Vec::new(),
             bone_sets: Vec::new(),
@@ -117,6 +122,15 @@ impl ShadowMapPass {
     /// 回归能被测试抓到，而不是只靠肉眼看阴影。
     pub fn last_casters(&self) -> (u32, u32) {
         self.last_casters
+    }
+
+    /// 上一帧被**光源视锥**剔掉的 caster 数（#491）。
+    ///
+    /// 主相机视锥剔除发生在提取阶段；阴影贴图只覆盖相机附近的一小块区域，
+    /// 所以这里的第二道剔除能省掉「主相机看得到、但不在阴影覆盖范围内」的
+    /// 投射者。与 [`Self::last_casters`] 一样，只统计第一级联。
+    pub fn last_culled_casters(&self) -> u32 {
+        self.last_culled_casters
     }
 
     pub fn shadow_extent(&self) -> vk::Extent2D {
@@ -718,6 +732,8 @@ impl RenderPassNode for ShadowMapPass {
         let mut casters = 0usize;
         // 其中有多少走的是蒙皮管线（#560 P0-3c）。
         let mut skinned_casters = 0u32;
+        // 被光源视锥剔除的 caster 只统计第一级联（#491）。
+        self.last_culled_casters = 0;
         unsafe {
             for cascade in 0..cascade_count {
                 // 每个级联固定占据 atlas 的一个正方形 tile；单级联只用左半边，
@@ -729,6 +745,10 @@ impl RenderPassNode for ShadowMapPass {
                 } else {
                     ctx.frame.light_view_proj1
                 };
+                // 光源视锥（#491）：阴影图只覆盖 main camera 附近的一小块，
+                // 提取阶段按主相机保留的 caster 不一定落在这里。矩阵退化时
+                // `from_view_proj` 返回 `None`，下面保守地全部提交。
+                let light_frustum = Frustum::from_view_proj(&light_view_proj);
                 ctx.device.cmd_set_viewport(
                     ctx.cmd,
                     0,
@@ -761,6 +781,17 @@ impl RenderPassNode for ShadowMapPass {
                 for item in ctx.frame.draw_list {
                     // `ShadowCastingMode::Off` -> 不写阴影贴图。
                     if !item.cast_shadow {
+                        continue;
+                    }
+                    // 不在这一级联阴影覆盖范围内的 caster 不提交（#491）。
+                    // `world_bounds` 缺失（程序化网格 / 句柄未解析）时保持旧行为。
+                    if !caster_survives_light_frustum(
+                        item.world_bounds.as_ref(),
+                        light_frustum.as_ref(),
+                    ) {
+                        if cascade == 0 {
+                            self.last_culled_casters += 1;
+                        }
                         continue;
                     }
                     let uploaded = match ctx.frame.mesh_manager.get(item.mesh) {
@@ -993,6 +1024,17 @@ impl Drop for ShadowMapPass {
     }
 }
 
+/// 一个 caster 是否还要写进这一级联的阴影贴图（#491）。
+///
+/// 保守优先：没有世界包围盒、或光源矩阵退化（`Frustum::from_view_proj`
+/// 返回 `None`）时都保留。只有「有包围盒 + 有有效视锥 + 完全在外」才剔除。
+fn caster_survives_light_frustum(bounds: Option<&Aabb>, frustum: Option<&Frustum>) -> bool {
+    match (bounds, frustum) {
+        (Some(bounds), Some(frustum)) => frustum.intersects_aabb(bounds),
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1085,6 +1127,56 @@ mod tests {
             }
             ref other => panic!("expected a depth attachment, got {other:?}"),
         }
+    }
+
+    /// 列主序矩阵，把世界 `[-1, 1]^3` 映射到 Vulkan 裁剪空间
+    /// `x/y ∈ [-1, 1]`、`z ∈ [0, 1]`（`w = 1`）。
+    ///
+    /// 只用它测试光源视锥，不参与渲染。
+    fn unit_box_ortho() -> [[f32; 4]; 4] {
+        [
+            [0.5, 0.0, 0.0, 0.0],
+            [0.0, 0.5, 0.0, 0.0],
+            [0.0, 0.0, 0.5, 0.0],
+            [0.0, 0.0, 0.5, 1.0],
+        ]
+    }
+
+    /// #491：光源视锥之外的 caster 被剔除，覆盖范围内 / 数据缺失时保留。
+    #[test]
+    fn casters_outside_the_light_frustum_are_skipped() {
+        let matrix = unit_box_ortho();
+        let frustum = Frustum::from_view_proj(&matrix).expect("unit-box ortho is a valid frustum");
+
+        let inside = Aabb::new([-0.5, -0.5, 0.1], [0.5, 0.5, 0.9]);
+        let outside = Aabb::new([10.0, -0.5, 0.1], [11.0, 0.5, 0.9]);
+        let straddling = Aabb::new([0.9, -0.5, 0.1], [1.1, 0.5, 0.9]);
+
+        assert!(caster_survives_light_frustum(Some(&inside), Some(&frustum)));
+        assert!(!caster_survives_light_frustum(
+            Some(&outside),
+            Some(&frustum)
+        ));
+        // 只交叠一部分也要保留（保守剔除，不切物体）。
+        assert!(caster_survives_light_frustum(
+            Some(&straddling),
+            Some(&frustum)
+        ));
+        // 没有包围盒 / 没有可用视锥：保持旧行为，不剔除。
+        assert!(caster_survives_light_frustum(None, Some(&frustum)));
+        assert!(caster_survives_light_frustum(Some(&outside), None));
+    }
+
+    #[test]
+    fn degenerate_light_matrix_keeps_every_caster() {
+        // 全零矩阵没有可提取的平面；此时任何剔除都只是瞎裁。
+        let degenerate = [[0.0f32; 4]; 4];
+        assert!(Frustum::from_view_proj(&degenerate).is_none());
+        let bounds = Aabb::new([10.0, 10.0, 10.0], [11.0, 11.0, 11.0]);
+        assert!(caster_survives_light_frustum(
+            Some(&bounds),
+            Frustum::from_view_proj(&degenerate).as_ref()
+        ));
     }
 
     #[test]

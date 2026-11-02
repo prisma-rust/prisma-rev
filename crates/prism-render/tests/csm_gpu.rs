@@ -5,6 +5,7 @@
 //! the fragment-side cascade selection) renders without validation errors.
 //! Skips gracefully on hosts without a Vulkan driver.
 
+use prism_render::culling::Aabb;
 use prism_render::descriptor::FrameUBOData;
 use prism_render::render_graph::{DrawItem, DrawState, PostGrade};
 use prism_render::shadow_map_pass::ShadowMapPass;
@@ -134,4 +135,84 @@ fn two_cascades_allocate_an_atlas_and_render() {
         .expect("copy_offscreen_to_readback failed");
     let pixels = renderer.readback_pixels().expect("readback_pixels failed");
     assert_eq!(pixels.len(), SIZE * SIZE * 4);
+}
+
+/// 与源码单测相同的单位盒正交投影：世界 `[-1, 1]^3` → Vulkan 裁剪空间。
+fn unit_box_ortho() -> [[f32; 4]; 4] {
+    [
+        [0.5, 0.0, 0.0, 0.0],
+        [0.0, 0.5, 0.0, 0.0],
+        [0.0, 0.0, 0.5, 0.0],
+        [0.0, 0.0, 0.5, 1.0],
+    ]
+}
+
+/// #491：`world_bounds` 落在阴影覆盖范围之外的 caster 不会进阴影通道。
+///
+/// 两个 caster 用同一个立方体、同一个模型矩阵，唯一区别是 `world_bounds`：
+/// 如果剔除没生效，两者都会被提交（`last_casters == (2, 0)`）。
+#[test]
+fn casters_outside_the_light_frustum_are_not_submitted() {
+    let Some(mut renderer) = try_create() else {
+        return;
+    };
+
+    let cube = prism_render::primitives::builtin("__builtin/cube").expect("builtin cube");
+    let mesh = renderer.register_mesh(&cube).expect("register cube");
+
+    let mut inside = caster(mesh);
+    inside.entity_id = 1;
+    inside.world_bounds = Some(Aabb::new([-0.5, -0.5, 0.1], [0.5, 0.5, 0.9]));
+
+    let mut outside = caster(mesh);
+    outside.entity_id = 2;
+    // 完全在单位盒之外；光源矩阵退化时它仍会被提交，所以这条断言能区分
+    // 「剔除生效」和「矩阵没法建视锥」。
+    outside.world_bounds = Some(Aabb::new([10.0, -0.5, 0.1], [11.0, 0.5, 0.9]));
+
+    let mut data = frame_data();
+    data.light_view_proj = unit_box_ortho();
+    data.light_view_proj1 = unit_box_ortho();
+    data.shadow_cascade_count = 1;
+
+    renderer
+        .render(
+            &[inside, outside],
+            &data,
+            IDENTITY,
+            IDENTITY,
+            0,
+            2,
+            0,
+            0,
+            1.0,
+            0.0,
+            &[],
+            RenderMode::Raster,
+            0,
+            0.0,
+            0,
+            1.0,
+            &[],
+            PostGrade::default(),
+            false,
+            false,
+            &[],
+        )
+        .expect("shadow culling render failed");
+
+    let shadow_pass = renderer
+        .graph()
+        .pass_ref::<ShadowMapPass>()
+        .expect("shadow pass is registered");
+    assert_eq!(
+        shadow_pass.last_casters(),
+        (1, 0),
+        "only the caster inside the light frustum should be submitted"
+    );
+    assert_eq!(
+        shadow_pass.last_culled_casters(),
+        1,
+        "the caster outside the light frustum should be counted as culled"
+    );
 }
