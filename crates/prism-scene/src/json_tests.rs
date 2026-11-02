@@ -671,7 +671,9 @@ fn a_lod_group_survives_cook_and_decode() {
                 "name": "Tree",
                 "components": {
                     "prism_engine::scene::LodGroup": {
-                        "distances": [15.0, 40.0, 90.0]
+                        "distances": [15.0, 40.0, 90.0],
+                        "screen_ratios": [0.4, 0.1],
+                        "bounds_radius": 2.5
                     }
                 }
             }]
@@ -691,6 +693,44 @@ fn a_lod_group_survives_cook_and_decode() {
         .get::<crate::components::LodGroup>(entity)
         .expect("LOD group must apply to the world");
     assert_eq!(lod.distances, vec![15.0, 40.0, 90.0]);
+    assert_eq!(lod.screen_ratios, vec![0.4, 0.1]);
+    assert_eq!(lod.bounds_radius, 2.5);
+}
+
+#[test]
+fn a_lod_group_without_screen_fields_uses_defaults() {
+    // 旧场景只写了 `distances`；新增字段必须靠 serde default 兼容。
+    let mut registry = ComponentRegistry::new();
+    register_builtin_components(&mut registry);
+    let scene = SceneJson::parse(
+        r#"{
+            "version": 3,
+            "entities": [{
+                "id": 0,
+                "name": "Tree",
+                "components": {
+                    "prism_engine::scene::LodGroup": {
+                        "distances": [15.0, 40.0]
+                    }
+                }
+            }]
+        }"#,
+    )
+    .unwrap();
+
+    let bytes = crate::encode_scene(&scene, &registry).expect("scene with LOD must cook");
+    let decoded = crate::decode_scene(&bytes, &registry).expect("cooked scene must decode");
+    let mut world = prism_ecs::World::new();
+    let entity = world.spawn();
+    for component in &decoded.entities[0].components {
+        assert!(registry.apply_object(&mut world, entity, component));
+    }
+    let lod = world
+        .get::<crate::components::LodGroup>(entity)
+        .expect("LOD group must apply to the world");
+    assert_eq!(lod.distances, vec![15.0, 40.0]);
+    assert!(lod.screen_ratios.is_empty());
+    assert_eq!(lod.bounds_radius, 1.0);
 }
 
 #[test]

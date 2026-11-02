@@ -338,18 +338,34 @@ impl MeshRenderer {
 ///
 /// 例：`distances = [20.0, 60.0]` + 三个子实体 = 20 米内 LOD0、20–60 米
 /// LOD1、60 米外 LOD2。
+///
+/// 也可以改用**屏幕占比**选级：`screen_ratios` 非空时，用
+/// `bounds_radius`（世界单位包围球半径）和相机投影算出物体在视口中的高度
+/// 占比，再按阈值选级。`screen_ratios[i]` 是第 `i` 级仍然显示的最小占比，
+/// 按 LOD0、LOD1……从大到小排列；超过最后一个阈值时显示最后一个子实体。
+/// 屏幕占比模式优先于 `distances`，为空时继续走距离模式。
 #[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
 #[reflect(name = "prism_engine::scene::LodGroup")]
 #[serde(default)]
 pub struct LodGroup {
     /// 每一级仍然显示的最大距离（米），按 LOD0、LOD1……排列。
     pub distances: Vec<f32>,
+    /// 每一级仍然显示的最小屏幕高度占比（0–1），按 LOD0、LOD1……从大到小排列。
+    ///
+    /// 为空时使用 `distances` 的距离模式。
+    pub screen_ratios: Vec<f32>,
+    /// 屏幕占比模式使用的包围球半径（世界单位）。
+    ///
+    /// 非有限或非正时回落到距离模式，避免把整组物体误藏。
+    pub bounds_radius: f32,
 }
 
 impl Default for LodGroup {
     fn default() -> Self {
         Self {
             distances: vec![20.0, 60.0],
+            screen_ratios: Vec::new(),
+            bounds_radius: 1.0,
         }
     }
 }
@@ -383,6 +399,37 @@ impl LodGroup {
                 distance <= limit
             })
             .unwrap_or(self.distances.len());
+        Some(index.min(child_count - 1))
+    }
+
+    /// 给定屏幕高度占比和子实体数量，返回应该显示的 LOD 下标。
+    ///
+    /// `screen_ratios` 为空或没有有限阈值时返回 `None`，调用方应回落到
+    /// [`Self::level_for_distance`]。占比非有限按 0 处理；阈值夹到 `0..=1`
+    /// 并按作者顺序匹配，所以阈值应按 LOD0、LOD1……从大到小排列。
+    pub fn level_for_screen_ratio(&self, ratio: f32, child_count: usize) -> Option<usize> {
+        if child_count == 0 {
+            return None;
+        }
+        let thresholds: Vec<f32> = self
+            .screen_ratios
+            .iter()
+            .copied()
+            .filter(|value| value.is_finite())
+            .map(|value| value.clamp(0.0, 1.0))
+            .collect();
+        if thresholds.is_empty() {
+            return None;
+        }
+        let ratio = if ratio.is_finite() {
+            ratio.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let index = thresholds
+            .iter()
+            .position(|threshold| ratio >= *threshold)
+            .unwrap_or(thresholds.len());
         Some(index.min(child_count - 1))
     }
 }
