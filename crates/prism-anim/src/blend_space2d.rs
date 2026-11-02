@@ -104,6 +104,18 @@ impl BlendSpace2D {
         &self.triangles
     }
 
+    /// 当前参数下权重最大的样本下标（Notify 的 Dominant 策略用）。
+    ///
+    /// 权重相同取三角形里更靠前的顶点；没有可用三角形时返回 `None`。
+    pub fn dominant_sample(&self, at: [f32; 2]) -> Option<usize> {
+        let (vertices, weights) = self.weights_at(at)?;
+        let (slot, _) = weights
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.total_cmp(b))?;
+        Some(vertices[slot])
+    }
+
     pub fn is_empty(&self) -> bool {
         self.samples.is_empty() || self.triangles.is_empty()
     }

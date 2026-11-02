@@ -111,7 +111,8 @@ let pose = evaluator.evaluate(&assets, &skeleton, dt)?;
 - StateMachine 节点内部维护当前状态、状态时间和转移交叉淡入；Trigger 按状态机语义消耗。
 - `evaluate_with_events` 额外返回 `GraphNotifyEvent`：ClipPlayer / StateMachine 跨过
   剪辑 Notify 时触发，循环回绕分两段扫描，第一帧不补发 time 0，共享节点只发一次。
-  BlendSpace 暂不产生事件（避免多个样本重复脚步声）。
+  BlendSpace 默认只让**权重最大的样本**产生事件（`BlendSpaceNotifyPolicy::Dominant`），
+  避免多个采样点重复脚步声；切到 `BlendSpaceNotifyPolicy::None` 可完全关闭。
 - 剪辑 / 状态机缺失、空混合空间、空状态机、成环都返回 `GraphEvalError`，不会 panic。
 
 Montage 播放由 `prism_anim::MontagePlayer` 负责：`play_now` 立即覆盖、`enqueue`

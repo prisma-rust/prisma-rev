@@ -114,6 +114,16 @@ struct StateBlend {
     total: f32,
 }
 
+/// BlendSpace 节点的 Notify 策略（#560）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BlendSpaceNotifyPolicy {
+    /// 不产生事件（旧行为，避免多个采样点重复脚步声）。
+    None,
+    /// 只让当前权重最大的样本产生事件；用一个剪辑的本地时间区间扫描。
+    #[default]
+    Dominant,
+}
+
 /// 一个动画图求值器实例，对应一个角色。
 #[derive(Debug, Clone)]
 pub struct AnimGraphEvaluator {
@@ -124,6 +134,8 @@ pub struct AnimGraphEvaluator {
     pending_events: Vec<GraphNotifyEvent>,
     /// 每个 Slot 节点自己的 Montage 播放队列（#560 P1）。
     montages: HashMap<String, MontagePlayer>,
+    /// BlendSpace 的事件策略（#560 Notify 区间）。
+    blend_space_notify: BlendSpaceNotifyPolicy,
 }
 
 impl AnimGraphEvaluator {
@@ -149,6 +161,7 @@ impl AnimGraphEvaluator {
             frame: 0,
             pending_events: Vec::new(),
             montages: HashMap::new(),
+            blend_space_notify: BlendSpaceNotifyPolicy::default(),
         }
     }
 
@@ -196,6 +209,15 @@ impl AnimGraphEvaluator {
 
     pub fn montage_player(&self, slot: &str) -> Option<&MontagePlayer> {
         self.montages.get(slot)
+    }
+
+    /// 设置 BlendSpace 的 Notify 策略；`None` 恢复旧行为。
+    pub fn set_blend_space_notify_policy(&mut self, policy: BlendSpaceNotifyPolicy) {
+        self.blend_space_notify = policy;
+    }
+
+    pub fn blend_space_notify_policy(&self) -> BlendSpaceNotifyPolicy {
+        self.blend_space_notify
     }
 
     /// 当前状态机节点的状态下标（调试面板 / 测试用）；不是状态机节点时返回 `None`。
@@ -373,15 +395,21 @@ impl AnimGraphEvaluator {
         reference: &Pose,
         dt: f32,
     ) -> Result<Pose, GraphEvalError> {
-        let runtime = &mut self.runtime[index];
-        runtime.time = advance_time(runtime.time, dt, node.speed);
+        let previous_time = self.runtime[index].time;
         let duration = node
             .clips
             .iter()
             .filter_map(|path| source.clip(path).map(|clip| clip.duration))
             .fold(0.0f32, f32::max);
+        let previous_phase = if duration > 0.0 {
+            previous_time.rem_euclid(duration) / duration
+        } else {
+            0.0
+        };
+        let time = advance_time(previous_time, dt, node.speed);
+        self.runtime[index].time = time;
         let phase = if duration > 0.0 {
-            runtime.time.rem_euclid(duration) / duration
+            time.rem_euclid(duration) / duration
         } else {
             0.0
         };
@@ -415,6 +443,23 @@ impl AnimGraphEvaluator {
                     node: node.name.clone(),
                 });
             }
+            let dominant = if self.blend_space_notify == BlendSpaceNotifyPolicy::Dominant {
+                space
+                    .dominant_sample(parameter)
+                    .and_then(|sample| space.samples().get(sample))
+                    .map(|sample| sample.clip.clone())
+            } else {
+                None
+            };
+            self.record_blend_space_notifies(
+                &node.name,
+                node,
+                source,
+                dominant,
+                previous_phase,
+                phase,
+                dt,
+            );
         } else {
             let samples = node
                 .clips
@@ -443,8 +488,55 @@ impl AnimGraphEvaluator {
                     node: node.name.clone(),
                 });
             }
+            let dominant = if self.blend_space_notify == BlendSpaceNotifyPolicy::Dominant {
+                space
+                    .dominant_sample(at)
+                    .and_then(|sample| space.samples().get(sample))
+                    .map(|sample| sample.clip.clone())
+            } else {
+                None
+            };
+            self.record_blend_space_notifies(
+                &node.name,
+                node,
+                source,
+                dominant,
+                previous_phase,
+                phase,
+                dt,
+            );
         }
         Ok(pose)
+    }
+
+    /// 让权重最大的 BlendSpace 样本按自己的本地时间区间发 Notify。
+    #[allow(clippy::too_many_arguments)]
+    fn record_blend_space_notifies(
+        &mut self,
+        node_name: &str,
+        node: &GraphNodeInfo,
+        source: &impl AnimGraphSource,
+        clip: Option<Arc<Clip>>,
+        previous_phase: f32,
+        phase: f32,
+        dt: f32,
+    ) {
+        if dt <= 0.0 || node.speed < 0.0 {
+            return;
+        }
+        let Some(clip) = clip else {
+            return;
+        };
+        let Some(path) = node.clips.iter().find(|path| {
+            source
+                .clip(path)
+                .is_some_and(|candidate| Arc::ptr_eq(&candidate, &clip))
+        }) else {
+            return;
+        };
+        let from = previous_phase * clip.duration;
+        let to = phase * clip.duration;
+        self.record_notifies(node_name, path, &clip, from, to);
     }
 
     #[allow(clippy::too_many_arguments)]
