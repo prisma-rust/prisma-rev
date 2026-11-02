@@ -562,6 +562,11 @@ pub struct Workspace {
     /// Scene View 是否给选中对象画轮廓（#487）。选中反馈弱时唯一的线索是 gizmo，
     /// 密集场景里容易改错对象。
     pub show_selection_outline: bool,
+    /// Scene View 是否给选中的蒙皮实体画骨架（#560）：关节圆点 + 父子连线。
+    ///
+    /// 和网格 / 图标开关一样是**会话级**状态：骨骼线在密集场景里很吵，默认开、
+    /// 随手可关。
+    pub show_skeleton: bool,
     /// Scene 视图是否处于 Isolate 模式（#417）：只渲染当前选择及其子树。
     ///
     /// 和 [`Document::hidden_entities`] 一样是会话级状态，不进 `.scene.json`；
@@ -681,6 +686,7 @@ impl Workspace {
             pivot_mode: PivotMode::Center,
             show_grid: true,
             show_selection_outline: true,
+            show_skeleton: true,
             isolate: false,
             show_camera_icons: true,
             show_light_icons: true,
@@ -5441,8 +5447,7 @@ mod tests {
             [450.0, 225.0, 100.0, 50.0],
         ));
 
-        let style = &workspace.document().doc.entities[0].components
-            ["prism_engine::ui::Style"];
+        let style = &workspace.document().doc.entities[0].components["prism_engine::ui::Style"];
         assert_eq!(style["anchors"]["min_x"], json!(0.25));
         assert_eq!(style["anchors"]["max_x"], json!(0.25));
         assert_eq!(style["margin"]["left"], json!(250.0));
@@ -5452,8 +5457,7 @@ mod tests {
         assert_eq!(workspace.undo_history().len(), undo_before + 1);
 
         workspace.undo();
-        let style = &workspace.document().doc.entities[0].components
-            ["prism_engine::ui::Style"];
+        let style = &workspace.document().doc.entities[0].components["prism_engine::ui::Style"];
         assert_eq!(style["anchors"]["min_x"], json!(0.5));
         assert_eq!(style["margin"]["left"], json!(0.0));
     }
@@ -5478,8 +5482,7 @@ mod tests {
             [450.0, 225.0, 100.0, 50.0],
         ));
 
-        let style = &workspace.document().doc.entities[0].components
-            ["prism_engine::ui::Style"];
+        let style = &workspace.document().doc.entities[0].components["prism_engine::ui::Style"];
         assert_eq!(style["margin"]["left"], json!(200.0));
         assert_eq!(style["margin"]["right"], json!(200.0));
         assert_eq!(style["margin"]["top"], json!(100.0));
@@ -5504,8 +5507,7 @@ mod tests {
             [450.0, 225.0, 100.0, 50.0],
         ));
 
-        let style = &workspace.document().doc.entities[0].components
-            ["prism_engine::ui::Style"];
+        let style = &workspace.document().doc.entities[0].components["prism_engine::ui::Style"];
         assert_eq!(style["width"], json!(100.0));
         assert_eq!(style["height"], json!(50.0));
         assert_eq!(style["margin"]["left"], json!(0.0));
@@ -5528,8 +5530,7 @@ mod tests {
 
         assert!(workspace.set_ui_anchors_raw(0, [0.25, 0.25, 0.75, 0.75]));
 
-        let style = &workspace.document().doc.entities[0].components
-            ["prism_engine::ui::Style"];
+        let style = &workspace.document().doc.entities[0].components["prism_engine::ui::Style"];
         assert_eq!(style["anchors"]["min_x"], json!(0.25));
         assert_eq!(style["anchors"]["max_x"], json!(0.75));
         assert_eq!(style["margin"]["left"], json!(12.0));

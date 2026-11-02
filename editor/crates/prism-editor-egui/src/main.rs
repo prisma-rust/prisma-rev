@@ -20,6 +20,7 @@ mod panels;
 mod project_module;
 mod screenshot;
 mod selection_history;
+mod skeleton_overlay;
 mod theme;
 mod ui_gizmo;
 mod ui_tree;
