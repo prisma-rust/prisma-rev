@@ -241,7 +241,7 @@ jobs:
       - name: Install Vulkan loader + headers
         run: |
           sudo apt-get update
-          sudo apt-get install -y libvulkan-dev vulkan-tools mesa-vulkan-drivers libasound2-dev
+          sudo apt-get install -y libvulkan-dev vulkan-tools mesa-vulkan-drivers vulkan-validationlayers libasound2-dev
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -259,6 +259,8 @@ jobs:
           -p prism-ecs -p prism-gfx -p prism-render -p prism-engine -p prism-platform
 
       - name: Test (desktop crates)
+        env:
+          PRISM_REQUIRE_VALIDATION: "1"
         run: >
           cargo test --locked
           -p prism-ecs -p prism-gfx -p prism-render -p prism-engine -p prism-platform

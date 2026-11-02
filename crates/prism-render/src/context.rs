@@ -13,6 +13,11 @@ use crate::capabilities::{self, RayTracingCaps};
 /// 调试构建/当加载器存在时请求的验证层。
 const VALIDATION_LAYERS: [&str; 1] = ["VK_LAYER_KHRONOS_validation"];
 
+/// 设置后，debug 构建没有 validation layer 时直接失败，而不是静默降级。
+///
+/// CI 用它把“验证层真的启用了”变成硬门禁；本地没有安装 layer 时不要设置。
+const REQUIRE_VALIDATION_ENV: &str = "PRISM_REQUIRE_VALIDATION";
+
 /// 谁拥有上下文背后的 Vulkan 对象。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ContextOwnership {
@@ -60,6 +65,14 @@ pub struct VulkanContext {
 }
 
 impl VulkanContext {
+    /// 本上下文是否真的启用了 Vulkan validation layer / debug messenger。
+    ///
+    /// debug 构建会尝试启用它；如果系统没有安装 layer，这里返回 `false`。
+    /// CI 在 `PRISM_REQUIRE_VALIDATION=1` 下会断言它为 `true`。
+    pub fn validation_enabled(&self) -> bool {
+        self._debug_messenger.is_some()
+    }
+
     /// 创建 the 实例 and 设备
     ///
     /// `window_extensions` are the 实例 extensions the 表面 needs
@@ -316,6 +329,13 @@ pub fn pick_present_queue_family(
     None
 }
 
+fn validation_required() -> bool {
+    match std::env::var(REQUIRE_VALIDATION_ENV) {
+        Ok(value) => !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false"),
+        Err(_) => false,
+    }
+}
+
 fn create_instance(
     entry: &ash::Entry,
     window_extensions: &[&str],
@@ -361,6 +381,11 @@ fn create_instance(
                 .iter()
                 .map(|s| CString::new(*s).unwrap())
                 .collect();
+        } else if validation_required() {
+            anyhow::bail!(
+                "{REQUIRE_VALIDATION_ENV} is set but {} is not installed",
+                VALIDATION_LAYERS[0]
+            );
         } else {
             log::warn!("validation layers requested but not available; continuing without");
         }
