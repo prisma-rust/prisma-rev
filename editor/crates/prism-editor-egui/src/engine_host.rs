@@ -890,6 +890,7 @@ impl EngineHost {
             bone_matrices: &self.packet.bone_matrices,
             skybox: self.packet.skybox,
             frame_data: &frame_data,
+            cameras: &scene.cameras,
             light_view_proj: scene.light_view_proj.to_cols_array_2d(),
             light_view_proj1: scene.light_view_proj1.to_cols_array_2d(),
             shadow_split: scene.shadow_split,

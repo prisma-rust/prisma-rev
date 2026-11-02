@@ -49,14 +49,11 @@ pub fn main_camera(world: &World) -> Option<prism_ecs::Entity> {
     all_cameras(world).pop()
 }
 
-/// 本次帧里**不会被渲染**的相机（除主相机之外的所有启用相机）。
+/// 主相机之外的启用相机（诊断用）。
 ///
-/// 目前整条渲染链（forward / shadow / skybox / post / PT / sprite / UI）都是
-/// 单相机：一台相机取景、一次清屏、一张图。额外的相机既不参与合成也不会报错，
-/// 所以在编辑器里加第二台相机、改它的 `depth` 或 `clear_flags` 看不到任何变化。
-///
-/// 这个函数就是用来把「被忽略的相机」暴露出来的 —— `render_system` 用它决定
-/// 要不要提示用户，而不是让人对着不生效的参数发呆（#461）。
+/// #461 之后所有启用相机都会参与合成：forward pass 按 `Camera.depth` 升序各画
+/// 一遍，`clear_flags` 决定每层清颜色 / 深度。这个函数保留给需要「非主相机」
+/// 列表的工具（统计、调试 UI），不再表示「被忽略」。
 pub fn ignored_cameras(world: &World) -> Vec<prism_ecs::Entity> {
     let mut cameras = all_cameras(world);
     cameras.pop(); // 主相机（`depth` 最大）会画出来
@@ -164,7 +161,18 @@ pub fn fallback_camera_output(surface_rotation: &Mat4, aspect: f32) -> CameraOut
 /// view-projection (mirrors the old `mat_mul(&surface_rotation, &vp)` step in
 /// `render_system`). Returns `None` if no usable 相机 存在
 pub fn compute_camera_output(world: &World, surface_rotation: &Mat4) -> Option<CameraOutput> {
-    let entity = active_camera(world)?;
+    compute_camera_output_for(world, active_camera(world)?, surface_rotation)
+}
+
+/// [`compute_camera_output`] for one explicit camera entity (#461).
+///
+/// Returns `None` when the entity lost its `Camera` / `LocalToWorld` since the
+/// caller enumerated it.
+pub fn compute_camera_output_for(
+    world: &World,
+    entity: prism_ecs::Entity,
+    surface_rotation: &Mat4,
+) -> Option<CameraOutput> {
     let cam = world.get::<Camera>(entity)?;
     let world_tf = world.get::<LocalToWorld>(entity)?;
 

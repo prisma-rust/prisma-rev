@@ -10,6 +10,21 @@ use crate::buffer::{self, BufferUsage, MemoryProperties};
 use crate::context::VulkanContext;
 
 /// 相机 UBO 描述符集的布局（集合 = 0，绑定 = 0）。
+/// Maximum number of cameras composited into a single frame (#461).
+///
+/// The per-frame UBO buffer holds one aligned block per camera slot, and the
+/// forward pass binds slot `i` with a dynamic offset. Four is enough for the
+/// Unity-style patterns this issue targets (game camera + UI overlay camera +
+/// minimap + debug), and the memory cost is `4 * 352` bytes per frame.
+pub const MAX_CAMERAS: usize = 4;
+
+fn align_up(value: u64, alignment: u64) -> u64 {
+    if alignment <= 1 {
+        return value;
+    }
+    value.div_ceil(alignment) * alignment
+}
+
 pub struct DescriptorLayout {
     pub layout: vk::DescriptorSetLayout,
     /// Cloned 设备 handle kept so 放置 can free the 布局 (RAII).
@@ -18,9 +33,11 @@ pub struct DescriptorLayout {
 
 impl DescriptorLayout {
     pub fn new(device: &ash::Device) -> anyhow::Result<Self> {
+        // `UNIFORM_BUFFER_DYNAMIC` so the forward pass can point the same
+        // descriptor set at a different camera slot (#461).
         let bindings = [vk::DescriptorSetLayoutBinding::default()
             .binding(0)
-            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC)
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)];
 
@@ -48,7 +65,7 @@ impl DescriptorLayout {
         let bindings = [
             vk::DescriptorSetLayoutBinding::default()
                 .binding(0)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
             vk::DescriptorSetLayoutBinding::default()
@@ -83,7 +100,7 @@ pub struct DescriptorPool {
 impl DescriptorPool {
     pub fn new(device: &ash::Device, max_frames: u32) -> anyhow::Result<Self> {
         let pool_sizes = [vk::DescriptorPoolSize {
-            ty: vk::DescriptorType::UNIFORM_BUFFER,
+            ty: vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC,
             descriptor_count: max_frames,
         }];
 
@@ -119,7 +136,7 @@ impl DescriptorPool {
     pub fn new_combined(device: &ash::Device, max_frames: u32) -> anyhow::Result<Self> {
         let pool_sizes = [
             vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::UNIFORM_BUFFER,
+                ty: vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC,
                 descriptor_count: max_frames,
             },
             vk::DescriptorPoolSize {
@@ -304,10 +321,18 @@ pub struct FrameUBOData {
 }
 
 /// Per-frame UBO 缓冲区 and its 描述符 集合
+///
+/// The buffer holds [`MAX_CAMERAS`] aligned slots (one per composited camera).
+/// `descriptor_set` covers one slot; the forward pass supplies the slot offset
+/// with `vkCmdBindDescriptorSets` dynamic offsets (#461).
 pub struct FrameUBO {
     pub buffer: vk::Buffer,
     pub memory: vk::DeviceMemory,
+    /// Size of one camera block (`size_of::<FrameUBOData>()`).
     pub size: vk::DeviceSize,
+    /// Byte stride between camera blocks (aligned to
+    /// `minUniformBufferOffsetAlignment`).
+    pub stride: vk::DeviceSize,
     pub descriptor_set: vk::DescriptorSet,
     /// Cloned 设备 handle kept so 放置 can free the 缓冲区 + 内存 (RAII).
     device: ash::Device,
@@ -317,10 +342,17 @@ impl FrameUBO {
     /// 创建 a UBO 缓冲区 and 更新 the 描述符 集合 to point to it.
     pub fn new(context: &VulkanContext, descriptor_set: vk::DescriptorSet) -> anyhow::Result<Self> {
         let size = std::mem::size_of::<FrameUBOData>() as vk::DeviceSize; // 352
+        let alignment = context
+            .physical_device_properties
+            .limits
+            .min_uniform_buffer_offset_alignment
+            .max(1);
+        let stride = align_up(size, alignment);
+        let total = stride * MAX_CAMERAS as u64;
 
         let (buffer, memory) = buffer::create_buffer(
             context,
-            size,
+            total,
             BufferUsage::UNIFORM_BUFFER,
             MemoryProperties::HOST_VISIBLE | MemoryProperties::HOST_COHERENT,
         )
@@ -334,7 +366,7 @@ impl FrameUBO {
         let write = vk::WriteDescriptorSet::default()
             .dst_set(descriptor_set)
             .dst_binding(0)
-            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC)
             .buffer_info(std::slice::from_ref(&buffer_info));
         unsafe { context.device.update_descriptor_sets(&[write], &[]) };
 
@@ -342,16 +374,34 @@ impl FrameUBO {
             buffer,
             memory,
             size,
+            stride,
             descriptor_set,
             device: context.device.clone(),
         })
     }
 
-    /// Upload new 帧 data to the GPU.
-    pub fn update(&self, device: &ash::Device, data: &FrameUBOData) -> anyhow::Result<()> {
-        let ptr =
-            unsafe { device.map_memory(self.memory, 0, self.size, vk::MemoryMapFlags::empty()) }
-                .context("map frame UBO memory")?;
+    /// Dynamic-offset value for camera `slot` (#461).
+    pub fn camera_offset(&self, slot: usize) -> u32 {
+        (self.stride * slot.min(MAX_CAMERAS - 1) as u64) as u32
+    }
+
+    /// Upload new 帧 data to the GPU for camera `slot`.
+    pub fn update(
+        &self,
+        device: &ash::Device,
+        data: &FrameUBOData,
+        slot: usize,
+    ) -> anyhow::Result<()> {
+        let slot = slot.min(MAX_CAMERAS - 1);
+        let ptr = unsafe {
+            device.map_memory(
+                self.memory,
+                self.stride * slot as u64,
+                self.size,
+                vk::MemoryMapFlags::empty(),
+            )
+        }
+        .context("map frame UBO memory")?;
         unsafe {
             std::ptr::copy_nonoverlapping(
                 data as *const _ as *const u8,

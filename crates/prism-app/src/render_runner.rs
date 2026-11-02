@@ -457,6 +457,7 @@ fn render_one_frame(
         bone_matrices: &packet.bone_matrices,
         skybox: packet.skybox,
         frame_data: &frame_data,
+        cameras: &scene.cameras,
         light_view_proj: scene.light_view_proj.to_cols_array_2d(),
         light_view_proj1: scene.light_view_proj1.to_cols_array_2d(),
         shadow_split: scene.shadow_split,

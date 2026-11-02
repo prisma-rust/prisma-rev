@@ -104,6 +104,9 @@ pub struct FrameInput<'a> {
     /// ECS-authored skybox parameters; `None` means no sky draw.
     pub skybox: Option<crate::skybox_pass::SkyboxSettings>,
     pub frame_data: &'a FrameUBOData,
+    /// Enabled cameras in `Camera.depth` order (#461). Empty keeps the legacy
+    /// single-camera path (`frame_data` describes that one camera).
+    pub cameras: &'a [crate::render_graph::CameraView],
     pub light_view_proj: [[f32; 4]; 4],
     /// Far-cascade light-space VP (#526 CSM).
     pub light_view_proj1: [[f32; 4]; 4],
@@ -509,6 +512,11 @@ impl GraphRenderer {
         // 交换链 not a graph-managed 资源
         let frame_ubo_buffers: Vec<vk::Buffer> =
             runtime.frame_ubos.iter().map(|u| u.buffer).collect();
+        let frame_ubo_stride = runtime
+            .frame_ubos
+            .first()
+            .map(|ubo| ubo.stride as u32)
+            .unwrap_or(0);
         let bindless = texture_manager.bindless_mut();
         let materials_buffer = material_manager.buffer();
 
@@ -539,6 +547,7 @@ impl GraphRenderer {
                 brdf_handle.0,
                 scene_scope.descriptor_set,
                 scene_scope.descriptor_set_layout,
+                frame_ubo_stride,
             )
             .context("ForwardPass: set_resources")?;
 
@@ -933,6 +942,11 @@ impl GraphRenderer {
 
         let frame_ubo_buffers: Vec<vk::Buffer> =
             runtime.frame_ubos.iter().map(|u| u.buffer).collect();
+        let frame_ubo_stride = runtime
+            .frame_ubos
+            .first()
+            .map(|ubo| ubo.stride as u32)
+            .unwrap_or(0);
         let bindless = texture_manager.bindless_mut();
         let materials_buffer = material_manager.buffer();
 
@@ -956,6 +970,7 @@ impl GraphRenderer {
                 brdf_handle.0,
                 scene_scope.descriptor_set,
                 scene_scope.descriptor_set_layout,
+                frame_ubo_stride,
             )
             .context("ForwardPass::set_resources (headless)")?;
 
@@ -2186,6 +2201,7 @@ impl GraphRenderer {
             bone_matrices,
             skybox,
             frame_data,
+            cameras,
             light_view_proj,
             light_view_proj1,
             shadow_split,
@@ -2235,11 +2251,32 @@ impl GraphRenderer {
         // `wait_for_fences` would hang forever.
         let mut record: anyhow::Result<()> = Ok(());
 
-        // --- 更新 帧 UBO ---
+        // --- 更新 帧 UBO (#461: one aligned slot per composited camera) ---
         if record.is_ok() {
-            record = self.runtime.frame_ubos[frame]
-                .update(device, frame_data)
-                .context("update frame UBO");
+            let ubo = &self.runtime.frame_ubos[frame];
+            if cameras.is_empty() {
+                record = ubo
+                    .update(device, frame_data, 0)
+                    .context("update frame UBO");
+            } else {
+                for (slot, camera) in cameras
+                    .iter()
+                    .take(crate::descriptor::MAX_CAMERAS)
+                    .enumerate()
+                {
+                    let mut data = **frame_data;
+                    let light_count = data.camera_position[3];
+                    data.view_proj = camera.view_proj;
+                    data.view = camera.view;
+                    data.camera_position =
+                        [camera.eye[0], camera.eye[1], camera.eye[2], light_count];
+                    data.exposure = camera.exposure;
+                    if let Err(error) = ubo.update(device, &data, slot) {
+                        record = Err(error).context("update frame UBO");
+                        break;
+                    }
+                }
+            }
         }
 
         // --- 执行 渲染 图 (Shadow -> Scene -> GTAO -> Post) ---
@@ -2258,6 +2295,7 @@ impl GraphRenderer {
             }
             let graph_frame = GraphFrame {
                 frame_ubo: &self.runtime.frame_ubos[frame],
+                cameras,
                 draw_list: draw_items,
                 gizmos,
                 sprite_items,
@@ -2712,6 +2750,7 @@ impl GraphRenderer {
             bone_matrices,
             skybox: None,
             frame_data: &frame_data,
+            cameras: &[],
             light_view_proj,
             light_view_proj1: frame_data.light_view_proj1,
             shadow_split: frame_data.shadow_split,

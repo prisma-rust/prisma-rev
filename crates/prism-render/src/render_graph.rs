@@ -810,6 +810,67 @@ impl PostGrade {
     }
 }
 
+/// One camera composited into the frame (#461).
+///
+/// Every enabled `Camera` produces one of these, sorted by `Camera.depth`
+/// ascending. The forward pass draws the scene once per entry, clearing the
+/// colour / depth buffers according to the camera's `clearFlags`, so a
+/// depth-ordered stack of opaque views composites into the single HDR target.
+///
+/// The first version covers opaque full-screen layers only: no per-camera
+/// viewport rect and no per-camera post stack.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CameraView {
+    /// `surface_rotation * projection * view`.
+    pub view_proj: [[f32; 4]; 4],
+    /// `world -> view`.
+    pub view: [[f32; 4]; 4],
+    /// Inverse of `view`, used by the skybox pass to orient the environment.
+    pub inv_view: [[f32; 4]; 4],
+    /// Camera world position (`.w` is filled with the light count at upload).
+    pub eye: [f32; 3],
+    /// Clear colour (`Camera.backgroundColor`).
+    pub clear_color: [f32; 4],
+    /// `clearFlags` clears the colour buffer (`Skybox` / `SolidColor`).
+    pub clear_color_enabled: bool,
+    /// `clearFlags` clears the depth buffer (everything except `Nothing`).
+    pub clear_depth: bool,
+    /// Draw the skybox for this camera (`clearFlags == Skybox`).
+    pub draw_skybox: bool,
+    /// Exposure multiplier for this camera.
+    pub exposure: f32,
+    /// `false` for the synthetic fallback when the scene has no camera.
+    pub has_camera: bool,
+}
+
+impl CameraView {
+    /// Build the implicit single-camera view used by the legacy call sites
+    /// (`GraphRenderer::render`, tests) whose `FrameUBOData` describes the only
+    /// camera.
+    pub fn legacy(
+        view_proj: [[f32; 4]; 4],
+        inv_view: [[f32; 4]; 4],
+        clear_color: [f32; 4],
+        has_camera: bool,
+    ) -> Self {
+        Self {
+            view_proj,
+            // The forward pass only reads `view` for its own bookkeeping; the
+            // skybox reads `inv_view`, so the fallback keeps the legacy
+            // rotation-only inverse it already had.
+            view: inv_view,
+            inv_view,
+            eye: [0.0; 3],
+            clear_color,
+            clear_color_enabled: true,
+            clear_depth: true,
+            draw_skybox: true,
+            exposure: 1.0,
+            has_camera,
+        }
+    }
+}
+
 /// Per-frame scene + lighting 状态 shared with every pass via [`RenderContext`].
 ///
 /// The `GraphRenderer` populates this once per 帧 (before driving the
@@ -818,6 +879,10 @@ impl PostGrade {
 pub struct GraphFrame<'a> {
     /// Per-frame UBO 相机 + 光源 Its 描述符 集合 is bound at 集合 0.
     pub frame_ubo: &'a FrameUBO,
+    /// Camera layers composited in `Camera.depth` order (#461). Empty means
+    /// "one implicit camera from `FrameUBOData`", which keeps the legacy
+    /// single-camera path bit-identical.
+    pub cameras: &'a [CameraView],
     /// 绘制 列表 for the 当前 帧
     pub draw_list: &'a [DrawItem],
     /// ECS-authored gizmos for this frame.

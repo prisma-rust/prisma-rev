@@ -129,6 +129,7 @@
   不再依赖 pass 内显式手工 barrier。状态追踪按 `(handle, image_index, layer_count)` 分帧，
   swapchain recreate 时重置全部 tracked state。
   第一阶段可先过渡：手动依赖表排顺序 + pass 内显式 barrier，行为不变后再启用自动屏障。
+- **多相机合成（#461）**：`render_system` 枚举所有启用相机（`Camera.depth` 升序），每台相机一份 `CameraView`（view/proj、清屏色、`clear_flags`）。`ForwardPass` 在同一个 render pass 内逐相机 `vkCmdClearAttachments`（`Skybox`/`SolidColor` 清颜色 + 深度，`Depth` 只清深度，`Nothing` 不清）+ 重画一遍场景；UBO 用 `UNORM_BUFFER_DYNAMIC` 的相机槽位切换 view/proj。第一版只支持全屏不透明层叠加，没有逐相机 viewport rect / 后处理栈。
 - `ShadowMapPass` 已正确实现 `RenderPassNode`，作为参照。**#526 CSM**：`shadow_cascade_count = 1` 时分配旧的 `shadow_size²` 单张阴影图；`= 2` 时分配 `2 × shadow_size` 的 2×1 atlas，左右 tile 分别是近/远级联，片元按相机前向深度选级联。atlas 尺寸在构造渲染图时确定，运行中改设置需要重建。
 
 ### 6.3 Pass 拓扑（重构后）
