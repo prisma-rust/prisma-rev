@@ -878,8 +878,10 @@ impl EngineHost {
         );
 
         let extent = self.renderer.extent();
+        self.renderer
+            .set_taa(self.settings.taa, self.settings.taa_strength);
         let scene = &self.packet.scene;
-        let frame_data = FrameUBOData {
+        let mut frame_data = FrameUBOData {
             view_proj: scene.view_proj.to_cols_array_2d(),
             camera_position: [
                 scene.eye.x,
@@ -901,6 +903,7 @@ impl EngineHost {
             _pad2: [0.0; 3],
             _pad3: [0.0; 2],
         };
+        self.renderer.apply_taa_jitter(&mut frame_data);
 
         // #502：LUT 强度跟随全局设置，路径解析到 assets/ 下。
         let mut resolved_grade = self
@@ -959,8 +962,6 @@ impl EngineHost {
             self.settings.internal_resolution,
             self.settings.internal_scale_mode,
         );
-        self.renderer
-            .set_taa(self.settings.taa, self.settings.taa_strength);
         let Some(ctx) = self.renderer.begin_frame()? else {
             return Ok(None);
         };
