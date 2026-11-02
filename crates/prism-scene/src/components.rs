@@ -2079,6 +2079,13 @@ pub struct Animator {
     pub looped: bool,
     /// 是否推进时间。
     pub playing: bool,
+    /// 一维混合空间的剪辑路径（#560 P1）。≥2 项且能找到剪辑时**优先于**
+    /// `clip_path`：姿态由 `blend_parameter` 在 `blend_positions` 上插值得到。
+    pub blend_clip_paths: Vec<String>,
+    /// 与 [`Self::blend_clip_paths`] 一一对应的参数轴位置（不必排序）。
+    pub blend_positions: Vec<f32>,
+    /// 混合参数（游戏侧每帧写，通常就是速度）。范围外夹到两端。
+    pub blend_parameter: f32,
     /// 换剪辑时的交叉淡入时长（秒）。
     ///
     /// `clip_path` 在运行时被改掉时，从**旧剪辑停在那一刻的姿态**过渡到新剪辑，
@@ -2095,6 +2102,9 @@ impl Default for Animator {
             speed: 1.0,
             looped: true,
             playing: true,
+            blend_clip_paths: Vec::new(),
+            blend_positions: Vec::new(),
+            blend_parameter: 0.0,
             // 0.2s ≈ UE 的默认混合时间：短到不拖沓，又能盖住大部分姿势差。
             blend_duration: 0.2,
         }
@@ -2104,6 +2114,11 @@ impl Default for Animator {
 impl Animator {
     pub fn has_clip(&self) -> bool {
         !self.clip_path.trim().is_empty()
+    }
+
+    /// 是否应该走一维混合空间（至少两个剪辑 + 至少两个位置）。
+    pub fn uses_blend_space(&self) -> bool {
+        self.blend_clip_paths.len() >= 2 && self.blend_positions.len() >= 2
     }
 }
 

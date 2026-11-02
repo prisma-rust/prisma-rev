@@ -398,9 +398,15 @@ cook 阶段把 glTF 的 `skins` / `JOINTS_0` / `WEIGHTS_0` / `animations` 烘成
   刻度带标出所有轨道的关键帧时刻（`Clip::key_times` 合并去重），拖的时候能看出哪里会变。
   改时间 / 勾 Loop 直接写回组件字段（一次撤销步），引擎的 `animator::pose` 系统下一帧按
   新时间重算骨骼调色板。**`blend_duration`**（秒，默认 0.2）是运行时换剪辑的交叉淡入时长：
-  旧剪辑冻结在切走那一刻的姿态，按时长淡出到新剪辑；`0` 表示硬切。它只在运行时改
-  `clip_path` 时生效，拖时间轴 / 换 `clip_path` 后的下一帧都会按它过渡。
+  旧剪辑冻结在切走那一刻的姿态，按时长淡出到新剪辑；`0` 表示硬切。换剪辑、出入混合空间
+  都走它。
 - **`SkeletonRoot`**：检查器里画骨骼树（`CollapsingHeader` 按父链缩进，成环有护栏）。
+- **一维混合空间**：`Animator` 的 `blend_clip_paths` / `blend_positions` / `blend_parameter`
+  是一条参数轴（速度 0 → 走 → 跑 这种）。填了 ≥2 条剪辑、且 `blend_positions` 与之一一对应
+  时，姿态由 `blend_parameter` 在轴上插值得到，**优先于** `clip_path`；参数超出范围夹到两端。
+  剪辑时长不同时按**归一化相位**对齐（步幅对齐），走 ↔ 跑不会出现两只脚互相追。少一个样本
+  （路径写错 / 资产还没加载）就退回单剪辑，不会让整个角色不动。三个字段都是 `Vec` / 数字，
+  检查器里直接可编辑；`blend_clip_paths` 已进资产重命名清单。
 - **视口叠加**：工具栏 `Bones`（`Outline` 右边）控制，默认开。选中蒙皮实体时按
   `BonePalette` 还原关节世界位置（`world = palette × inverse_bind⁻¹`），画父 → 子 1.6px
   连线 + 关节圆点（根关节更大）。拖时间轴时叠加层跟着动，因为它读的就是动画系统当帧的
