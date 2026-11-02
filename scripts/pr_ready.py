@@ -509,7 +509,17 @@ def main() -> int:
         if any(p in WORKSPACE_WIDE or p.startswith(WORKSPACE_PREFIXES) for p in changed):
             crates = set(members)
 
-    default_crates = sorted(crates if args.all else crates - SKIP_BY_DEFAULT)
+    # `prism-app` 只在对它的检查成本高 / CI 不覆盖时默认跳过；当它**自己**被
+    # 改动时必须跑，否则改 `prism-app` 的自检会显示「touched crates: (none)」。
+    directly_changed = {
+        path.split("/")[1]
+        for path in changed
+        if path.startswith("crates/") and len(path.split("/")) > 1
+    }
+    if args.all:
+        default_crates = sorted(crates)
+    else:
+        default_crates = sorted(crates - (SKIP_BY_DEFAULT - directly_changed))
     eprint(f"PrismaRev self-check — base {base}, {len(changed)} changed file(s)")
     eprint(f"  touched crates: {', '.join(default_crates) or '(none)'}")
 

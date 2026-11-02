@@ -2023,6 +2023,8 @@ mod tests {
             (K::Digit3, 12),
             (K::Digit4, 13),
             (K::Digit5, 14),
+            // Shift+6 是蒙皮权重热图（#560），不是 PBR 分量，但同样是 15 号 debug 位。
+            (K::Digit6, 15),
         ] {
             assert_eq!(
                 App::pbr_debug_key_to_bit(code, true),
@@ -2030,15 +2032,8 @@ mod tests {
                 "{code:?} with Shift"
             );
         }
-        // 只有 15 个分量；Shift+6..0 与普通字母都不该抢快捷键。
-        for code in [
-            K::Digit6,
-            K::Digit7,
-            K::Digit8,
-            K::Digit9,
-            K::Digit0,
-            K::KeyA,
-        ] {
+        // 15 个 debug 位已经用完；Shift+7..0 与普通字母都不该抢快捷键。
+        for code in [K::Digit7, K::Digit8, K::Digit9, K::Digit0, K::KeyA] {
             assert_eq!(App::pbr_debug_key_to_bit(code, true), None, "{code:?}");
         }
     }
