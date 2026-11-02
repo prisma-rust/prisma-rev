@@ -659,6 +659,41 @@ fn a_terrain_survives_cook_and_decode() {
 }
 
 #[test]
+fn a_lod_group_survives_cook_and_decode() {
+    // 距离 LOD 只有一个 `Vec<f32>` 字段（#491）。
+    let mut registry = ComponentRegistry::new();
+    register_builtin_components(&mut registry);
+    let scene = SceneJson::parse(
+        r#"{
+            "version": 3,
+            "entities": [{
+                "id": 0,
+                "name": "Tree",
+                "components": {
+                    "prism_engine::scene::LodGroup": {
+                        "distances": [15.0, 40.0, 90.0]
+                    }
+                }
+            }]
+        }"#,
+    )
+    .unwrap();
+
+    let bytes = crate::encode_scene(&scene, &registry).expect("scene with LOD must cook");
+    let decoded = crate::decode_scene(&bytes, &registry).expect("cooked scene must decode");
+
+    let mut world = prism_ecs::World::new();
+    let entity = world.spawn();
+    for component in &decoded.entities[0].components {
+        assert!(registry.apply_object(&mut world, entity, component));
+    }
+    let lod = world
+        .get::<crate::components::LodGroup>(entity)
+        .expect("LOD group must apply to the world");
+    assert_eq!(lod.distances, vec![15.0, 40.0, 90.0]);
+}
+
+#[test]
 fn skinned_components_survive_cook_and_decode() {
     // 骨架与蒙皮渲染器只有路径 + 一个 `Vec<String>`（#560）。
     let mut registry = ComponentRegistry::new();

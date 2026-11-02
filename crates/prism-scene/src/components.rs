@@ -4,7 +4,7 @@
 //! |-----------|------------|
 //! | 层次结构  | `Parent`, `Child` |
 //! | 变换     | `LocalTransform`, `LocalToWorld`, `TransformDirty` |
-//! | 渲染     | `MeshRenderer`, `SpriteRenderer`, `Tilemap`, `Active` |
+//! | 渲染     | `MeshRenderer`, `LodGroup`（距离 LOD）, `SpriteRenderer`, `Tilemap`, `Active` |
 //! | 动画     | `SpriteAnimation`（2D 帧）, `KeyframeAnimation`（曲线） |
 //! | 粒子     | `ParticleSystem`（世界空间 3D CPU 粒子）、`ParticleEmitter2D`（世界 XY 平面 2D 粒子） |
 //! | 光源 | `Light`（形状）, `DirectionalLight`, `PointLight`, `SpotLight`（旧）, `Light2D`（2D 精灵光照） |
@@ -319,6 +319,71 @@ impl MeshRenderer {
         self.src_blend != BlendMode::One
             || self.dst_blend != BlendMode::Zero
             || self.blend_op != BlendOp::Add
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 距离 LOD
+// ---------------------------------------------------------------------------
+
+/// 距离分级 LOD（#491）。
+///
+/// 挂在父实体上，父实体的 [`Child`] 列表**顺序就是 LOD 顺序**：第一个子实体
+/// 是 LOD0（最近、最细），第二个是 LOD1，依此类推。运行时系统按到最近启用
+/// 相机的距离选级，并用运行时 `LodHidden` 隐藏其它级；作者的 [`Active`] 与
+/// 编辑器的 `Hidden` 都不会被改写。
+///
+/// `distances[i]` 是第 `i` 级仍然显示的最大距离（米）。距离超过所有阈值时
+/// 显示最后一个子实体；`distances` 为空时始终显示第一个。
+///
+/// 例：`distances = [20.0, 60.0]` + 三个子实体 = 20 米内 LOD0、20–60 米
+/// LOD1、60 米外 LOD2。
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
+#[reflect(name = "prism_engine::scene::LodGroup")]
+#[serde(default)]
+pub struct LodGroup {
+    /// 每一级仍然显示的最大距离（米），按 LOD0、LOD1……排列。
+    pub distances: Vec<f32>,
+}
+
+impl Default for LodGroup {
+    fn default() -> Self {
+        Self {
+            distances: vec![20.0, 60.0],
+        }
+    }
+}
+
+impl LodGroup {
+    /// 给定距离和子实体数量，返回应该显示的 LOD 下标。
+    ///
+    /// 退化输入按「显示最详细的一级」处理：没有子实体返回 `None`，距离非
+    /// 有限按 0，负阈值按 0。距离超过所有阈值时夹到最后一个子实体。
+    pub fn level_for_distance(&self, distance: f32, child_count: usize) -> Option<usize> {
+        if child_count == 0 {
+            return None;
+        }
+        if self.distances.is_empty() {
+            return Some(0);
+        }
+        let distance = if distance.is_finite() {
+            distance.max(0.0)
+        } else {
+            0.0
+        };
+        let index = self
+            .distances
+            .iter()
+            .position(|limit| {
+                let limit = if limit.is_finite() {
+                    limit.max(0.0)
+                } else {
+                    f32::INFINITY
+                };
+                distance <= limit
+            })
+            .unwrap_or(self.distances.len());
+        Some(index.min(child_count - 1))
     }
 }
 
