@@ -181,6 +181,18 @@ impl<'a> SceneReadView<'a> {
             self.world, frustum, out,
         )
     }
+
+    /// [`Self::draw_items_with_frustum_into`] for **all** composited cameras
+    /// (#461 / #491). 空切片 = 不剔除。
+    pub fn draw_items_with_frustums_into(
+        &self,
+        frustums: &[prism_render::culling::Frustum],
+        out: &mut Vec<prism_render::DrawItem>,
+    ) {
+        crate::scene::systems::render::scene_render_system_into_with_frustums(
+            self.world, frustums, out,
+        )
+    }
 }
 
 /// 把场景里的相对资源路径解析成资源包内路径。

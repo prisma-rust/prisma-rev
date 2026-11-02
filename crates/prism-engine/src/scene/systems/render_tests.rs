@@ -921,18 +921,19 @@ fn child_of_an_inactive_parent_is_skipped() {
 
 /// 相机在原点、看向 −Z 的视锥（与 `prism-render` 的 culling 测试同一构造）。
 fn camera_frustum() -> prism_render::culling::Frustum {
-    // 走引擎自己的投影（Vulkan 深度 [0,1] + y-flip），不要另写一份公式。
+    camera_frustum_looking(glam::Vec3::ZERO, glam::Vec3::new(0.0, 0.0, -1.0))
+}
+
+/// 任意位置 / 朝向的相机视锥；投影走引擎自己的 `Camera::projection_matrix`
+/// （Vulkan 深度 [0,1] + y-flip），不另写一份公式。
+fn camera_frustum_looking(eye: glam::Vec3, forward: glam::Vec3) -> prism_render::culling::Frustum {
     let camera = prism_scene::Camera {
         fov_y_degrees: 45.0,
         near: 0.1,
         far: 100.0,
         ..prism_scene::Camera::default()
     };
-    let view = glam::camera::rh::view::look_at_mat4(
-        glam::Vec3::ZERO,
-        glam::Vec3::new(0.0, 0.0, -1.0),
-        glam::Vec3::Y,
-    );
+    let view = glam::camera::rh::view::look_at_mat4(eye, eye + forward, glam::Vec3::Y);
     let view_proj = camera.projection_matrix(1.0) * view;
     prism_render::culling::Frustum::from_view_proj(&view_proj.to_cols_array_2d())
         .expect("camera frustum must be valid")
@@ -1011,6 +1012,54 @@ fn culling_keeps_the_rest_of_the_extraction_rules() {
     let mut out = Vec::new();
     scene_render_system_into_with_frustum(&world, Some(&frustum), &mut out);
     assert!(out.is_empty(), "视锥内但未激活的实体仍然不画");
+}
+
+#[test]
+fn a_mesh_visible_only_through_a_second_camera_is_kept() {
+    let mut world = World::new();
+    // 主相机看 −Z，第二台相机看 +Z：两个实体各自只被其中一台看到。
+    spawn_mesh(
+        &mut world,
+        glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -5.0)),
+    );
+    spawn_mesh(
+        &mut world,
+        glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, 5.0)),
+    );
+    let mut bounds = MeshBounds::default();
+    bounds.insert(MeshHandle::default(), unit_bounds());
+    world.insert_resource(bounds);
+
+    let front = camera_frustum();
+    let back = camera_frustum_looking(glam::Vec3::ZERO, glam::Vec3::Z);
+
+    let mut single = Vec::new();
+    scene_render_system_into_with_frustums(&world, std::slice::from_ref(&front), &mut single);
+    assert_eq!(single.len(), 1, "只按主相机剔除时只剩 −Z 的实体");
+
+    let mut both = Vec::new();
+    scene_render_system_into_with_frustums(&world, &[front, back], &mut both);
+    assert_eq!(both.len(), 2, "第二台相机视野里的实体不能被主相机剔掉");
+}
+
+#[test]
+fn an_empty_frustum_set_keeps_everything() {
+    let mut world = World::new();
+    spawn_mesh(
+        &mut world,
+        glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -5.0)),
+    );
+    spawn_mesh(
+        &mut world,
+        glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, 5.0)),
+    );
+    let mut bounds = MeshBounds::default();
+    bounds.insert(MeshHandle::default(), unit_bounds());
+    world.insert_resource(bounds);
+
+    let mut out = Vec::new();
+    scene_render_system_into_with_frustums(&world, &[], &mut out);
+    assert_eq!(out.len(), 2, "没有可用视锥时不剔除");
 }
 
 #[test]
