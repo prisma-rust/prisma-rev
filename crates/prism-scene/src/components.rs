@@ -2297,7 +2297,8 @@ impl Animator {
 /// 高度场地形（#517 Phase 1）。
 ///
 /// 只是一个数据组件：运行时按 `heightmap`（f32 little-endian 高度数组）+ 网格参数生成
-/// 地形网格，挂到同一实体的 [`MeshRenderer`] 上；材质仍然由 MeshRenderer 决定。
+/// 地形网格。`chunks == 1` 时挂到同一实体的 [`MeshRenderer`] 上；`chunks > 1` 时
+/// 每块生成一个运行时子实体，便于逐块视锥剔除。材质仍然由 MeshRenderer 决定。
 ///
 /// 高度数组是行优先的 `resolution × resolution` 个 f32（`resolution = 0` 按 32 处理），
 /// 世界尺寸是 `size` 米（x / z），`height_scale` 把 `[0, 1]` 的高度放大成米。
@@ -2318,6 +2319,11 @@ pub struct Terrain {
     ///
     /// 非 `0` 时高度数组长度必须正好是 `resolution * resolution`，否则退回平坦地形并告警。
     pub resolution: u32,
+    /// 每边切成多少块（#517 Phase 2）。`1` = 整张地形一个网格；
+    /// 大于 `1` 时每块是独立实体 / 独立网格，渲染与阴影可以逐块剔除。
+    ///
+    /// 运行时钳到 `1..=16`，并且不会超过 `cells - 1`（每块至少一个 quad）。
+    pub chunks: u32,
 }
 
 impl Default for Terrain {
@@ -2327,6 +2333,7 @@ impl Default for Terrain {
             size: [100.0, 100.0],
             height_scale: 1.0,
             resolution: 0,
+            chunks: 4,
         }
     }
 }
@@ -2344,6 +2351,15 @@ impl Terrain {
 
     pub fn has_heightmap(&self) -> bool {
         !self.heightmap.trim().is_empty()
+    }
+
+    /// 请求的每边块数，钳到 `1..=16`；实际块数还要受 `cells - 1` 限制。
+    pub fn chunk_count(&self) -> usize {
+        if self.chunks == 0 {
+            1
+        } else {
+            self.chunks.clamp(1, 16) as usize
+        }
     }
 }
 
