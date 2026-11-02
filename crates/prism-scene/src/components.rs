@@ -2042,6 +2042,19 @@ impl SkinnedMeshRenderer {
     pub fn has_mesh(&self) -> bool {
         !self.skinned_mesh_path.trim().is_empty()
     }
+
+    /// 绘制/材质解析需要的等价 [`MeshRenderer`]（网格路径留空：网格来自 `.rskin`）。
+    ///
+    /// 让蒙皮实体复用静态网格那条资源解析与绘制状态代码，而不是再抄一遍。
+    pub fn as_mesh_renderer(&self) -> MeshRenderer {
+        MeshRenderer {
+            mesh_path: String::new(),
+            material_path: self.material_path.clone(),
+            material_paths: self.material_paths.clone(),
+            shadow_casting_mode: self.shadow_casting_mode,
+            ..MeshRenderer::default()
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

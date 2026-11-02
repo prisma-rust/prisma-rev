@@ -18,5 +18,6 @@ pub mod lights;
 pub mod particles;
 pub mod particles2d;
 pub mod render;
+pub mod skinned_draw;
 pub mod terrain;
 pub mod tilemap;

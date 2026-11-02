@@ -1,0 +1,143 @@
+// 蒙皮（#560 P0-3b）：把 `SkinnedMeshRenderer` 实体接成绘制项。
+//
+// 单独一个文件而不是塞进 `render.rs`：静态网格那条循环已经很满，这里的分支
+// 还要顺手把每个实体的骨骼调色板追加进帧包。
+
+use prism_ecs::{Entity, World};
+use prism_render::culling::Frustum;
+use prism_render::render_graph::DrawItem;
+
+use super::animator::BonePalette;
+use super::render::draw_state;
+use crate::scene::components::{
+    LocalToWorld, MaterialRef, MaterialSlots, MeshRef, MeshSubmeshes, SkinnedMeshRenderer,
+};
+use crate::scene::systems::render::MeshBounds;
+
+/// 每帧最大骨骼矩阵数（与 `ForwardPass::BONE_CAPACITY` 一致）。
+///
+/// 超出的实体退回 bind pose（`bone_offset = None`）并告警一次，而不是让
+/// 多个实例的调色板互相覆盖。
+const BONE_BUDGET: usize = prism_render::forward_pass::ForwardPass::BONE_CAPACITY;
+
+/// 把 `SkinnedMeshRenderer` 实体追加到绘制列表，并收集它们的骨骼调色板。
+///
+/// `bones` 是整帧共享的调色板缓冲：每个实体把自己 `BonePalette` 的矩阵追加在
+/// 尾部，绘制项只记 `bone_offset`（顶点阶段按它索引 SSBO），所以同一个骨架
+/// 被多个网格复用时也不需要复制。
+///
+/// 返回追加的绘制项数量。
+pub fn append_skinned_draw_items(
+    world: &World,
+    frustum: Option<&Frustum>,
+    out: &mut Vec<DrawItem>,
+    bones: &mut Vec<[[f32; 4]; 4]>,
+) -> usize {
+    let bounds = world.get_resource::<MeshBounds>();
+    let mut appended = 0;
+
+    for (entity, wt, mr, skinned) in world.query3::<LocalToWorld, MeshRef, SkinnedMeshRenderer>() {
+        if !crate::scene::systems::hierarchy::is_active_in_hierarchy(world, entity) {
+            continue;
+        }
+        let model = wt.0.to_cols_array_2d();
+        let world_bounds = bounds
+            .and_then(|bounds| bounds.get(mr.render_handle))
+            .and_then(|local| local.transformed(&model));
+        if let Some(frustum) = frustum {
+            if let Some(world_bounds) = world_bounds {
+                if !frustum.intersects_aabb(&world_bounds) {
+                    continue;
+                }
+            }
+        }
+
+        let bone_offset = append_palette(world, entity, BONE_BUDGET, bones);
+        let renderer = skinned.as_mesh_renderer();
+        let state = draw_state(Some(&renderer));
+        let material_ref = world.get::<MaterialRef>(entity);
+        let material_slots = world.get::<MaterialSlots>(entity);
+        let submeshes = world.get::<MeshSubmeshes>(entity);
+        let mode = skinned.shadow_casting_mode;
+
+        let has_submeshes = submeshes.is_some_and(|submeshes| !submeshes.submeshes.is_empty());
+        if has_submeshes {
+            for (index, submesh) in submeshes.unwrap().submeshes.iter().enumerate() {
+                let material = match material_slots {
+                    Some(slots) => slots.slots.get(index).copied().flatten(),
+                    None => material_ref.map(|material| material.material_slot),
+                };
+                out.push(DrawItem {
+                    mesh: mr.render_handle,
+                    entity_id: entity.id(),
+                    model,
+                    material,
+                    cast_shadow: mode.casts_shadows(),
+                    visible_in_main_pass: mode.visible_in_main_pass(),
+                    cast_shadow_two_sided: mode.casts_two_sided_shadows(),
+                    state,
+                    world_bounds,
+                    index_start: submesh.index_start,
+                    index_count: Some(submesh.index_count),
+                    bone_offset,
+                });
+                appended += 1;
+            }
+        } else {
+            let material = match material_slots {
+                Some(slots) => slots.slots.first().copied().flatten(),
+                None => material_ref.map(|material| material.material_slot),
+            };
+            out.push(DrawItem {
+                mesh: mr.render_handle,
+                entity_id: entity.id(),
+                model,
+                material,
+                cast_shadow: mode.casts_shadows(),
+                visible_in_main_pass: mode.visible_in_main_pass(),
+                cast_shadow_two_sided: mode.casts_two_sided_shadows(),
+                state,
+                world_bounds,
+                index_start: 0,
+                index_count: None,
+                bone_offset,
+            });
+            appended += 1;
+        }
+    }
+
+    appended
+}
+
+/// 追加一个实体的骨骼调色板，返回它在整帧缓冲里的起始下标。
+///
+/// 没有 `BonePalette`（动画系统还没跑 / 骨架缺失）或超出预算时返回 `None`，
+/// 绘制项按 bind pose 画。
+fn append_palette(
+    world: &World,
+    entity: Entity,
+    budget: usize,
+    bones: &mut Vec<[[f32; 4]; 4]>,
+) -> Option<u32> {
+    let palette = world.get::<BonePalette>(entity)?;
+    if palette.matrices.is_empty() {
+        return None;
+    }
+    if bones.len() + palette.matrices.len() > budget {
+        log::warn!(
+            "skinning: bone palette budget exhausted ({} + {} > {budget}); \
+             entity {} is drawn in its bind pose",
+            bones.len(),
+            palette.matrices.len(),
+            entity.id()
+        );
+        return None;
+    }
+    let offset = bones.len() as u32;
+    bones.extend_from_slice(&palette.matrices);
+    Some(offset)
+}
+
+#[cfg(test)]
+#[path = "skinned_draw_tests.rs"]
+mod tests;
