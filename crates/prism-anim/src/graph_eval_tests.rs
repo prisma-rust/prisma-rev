@@ -435,3 +435,102 @@ fn a_state_machine_emits_notifies_from_its_current_state_clip() {
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(events[0].name, "IdleStep");
 }
+
+#[test]
+fn a_slot_overlays_an_optional_montage_clip_by_weight() {
+    let mut base = node("base", GraphNodeKind::ClipPlayer);
+    base.clips.push("base.ranim".into());
+    let mut slot = node("slot", GraphNodeKind::Slot);
+    slot.clips.push("montage.ranim".into());
+    slot.weight = 0.5;
+    slot.inputs.push(GraphInputInfo {
+        node: 0,
+        weight: 1.0,
+        bone_mask: Vec::new(),
+    });
+    let mut evaluator = AnimGraphEvaluator::new(graph(vec![base, slot, output(1)], 2));
+    let skeleton = skeleton();
+    let source = Source::new(&[
+        ("base.ranim", translation_clip("base", 0.0)),
+        ("montage.ranim", translation_clip("montage", 10.0)),
+    ]);
+    let pose = evaluator
+        .evaluate(&source, &skeleton, 0.0)
+        .expect("evaluates");
+    assert!((x(&pose) - 5.0).abs() < 1e-5, "x={}", x(&pose));
+
+    // Weight 0 keeps the base untouched.
+    let mut evaluator = AnimGraphEvaluator::new(graph(
+        vec![
+            {
+                let mut base = node("base", GraphNodeKind::ClipPlayer);
+                base.clips.push("base.ranim".into());
+                base
+            },
+            {
+                let mut slot = node("slot", GraphNodeKind::Slot);
+                slot.clips.push("montage.ranim".into());
+                slot.weight = 0.0;
+                slot.inputs.push(GraphInputInfo {
+                    node: 0,
+                    weight: 1.0,
+                    bone_mask: Vec::new(),
+                });
+                slot
+            },
+            output(1),
+        ],
+        2,
+    ));
+    let pose = evaluator
+        .evaluate(&source, &skeleton, 0.0)
+        .expect("evaluates");
+    assert!(x(&pose).abs() < 1e-5, "x={}", x(&pose));
+}
+
+#[test]
+fn a_slot_without_a_clip_is_transparent() {
+    let mut base = node("base", GraphNodeKind::ClipPlayer);
+    base.clips.push("base.ranim".into());
+    let mut slot = node("slot", GraphNodeKind::Slot);
+    slot.inputs.push(GraphInputInfo {
+        node: 0,
+        weight: 1.0,
+        bone_mask: Vec::new(),
+    });
+    let mut evaluator = AnimGraphEvaluator::new(graph(vec![base, slot, output(1)], 2));
+    let source = Source::new(&[("base.ranim", translation_clip("base", 3.0))]);
+    let pose = evaluator
+        .evaluate(&source, &skeleton(), 0.0)
+        .expect("evaluates");
+    assert!((x(&pose) - 3.0).abs() < 1e-5);
+}
+
+#[test]
+fn a_slot_montage_emits_its_own_notifies() {
+    let mut base = node("base", GraphNodeKind::ClipPlayer);
+    base.clips.push("base.ranim".into());
+    let mut slot = node("slot", GraphNodeKind::Slot);
+    slot.clips.push("montage.ranim".into());
+    slot.looped = false;
+    slot.inputs.push(GraphInputInfo {
+        node: 0,
+        weight: 1.0,
+        bone_mask: Vec::new(),
+    });
+    let mut evaluator = AnimGraphEvaluator::new(graph(vec![base, slot, output(1)], 2));
+    let skeleton = skeleton();
+    let source = Source::new(&[
+        ("base.ranim", translation_clip("base", 0.0)),
+        (
+            "montage.ranim",
+            clip_with_notify("montage", 0.5, "MontageHit"),
+        ),
+    ]);
+    let (_, events) = evaluator
+        .evaluate_with_events(&source, &skeleton, 0.6)
+        .expect("evaluates");
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].name, "MontageHit");
+    assert_eq!(events[0].node, "slot");
+}

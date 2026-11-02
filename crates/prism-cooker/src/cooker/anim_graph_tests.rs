@@ -37,7 +37,7 @@ fn document() -> serde_json::Value {
                 "weight": 0.5,
                 "bone_mask": ["spine_02", "hand_r"]
             },
-            { "name": "slot", "type": "slot", "input": "aim" },
+            { "name": "slot", "type": "slot", "clip": "montage.ranim", "input": "aim" },
             { "name": "cached", "type": "cached_pose", "input": "slot" },
             {
                 "name": "stack",
@@ -67,6 +67,7 @@ fn a_graph_round_trips_through_json_and_ragp() {
         GraphNodeKind::Output
     );
     assert_eq!(graph.nodes[0].positions, [[0.0, 0.0], [5.0, 0.0]]);
+    assert_eq!(graph.nodes[4].clips, ["montage.ranim"]);
     assert_eq!(graph.nodes[5].inputs[0].node, 4); // cached -> slot
     assert_eq!(graph.nodes[6].inputs[1].bone_mask, ["spine_02"]);
 
