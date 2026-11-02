@@ -14,13 +14,17 @@
 //   set 1, binding 0 - scene view-space normal (Texture2D, R16G16B16A16_SFLOAT)
 //                      (only sampled when `pc.mode == 0`)
 //   set 1, binding 1 - linear sampler for normal
+//   set 2, binding 0 - previous frame's resolved AO (Texture2D, R8_UNORM)
+//   set 2, binding 1 - current screen-space velocity (Texture2D, RGBA16F)
+//   set 2, binding 2 - linear clamp sampler for temporal inputs
 //
-// Push constants: GtaoPush (96 bytes):
+// Push constants: GtaoPush (88 bytes):
 //   inv_proj    - column-major clip->view (for position reconstruction)
 //   viewport    - AO texture resolution (half-res)
 //   radius      - view-space occlusion radius (world units)
 //   mode        - 0 = sample normal MRT, 1 = reconstruct from depth derivatives
-//   _pad0       - explicit alignment padding
+//   historyStrength - temporal history weight (0 = raw, 1 = full history)
+//   validHistory    - 1 when the previous AO image belongs to the same view
 //
 // Coordinate conventions (see README §Coordinate Conventions and AGENTS.md):
 //   - Right-handed; camera looks down -Z; NDC y: -1 = top, +1 = bottom.
@@ -48,18 +52,29 @@ Texture2D<float4> normalTex;
 [[vk::binding(1, 1)]]
 SamplerState normalSampler;
 
+// ---- set 2: temporal inputs (#883 Phase 3) --------------------------
+// Previous AO is the other half of the double buffer. Velocity is the same
+// full-res MRT written by ForwardPass; sampling it at half-res is intentional
+// (AO is half-res too). normal.w marks transparent pixels as reactive.
+[[vk::binding(0, 2)]]
+Texture2D<float> historyTex;
+[[vk::binding(1, 2)]]
+Texture2D<float2> velocityTex;
+[[vk::binding(2, 2)]]
+SamplerState temporalSampler;
+
 // ---- push constants -------------------------------------------------
-// 64 (inv_proj) + 8 (viewport) + 4 (radius) + 4 (mode) + 4 (pad) = 84 bytes.
-// Matches the Rust `GtaoPushConstants` (`#[repr(C)]`, tight packing) exactly.
-// Vulkan push-constant ranges don't require 16-byte multiples; the range
-// `size` just has to match the bytes pushed (84 here).
+// 64 (inv_proj) + 8 (viewport) + 4 (radius) + 4 (mode) + 4 (strength)
+// + 4 (history validity) = 88 bytes. Matches the Rust `GtaoPush`
+// (`#[repr(C)]`, tight packing) exactly.
 public struct GtaoPush
 {
-    public float4x4 inv_proj;   // clip -> view (for position reconstruction)
-    public float2   viewport;   // AO texture size (half-res), px
-    public float    radius;     // view-space sample radius (world units)
-    public uint     mode;       // 0 = normal MRT, 1 = depth-reconstruct
-    public uint     _pad0;
+    public float4x4 inv_proj;        // clip -> view (for position reconstruction)
+    public float2   viewport;        // AO texture size (half-res), px
+    public float    radius;          // view-space sample radius (world units)
+    public uint     mode;            // 0 = normal MRT, 1 = depth-reconstruct
+    public float    historyStrength; // temporal history weight, 0..1
+    public float    validHistory;    // 0 on first frame / after resize
 };
 [[vk::push_constant]]
 GtaoPush pc;
@@ -244,5 +259,40 @@ public void fragmentMain(
     }
     visibility /= float(SLICE_COUNT);
 
+    // #883 Phase 3: temporal denoise. Reproject last frame's resolved AO with
+    // the motion-vector buffer and blend. Transparent/reactive pixels and the
+    // first frame after resize intentionally stay raw.
+    float reactive = (pc.mode == 0u)
+        ? normalTex.SampleLevel(normalSampler, uv, 0.0).a
+        : 0.0;
+    if (pc.validHistory < 0.5 || pc.historyStrength <= 0.0 || reactive > 0.5)
+    {
+        outColor = float4(visibility, visibility, visibility, 1.0);
+        return;
+    }
+
+    float2 velocity = velocityTex.SampleLevel(temporalSampler, uv, 0.0).rg;
+    float2 prev_uv = uv - velocity;
+    if (any(prev_uv < 0.0) || any(prev_uv > 1.0))
+    {
+        outColor = float4(visibility, visibility, visibility, 1.0);
+        return;
+    }
+
+    // Static/slow pixels still need a depth-disocclusion test. Fast pixels
+    // move to a different surface by design; trust their velocity.
+    float2 motion_pixels = velocity * pc.viewport;
+    if (length(motion_pixels) < 1.0)
+    {
+        float prev_depth = sample_depth(prev_uv);
+        if (abs(prev_depth - depth) > 0.02)
+        {
+            outColor = float4(visibility, visibility, visibility, 1.0);
+            return;
+        }
+    }
+
+    float history = saturate(historyTex.SampleLevel(temporalSampler, prev_uv, 0.0).r);
+    visibility = lerp(visibility, history, saturate(pc.historyStrength));
     outColor = float4(visibility, visibility, visibility, 1.0);
 }

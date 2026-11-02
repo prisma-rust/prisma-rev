@@ -4,6 +4,8 @@
 //! D32_SFLOAT 深度和 R16G16B16A16 视图空间法线 MRT）。此通道读取深度
 //!（+ 可选法线）并写入单通道 R8_UNORM 环境光遮蔽纹理。
 //! `ForwardPass` 采样**上一帧的**环境光遮蔽输出（1 帧延迟）以衰减 IBL 漫反射+镜面反射项。
+//! #883 Phase 3 起，GTAO 还会用上一帧 AO + `FORWARD_VELOCITY_H` 做时域重投影降噪；
+//! 透明 reactive 像素（`normal.w = 1`）和 resize 后第一帧保持原始输出。
 //!
 //! ## 资源
 //! - 两个 R8_UNORM 环境光遮蔽图像（通过处理中帧索引双缓冲，因此场景可以读取
@@ -33,7 +35,7 @@ use crate::context::VulkanContext;
 use crate::pipeline::{GraphicsPipeline, PipelineDesc};
 use crate::render_graph::{
     GraphResources, PassInfo, PassKind, RenderContext, RenderGraphBuilder, RenderPassNode,
-    RenderSettings, ResourceUsage, FORWARD_DEPTH_H, FORWARD_NORMAL_H,
+    RenderSettings, ResourceUsage, FORWARD_DEPTH_H, FORWARD_NORMAL_H, FORWARD_VELOCITY_H,
 };
 use crate::render_pass::find_memory_type;
 use crate::shader;
@@ -54,6 +56,8 @@ pub struct GtaoFrameInputs {
     pub normal_image: vk::Image,
     /// 法线 视图 (for the 集合 1 SAMPLED_IMAGE 描述符
     pub normal_view: vk::ImageView,
+    /// Motion-vector view (#883 Phase 3 temporal history reprojection).
+    pub velocity_view: vk::ImageView,
 }
 
 /// Half-resolution GTAO screen-space ambient 遮挡 pass
@@ -69,6 +73,9 @@ pub struct GtaoPass {
     /// 法线 Each binds one SAMPLED_IMAGE + the shared 采样器
     descriptor_sets: [[vk::DescriptorSet; 2]; 2],
     ds_layout: vk::DescriptorSetLayout,
+    /// Set 2 for temporal history (previous AO + velocity + sampler).
+    temporal_sets: [vk::DescriptorSet; 2],
+    temporal_layout: vk::DescriptorSetLayout,
     ds_pool: vk::DescriptorPool,
     sampler: vk::Sampler,
     render_pass: Option<vk::RenderPass>,
@@ -80,6 +87,11 @@ pub struct GtaoPass {
     /// image_index repeats across frames-in-flight.
     bound_depth: [vk::ImageView; 2],
     bound_normal: [vk::ImageView; 2],
+    bound_velocity: [vk::ImageView; 2],
+    bound_history: [vk::ImageView; 2],
+    /// Whether `ao_images[(frame + 1) % 2]` contains a valid resolved AO
+    /// frame. Reset on creation/resize; first frame after that is raw.
+    history_valid: [bool; 2],
     device: Option<ash::Device>,
     /// 最后一个 时间 the AO_PROBE 调试 line was logged; the probe is throttled to
     /// once per 秒 so it doesn't flood the 对数 at 帧 rate.
@@ -156,19 +168,47 @@ impl GtaoPass {
         }
         .context("GtaoPass: create ds layout")?;
 
-        // 4 sets 总计 帧 0 集合 0, 帧 0 集合 1, 帧 1 集合 0, 帧 1 集合 1].
+        // Set 2: previous resolved AO + velocity + sampler. This is separate
+        // from the depth/normal layouts because it has two texture bindings
+        // plus one sampler (#883 Phase 3).
+        let temporal_bindings = [
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(bindings::HISTORY_TEX_BINDING)
+                .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(bindings::VELOCITY_TEX_BINDING)
+                .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(bindings::TEMPORAL_SAMPLER_BINDING)
+                .descriptor_type(vk::DescriptorType::SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+        ];
+        let temporal_layout = unsafe {
+            device.create_descriptor_set_layout(
+                &vk::DescriptorSetLayoutCreateInfo::default().bindings(&temporal_bindings),
+                None,
+            )
+        }
+        .context("GtaoPass: create temporal ds layout")?;
+
+        // 4 per-frame depth/normal sets + 2 temporal sets.
         let ds_pool = unsafe {
             device.create_descriptor_pool(
                 &vk::DescriptorPoolCreateInfo::default()
-                    .max_sets(4)
+                    .max_sets(6)
                     .pool_sizes(&[
                         vk::DescriptorPoolSize {
                             ty: vk::DescriptorType::SAMPLED_IMAGE,
-                            descriptor_count: 4,
+                            descriptor_count: 8,
                         },
                         vk::DescriptorPoolSize {
                             ty: vk::DescriptorType::SAMPLER,
-                            descriptor_count: 4,
+                            descriptor_count: 6,
                         },
                     ]),
                 None,
@@ -176,7 +216,14 @@ impl GtaoPass {
         }
         .context("GtaoPass: create ds pool")?;
 
-        let layouts = [ds_layout; 4];
+        let layouts = [
+            ds_layout,
+            ds_layout,
+            ds_layout,
+            ds_layout,
+            temporal_layout,
+            temporal_layout,
+        ];
         let allocated = unsafe {
             device.allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
@@ -186,14 +233,24 @@ impl GtaoPass {
         }
         .context("GtaoPass: allocate descriptor sets")?;
         let descriptor_sets = [[allocated[0], allocated[1]], [allocated[2], allocated[3]]];
+        let temporal_sets = [allocated[4], allocated[5]];
 
         // Bind the shared 采样器 to 绑定 1 of every 集合 (the SAMPLED_IMAGE
         // at 绑定 0 is updated per-frame in `set_inputs`).
-        for ds in allocated.iter() {
+        for ds in allocated.iter().take(4) {
             let sampler_info = vk::DescriptorImageInfo::default().sampler(sampler);
             let write = vk::WriteDescriptorSet::default()
                 .dst_set(*ds)
                 .dst_binding(bindings::DEPTH_SAMPLER_BINDING)
+                .descriptor_type(vk::DescriptorType::SAMPLER)
+                .image_info(std::slice::from_ref(&sampler_info));
+            unsafe { device.update_descriptor_sets(&[write], &[]) };
+        }
+        for ds in temporal_sets.iter() {
+            let sampler_info = vk::DescriptorImageInfo::default().sampler(sampler);
+            let write = vk::WriteDescriptorSet::default()
+                .dst_set(*ds)
+                .dst_binding(bindings::TEMPORAL_SAMPLER_BINDING)
                 .descriptor_type(vk::DescriptorType::SAMPLER)
                 .image_info(std::slice::from_ref(&sampler_info));
             unsafe { device.update_descriptor_sets(&[write], &[]) };
@@ -237,6 +294,8 @@ impl GtaoPass {
             ao_views,
             descriptor_sets,
             ds_layout,
+            temporal_sets,
+            temporal_layout,
             ds_pool,
             sampler,
             render_pass: Some(render_pass),
@@ -244,6 +303,9 @@ impl GtaoPass {
             pipeline: None,
             bound_depth: [vk::ImageView::null(); 2],
             bound_normal: [vk::ImageView::null(); 2],
+            bound_velocity: [vk::ImageView::null(); 2],
+            bound_history: [vk::ImageView::null(); 2],
+            history_valid: [false; 2],
             device: Some(device.clone()),
             last_probe_log: Instant::now(),
         })
@@ -275,19 +337,33 @@ impl GtaoPass {
         frame_index: u32,
         depth_view: vk::ImageView,
         normal_view: vk::ImageView,
+        velocity_view: vk::ImageView,
     ) {
         let i = (frame_index as usize) % 2;
-        if self.bound_depth[i] == depth_view && self.bound_normal[i] == normal_view {
+        let history_view = self.ao_views[(i + 1) % 2];
+        if self.bound_depth[i] == depth_view
+            && self.bound_normal[i] == normal_view
+            && self.bound_velocity[i] == velocity_view
+            && self.bound_history[i] == history_view
+        {
             return;
         }
         self.bound_depth[i] = depth_view;
         self.bound_normal[i] = normal_view;
+        self.bound_velocity[i] = velocity_view;
+        self.bound_history[i] = history_view;
 
         let depth_info = vk::DescriptorImageInfo::default()
             .image_view(depth_view)
             .image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL);
         let normal_info = vk::DescriptorImageInfo::default()
             .image_view(normal_view)
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        let history_info = vk::DescriptorImageInfo::default()
+            .image_view(history_view)
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        let velocity_info = vk::DescriptorImageInfo::default()
+            .image_view(velocity_view)
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
 
         let writes = [
@@ -301,6 +377,16 @@ impl GtaoPass {
                 .dst_binding(bindings::NORMAL_TEX_BINDING)
                 .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                 .image_info(std::slice::from_ref(&normal_info)),
+            vk::WriteDescriptorSet::default()
+                .dst_set(self.temporal_sets[i])
+                .dst_binding(bindings::HISTORY_TEX_BINDING)
+                .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                .image_info(std::slice::from_ref(&history_info)),
+            vk::WriteDescriptorSet::default()
+                .dst_set(self.temporal_sets[i])
+                .dst_binding(bindings::VELOCITY_TEX_BINDING)
+                .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                .image_info(std::slice::from_ref(&velocity_info)),
         ];
         unsafe { device.update_descriptor_sets(&writes, &[]) };
     }
@@ -335,7 +421,10 @@ impl GtaoPass {
             self.ao_views[i] = vk::ImageView::null();
             self.bound_depth[i] = vk::ImageView::null();
             self.bound_normal[i] = vk::ImageView::null();
+            self.bound_velocity[i] = vk::ImageView::null();
+            self.bound_history[i] = vk::ImageView::null();
         }
+        self.history_valid = [false; 2];
 
         // 创建 new 环境光遮蔽 images + framebuffers.
         for i in 0..2 {
@@ -435,6 +524,15 @@ impl GtaoPass {
                 std::slice::from_ref(&self.descriptor_sets[i][1]),
                 &[],
             );
+            // 集合 2: previous AO + velocity + temporal sampler.
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::GRAPHICS,
+                pipeline.layout,
+                2,
+                std::slice::from_ref(&self.temporal_sets[i]),
+                &[],
+            );
 
             device.cmd_set_viewport(
                 cmd,
@@ -457,7 +555,7 @@ impl GtaoPass {
                 }],
             );
 
-            // 推送 constants: shader_bindings::gtao::GtaoPush (96 字节 片元
+            // 推送 constants: shader_bindings::gtao::GtaoPush (88 字节 片元
             device.cmd_push_constants(
                 cmd,
                 pipeline.layout,
@@ -552,10 +650,10 @@ impl GtaoPass {
         let binding_descs: [vk::VertexInputBindingDescription; 0] = [];
         let attr_descs: [vk::VertexInputAttributeDescription; 0] = [];
 
-        // 集合 0 + 集合 1 share the same 布局 (SAMPLED_IMAGE + 采样器
-        let set_layouts = [self.ds_layout, self.ds_layout];
+        // Sets 0/1 share the depth/normal layout; set 2 is temporal.
+        let set_layouts = [self.ds_layout, self.ds_layout, self.temporal_layout];
 
-        // 推送 constants: shader_bindings::gtao::GtaoPush (96 字节 片元 only).
+        // 推送 constants: shader_bindings::gtao::GtaoPush (88 字节 片元 only).
         let push = [vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::FRAGMENT)
             .offset(0)
@@ -618,6 +716,7 @@ impl GtaoPass {
         }
         self.pipeline = None;
         unsafe { device.destroy_descriptor_set_layout(self.ds_layout, None) };
+        unsafe { device.destroy_descriptor_set_layout(self.temporal_layout, None) };
         unsafe { device.destroy_descriptor_pool(self.ds_pool, None) };
         unsafe { device.destroy_sampler(self.sampler, None) };
         self.device = None;
@@ -833,6 +932,12 @@ impl RenderPassNode for GtaoPass {
             stage: vk::PipelineStageFlags::FRAGMENT_SHADER,
             layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
         });
+        graph.read_usage(ResourceUsage {
+            handle: FORWARD_VELOCITY_H,
+            access: vk::AccessFlags::SHADER_READ,
+            stage: vk::PipelineStageFlags::FRAGMENT_SHADER,
+            layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        });
     }
 
     fn execute(
@@ -851,6 +956,13 @@ impl RenderPassNode for GtaoPass {
             Some(v) => v,
             None => {
                 log::warn!("GtaoPass: no ForwardPass normal view published; skipping");
+                return Ok(());
+            }
+        };
+        let velocity_view = match resources.published_view(FORWARD_VELOCITY_H) {
+            Some(v) => v,
+            None => {
+                log::warn!("GtaoPass: no ForwardPass velocity view published; skipping");
                 return Ok(());
             }
         };
@@ -888,7 +1000,13 @@ impl RenderPassNode for GtaoPass {
         // MUST happen before 执行 (which binds the 描述符 sets and
         // draws), otherwise 验证 reports `depthTex` / `normalTex` as
         // never updated via vkUpdateDescriptorSets.
-        self.set_inputs(ctx.device, ctx.frame_index, depth_view, normal_view);
+        self.set_inputs(
+            ctx.device,
+            ctx.frame_index,
+            depth_view,
+            normal_view,
+            velocity_view,
+        );
 
         let gtao_extent = self.extent();
         let inputs = GtaoFrameInputs {
@@ -896,15 +1014,26 @@ impl RenderPassNode for GtaoPass {
             depth_view,
             normal_image,
             normal_view,
+            velocity_view,
         };
+        let i = (ctx.frame_index as usize) % 2;
         let push = bindings::GtaoPush {
             inv_proj: ctx.frame.inv_projection,
             viewport: [gtao_extent.width as f32, gtao_extent.height as f32],
             radius: 0.5,
             mode: 0,
-            _pad0: 0,
+            // #883 Phase 3: 0.85 keeps most of the history while still
+            // converging within a few frames after disocclusion.
+            historyStrength: 0.85,
+            validHistory: if self.history_valid[(i + 1) % 2] {
+                1.0
+            } else {
+                0.0
+            },
         };
-        self.execute(ctx.device, ctx.cmd, ctx.frame_index, &inputs, &push)
+        self.execute(ctx.device, ctx.cmd, ctx.frame_index, &inputs, &push)?;
+        self.history_valid[i] = true;
+        Ok(())
     }
 
     fn graph_info(&self) -> PassInfo {
@@ -913,7 +1042,7 @@ impl RenderPassNode for GtaoPass {
             name: self.name().to_string(),
             kind: PassKind::Gtao,
             // 深度 + 法线 come from ForwardPass via the well-known handles.
-            inputs: vec![FORWARD_DEPTH_H, FORWARD_NORMAL_H],
+            inputs: vec![FORWARD_DEPTH_H, FORWARD_NORMAL_H, FORWARD_VELOCITY_H],
             // 环境光遮蔽 is consumed by ForwardPass via `set_ao` (1-frame 延迟 not a
             // 图 edge - surfaced as a 音符 by the viz instead.
             outputs: Vec::new(),
