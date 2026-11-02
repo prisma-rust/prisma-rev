@@ -33,6 +33,7 @@ const RTEX_FORMAT_BC5: u8 = 2;
 const RTEX_FORMAT_BC1: u8 = 3;
 const RTEX_FORMAT_BC3: u8 = 4;
 const RTEX_FORMAT_BC6H: u8 = 5;
+const RTEX_FORMAT_BC7: u8 = 6;
 
 /// Fixed part of the RTEX header: magic + version + w/h + mip count + format.
 const RTEX_HEADER_SIZE: usize = 4 + 1 + 4 + 4 + 4 + 1;
@@ -170,6 +171,7 @@ fn rtex_texture_format(code: u8) -> Result<TextureFormat> {
         // 主要用途。需要线性时上层用 `texture_format_for`，它知道槽位语义）（#519）。
         RTEX_FORMAT_BC1 => Ok(TextureFormat::Bc1Srgb),
         RTEX_FORMAT_BC3 => Ok(TextureFormat::Bc3Srgb),
+        RTEX_FORMAT_BC7 => Ok(TextureFormat::Bc7Srgb),
         other => bail!("RTEX unknown format code {other}"),
     }
 }

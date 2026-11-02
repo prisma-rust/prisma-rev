@@ -298,9 +298,8 @@ fn rgba8_textures_are_marked_for_pak_compression() {
 }
 
 #[test]
-fn an_unimplemented_compression_profile_still_falls_back_to_rgba8() {
-    // profile 说 BC7（desktop 默认），但编码器还没实现：必须是 RGBA8 + 可压缩，
-    // 而不是产出运行时读不懂的块数据。
+fn bc_profiles_are_encoded_instead_of_falling_back_to_rgba8() {
+    // 桌面 profile 的 BC1 / BC3 / BC5 / BC7 都走真实编码器；4×4 恰好一个块。
     let pixels = std::iter::repeat_n([200u8, 40, 90, 255], 4 * 4)
         .flatten()
         .collect::<Vec<_>>();
@@ -308,17 +307,86 @@ fn an_unimplemented_compression_profile_still_falls_back_to_rgba8() {
     let id = AssetId::from_raw((1u64 << 32) | 101);
     let record =
         crate::db::AssetRecord::new(id, "tex.png".into(), AssetType::Texture, "texture-importer");
+
+    for (compression, rtex_format, block_bytes) in [
+        (profile::TextureCompression::Bc1, 3u8, 8usize),
+        (profile::TextureCompression::Bc3, 4u8, 16),
+        (profile::TextureCompression::Bc5, 2u8, 16),
+        (profile::TextureCompression::Bc7, 6u8, 16),
+    ] {
+        let mut settings = profile::CookSettings::default();
+        settings.texture.compression = compression;
+        let ctx = CookContext {
+            record: &record,
+            imported_data: &intermediate,
+            settings: &settings,
+        };
+        let result = TextureCooker.cook(&ctx).unwrap();
+        assert_eq!(
+            result.cooked_data[17], rtex_format,
+            "{compression:?} should write its RTEX format byte"
+        );
+        assert!(
+            !result.compress,
+            "{compression:?} is already block-compressed"
+        );
+        let decoded = prism_asset::formats::decode_rtex(&result.cooked_data)
+            .unwrap_or_else(|| panic!("{compression:?} must produce a valid RTEX blob"));
+        assert_eq!(decoded.format, rtex_format);
+        assert_eq!(
+            decoded.mip_data[0].len(),
+            block_bytes,
+            "{compression:?} 4x4 block size"
+        );
+    }
+}
+
+#[test]
+fn bc1_mip_chain_keeps_one_block_per_level() {
+    // 8×8 → 4×4 → 2×2 → 1×1；BC1 每级都是 4×4 块（8 字节），边缘补齐。
+    let pixels = std::iter::repeat_n([10u8, 20, 30, 255], 8 * 8)
+        .flatten()
+        .collect::<Vec<_>>();
+    let intermediate = make_texture_intermediate(8, 8, &pixels);
+    let id = AssetId::from_raw((1u64 << 32) | 103);
+    let record =
+        crate::db::AssetRecord::new(id, "tex.png".into(), AssetType::Texture, "texture-importer");
     let mut settings = profile::CookSettings::default();
-    settings.texture.compression = profile::TextureCompression::Bc7;
+    settings.texture.compression = profile::TextureCompression::Bc1;
     let ctx = CookContext {
         record: &record,
         imported_data: &intermediate,
         settings: &settings,
     };
     let result = TextureCooker.cook(&ctx).unwrap();
-    // RTEX format byte 在 header 的固定偏移上（4 magic + 1 version + 4 w + 4 h + 4 levels）。
+    let decoded = prism_asset::formats::decode_rtex(&result.cooked_data).unwrap();
+    assert_eq!(decoded.mip_levels, 4);
+    assert_eq!(
+        decoded.mip_data.iter().map(Vec::len).collect::<Vec<_>>(),
+        vec![32, 8, 8, 8]
+    );
+}
+
+#[test]
+fn astc_still_falls_back_to_rgba8_with_an_honest_warning() {
+    // 移动编码器是独立后续；现在必须回退到运行时能读的 RGBA8，而不是写坏数据。
+    let pixels = std::iter::repeat_n([200u8, 40, 90, 255], 4 * 4)
+        .flatten()
+        .collect::<Vec<_>>();
+    let intermediate = make_texture_intermediate(4, 4, &pixels);
+    let id = AssetId::from_raw((1u64 << 32) | 102);
+    let record =
+        crate::db::AssetRecord::new(id, "tex.png".into(), AssetType::Texture, "texture-importer");
+    let mut settings = profile::CookSettings::default();
+    settings.texture.compression = profile::TextureCompression::Astc8x8;
+    let ctx = CookContext {
+        record: &record,
+        imported_data: &intermediate,
+        settings: &settings,
+    };
+    let result = TextureCooker.cook(&ctx).unwrap();
     assert_eq!(result.cooked_data[17], 0, "RGBA8 format byte");
-    assert!(result.compress);
+    assert!(result.compress, "RGBA8 payload still goes through zstd");
 }
 
 fn rtex_header(data: &[u8]) -> (u32, u32, u32) {

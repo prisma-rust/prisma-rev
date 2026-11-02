@@ -2719,6 +2719,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "texture-compressor",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
@@ -3756,6 +3757,15 @@ dependencies = [
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "texture-compressor"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aca0b717813dfebb27002bc636c05964ee3f4c8fc5388cbede551ecc731d5e8c"
+dependencies = [
+ "libm",
 ]
 
 [[package]]
