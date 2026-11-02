@@ -6523,6 +6523,30 @@ pub fn render_graph(
                 .changed();
             ui.end_row();
 
+            ui.label("Depth of Field");
+            changed |= ui
+                .add(egui::Slider::new(&mut settings.dof_aperture, 0.0..=1.0))
+                .on_hover_text("Depth-of-field strength; 0 disables it.")
+                .changed();
+            ui.end_row();
+
+            ui.label("Focus Distance");
+            changed |= ui
+                .add(egui::Slider::new(
+                    &mut settings.dof_focus_distance,
+                    0.1..=100.0,
+                ))
+                .on_hover_text("Distance from the camera that stays sharp, in metres.")
+                .changed();
+            ui.end_row();
+
+            ui.label("Max Blur");
+            changed |= ui
+                .add(egui::Slider::new(&mut settings.dof_max_blur, 0.0..=32.0))
+                .on_hover_text("Largest depth-of-field blur radius in pixels.")
+                .changed();
+            ui.end_row();
+
             ui.label("Bloom");
             changed |= ui.checkbox(&mut settings.bloom, "Enable").changed();
             ui.end_row();

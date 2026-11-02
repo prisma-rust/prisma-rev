@@ -117,6 +117,9 @@ fn volume_grade(volume: &PostProcessVolume) -> PostGrade {
         film_grain: volume.film_grain,
         temperature: volume.temperature,
         tint: volume.tint,
+        dof_focus_distance: volume.dof_focus_distance,
+        dof_aperture: volume.dof_aperture,
+        dof_max_blur: volume.dof_max_blur,
     }
     .sanitized()
 }
@@ -139,6 +142,9 @@ fn lerp_grade(a: PostGrade, b: PostGrade, t: f32) -> PostGrade {
         film_grain: mix(a.film_grain, b.film_grain),
         temperature: mix(a.temperature, b.temperature),
         tint: mix(a.tint, b.tint),
+        dof_focus_distance: mix(a.dof_focus_distance, b.dof_focus_distance),
+        dof_aperture: mix(a.dof_aperture, b.dof_aperture),
+        dof_max_blur: mix(a.dof_max_blur, b.dof_max_blur),
     }
     .sanitized()
 }

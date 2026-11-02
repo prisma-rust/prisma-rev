@@ -24,6 +24,12 @@
 [[vk::binding(0, 0)]]
 Sampler2D hdrTex;
 
+// ---- set 0, binding 1 - scene depth (combined image+sampler, D32_SFLOAT).
+// Used by the depth-of-field effect (#502 Phase 2). Debug RT views disable DOF
+// on the Rust side, so the depth texture is only sampled for effect.
+[[vk::binding(1, 0)]]
+Sampler2D depthTex;
+
 // Push constants: tonemap operator selector (matches `tonemapMode` in FrameUBO).
 //
 // `aaMode` selects the anti-aliasing path applied after tonemapping:
@@ -58,6 +64,15 @@ public struct PostPush
     // Both are in [-1, 1], and 0 / 0 is the identity gain.
     public float temperature;
     public float tint;
+    // Depth of field (#502 Phase 2). `nearPlane` / `farPlane` linearize the
+    // sampled depth; `dofFocusDistance` is in metres, `dofAperture` in [0, 1]
+    // and `dofMaxBlur` is the largest blur radius in pixels. aperture 0 skips
+    // the whole effect and is bit-identical to the pre-effect path.
+    public float nearPlane;
+    public float farPlane;
+    public float dofFocusDistance;
+    public float dofAperture;
+    public float dofMaxBlur;
 };
 [[vk::push_constant]]
 PostPush pc;
@@ -165,11 +180,57 @@ float3 bloom(float2 uv)
     return sum;
 }
 
-// Sample + bloom + tonemap + grade. Bloom is applied in linear HDR before the
-// tonemap so highlights can spill without being clipped first. FXAA runs
-// entirely in this display-referred space so the edge-luma it compares is
-// perceptually uniform (the hardware sRGB encode to the swapchain happens
-// after this shader, so the values written back are still linear).
+// Perspective depth in [0, 1] -> positive view-space distance in metres.
+// Matches the engine's Vulkan projection (`near` maps to 0, `far` to 1).
+float linearDepth(float depth)
+{
+    return pc.nearPlane * pc.farPlane
+         / max(pc.farPlane - depth * (pc.farPlane - pc.nearPlane), 1e-4);
+}
+
+// Circle of confusion in pixels (#502 Phase 2). A pixel at the focus distance
+// is sharp; the blur grows with the relative depth error, the aperture and the
+// configured maximum radius.
+float circleOfConfusion(float depth)
+{
+    float z = linearDepth(depth);
+    float focus = max(pc.dofFocusDistance, 1e-3);
+    float coc = saturate(abs(z - focus) / max(z, 1e-3) * pc.dofAperture);
+    return coc * pc.dofMaxBlur;
+}
+
+// Fixed 12-tap golden-angle disk. The centre tap plus 11 ring samples keeps the
+// effect a single fullscreen pass with no extra render target. `radius < 1`
+// leaves the pixel untouched; aperture 0 never reaches this function.
+float3 depthOfField(float2 uv, float3 sharp)
+{
+    float radius = circleOfConfusion(depthTex.Sample(uv).r);
+    if (radius < 1.0)
+        return sharp;
+
+    const float TAU = 6.28318530718;
+    float2 px = pc.invTexelSize;
+    float3 sum = sharp;
+    float weight = 1.0;
+    for (int i = 1; i < 12; i++)
+    {
+        // sqrt distributes the taps evenly over the disk instead of clustering
+        // them at the centre; the golden angle keeps successive taps apart.
+        float r = sqrt(float(i) / 11.0) * radius;
+        float a = float(i) * 2.39996323;
+        float2 offset = float2(cos(a), sin(a)) * r * px;
+        sum += hdrTex.Sample(uv + offset).rgb;
+        weight += 1.0;
+    }
+    return sum / weight;
+}
+
+// Sample + depth of field + bloom + tonemap + grade. DOF runs in linear HDR
+// before bloom so out-of-focus highlights can still bloom. Bloom is applied
+// before the tonemap so highlights can spill without being clipped first.
+// FXAA runs entirely in this display-referred space so the edge-luma it
+// compares is perceptually uniform (the hardware sRGB encode to the swapchain
+// happens after this shader, so the values written back are still linear).
 float3 shade(float2 uv)
 {
     float3 hdr;
@@ -188,6 +249,8 @@ float3 shade(float2 uv)
     {
         hdr = hdrTex.Sample(uv).rgb;
     }
+    if (pc.dofAperture > 0.0)
+        hdr = depthOfField(uv, hdr);
     if (pc.bloomIntensity > 0.0)
         hdr += bloom(uv) * pc.bloomIntensity;
     return grade(saturate(tonemap(hdr)));

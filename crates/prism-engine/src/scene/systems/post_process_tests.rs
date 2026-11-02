@@ -46,12 +46,18 @@ fn a_global_volume_overrides_the_base_parameters() {
         volume.vignette = 0.75;
         volume.bloom = true;
         volume.bloom_intensity = 0.5;
+        volume.dof_focus_distance = 4.0;
+        volume.dof_aperture = 0.5;
+        volume.dof_max_blur = 12.0;
     });
     let grade = resolve_post_grade(&world, Vec3::splat(999.0), base());
     assert!((grade.contrast - 1.5).abs() < 1e-6);
     assert!((grade.saturation - 0.25).abs() < 1e-6);
     assert!((grade.vignette - 0.75).abs() < 1e-6);
     assert!((grade.bloom_intensity - 0.5).abs() < 1e-6);
+    assert!((grade.dof_focus_distance - 4.0).abs() < 1e-6);
+    assert!((grade.dof_aperture - 0.5).abs() < 1e-6);
+    assert!((grade.dof_max_blur - 12.0).abs() < 1e-6);
 }
 
 #[test]
