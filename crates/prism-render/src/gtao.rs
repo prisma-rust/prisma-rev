@@ -37,7 +37,10 @@ use crate::render_graph::{
 };
 use crate::render_pass::find_memory_type;
 use crate::shader;
-use crate::shader_bindings;
+use crate::shader_bindings::gtao as bindings;
+
+const _: () =
+    assert!(std::mem::size_of::<bindings::GtaoPush>() as u32 == bindings::PUSH_CONSTANT_SIZE);
 
 /// Per-frame-in-flight inputs the GTAO pass needs to 样本 内置 by
 /// `GraphRenderer::render` from `ForwardPass` accessors and passed to
@@ -135,12 +138,12 @@ impl GtaoPass {
         // 法线 both with this shape, so we reuse the 布局 4x.
         let per_set_bindings = [
             vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
+                .binding(bindings::DEPTH_TEX_BINDING)
                 .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
             vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
+                .binding(bindings::DEPTH_SAMPLER_BINDING)
                 .descriptor_type(vk::DescriptorType::SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
@@ -190,7 +193,7 @@ impl GtaoPass {
             let sampler_info = vk::DescriptorImageInfo::default().sampler(sampler);
             let write = vk::WriteDescriptorSet::default()
                 .dst_set(*ds)
-                .dst_binding(1)
+                .dst_binding(bindings::DEPTH_SAMPLER_BINDING)
                 .descriptor_type(vk::DescriptorType::SAMPLER)
                 .image_info(std::slice::from_ref(&sampler_info));
             unsafe { device.update_descriptor_sets(&[write], &[]) };
@@ -290,12 +293,12 @@ impl GtaoPass {
         let writes = [
             vk::WriteDescriptorSet::default()
                 .dst_set(self.descriptor_sets[i][0])
-                .dst_binding(0)
+                .dst_binding(bindings::DEPTH_TEX_BINDING)
                 .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                 .image_info(std::slice::from_ref(&depth_info)),
             vk::WriteDescriptorSet::default()
                 .dst_set(self.descriptor_sets[i][1])
-                .dst_binding(0)
+                .dst_binding(bindings::NORMAL_TEX_BINDING)
                 .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                 .image_info(std::slice::from_ref(&normal_info)),
         ];
@@ -376,7 +379,7 @@ impl GtaoPass {
         cmd: vk::CommandBuffer,
         frame_index: u32,
         inputs: &GtaoFrameInputs,
-        push: &shader_bindings::gtao::GtaoPush,
+        push: &bindings::GtaoPush,
     ) -> anyhow::Result<()> {
         self.ensure_pipeline(device)?;
         let i = (frame_index as usize) % 2;
@@ -462,7 +465,7 @@ impl GtaoPass {
                 0,
                 std::slice::from_raw_parts(
                     push as *const _ as *const u8,
-                    std::mem::size_of::<shader_bindings::gtao::GtaoPush>(),
+                    bindings::PUSH_CONSTANT_SIZE as usize,
                 ),
             );
 
@@ -531,8 +534,8 @@ impl GtaoPass {
         let frag_module =
             shader::load_shader_module(device, FRAG_SPV).context("GtaoPass: load frag")?;
 
-        let vert_entry = std::ffi::CString::new("vertexMain").unwrap();
-        let frag_entry = std::ffi::CString::new("fragmentMain").unwrap();
+        let vert_entry = std::ffi::CString::new(bindings::ENTRY_VERTEX_MAIN).unwrap();
+        let frag_entry = std::ffi::CString::new(bindings::ENTRY_FRAGMENT_MAIN).unwrap();
         let vert_stage = shader::shader_stage(
             vk::ShaderStageFlags::VERTEX,
             vert_module,
@@ -556,7 +559,7 @@ impl GtaoPass {
         let push = [vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::FRAGMENT)
             .offset(0)
-            .size(std::mem::size_of::<shader_bindings::gtao::GtaoPush>() as u32)];
+            .size(bindings::PUSH_CONSTANT_SIZE)];
 
         let blend_attachment = vk::PipelineColorBlendAttachmentState::default()
             .color_write_mask(vk::ColorComponentFlags::RGBA)
@@ -894,7 +897,7 @@ impl RenderPassNode for GtaoPass {
             normal_image,
             normal_view,
         };
-        let push = shader_bindings::gtao::GtaoPush {
+        let push = bindings::GtaoPush {
             inv_proj: ctx.frame.inv_projection,
             viewport: [gtao_extent.width as f32, gtao_extent.height as f32],
             radius: 0.5,
