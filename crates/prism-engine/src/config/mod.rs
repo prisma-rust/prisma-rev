@@ -82,6 +82,10 @@ pub struct RenderConfig {
     pub motion_blur: Option<f32>,
     /// 运动模糊最大拖影长度（像素，#502 Phase 2）。
     pub motion_blur_max_pixels: Option<f32>,
+    /// Temporal anti-aliasing (#883)。
+    pub taa: Option<bool>,
+    /// TAA 历史混合强度（0..=0.95）。
+    pub taa_strength: Option<f32>,
     /// 0 = HDR tonemap, 1 = depth, 2 = view-space normal。
     pub debug_rt: Option<u32>,
     /// 前向管线线框模式（#431）。
@@ -206,6 +210,12 @@ impl RenderConfig {
         if let Some(value) = self.motion_blur_max_pixels {
             settings.motion_blur_max_pixels = value.clamp(0.0, 64.0);
         }
+        if let Some(value) = self.taa {
+            settings.taa = value;
+        }
+        if let Some(value) = self.taa_strength {
+            settings.taa_strength = value.clamp(0.0, 0.95);
+        }
         if let Some(rt) = self.debug_rt {
             settings.debug_rt = rt;
         }
@@ -263,6 +273,8 @@ impl RenderConfig {
             lut_strength: ini.get_f32("render", "lut_strength"),
             motion_blur: ini.get_f32("render", "motion_blur"),
             motion_blur_max_pixels: ini.get_f32("render", "motion_blur_max_pixels"),
+            taa: ini.get_bool("render", "taa"),
+            taa_strength: ini.get_f32("render", "taa_strength"),
             debug_rt: ini.get_u32("render", "debug_rt"),
             wireframe: ini.get_bool("render", "wireframe"),
             shaded_wireframe: ini.get_bool("render", "shaded_wireframe"),
@@ -502,6 +514,8 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "lut_strength",
             "motion_blur",
             "motion_blur_max_pixels",
+            "taa",
+            "taa_strength",
             "debug_rt",
             "wireframe",
             "shaded_wireframe",
@@ -623,7 +637,7 @@ mod tests {
         use crate::render_settings::{RenderMode, RenderSettings};
 
         let cfg = AppConfig::from_ini(
-            "[render]\nrender_mode = \"path_trace\"\ntonemap_mode = 1\naa_mode = 1\ncontrast = 1.4\nsaturation = 0.6\nvignette = 0.3\nbloom = true\nbloom_intensity = 0.4\nbloom_threshold = 2.5\nchromatic_aberration = 0.25\nfilm_grain = 0.35\ntemperature = -0.4\ntint = 0.2\ndof_focus_distance = 4.5\ndof_aperture = 0.6\ndof_max_blur = 12\nlut = \"luts/grade.cube\"\nlut_strength = 0.8\nmotion_blur = 0.7\nmotion_blur_max_pixels = 24\nshadow_distance = 120.0\nshadow_map_size = 1024\nshadow_cascade_count = 2\nwireframe = true\nshaded_wireframe = true\npt_max_bounces = 7\n",
+            "[render]\nrender_mode = \"path_trace\"\ntonemap_mode = 1\naa_mode = 1\ncontrast = 1.4\nsaturation = 0.6\nvignette = 0.3\nbloom = true\nbloom_intensity = 0.4\nbloom_threshold = 2.5\nchromatic_aberration = 0.25\nfilm_grain = 0.35\ntemperature = -0.4\ntint = 0.2\ndof_focus_distance = 4.5\ndof_aperture = 0.6\ndof_max_blur = 12\nlut = \"luts/grade.cube\"\nlut_strength = 0.8\nmotion_blur = 0.7\nmotion_blur_max_pixels = 24\ntaa = true\ntaa_strength = 0.75\nshadow_distance = 120.0\nshadow_map_size = 1024\nshadow_cascade_count = 2\nwireframe = true\nshaded_wireframe = true\npt_max_bounces = 7\n",
         );
         let mut settings = RenderSettings::default();
         cfg.render.apply(&mut settings);
@@ -648,6 +662,8 @@ mod tests {
         assert_eq!(settings.lut_strength, 0.8);
         assert_eq!(settings.motion_blur, 0.7);
         assert_eq!(settings.motion_blur_max_pixels, 24.0);
+        assert!(settings.taa);
+        assert_eq!(settings.taa_strength, 0.75);
         assert_eq!(settings.pt_max_bounces, 7);
         // #526：阴影覆盖距离与贴图边长都是可配置的质量旋钮。
         assert_eq!(settings.shadow_distance, 120.0);
@@ -670,6 +686,7 @@ mod tests {
         extreme.lut_strength = Some(5.0);
         extreme.motion_blur = Some(5.0);
         extreme.motion_blur_max_pixels = Some(100.0);
+        extreme.taa_strength = Some(5.0);
         extreme.apply(&mut clamped);
         assert_eq!(clamped.temperature, 1.0);
         assert_eq!(clamped.tint, -1.0);
@@ -679,6 +696,7 @@ mod tests {
         assert_eq!(clamped.lut_strength, 1.0);
         assert_eq!(clamped.motion_blur, 1.0);
         assert_eq!(clamped.motion_blur_max_pixels, 64.0);
+        assert_eq!(clamped.taa_strength, 0.95);
     }
 
     #[test]

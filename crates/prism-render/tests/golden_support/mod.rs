@@ -92,6 +92,11 @@ impl FrameHarness {
         self.mesh
     }
 
+    /// Enable/disable TAA on the underlying renderer (#883).
+    pub fn set_taa(&mut self, enabled: bool, strength: f32) {
+        self.renderer.set_taa(enabled, strength);
+    }
+
     pub fn supports_wireframe(&self) -> bool {
         self.renderer.context().wireframe_supported
     }

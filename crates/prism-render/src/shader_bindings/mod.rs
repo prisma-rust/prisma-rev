@@ -15,4 +15,5 @@ pub mod scene_frag;
 pub mod shadow_depth;
 pub mod skybox;
 pub mod sprites;
+pub mod taa;
 pub mod ui_overlay;

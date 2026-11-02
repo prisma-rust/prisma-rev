@@ -35,7 +35,7 @@ use crate::pipeline::{GraphicsPipeline, PipelineDesc};
 use crate::render_graph::{
     GraphResources, PassInfo, PassKind, RenderContext, RenderGraphBuilder, RenderMode,
     RenderPassNode, RenderSettings, ResourceHandle, ResourceUsage, FORWARD_COLOR_H,
-    FORWARD_DEPTH_H, FORWARD_NORMAL_H, PT_COLOR_H,
+    FORWARD_DEPTH_H, FORWARD_NORMAL_H, PT_COLOR_H, TAA_COLOR_H,
 };
 use crate::render_pass::find_memory_type;
 use crate::shader;
@@ -813,6 +813,14 @@ impl RenderPassNode for PostPass {
             stage: vk::PipelineStageFlags::FRAGMENT_SHADER,
             layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
         });
+        // TAA output (#883) when enabled; declared unconditionally so the
+        // graph knows PostPass may depend on it.
+        graph.read_usage(ResourceUsage {
+            handle: TAA_COLOR_H,
+            access: vk::AccessFlags::SHADER_READ,
+            stage: vk::PipelineStageFlags::FRAGMENT_SHADER,
+            layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        });
         // PT 输出 颜色 读取 in path-trace 众数 Declare unconditionally
         // so the 图 reserves the 屏障 槽 even when in 光栅化 众数
         graph.read_usage(ResourceUsage {
@@ -857,8 +865,17 @@ impl RenderPassNode for PostPass {
         let is_pt = ctx.frame.render_mode == RenderMode::PathTrace;
         let has_camera = ctx.frame.has_camera;
         let has_pt_view = resources.published_view(PT_COLOR_H).is_some();
-        let (handle, image_layout) =
-            select_input_target(ctx.frame.debug_rt, is_pt, has_camera, has_pt_view);
+        // TAA output (#883) takes precedence in the raster path when enabled.
+        let taa_view = if ctx.settings.taa && !is_pt && ctx.frame.debug_rt == 0 {
+            resources.published_view(TAA_COLOR_H)
+        } else {
+            None
+        };
+        let (handle, image_layout) = if taa_view.is_some() {
+            (TAA_COLOR_H, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+        } else {
+            select_input_target(ctx.frame.debug_rt, is_pt, has_camera, has_pt_view)
+        };
         let input_view = match resources.published_view(handle) {
             Some(v) => v,
             None => {

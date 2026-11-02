@@ -272,6 +272,10 @@ pub struct GraphRenderer {
     /// `graph.execute` and reaches into them only for lifecycle ops
     /// (`recreate_swapchain`) via `graph.pass_mut`.
     settings: RenderSettings,
+    /// Monotonic frame counter used by TAA's Halton jitter (#883).
+    taa_frame: u64,
+    /// NDC jitter applied to this frame's camera projection.
+    taa_jitter_ndc: [f32; 2],
     /// Path of the `.cube` LUT currently bound to `PostPass` (#502). `None`
     /// means the pass still holds its startup identity LUT.
     applied_lut: Option<PathBuf>,
@@ -580,6 +584,11 @@ impl GraphRenderer {
              需要 AO 请在项目里启用 prism-render/gtao"
         );
 
+        // TAA resolve (#883). Always registered; `execute` is a no-op when
+        // `RenderSettings::taa` is false.
+        let taa_pass =
+            crate::taa::TaaPass::new(&context, swapchain.extent).context("TaaPass::new")?;
+
         // PostPass parameters: 2 in-flight frames = 2 描述符 sets.
         let frame_count = 2u32;
         let post_pass = crate::post::PostPass::new(
@@ -630,6 +639,7 @@ impl GraphRenderer {
         }
         #[cfg(feature = "gtao")]
         graph.add_pass(Box::new(gtao_pass));
+        graph.add_pass(Box::new(taa_pass));
         graph.add_pass(Box::new(rt_scheduler));
         #[cfg(feature = "pathtrace")]
         if let Some(pt) = pt_pass {
@@ -657,6 +667,8 @@ impl GraphRenderer {
             brdf_bindless_slot: brdf_handle.0,
             graph,
             settings,
+            taa_frame: 0,
+            taa_jitter_ndc: [0.0; 2],
             applied_lut: None,
             outline_entities: Vec::new(),
             shadow_sampler,
@@ -1010,6 +1022,9 @@ impl GraphRenderer {
              需要 AO 请在项目里启用 prism-render/gtao"
         );
 
+        let taa_pass = crate::taa::TaaPass::new(&context, offscreen.extent())
+            .context("TaaPass::new (headless)")?;
+
         // CRT 调度器（headless 下同样接入图，支持无窗口离屏 RT 调度）。
         let rt_scheduler = crate::rt_scheduler::RenderTextureScheduler::new(&context);
 
@@ -1040,6 +1055,7 @@ impl GraphRenderer {
         }
         #[cfg(feature = "gtao")]
         graph.add_pass(Box::new(gtao_pass));
+        graph.add_pass(Box::new(taa_pass));
         graph.add_pass(Box::new(rt_scheduler));
         #[cfg(feature = "pathtrace")]
         if let Some(pt) = pt_pass {
@@ -1074,6 +1090,8 @@ impl GraphRenderer {
             brdf_bindless_slot: brdf_handle.0,
             graph,
             settings,
+            taa_frame: 0,
+            taa_jitter_ndc: [0.0; 2],
             applied_lut: None,
             outline_entities: Vec::new(),
             shadow_sampler,
@@ -1666,6 +1684,15 @@ impl GraphRenderer {
         Ok(())
     }
 
+    /// Enable/disable TAA and set its history weight (#883).
+    pub fn set_taa(&mut self, enabled: bool, strength: f32) {
+        if !enabled && self.settings.taa {
+            self.taa_frame = 0;
+        }
+        self.settings.taa = enabled;
+        self.settings.taa_strength = strength.clamp(0.0, 0.95);
+    }
+
     pub fn set_internal_resolution(
         &mut self,
         resolution: [u32; 2],
@@ -1842,6 +1869,11 @@ impl GraphRenderer {
                     log::warn!("GtaoPass recreate_target failed: {e:#}");
                 }
             }
+            if let Some(taa) = self.graph.pass_mut::<crate::taa::TaaPass>() {
+                if let Err(e) = taa.recreate_target(&self.runtime.context, extent) {
+                    log::warn!("TaaPass recreate_target failed: {e:#}");
+                }
+            }
             // CRT 调度器的 RenderTextures 跟随 swapchain 尺寸（演示 RT 全屏）。
             if let Some(sched) = self
                 .graph
@@ -1924,6 +1956,11 @@ impl GraphRenderer {
         if let Some(gtao) = self.graph.pass_mut::<crate::gtao::GtaoPass>() {
             if let Err(e) = gtao.recreate_target(&context, self.runtime.command_pool, extent) {
                 log::warn!("GtaoPass recreate_target failed (offscreen resize): {e:#}");
+            }
+        }
+        if let Some(taa) = self.graph.pass_mut::<crate::taa::TaaPass>() {
+            if let Err(e) = taa.recreate_target(&context, extent) {
+                log::warn!("TaaPass recreate_target failed (offscreen resize): {e:#}");
             }
         }
         if let Some(sched) = self
@@ -2385,6 +2422,7 @@ impl GraphRenderer {
                     m
                 },
                 view_proj: frame_data.view_proj,
+                view_proj_jitter: self.taa_jitter_ndc,
                 lights,
                 ao_view,
                 tonemap_mode,
@@ -2795,6 +2833,22 @@ impl GraphRenderer {
         frame_data.shadow_cascade_count = frame_data
             .shadow_cascade_count
             .clamp(1, self.settings.shadow_cascade_count.clamp(1, 2));
+        // #883: subpixel jitter for TAA. The graph frame carries the applied
+        // NDC offset so `TaaPass` can recover the unjittered camera matrix.
+        let jitter = if self.settings.taa {
+            let j = taa_jitter(self.taa_frame);
+            self.taa_frame = self.taa_frame.wrapping_add(1);
+            j
+        } else {
+            self.taa_frame = 0;
+            [0.0, 0.0]
+        };
+        let width = frame_data.viewport_size[0].max(1.0);
+        let height = frame_data.viewport_size[1].max(1.0);
+        let jitter_ndc = [jitter[0] * 4.0 / width, jitter[1] * 4.0 / height];
+        frame_data.view_proj[3][0] += jitter_ndc[0];
+        frame_data.view_proj[3][1] += jitter_ndc[1];
+        self.taa_jitter_ndc = jitter_ndc;
         let input = FrameInput {
             draw_items,
             gizmos: &[],
@@ -2994,6 +3048,24 @@ impl GraphRenderer {
             self.headless_fence = vk::Fence::null();
         }
     }
+}
+
+/// One Halton sequence value in `[0, 1)` (#883).
+fn halton(mut index: u64, base: u64) -> f32 {
+    let mut result = 0.0;
+    let mut factor = 1.0;
+    while index > 0 {
+        factor /= base as f32;
+        result += factor * (index % base) as f32;
+        index /= base;
+    }
+    result
+}
+
+/// Subpixel TAA jitter in pixels, centred around zero.
+fn taa_jitter(frame: u64) -> [f32; 2] {
+    // Halton(2,3), shifted by -0.5 so the sequence covers [-0.5, 0.5).
+    [halton(frame + 1, 2) - 0.5, halton(frame + 1, 3) - 0.5]
 }
 
 // 安全性 UI 状态已移出渲染线程（主线程持有），
