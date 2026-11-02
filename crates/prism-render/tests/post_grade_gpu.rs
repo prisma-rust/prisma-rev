@@ -154,3 +154,47 @@ fn zero_saturation_flattens_the_channels() {
         "saturation 0 must flatten green/blue: {center:?}"
     );
 }
+
+#[test]
+fn bloom_brightens_a_uniform_hdr_frame() {
+    let Some(mut renderer) = try_create_headless() else {
+        return;
+    };
+    let plain = render_graded(&mut renderer, PostGrade::default());
+    let bloomed = render_graded(
+        &mut renderer,
+        PostGrade {
+            bloom_intensity: 0.4,
+            bloom_threshold: 0.0,
+            ..PostGrade::default()
+        },
+    );
+
+    let plain_center = pixel(&plain, SIZE / 2, SIZE / 2);
+    let bloomed_center = pixel(&bloomed, SIZE / 2, SIZE / 2);
+    assert!(
+        bloomed_center[0] >= plain_center[0].saturating_add(8),
+        "bloom should add light: {plain_center:?} -> {bloomed_center:?}"
+    );
+}
+
+#[test]
+fn a_high_bloom_threshold_leaves_the_frame_unchanged() {
+    let Some(mut renderer) = try_create_headless() else {
+        return;
+    };
+    let plain = render_graded(&mut renderer, PostGrade::default());
+    let bloomed = render_graded(
+        &mut renderer,
+        PostGrade {
+            bloom_intensity: 1.0,
+            bloom_threshold: 10.0,
+            ..PostGrade::default()
+        },
+    );
+
+    assert_eq!(
+        plain, bloomed,
+        "a threshold above every pixel must make bloom a no-op"
+    );
+}

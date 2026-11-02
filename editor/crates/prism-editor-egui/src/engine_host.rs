@@ -818,11 +818,7 @@ impl EngineHost {
             tonemap_mode: self.settings.tonemap_mode,
             aa_mode: self.settings.aa_mode,
             debug_rt: self.settings.debug_rt,
-            grade: prism_render::PostGrade {
-                contrast: self.settings.contrast,
-                saturation: self.settings.saturation,
-                vignette: self.settings.vignette,
-            },
+            grade: self.settings.post_grade(),
             proj22: scene.proj22,
             proj32: scene.proj32,
             lights: &scene.lights,

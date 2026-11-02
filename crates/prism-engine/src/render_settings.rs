@@ -90,6 +90,12 @@ pub struct RenderSettings {
     pub saturation: f32,
     /// 暗角强度（`0.0` = 关闭，`1.0` = 四角全黑）。
     pub vignette: f32,
+    /// HDR bloom 开关（#502）。关闭时 `bloom_intensity` 不参与渲染。
+    pub bloom: bool,
+    /// bloom 加性强度（`0.0` = 关闭，`1.0` = 最强）。
+    pub bloom_intensity: f32,
+    /// bloom 亮度阈值；高于该 HDR 亮度的像素才会发光。
+    pub bloom_threshold: f32,
     /// 内部渲染分辨率 `[宽, 高]`（#613）；`[0, 0]` = 关闭。
     ///
     /// 开启后场景按这个尺寸渲染，`PostPass` 再放大到窗口；相机的宽高比也跟着
@@ -109,6 +115,20 @@ pub struct RenderSettings {
 
 /// 默认 PBR 众数 法线 full-PBR 渲染 Reinhard 色调映射 光栅化
 impl RenderSettings {
+    pub fn post_grade(&self) -> prism_render::PostGrade {
+        prism_render::PostGrade {
+            contrast: self.contrast,
+            saturation: self.saturation,
+            vignette: self.vignette,
+            bloom_intensity: if self.bloom {
+                self.bloom_intensity
+            } else {
+                0.0
+            },
+            bloom_threshold: self.bloom_threshold,
+        }
+    }
+
     /// 导出成渲染图报告用的纯数据（`prism_render::render_graph_report`）。
     ///
     /// 报告 DTO 在 `prism-render` 里（不依赖引擎），映射留在这里，编辑器与
@@ -143,6 +163,9 @@ impl Default for RenderSettings {
             contrast: 1.0,
             saturation: 1.0,
             vignette: 0.0,
+            bloom: false,
+            bloom_intensity: 0.15,
+            bloom_threshold: 1.0,
             shadow_distance: DEFAULT_SHADOW_DISTANCE,
             shadow_map_size: prism_render::SHADOW_MAP_SIZE,
             internal_resolution: [0, 0],
@@ -171,6 +194,18 @@ impl RenderSettings {
 #[cfg(test)]
 mod tests {
     use super::{InternalScaleMode, RenderSettings};
+
+    #[test]
+    fn post_grade_only_passes_bloom_when_enabled() {
+        let mut settings = RenderSettings::default();
+        settings.bloom_intensity = 0.7;
+        assert_eq!(settings.post_grade().bloom_intensity, 0.0);
+
+        settings.bloom = true;
+        let grade = settings.post_grade();
+        assert_eq!(grade.bloom_intensity, 0.7);
+        assert_eq!(grade.bloom_threshold, settings.bloom_threshold);
+    }
 
     #[test]
     fn render_aspect_prefers_the_internal_resolution() {

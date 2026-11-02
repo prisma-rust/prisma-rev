@@ -5376,6 +5376,29 @@ pub fn render_graph(
                 .changed();
             ui.end_row();
 
+            ui.label("Bloom");
+            changed |= ui.checkbox(&mut settings.bloom, "Enable").changed();
+            ui.end_row();
+
+            ui.label("Bloom Intensity");
+            changed |= ui
+                .add_enabled(
+                    settings.bloom,
+                    egui::Slider::new(&mut settings.bloom_intensity, 0.0..=1.0),
+                )
+                .changed();
+            ui.end_row();
+
+            ui.label("Bloom Threshold");
+            changed |= ui
+                .add_enabled(
+                    settings.bloom,
+                    egui::Slider::new(&mut settings.bloom_threshold, 0.0..=8.0),
+                )
+                .on_hover_text("HDR luminance above which pixels start to bloom.")
+                .changed();
+            ui.end_row();
+
             ui.label("Shadow Distance");
             changed |= ui
                 .add(

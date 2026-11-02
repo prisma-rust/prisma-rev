@@ -453,11 +453,7 @@ fn render_one_frame(
         tonemap_mode: settings.tonemap_mode,
         aa_mode: settings.aa_mode,
         debug_rt: settings.debug_rt,
-        grade: prism_render::PostGrade {
-            contrast: settings.contrast,
-            saturation: settings.saturation,
-            vignette: settings.vignette,
-        },
+        grade: settings.post_grade(),
         proj22: scene.proj22,
         proj32: scene.proj32,
         lights: &scene.lights,
