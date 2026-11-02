@@ -219,18 +219,24 @@ pub fn extract_frame_packet_into_with_shadow_cascades(
 
     // 2. Build the flat draw list and ECS-authored render helpers.
     let scene_view = scene::SceneReadView::new(world);
-    // 视锥剔除（#491）：main-pass 只提交主相机视锥内的实体。退化矩阵
-    // （`Frustum::from_view_proj` 返回 `None`）时自动退回「不剔除」。
-    let frustum =
-        prism_render::culling::Frustum::from_view_proj(&packet.scene.view_proj.to_cols_array_2d());
+    // 视锥剔除（#491）：多相机合成（#461）下，只要**任意一台**启用相机能看到
+    // 实体就提交。每层相机共用同一份绘制列表，只按主相机剔除会漏掉只在第二台
+    // 相机里出现的物体。所有相机矩阵都退化时 `camera_frustums` 为空 =
+    // 不剔除（与旧行为一致）。
+    let camera_frustums: Vec<prism_render::culling::Frustum> = packet
+        .scene
+        .cameras
+        .iter()
+        .filter_map(|camera| prism_render::culling::Frustum::from_view_proj(&camera.view_proj))
+        .collect();
     // 引擎的 `renderQueue` 顺序：不透明段按队列升序，透明段按距离从远到近。
     // 排序必须在提交给渲染器之前完成（`ForwardPass` 只按列表顺序绘制）。
-    scene_view.draw_items_with_frustum_into(frustum.as_ref(), &mut packet.draw_items);
+    scene_view.draw_items_with_frustums_into(&camera_frustums, &mut packet.draw_items);
     // 蒙皮实体：静态那条循环会跳过它们，这里追加绘制项并把各自的骨骼调色板
     // 塞进同一份缓冲（#560 P0-3b）。
-    scene::systems::skinned_draw::append_skinned_draw_items(
+    scene::systems::skinned_draw::append_skinned_draw_items_with_frustums(
         world,
-        frustum.as_ref(),
+        &camera_frustums,
         &mut packet.draw_items,
         &mut packet.bone_matrices,
     );
@@ -261,8 +267,14 @@ pub fn extract_frame_packet_into_with_shadow_cascades(
     } else {
         None
     };
-    // 2D 也走同一份主相机视锥：瓦片地图逐格裁剪（#529）。
-    scene_view.sprite_items_with_frustum_into(frustum.as_ref(), &mut packet.sprite_items);
+    // 2D 也走相机视锥：瓦片地图逐格裁剪（#529）。多相机时没有单一份视锥可
+    // 代表所有层，保守地不裁剪 2D（2D 很少和 3D 多相机混用）。
+    let primary_frustum = if camera_frustums.len() == 1 {
+        camera_frustums.first()
+    } else {
+        None
+    };
+    scene_view.sprite_items_with_frustum_into(primary_frustum, &mut packet.sprite_items);
     // 2D 光照（#611）：只有 `receive_lights` 的精灵会用到，没灯光时为空。
     scene_view.sprite_lights_into(&mut packet.sprite_lights);
     // 3D 粒子：世界空间 billboard，按到眼睛的距离远到近排序（透明混合）。
@@ -1014,6 +1026,68 @@ mod tests {
         assert!(!out.cameras[0].has_camera);
         assert!(out.cameras[0].clear_color_enabled);
         assert!(!out.cameras[0].draw_skybox);
+    }
+
+    /// #491：第二台相机视野里的物体不能被主相机视锥剔掉（多相机合成 #461）。
+    #[test]
+    fn extraction_keeps_objects_visible_only_through_a_second_camera() {
+        use crate::scene::components::{Camera, LocalTransform, MeshRef};
+        use crate::scene::systems::render::MeshBounds;
+        use prism_render::managers::MeshHandle;
+        use prism_scene::SceneAssetId;
+
+        let mut world = World::new();
+        let primary = world.spawn();
+        world.insert(primary, Camera::default());
+        world.insert(primary, LocalTransform::default());
+        world.insert(primary, LocalToWorld(Mat4::IDENTITY));
+
+        let secondary = world.spawn();
+        world.insert(
+            secondary,
+            Camera {
+                depth: 1.0,
+                ..Camera::default()
+            },
+        );
+        let rotation = glam::Quat::from_rotation_y(std::f32::consts::PI);
+        world.insert(
+            secondary,
+            LocalTransform {
+                rotation,
+                ..LocalTransform::default()
+            },
+        );
+        world.insert(secondary, LocalToWorld(Mat4::from_quat(rotation)));
+
+        // 主相机看向 −Z，所以 +Z 的物体只在第二台（旋转 180°）相机里可见。
+        let mesh = world.spawn();
+        world.insert(
+            mesh,
+            LocalToWorld(Mat4::from_translation(Vec3::new(0.0, 0.0, 5.0))),
+        );
+        world.insert(
+            mesh,
+            MeshRef {
+                asset_id: SceneAssetId::generate(),
+                render_handle: MeshHandle::default(),
+                generation: 1,
+            },
+        );
+        let mut bounds = MeshBounds::default();
+        bounds.insert(
+            MeshHandle::default(),
+            prism_render::culling::Aabb::new([-0.5; 3], [0.5; 3]),
+        );
+        world.insert_resource(bounds);
+
+        let packet = extract_frame_packet(&mut world, 1.0, &Mat4::IDENTITY);
+        assert_eq!(packet.scene.cameras.len(), 2, "两台相机都参与合成");
+        assert_eq!(
+            packet.draw_items.len(),
+            1,
+            "物体在第二台相机里可见，不能被主相机剔除"
+        );
     }
 
     /// 阴影盒子以相机**前方**为中心，不是以相机位置为中心（#526）。

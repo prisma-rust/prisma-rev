@@ -8,7 +8,7 @@ use prism_render::culling::{Aabb, Frustum};
 use prism_render::render_graph::DrawItem;
 
 use super::animator::BonePalette;
-use super::render::draw_state;
+use super::render::{draw_state, visible_in_frustums};
 use crate::scene::components::{
     LocalToWorld, MaterialRef, MaterialSlots, MeshRef, MeshSubmeshes, SkinnedMeshRenderer,
 };
@@ -33,6 +33,26 @@ pub fn append_skinned_draw_items(
     out: &mut Vec<DrawItem>,
     bones: &mut Vec<[[f32; 4]; 4]>,
 ) -> usize {
+    match frustum {
+        Some(frustum) => append_skinned_draw_items_with_frustums(
+            world,
+            std::slice::from_ref(frustum),
+            out,
+            bones,
+        ),
+        None => append_skinned_draw_items_with_frustums(world, &[], out, bones),
+    }
+}
+
+/// [`append_skinned_draw_items`] for a set of camera frustums (#491).
+///
+/// 与静态网格一致：只要任意一台相机能看到就保留，空切片 = 不剔除。
+pub fn append_skinned_draw_items_with_frustums(
+    world: &World,
+    frustums: &[Frustum],
+    out: &mut Vec<DrawItem>,
+    bones: &mut Vec<[[f32; 4]; 4]>,
+) -> usize {
     let bounds = world.get_resource::<MeshBounds>();
     let mut appended = 0;
 
@@ -53,12 +73,8 @@ pub fn append_skinned_draw_items(
                 None => *bind,
             });
         let world_bounds = local_bounds.and_then(|local| local.transformed(&model));
-        if let Some(frustum) = frustum {
-            if let Some(world_bounds) = world_bounds {
-                if !frustum.intersects_aabb(&world_bounds) {
-                    continue;
-                }
-            }
+        if !visible_in_frustums(frustums, world_bounds.as_ref()) {
+            continue;
         }
 
         let bone_offset = append_palette(palette, entity, BONE_BUDGET, bones);

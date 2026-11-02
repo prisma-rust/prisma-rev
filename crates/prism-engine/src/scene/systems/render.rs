@@ -4,6 +4,7 @@
 //! 激活 The 结果 is fed to [`prism_render`]'s [`GraphRenderer`] each 帧
 
 use prism_ecs::World;
+use prism_render::culling::{Aabb, Frustum};
 use prism_render::{DrawItem, DrawState};
 
 use crate::scene::components::*;
@@ -96,12 +97,32 @@ impl MeshBounds {
 /// 包围盒按实体模型矩阵变换到世界空间再做保守相交测试；**没有包围盒或变换非
 /// 有限**的实体照旧提交（见 [`MeshBounds`]）。
 ///
-/// 注意这只按**主相机**剔除：阴影通道共用同一份绘制列表，因此相机外的投射者
-/// 也不会进阴影贴图（与 Unity 的「只为可见物体渲阴影」一致）。按光源视锥剔除
-/// 是后续单独的一步。
+/// 多相机（#461）请用 [`scene_render_system_into_with_frustums`]：只按主相机
+/// 剔除会漏掉只在第二台相机里可见的物体。
 pub fn scene_render_system_into_with_frustum(
     world: &World,
-    frustum: Option<&prism_render::culling::Frustum>,
+    frustum: Option<&Frustum>,
+    out: &mut Vec<DrawItem>,
+) {
+    match frustum {
+        Some(frustum) => {
+            scene_render_system_into_with_frustums(world, std::slice::from_ref(frustum), out)
+        }
+        None => scene_render_system_into_with_frustums(world, &[], out),
+    }
+}
+
+/// [`scene_render_system_into_with_frustum`] for a **set** of camera frustums.
+///
+/// 多相机合成（#461）下，一个实体只要落在**任意一台**启用相机的视锥里就必须
+/// 提交：每层相机共用同一份绘制列表，主相机看不到但第二台相机看得到的东西
+/// 不能提前剔掉。空切片表示不剔除。
+///
+/// 没有世界包围盒的实体（程序化网格 / 句柄还没解析）保持提交——和单相机路径
+/// 一样，数据未知时不冒险让物体消失。
+pub fn scene_render_system_into_with_frustums(
+    world: &World,
+    frustums: &[Frustum],
     out: &mut Vec<DrawItem>,
 ) {
     out.clear();
@@ -122,12 +143,8 @@ pub fn scene_render_system_into_with_frustum(
         let world_bounds = bounds
             .and_then(|bounds| bounds.get(mr.render_handle))
             .and_then(|local| local.transformed(&model));
-        if let Some(frustum) = frustum {
-            if let Some(world_bounds) = world_bounds {
-                if !frustum.intersects_aabb(&world_bounds) {
-                    continue;
-                }
-            }
+        if !visible_in_frustums(frustums, world_bounds.as_ref()) {
+            continue;
         }
 
         // `MeshRenderer.shadow_casting_mode` / `cull_mode`（
@@ -188,6 +205,21 @@ pub fn scene_render_system_into_with_frustum(
                 bone_offset: None,
             });
         }
+    }
+}
+
+/// 一个世界包围盒是否落在**至少一个**相机视锥里（#491）。
+///
+/// 空视锥集合 = 不剔除；`bounds == None` 也保持提交（数据未知）。
+pub(crate) fn visible_in_frustums(frustums: &[Frustum], bounds: Option<&Aabb>) -> bool {
+    if frustums.is_empty() {
+        return true;
+    }
+    match bounds {
+        Some(bounds) => frustums
+            .iter()
+            .any(|frustum| frustum.intersects_aabb(bounds)),
+        None => true,
     }
 }
 
