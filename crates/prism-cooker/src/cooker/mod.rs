@@ -198,6 +198,36 @@ impl Cooker for BinaryCooker {
 }
 
 // ---------------------------------------------------------------------------
+// 动画图 Cooker (pass-through)
+// ---------------------------------------------------------------------------
+
+/// 动画图 importer 已经输出 RAGP 二进制，cooker 只做格式校验与透传。
+pub struct AnimGraphCooker;
+
+impl Cooker for AnimGraphCooker {
+    fn name(&self) -> &'static str {
+        "anim-graph-cooker"
+    }
+
+    fn can_cook(&self, asset_type: AssetType) -> bool {
+        matches!(asset_type, AssetType::AnimGraph)
+    }
+
+    fn cook(&self, ctx: &CookContext) -> Result<CookResult, CookError> {
+        if prism_asset::formats_anim_graph::decode_rag(ctx.imported_data).is_none() {
+            return Err(CookError::CookFailed(format!(
+                "{}: invalid RAGP intermediate",
+                ctx.record.path
+            )));
+        }
+        Ok(CookResult {
+            cooked_data: ctx.imported_data.to_vec(),
+            compress: true,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 纹理 Cooker — decodes intermediate RTXI → generates mip 链 → RTEX
 // ---------------------------------------------------------------------------
 
@@ -1416,6 +1446,7 @@ impl Cooker for ShaderCooker {
 pub fn default_cooker_registry() -> CookerRegistry {
     let mut reg = CookerRegistry::new();
     reg.register(Box::new(BinaryCooker));
+    reg.register(Box::new(AnimGraphCooker));
     reg.register(Box::new(TextureCooker));
     reg.register(Box::new(MeshCooker));
     reg.register(Box::new(MaterialCooker));

@@ -4,8 +4,8 @@
 作者写 `*.animgraph.json`，cooker 校验后编成 `.rag`（RAGP v1）放进 `.pak`；
 运行时只解码，不在加载时查名字。
 
-> 当前范围：格式、作者 JSON 校验、cooker 编码、运行时解码与资源类型。
-> 图求值器（把节点结果真正算成 Pose）和构建管线接线是后续步骤。
+> 当前范围：格式、作者 JSON 校验、cooker 编码、构建管线导入、运行时解码、资源类型
+> 和 `AnimGraphEvaluator`。把图自动接进引擎 `Animator` 仍是后续步骤。
 
 ## 作者格式
 
@@ -60,6 +60,15 @@
 - `prism_asset::runtime::AnimGraphAsset` —— `ResourceManager` 类型化加载 `.rag`。
 - `prism_asset::formats_anim_graph::AnimGraphInfo` —— 参数、节点、输入下标和输出下标。
 - `AssetType::AnimGraph` / 扩展名 `rag`。
+
+## 构建管线
+
+- `prism-cook import` / `build` 通过 `AnimGraphImporter` 识别 `*.animgraph.json`：
+  解析并校验作者 JSON，编码成 RAGP 中间数据，同时把剪辑 / 状态机路径解析成资产依赖。
+- `AnimGraphCooker` 校验中间数据的 RAGP magic / 版本 / 结构，再原样打包进 `.pak`
+  （`AssetType::AnimGraph`）。
+- 导入缓存 / 依赖拓扑排序复用现有资源管线；图格式非法会让该资产导入失败，而不是
+  把坏数据带进包。
 
 ## 字节布局
 

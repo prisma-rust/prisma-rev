@@ -1590,3 +1590,96 @@ fn a_notify_file_that_names_no_clip_changes_nothing() {
         "对不上的剪辑名不该把事件塞进别的剪辑"
     );
 }
+
+// -------------------------------------------------------------------
+// 动画图 Importer
+// -------------------------------------------------------------------
+
+#[test]
+fn animation_graph_importer_accepts_animgraph_json_only() {
+    let imp = AnimGraphImporter;
+    assert!(imp.can_import(Path::new("hero.animgraph.json")));
+    assert!(imp.can_import(Path::new("HERO.ANIMGRAPH.JSON")));
+    assert!(!imp.can_import(Path::new("hero.json")));
+    assert!(!imp.can_import(Path::new("hero.statemachine.json")));
+}
+
+#[test]
+fn animation_graph_importer_emits_ragp_and_resolves_dependencies() {
+    let imp = AnimGraphImporter;
+    let dir = std::env::temp_dir().join(format!(
+        "prisma-anim-graph-import-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("hero.animgraph.json");
+    std::fs::write(
+        &path,
+        r#"{
+            "nodes": [
+                { "name": "clip", "type": "clip_player", "clip": "clips/idle.ranim" },
+                { "name": "sm", "type": "state_machine", "state_machine": "hero.rasm" },
+                { "name": "out", "type": "output", "input": "clip" }
+            ]
+        }"#,
+    )
+    .unwrap();
+
+    let mut db = AssetDatabase::new();
+    let clip_id = db.generate_id();
+    db.insert(crate::db::AssetRecord::new(
+        clip_id,
+        "clips/idle.ranim".into(),
+        AssetType::AnimClip,
+        "gltf-importer",
+    ))
+    .unwrap();
+    let machine_id = db.generate_id();
+    db.insert(crate::db::AssetRecord::new(
+        machine_id,
+        "hero.rasm".into(),
+        AssetType::StateMachine,
+        "anim-graph-importer",
+    ))
+    .unwrap();
+
+    let ctx = ImportContext {
+        source_path: path.clone(),
+        source_hash: 0,
+        settings: Value::Null,
+        db: Arc::new(db),
+    };
+    let result = imp.import(&ctx).expect("imports");
+    assert_eq!(result.asset_type, AssetType::AnimGraph);
+    assert_eq!(result.dependencies.len(), 2);
+    assert!(result.dependencies.contains(&clip_id));
+    assert!(result.dependencies.contains(&machine_id));
+
+    let graph =
+        prism_asset::formats_anim_graph::decode_rag(&result.output_data).expect("valid RAGP");
+    assert_eq!(graph.nodes.len(), 3);
+    assert_eq!(graph.nodes[graph.output as usize].name, "out");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn animation_graph_importer_rejects_invalid_graphs() {
+    let imp = AnimGraphImporter;
+    let dir =
+        std::env::temp_dir().join(format!("prisma-anim-graph-invalid-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("broken.animgraph.json");
+    std::fs::write(&path, r#"{ "nodes": [] }"#).unwrap();
+    let ctx = ImportContext {
+        source_path: path,
+        source_hash: 0,
+        settings: Value::Null,
+        db: Arc::new(AssetDatabase::new()),
+    };
+    assert!(imp.import(&ctx).is_err());
+    std::fs::remove_dir_all(dir).ok();
+}
