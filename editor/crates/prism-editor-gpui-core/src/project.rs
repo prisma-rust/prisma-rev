@@ -49,6 +49,29 @@ pub fn scan_assets(root: &Path) -> Vec<crate::assets::AssetInfo> {
     files
 }
 
+/// 给 `assets/` 下所有还缺 sidecar 的资产生成 `<path>.rmeta`，返回新写入的数量。
+///
+/// 已有且有效的 sidecar 不动（GUID 跨重命名稳定）；损坏的按缺失处理并重写。
+/// 由编辑器在打开项目 / 刷新资产时调用，是**显式**操作，不在只读的
+/// [`scan_assets`] 里偷偷写盘。
+pub fn ensure_asset_metas(root: &Path) -> usize {
+    let assets = scan_assets(root);
+    let mut written = 0;
+    for asset in assets {
+        if crate::asset_meta::AssetMeta::read(root, &asset.path).is_some() {
+            continue;
+        }
+        match crate::asset_meta::AssetMeta::ensure(root, &asset.path, &asset.importer) {
+            Ok(_) => written += 1,
+            Err(error) => log::warn!(
+                "asset meta: failed to write {}: {error}",
+                crate::asset_meta::meta_relative_path(&asset.path)
+            ),
+        }
+    }
+    written
+}
+
 fn collect_assets(
     root: &Path,
     relative: &str,
@@ -66,6 +89,11 @@ fn collect_assets(
         if name.starts_with('.') || name == "target" || name == "node_modules" {
             continue;
         }
+        // `.rmeta` 是资产的 sidecar，不是可导入资产：不要出现在资产浏览器里，
+        // 也不要再给它生成一层 `<...>.rmeta.rmeta`。
+        if name.ends_with(crate::asset_meta::META_SUFFIX) {
+            continue;
+        }
         let child = format!("{relative}/{name}");
         let path = entry.path();
         if path.is_dir() {
@@ -73,11 +101,13 @@ fn collect_assets(
             continue;
         }
         let size_bytes = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+        let guid = crate::asset_meta::AssetMeta::read(root, &child).map(|meta| meta.guid);
         out.push(crate::assets::AssetInfo {
             kind: asset_kind(&child),
             importer: importer_for(&child),
             path: child,
             size_bytes,
+            guid,
         });
     }
 }
@@ -874,5 +904,32 @@ mod tests {
             normalize_save_path(DocKind::Scene, "assets\\scenes\\win.scene.json"),
             "assets/scenes/win.scene.json"
         );
+    }
+    #[test]
+    fn ensure_asset_metas_creates_sidecars_once_and_scan_exposes_the_guid() {
+        let project = TempProject::new();
+        std::fs::create_dir_all(project.root.join("assets/textures")).unwrap();
+        std::fs::write(project.root.join("assets/textures/wood.png"), b"png").unwrap();
+
+        assert_eq!(ensure_asset_metas(&project.root), 1);
+        let assets = scan_assets(&project.root);
+        assert!(
+            !assets.iter().any(|asset| asset.path.ends_with(".rmeta")),
+            "sidecar 不能出现在资产浏览器里"
+        );
+        let wood = assets
+            .iter()
+            .find(|asset| asset.path == "assets/textures/wood.png")
+            .expect("texture asset");
+        let guid = wood.guid.clone().expect("扫描时读出 sidecar guid");
+        assert_eq!(guid.len(), 32);
+
+        // 第二次不重写，GUID 稳定。
+        assert_eq!(ensure_asset_metas(&project.root), 0);
+        let again = scan_assets(&project.root)
+            .into_iter()
+            .find(|asset| asset.path == "assets/textures/wood.png")
+            .unwrap();
+        assert_eq!(again.guid.as_deref(), Some(guid.as_str()));
     }
 }

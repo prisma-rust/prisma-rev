@@ -177,6 +177,10 @@ pub struct AssetInfo {
     pub kind: AssetKind,
     #[serde(default)]
     pub importer: String,
+    /// 资产 sidecar（`<path>.rmeta`）里的稳定 GUID（#466）。旧调用方 / 没有
+    /// sidecar 的资产是 `None`，详情面板回落到路径哈希。
+    #[serde(default)]
+    pub guid: Option<String>,
 }
 
 fn other_kind() -> AssetKind {
@@ -652,30 +656,35 @@ mod tests {
                 size_bytes: 2048,
                 kind: AssetKind::Scene,
                 importer: "TextScriptImporter".into(),
+                guid: None,
             },
             AssetInfo {
                 path: "assets/scenes/rocket.scene.json".into(),
                 size_bytes: 1024,
                 kind: AssetKind::Scene,
                 importer: "TextScriptImporter".into(),
+                guid: None,
             },
             AssetInfo {
                 path: "assets/prefabs/camera.prefab.json".into(),
                 size_bytes: 512,
                 kind: AssetKind::Prefab,
                 importer: "TextScriptImporter".into(),
+                guid: None,
             },
             AssetInfo {
                 path: "assets/textures/brick.png".into(),
                 size_bytes: 5_242_880,
                 kind: AssetKind::Texture,
                 importer: "TextureImporter".into(),
+                guid: None,
             },
             AssetInfo {
                 path: "assets/settings.ini".into(),
                 size_bytes: 64,
                 kind: AssetKind::Data,
                 importer: "DefaultImporter".into(),
+                guid: None,
             },
         ]
     }

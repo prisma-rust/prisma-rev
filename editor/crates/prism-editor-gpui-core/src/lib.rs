@@ -15,6 +15,7 @@
 //! | [`keys`] | 菜单命令 + 快捷键 |
 //! | [`workspace`] | 上面所有东西的宿主状态 |
 
+pub mod asset_meta;
 pub mod assets;
 pub mod build;
 pub mod components;
@@ -39,6 +40,7 @@ pub mod undo;
 pub mod viewport_math;
 pub mod workspace;
 
+pub use asset_meta::{AssetMeta, META_SUFFIX};
 pub use assets::{
     format_bytes, AssetDetails, AssetInfo, AssetKind, AssetPreview, AssetQuery, AssetTree,
 };

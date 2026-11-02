@@ -93,6 +93,11 @@ pub fn rename_asset(project_root: &Path, from: &str, to: &str) -> Result<AssetMu
     let plan = plan_rewrites(project_root, &renamer)?;
 
     std::fs::rename(&src, &dst).map_err(|e| format!("重命名 {from_rel} 失败: {e}"))?;
+    // #466：资产身份在 `<path>.rmeta` 里，重命名时 sidecar 跟着走（目录里的
+    // sidecar 本来就随目录一起移动，这里只处理单文件）。
+    if !is_dir {
+        move_asset_sidecar(&src, &dst);
+    }
     let affected_documents = plan.affected.clone();
     let references_updated = apply_plan(project_root, plan, &renamer)?;
 
@@ -168,6 +173,12 @@ pub fn delete_asset(
         std::fs::remove_dir_all(&path).map_err(|e| format!("删除目录 {rel} 失败: {e}"))?;
     } else {
         std::fs::remove_file(&path).map_err(|e| format!("删除 {rel} 失败: {e}"))?;
+        // #466：sidecar 不是用户资产，跟着文件一起删。
+        let sidecar = asset_sidecar_path(&path);
+        if sidecar.exists() {
+            std::fs::remove_file(&sidecar)
+                .map_err(|e| format!("删除 {} 失败: {e}", sidecar.display()))?;
+        }
     }
 
     // 删掉场景文档/产物后，`scenes.json` 里指向它的条目必须一起消失，
@@ -194,6 +205,31 @@ pub fn delete_asset(
         references_updated,
         affected_documents: refs,
     })
+}
+
+/// 资产 sidecar 路径：`wood.png` → `wood.png.rmeta`（#466）。
+fn asset_sidecar_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".rmeta");
+    path.with_file_name(name)
+}
+
+/// 重命名时同步移动 sidecar；sidecar 不存在时安静跳过。
+fn move_asset_sidecar(src: &Path, dst: &Path) {
+    let from = asset_sidecar_path(src);
+    if !from.is_file() {
+        return;
+    }
+    let to = asset_sidecar_path(dst);
+    // 目标文件事先不存在（rename_asset 已检查），残留的孤儿 sidecar 直接覆盖。
+    let _ = std::fs::remove_file(&to);
+    if let Err(error) = std::fs::rename(&from, &to) {
+        log::warn!(
+            "asset meta: failed to move {} to {}: {error}",
+            from.display(),
+            to.display()
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1075,6 +1111,39 @@ mod tests {
         );
         assert!(manifest.contains("scenes/chaptered.rscn"), "{manifest}");
         assert!(manifest.contains("scenes/other.rscn"), "{manifest}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn renaming_an_asset_moves_its_meta_sidecar() {
+        let root = temp_root("rename_moves_meta");
+        std::fs::create_dir_all(root.join("assets/textures")).unwrap();
+        std::fs::write(root.join("assets/textures/a.png"), b"x").unwrap();
+        std::fs::write(
+            root.join("assets/textures/a.png.rmeta"),
+            r#"{"guid":"0123456789abcdef0123456789abcdef","importer":"TextureImporter"}"#,
+        )
+        .unwrap();
+
+        rename_asset(&root, "assets/textures/a.png", "assets/textures/b.png").unwrap();
+        assert!(!root.join("assets/textures/a.png.rmeta").exists());
+        let moved = std::fs::read_to_string(root.join("assets/textures/b.png.rmeta"))
+            .expect("sidecar must follow the rename");
+        assert!(moved.contains("0123456789abcdef0123456789abcdef"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn deleting_an_asset_removes_its_meta_sidecar() {
+        let root = temp_root("delete_removes_meta");
+        std::fs::create_dir_all(root.join("assets/textures")).unwrap();
+        std::fs::write(root.join("assets/textures/a.png"), b"x").unwrap();
+        let meta = root.join("assets/textures/a.png.rmeta");
+        std::fs::write(&meta, b"{}").unwrap();
+
+        delete_asset(&root, "assets/textures/a.png", true).unwrap();
+        assert!(!root.join("assets/textures/a.png").exists());
+        assert!(!meta.exists(), "sidecar must be deleted with the asset");
         std::fs::remove_dir_all(&root).ok();
     }
 
