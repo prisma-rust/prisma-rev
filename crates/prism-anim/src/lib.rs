@@ -24,6 +24,7 @@ pub mod pose;
 pub mod skeleton;
 pub mod skinning;
 pub mod state_machine;
+pub mod sync;
 
 pub use blend::{
     additive_joint, apply_additive, blend_into, blend_joint, blend_poses, blend_space_weights,
@@ -39,3 +40,4 @@ pub use state_machine::{
     AnimParameters, AnimState, AnimTransition, StateMachine, TransitionCondition, TransitionTarget,
     ANY_STATE,
 };
+pub use sync::{SyncGroup, SyncMarkerSet};
