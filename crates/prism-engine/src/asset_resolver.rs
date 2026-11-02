@@ -20,7 +20,8 @@ use std::path::PathBuf;
 
 use prism_asset::core::AssetId;
 use prism_asset::formats::{
-    RTEX_FORMAT_BC1, RTEX_FORMAT_BC3, RTEX_FORMAT_BC5, RTEX_FORMAT_BC6H, RTEX_FORMAT_RGBA8,
+    RTEX_FORMAT_BC1, RTEX_FORMAT_BC3, RTEX_FORMAT_BC5, RTEX_FORMAT_BC6H, RTEX_FORMAT_BC7,
+    RTEX_FORMAT_RGBA8,
 };
 use prism_asset::runtime::{
     MaterialAsset, MeshAsset, ResourceManager, SkinnedMeshAsset, TextureAsset,
@@ -54,6 +55,8 @@ fn texture_format_for(rtex_format: u8, srgb: bool) -> Option<TextureFormat> {
         RTEX_FORMAT_BC1 => Some(TextureFormat::Bc1Unorm),
         RTEX_FORMAT_BC3 if srgb => Some(TextureFormat::Bc3Srgb),
         RTEX_FORMAT_BC3 => Some(TextureFormat::Bc3Unorm),
+        RTEX_FORMAT_BC7 if srgb => Some(TextureFormat::Bc7Srgb),
+        RTEX_FORMAT_BC7 => Some(TextureFormat::Bc7Unorm),
         RTEX_FORMAT_BC5 => Some(TextureFormat::Bc5Unorm),
         RTEX_FORMAT_BC6H => Some(TextureFormat::Bc6HUfloat),
         _ => None,
@@ -2451,6 +2454,14 @@ mod tests {
         assert_eq!(
             texture_format_for(RTEX_FORMAT_BC3, false),
             Some(TextureFormat::Bc3Unorm)
+        );
+        assert_eq!(
+            texture_format_for(RTEX_FORMAT_BC7, true),
+            Some(TextureFormat::Bc7Srgb)
+        );
+        assert_eq!(
+            texture_format_for(RTEX_FORMAT_BC7, false),
+            Some(TextureFormat::Bc7Unorm)
         );
     }
 

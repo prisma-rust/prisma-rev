@@ -17,7 +17,10 @@ use crate::db::AssetRecord;
 use prism_asset::core::{AssetId, AssetType};
 // RTEX format bytes are part of the wire format; the single source of truth
 // lives in `prism-asset::formats` (shared with the runtime decoder).
-use prism_asset::formats::{RMES_VERSION, RTEX_FORMAT_RGBA8};
+use prism_asset::formats::{
+    RMES_VERSION, RTEX_FORMAT_BC1, RTEX_FORMAT_BC3, RTEX_FORMAT_BC5, RTEX_FORMAT_BC7,
+    RTEX_FORMAT_RGBA8,
+};
 use prism_asset::package::PackageBuilder;
 use std::collections::HashMap;
 use thiserror::Error;
@@ -341,6 +344,38 @@ impl TextureCooker {
         mips
     }
 
+    /// Encode every mip level with the pure-Rust BC encoder.
+    ///
+    /// The encoder pads partial 4x4 blocks at the edge, matching RTEX/GPU block
+    /// sizing. BC5 reads R/G from the RGBA8 input, which is what the importer
+    /// already provides for normal maps.
+    fn encode_block_mips(
+        mips: &[(u32, u32, Vec<u8>)],
+        format: texture_compressor::Format,
+    ) -> Result<Vec<(u32, u32, Vec<u8>)>, CookError> {
+        let settings =
+            texture_compressor::Settings::new(format, texture_compressor::Effort::Balanced);
+        mips.iter()
+            .map(|(width, height, rgba)| {
+                let view = texture_compressor::ImageView::rgba8(
+                    rgba,
+                    *width,
+                    *height,
+                    *width as usize * 4,
+                )
+                .map_err(|error| {
+                    CookError::CookFailed(format!("BC encode {width}x{height} input: {error}"))
+                })?;
+                let bytes = texture_compressor::encode(view, &settings).map_err(|error| {
+                    CookError::CookFailed(format!(
+                        "BC encode {width}x{height} ({format:?}): {error}"
+                    ))
+                })?;
+                Ok((*width, *height, bytes))
+            })
+            .collect()
+    }
+
     fn write_rtex(mips: &[(u32, u32, Vec<u8>)], format: u8) -> Vec<u8> {
         let levels = mips.len() as u32;
         // Header: magic(4) + version(1) + w(4) + h(4) + levels(4) + format(1) + offsets(levels*4)
@@ -399,16 +434,35 @@ impl Cooker for TextureCooker {
             vec![(w, h, rgba.to_vec())]
         };
 
-        // 格式 byte：只有 RGBA8 有编码器。块压缩（BC / ASTC / ETC2）还没实现，
-        // 所以 profile 里声明的桌面 / 移动格式仍然回退 —— 但**运行时**已经能读
-        // BC1 / BC3 / BC5 / BC6H（#519），编码器接上就能直接用。
+        // 格式 byte：桌面 BC1/BC3/BC5/BC7 走纯 Rust 编码器；ASTC / ETC2 的移动
+        // 编码器还没接，继续明确回退到 RGBA8（不静默冒充已压缩，#519）。
         let (format, mips, block_compressed) = match ctx.settings.texture.compression {
             profile::TextureCompression::Rgba8 | profile::TextureCompression::None => {
                 (RTEX_FORMAT_RGBA8, mips_rgba, false)
             }
+            profile::TextureCompression::Bc1 => (
+                RTEX_FORMAT_BC1,
+                Self::encode_block_mips(&mips_rgba, texture_compressor::Format::Bc1)?,
+                true,
+            ),
+            profile::TextureCompression::Bc3 => (
+                RTEX_FORMAT_BC3,
+                Self::encode_block_mips(&mips_rgba, texture_compressor::Format::Bc3)?,
+                true,
+            ),
+            profile::TextureCompression::Bc5 => (
+                RTEX_FORMAT_BC5,
+                Self::encode_block_mips(&mips_rgba, texture_compressor::Format::Bc5)?,
+                true,
+            ),
+            profile::TextureCompression::Bc7 => (
+                RTEX_FORMAT_BC7,
+                Self::encode_block_mips(&mips_rgba, texture_compressor::Format::Bc7)?,
+                true,
+            ),
             other => {
                 tracing::warn!(
-                    "Compression format {other:?} not implemented yet, falling back to RGBA8"
+                    "Compression format {other:?} has no encoder yet, falling back to RGBA8"
                 );
                 (RTEX_FORMAT_RGBA8, mips_rgba, false)
             }

@@ -116,6 +116,9 @@ fn decode_rtex_maps_block_formats() {
         decode_rtex(&bc6h).unwrap().format,
         TextureFormat::Bc6HUfloat
     );
+
+    let bc7 = rtex_blob(4, 4, RTEX_FORMAT_BC7, &[vec![0u8; 16]]);
+    assert_eq!(decode_rtex(&bc7).unwrap().format, TextureFormat::Bc7Srgb);
 }
 
 #[test]

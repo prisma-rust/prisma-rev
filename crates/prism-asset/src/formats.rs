@@ -26,6 +26,8 @@ pub const RTEX_FORMAT_BC1: u8 = 3;
 pub const RTEX_FORMAT_BC3: u8 = 4;
 /// BC6H (HDR RGB, 16 bytes per 4×4 block).
 pub const RTEX_FORMAT_BC6H: u8 = 5;
+/// BC7 (RGBA, 16 bytes per 4×4 block).
+pub const RTEX_FORMAT_BC7: u8 = 6;
 
 #[derive(Debug, Clone)]
 pub struct RtexInfo {

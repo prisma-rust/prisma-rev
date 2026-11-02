@@ -379,6 +379,7 @@ impl TextureFormat { fn is_compressed()->bool; fn compressed_byte_len()->usize; 
 ### 7.7 阶段拆解（可独立 PR，每步 CI 绿）
 
 - **PR-T1：BC/ASTC 上传支持（不改加载路径）** ✅ **已完成 2026-08-21**。`TextureFormat` 全量扩展 + `mip_levels` + `is_compressed/vk_format` + `RenderTextureManager` 校验/上传分支已落地。下一步扩展测试补充 BC7 编码走新路径的采样近似验证。**此 PR 不动 glTF 加载，运行时仍走 RGBA8（压缩路径可手动构造验证）**。
+- **PR-T1.1：BC1/BC3/BC5/BC7 cooker 编码** ✅ **已完成 2026-11-02**。`TextureCooker` 用纯 Rust `texture-compressor` 按 `CookProfile.texture.compression` 真正编码 BC 格式，并补上 RTEX BC7 的运行时映射；ASTC / ETC2 的移动编码器仍未接，继续明确回退 RGBA8（#519）。
 - **PR-T2：xtask texture-import 离线工具**。新增 `xtask/src/bin/texture-import.rs`，依赖 `ktx2` + `bc7enc` + `astc-encoder` crate。扫 glTF -> 编码 -> 写 KTX2 + manifest.json。命令行：`cargo run -p xtask -- texture-import --scene sponza --platform desktop,android`。**此 PR 只产工具，不改引擎**。
 - **PR-T3：`prism-asset` 运行时优先读 KTX2**。`gltf_loader::load` 加 cache 查询分支，命中走 KTX2 路径，未命中回退 RGBA8（打 warn）。`SceneStore` 加 KTX2 解析（`ktx2` crate decode）。**此 PR 上线后，跑过一次 `xtask texture-import` 的场景加载时间从 ~1.8s 降到 ~0.5s 量级**。
 - **PR-T4（可选）：mip chain 流式加载**。KTX2 mip level 按可视距离动态加载/卸载，首帧只加载低 mip。需要 `SceneStore` 支持部分加载 + 渲染管线容忍"纹理未就绪"。工作量大，放下一步扩展里程碑。
