@@ -69,6 +69,7 @@ fn looping_times_wrap_and_once_clips_clamp() {
         looped: true,
         additive: false,
         tracks: Vec::new(),
+        ..Default::default()
     };
     assert!((clip.wrap_time(2.5) - 0.5).abs() < 1e-6);
     assert!((clip.wrap_time(-0.5) - 1.5).abs() < 1e-6, "负时间也要绕回");
@@ -101,6 +102,7 @@ fn sampling_writes_only_the_channels_that_have_keys() {
             ],
             scale: Vec::new(),
         }],
+        ..Default::default()
     };
     assert!(clip.sample_into(0.0, &mut pose));
     // 位置没有被写（剪辑不动 position 通道）。
@@ -125,6 +127,7 @@ fn a_track_for_a_missing_joint_is_ignored() {
             translation: vec![v3(0.0, Vec3::ONE)],
             ..Default::default()
         }],
+        ..Default::default()
     };
     let before = pose.clone();
     clip.sample_into(0.0, &mut pose);
@@ -151,6 +154,7 @@ fn max_key_time_sees_every_channel() {
                 ..Default::default()
             },
         ],
+        ..Default::default()
     };
     assert!((clip.max_key_time() - 7.5).abs() < 1e-6);
     assert!(!clip.is_empty());
@@ -185,6 +189,7 @@ fn key_times_merge_every_track_and_drop_duplicates() {
                 ..Default::default()
             },
         ],
+        ..Default::default()
     };
     // 0.0 / 1.0 各出现两次 → 各留一个；NaN 丢掉。
     assert_eq!(clip.key_times(), vec![0.0, 0.5, 1.0]);
@@ -199,6 +204,57 @@ fn a_clip_without_keys_has_no_key_times() {
         looped: false,
         additive: false,
         tracks: Vec::new(),
+        ..Default::default()
     };
     assert!(clip.key_times().is_empty());
+}
+
+fn notified_clip(duration: f32, looped: bool, notifies: &[(f32, &str)]) -> Clip {
+    Clip {
+        name: "notified".into(),
+        duration,
+        fps: 30.0,
+        looped,
+        additive: false,
+        tracks: Vec::new(),
+        notifies: notifies
+            .iter()
+            .map(|(time, name)| ClipNotify {
+                time: *time,
+                name: (*name).to_string(),
+            })
+            .collect(),
+    }
+}
+
+fn fired(clip: &Clip, from: f32, to: f32) -> Vec<&str> {
+    clip.notifies_between(from, to)
+        .into_iter()
+        .map(|notify| notify.name.as_str())
+        .collect()
+}
+
+#[test]
+fn notifies_fire_in_a_half_open_interval() {
+    let clip = notified_clip(2.0, false, &[(0.5, "a"), (1.5, "b")]);
+    assert_eq!(fired(&clip, 0.4, 0.6), vec!["a"]);
+    // 起点是开区间：0.5 那一帧已经触发过，停在上面不该反复播。
+    assert!(fired(&clip, 0.5, 0.6).is_empty());
+    // 一帧跨过两个也不漏。
+    assert_eq!(fired(&clip, 0.0, 2.0), vec!["a", "b"]);
+    // 没有事件 / 非有限 / 零时长都安全。
+    assert!(fired(&notified_clip(2.0, false, &[]), 0.0, 2.0).is_empty());
+    assert!(fired(&clip, f32::NAN, 1.0).is_empty());
+    assert!(fired(&notified_clip(0.0, false, &[(0.5, "a")]), 0.0, 1.0).is_empty());
+}
+
+#[test]
+fn a_looped_clip_fires_notifies_on_both_sides_of_the_wrap() {
+    let clip = notified_clip(1.0, true, &[(0.05, "start"), (0.95, "end")]);
+    // 0.9 → 1.0 → 0.1：两段各命中一个。
+    assert_eq!(fired(&clip, 0.9, 0.1), vec!["start", "end"]);
+    // 只跨过结尾。
+    assert_eq!(fired(&clip, 0.9, 0.98), vec!["end"]);
+    // 只跨过开头（0 点本身也要能触发）。
+    assert_eq!(fired(&clip, 0.98, 0.05), vec!["start"]);
 }

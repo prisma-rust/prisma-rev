@@ -9,8 +9,8 @@
 
 use prism_asset::formats_skinned::{
     AnimClipInfo, SkeletonInfo, SkinnedMeshInfo, RANI_ADDITIVE, RANI_LOOPED, RANI_MAGIC,
-    RSKL_JOINT_RECORD_SIZE, RSKL_MAGIC, RSKN_BIND_POSE_SIZE, RSKN_HAS_NORMALS, RSKN_HAS_TANGENTS,
-    RSKN_HAS_UV0, RSKN_HEADER_SIZE, RSKN_MAGIC, SKINNED_FORMAT_VERSION,
+    RANI_VERSION, RSKL_JOINT_RECORD_SIZE, RSKL_MAGIC, RSKN_BIND_POSE_SIZE, RSKN_HAS_NORMALS,
+    RSKN_HAS_TANGENTS, RSKN_HAS_UV0, RSKN_HEADER_SIZE, RSKN_MAGIC, SKINNED_FORMAT_VERSION,
 };
 
 /// 编码 `.rskel`。`skeleton` 必须是拓扑序（父索引 < 自身下标），否则返回 `None`。
@@ -195,7 +195,7 @@ pub fn encode_ranim(clip: &AnimClipInfo) -> Option<Vec<u8>> {
 
     let mut out = Vec::new();
     out.extend_from_slice(RANI_MAGIC);
-    out.push(SKINNED_FORMAT_VERSION);
+    out.push(RANI_VERSION);
     out.extend_from_slice(&(name.len() as u16).to_le_bytes());
     out.extend_from_slice(name);
     out.extend_from_slice(&clip.duration.to_le_bytes());
@@ -235,6 +235,21 @@ pub fn encode_ranim(clip: &AnimClipInfo) -> Option<Vec<u8>> {
                 out.extend_from_slice(&value.to_le_bytes());
             }
         }
+    }
+
+    // 事件表（#560 P1 Notify）：按时间排序写出，让同一个源文件每次 cook 出同样的字节。
+    // 剪辑里的 notify 顺序没有语义。
+    let mut notifies: Vec<&prism_asset::formats_skinned::AnimNotifyInfo> = clip
+        .notifies
+        .iter()
+        .filter(|notify| notify.time.is_finite() && notify.name.len() <= u16::MAX as usize)
+        .collect();
+    notifies.sort_by(|a, b| a.time.total_cmp(&b.time));
+    out.extend_from_slice(&(notifies.len() as u32).to_le_bytes());
+    for notify in notifies {
+        out.extend_from_slice(&notify.time.to_le_bytes());
+        out.extend_from_slice(&(notify.name.len() as u16).to_le_bytes());
+        out.extend_from_slice(notify.name.as_bytes());
     }
 
     Some(out)

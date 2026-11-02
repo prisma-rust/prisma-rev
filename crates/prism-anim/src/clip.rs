@@ -34,8 +34,19 @@ impl Track {
     }
 }
 
-/// 一段动画剪辑。
+/// 剪辑里的一个关键帧事件（#560 P1 Notify）。
+///
+/// `name` 由项目解释（`Footstep.L` / `Traversal.Window` / …）：动画层只负责「在这一帧
+/// 跨过了这个时间点」的事实，不决定它意味着什么。
 #[derive(Debug, Clone, PartialEq)]
+pub struct ClipNotify {
+    /// 触发时间（秒，剪辑本地时间）。
+    pub time: f32,
+    pub name: String,
+}
+
+/// 一段动画剪辑。
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Clip {
     pub name: String,
     pub duration: f32,
@@ -43,6 +54,8 @@ pub struct Clip {
     pub looped: bool,
     pub additive: bool,
     pub tracks: Vec<Track>,
+    /// 关键帧事件（时间升序由 `from_info` / 编码器保证，这里不再排序）。
+    pub notifies: Vec<ClipNotify>,
 }
 
 impl Clip {
@@ -92,11 +105,51 @@ impl Clip {
             looped: info.looped,
             additive: info.additive,
             tracks,
+            notifies: info
+                .notifies
+                .iter()
+                .filter(|notify| notify.time.is_finite() && !notify.name.is_empty())
+                .map(|notify| ClipNotify {
+                    time: notify.time,
+                    name: notify.name.clone(),
+                })
+                .collect(),
         }
     }
 
     pub fn is_empty(&self) -> bool {
         self.tracks.iter().all(Track::is_empty)
+    }
+
+    /// 这一帧跨越的事件：区间 `(from, to]`；循环剪辑跨过结尾时把 `[0, to]` 也算上。
+    ///
+    /// `from` / `to` 都是**已折算的本地时间**（`0..=duration`）。起点取开区间是有意的：
+    /// 事件在它恰好等于 `from` 的那一帧已经触发过，再用闭区间会让停在某帧上反复播。
+    /// 结果按时间升序。
+    pub fn notifies_between(&self, from: f32, to: f32) -> Vec<&ClipNotify> {
+        if self.notifies.is_empty() || !from.is_finite() || !to.is_finite() {
+            return Vec::new();
+        }
+        let duration = self.duration;
+        if !duration.is_finite() || duration <= 0.0 {
+            return Vec::new();
+        }
+        let mut fired: Vec<&ClipNotify> = Vec::new();
+        // `to < from` 只可能是循环回绕（`rem_euclid` 之后），分两段扫。
+        let wrapped = to < from;
+        for notify in &self.notifies {
+            let hit = if wrapped {
+                (notify.time > from && notify.time <= duration)
+                    || (notify.time >= 0.0 && notify.time <= to)
+            } else {
+                notify.time > from && notify.time <= to
+            };
+            if hit {
+                fired.push(notify);
+            }
+        }
+        fired.sort_by(|a, b| a.time.total_cmp(&b.time));
+        fired
     }
 
     /// 把本地时间折算成采样时间：循环剪辑取余、单次剪辑夹到 `[0, duration]`。

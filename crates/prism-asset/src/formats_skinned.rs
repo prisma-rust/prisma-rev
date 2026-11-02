@@ -34,7 +34,7 @@
 //! bind_pose: 10×f32
 //! ```
 //!
-//! ## RANI v1（animation clip）
+//! ## RANI v2（animation clip + notifies）
 //!
 //! ```text
 //! [magic:4 "RANI"][version:1][name_len:u16][name][duration:f32][fps:f32][flags:u16][track_count:4]
@@ -44,7 +44,11 @@
 //!     rot_count: u32,   rot keys:   ×{time:f32, value:[f32;4]}
 //!     scale_count: u32, scale keys: ×{time:f32, value:[f32;3]}
 //! }
+//! notifies: notify_count:4, notify_count × { time:f32, name_len:u16, name }
 //! ```
+//!
+//! v2 只在 v1 的末尾追加事件表（`notify_count` = 0 时就是一个 u32 的零），
+//! 头与轨道布局完全不变。版本 1 的剪辑仍然可读，解出来 `notifies` 为空。
 
 /// RSKL magic。
 pub const RSKL_MAGIC: &[u8; 4] = b"RSKL";
@@ -53,8 +57,14 @@ pub const RSKN_MAGIC: &[u8; 4] = b"RSKN";
 /// RANI magic。
 pub const RANI_MAGIC: &[u8; 4] = b"RANI";
 
-/// 三种格式共用的版本号。
+/// RSKL / RSKN 的版本号。
 pub const SKINNED_FORMAT_VERSION: u8 = 1;
+
+/// RANI 的版本号（#560 P1 Notify）：v2 在 v1 末尾追加事件表。
+///
+/// 与 [`SKINNED_FORMAT_VERSION`] 分开，是因为骨架 / 蒙皮网格没有需要加字段的理由，
+/// 而剪辑需要；混在一起会让 RSKL/RSKN 也跟着无谓地跳版本。
+pub const RANI_VERSION: u8 = 2;
 
 /// 每根骨骼的 cooked 记录大小：parent(4) + flags(1) + pad(3) + local(40) + inverse_bind(64)。
 pub const RSKL_JOINT_RECORD_SIZE: usize = 4 + 1 + 3 + 40 + 64;
@@ -520,6 +530,15 @@ pub struct AnimTrackInfo {
     pub scales: Vec<Vec3KeyInfo>,
 }
 
+/// 剪辑里的一个关键帧事件（#560 P1 Notify）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnimNotifyInfo {
+    /// 触发时间（秒，剪辑本地时间）。
+    pub time: f32,
+    /// 事件名（`Footstep.L` / `Traversal.Window` 之类，由项目解释）。
+    pub name: String,
+}
+
 /// 解码后的 `.ranim`。
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnimClipInfo {
@@ -529,6 +548,8 @@ pub struct AnimClipInfo {
     pub looped: bool,
     pub additive: bool,
     pub tracks: Vec<AnimTrackInfo>,
+    /// 关键帧事件（v1 剪辑恒为空）。
+    pub notifies: Vec<AnimNotifyInfo>,
 }
 
 impl AnimClipInfo {
@@ -571,7 +592,8 @@ pub fn decode_ranim(data: &[u8]) -> Option<AnimClipInfo> {
         return None;
     }
     let mut reader = Reader::new(data, 4);
-    if reader.u8()? != SKINNED_FORMAT_VERSION {
+    let version = reader.u8()?;
+    if version != SKINNED_FORMAT_VERSION && version != RANI_VERSION {
         return None;
     }
     let name_len = reader.u16()? as usize;
@@ -640,6 +662,23 @@ pub fn decode_ranim(data: &[u8]) -> Option<AnimClipInfo> {
         });
     }
 
+    // v1 没有事件表：版本号就是「无事件」的声明。v2 之后每个剪辑都带表（可能为空），
+    // 这样将来再加字段只需要继续往后追加。
+    let mut notifies = Vec::new();
+    if version >= RANI_VERSION {
+        let notify_count = reader.u32()? as usize;
+        if notify_count > 1 << 20 {
+            return None;
+        }
+        notifies.reserve(notify_count);
+        for _ in 0..notify_count {
+            let time = reader.f32()?;
+            let name_len = reader.u16()? as usize;
+            let name = String::from_utf8(reader.take(name_len)?.to_vec()).ok()?;
+            notifies.push(AnimNotifyInfo { time, name });
+        }
+    }
+
     if reader.remaining() != 0 {
         return None;
     }
@@ -651,6 +690,7 @@ pub fn decode_ranim(data: &[u8]) -> Option<AnimClipInfo> {
         looped: flags & RANI_LOOPED != 0,
         additive: flags & RANI_ADDITIVE != 0,
         tracks,
+        notifies,
     })
 }
 

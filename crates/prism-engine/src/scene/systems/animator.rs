@@ -99,6 +99,48 @@ impl BonePalette {
     }
 }
 
+/// 本帧触发的一个关键帧事件（#560 P1 Notify）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnimEvent {
+    pub entity: Entity,
+    /// 事件名，由项目解释（`Footstep.L` / `Traversal.Window` / …）。
+    pub name: String,
+    /// 事件在剪辑里的时间（秒）。
+    pub time: f32,
+}
+
+/// 一次 `animator_system` 调用里触发的事件（World 资源）。
+///
+/// 每个 tick **整体重建**（不是累加）：消费者在 `update` 之后读到的永远只是这一帧
+/// 跨过的时间点，不会重复播上一帧的脚步声。要跨帧缓存就自己 `drain` 走。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AnimEvents {
+    pub events: Vec<AnimEvent>,
+}
+
+impl AnimEvents {
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.events.len()
+    }
+
+    /// 取走这一帧的事件（资源本身留空）。
+    pub fn drain(&mut self) -> Vec<AnimEvent> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// 某个实体这一帧触发的事件名。
+    pub fn names_for(&self, entity: Entity) -> impl Iterator<Item = &str> {
+        self.events
+            .iter()
+            .filter(move |event| event.entity == entity)
+            .map(|event| event.name.as_str())
+    }
+}
+
 /// 播放头（运行时组件，不进场景）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnimatorPlayhead {
@@ -145,6 +187,7 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
     };
 
     let mut updates: Vec<(Entity, BonePalette, AnimatorPlayhead)> = Vec::new();
+    let mut events: Vec<AnimEvent> = Vec::new();
     for (entity, animator) in world.query::<Animator>() {
         let Some(root) = world.get::<SkeletonRoot>(entity) else {
             continue;
@@ -219,12 +262,21 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
                 .fold(0.0f32, f32::max)
                 .max(0.0),
         };
+        // 上一帧已经在这个播放内容上时的本地时间：只有它存在才触发 notify ——
+        // 刚创建 / 刚换剪辑的第一帧不该把整段剪辑的事件一次性播出来。
+        let previous_local = match world.get::<AnimatorPlayhead>(entity) {
+            Some(head) if head.clip_path == playback_key => {
+                Some(local_time(duration, animator.looped, head.time))
+            }
+            _ => None,
+        };
+
+        let speed = if animator.speed.is_finite() {
+            animator.speed
+        } else {
+            0.0
+        };
         if animator.playing && dt.is_finite() {
-            let speed = if animator.speed.is_finite() {
-                animator.speed
-            } else {
-                0.0
-            };
             playhead.time += dt * speed;
             if !animator.looped {
                 playhead.time = playhead.time.clamp(0.0, duration);
@@ -233,15 +285,22 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
         playhead.finished = !animator.looped && duration > 0.0 && playhead.time >= duration;
 
         // 循环与否由 `Animator` 组件说了算（剪辑里的 `looped` 只是默认值）。
-        let local = if duration > 0.0 {
-            if animator.looped {
-                playhead.time.rem_euclid(duration)
-            } else {
-                playhead.time.clamp(0.0, duration)
+        let local = local_time(duration, animator.looped, playhead.time);
+
+        // 关键帧事件：只在前向播放、且上一帧确实在这个剪辑上时触发。
+        // 倒放（`speed < 0`）需要反向扫区间，暂时不触发 —— 宁可少一次脚步声，
+        // 也不要在倒放时把整段事件倒着播一遍。
+        if let (Some(previous), Some(clip)) = (previous_local, clip.as_ref()) {
+            if animator.playing && dt.is_finite() && speed > 0.0 {
+                for notify in clip.notifies_between(previous, local) {
+                    events.push(AnimEvent {
+                        entity,
+                        name: notify.name.clone(),
+                        time: notify.time,
+                    });
+                }
             }
-        } else {
-            0.0
-        };
+        }
         let mut pose = skeleton.rest_pose();
         match &clip {
             Some(clip) => {
@@ -303,6 +362,7 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
         world.insert(entity, palette);
         world.insert(entity, playhead);
     }
+    world.insert_resource(AnimEvents { events });
     count
 }
 
@@ -310,6 +370,19 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
 fn sanitize_blend_duration(duration: f32) -> f32 {
     if duration.is_finite() && duration > 0.0 {
         duration
+    } else {
+        0.0
+    }
+}
+
+/// 把播放头时间折算成剪辑本地时间（循环取余、单次夹到 `0..=duration`）。
+fn local_time(duration: f32, looped: bool, time: f32) -> f32 {
+    if duration > 0.0 {
+        if looped {
+            time.rem_euclid(duration)
+        } else {
+            time.clamp(0.0, duration)
+        }
     } else {
         0.0
     }
