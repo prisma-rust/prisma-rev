@@ -3053,6 +3053,112 @@ fn draw_key_ticks(
     )
 }
 
+/// 混合空间参数轴的取值范围（最小 / 最大样本位置）。
+///
+/// 样本位置可能乱序、也可能全都一样（作者填错），所以范围由数据本身决定：
+/// 没有任何有限值时返回 `None`，调用方就不用画轴了。
+pub fn blend_axis_range(positions: &[f32]) -> Option<(f32, f32)> {
+    let mut min = f32::INFINITY;
+    let mut max = f32::NEG_INFINITY;
+    let mut any = false;
+    for position in positions.iter().copied().filter(|value| value.is_finite()) {
+        any = true;
+        min = min.min(position);
+        max = max.max(position);
+    }
+    any.then_some((min, max))
+}
+
+/// 每个样本在参数轴条带上的横向偏移（像素）。
+///
+/// 取值范围退化（所有样本一个值）时全部落在**正中**：既不会挤在左端，也不会因为
+/// 除零得到 NaN。非有限位置被丢掉。
+pub fn blend_axis_offsets(positions: &[f32], width: f32) -> Vec<f32> {
+    if width <= 0.0 || !width.is_finite() {
+        return Vec::new();
+    }
+    let Some((min, max)) = blend_axis_range(positions) else {
+        return Vec::new();
+    };
+    let span = max - min;
+    positions
+        .iter()
+        .copied()
+        .filter(|value| value.is_finite())
+        .map(|value| {
+            if span <= 1e-6 {
+                width * 0.5
+            } else {
+                (value - min) / span * width
+            }
+        })
+        .collect()
+}
+
+/// 条带上的横向位置反算回参数值（点击/拖动时用）。
+///
+/// `x` 会先夹到 `0..=width`，所以点出边界外也不会把参数推到样本范围之外。
+pub fn blend_axis_value_at(x: f32, width: f32, min: f32, max: f32) -> Option<f32> {
+    if width <= 0.0 || !width.is_finite() || !x.is_finite() {
+        return None;
+    }
+    if !min.is_finite() || !max.is_finite() {
+        return None;
+    }
+    let t = (x / width).clamp(0.0, 1.0);
+    Some(min + (max - min) * t)
+}
+
+/// 画一条混合空间参数轴：底色条 + 每个样本一根竖线 + 当前参数的位置；点一下改参数。
+///
+/// 返回被点出来的新参数值（`None` = 没动）。拖动时间轴看姿态时，这条轴是唯一
+/// 能看出「现在落在哪两个样本之间」的地方。
+fn draw_blend_axis(ui: &mut egui::Ui, positions: &[f32], parameter: f32) -> Option<f32> {
+    let Some((min, max)) = blend_axis_range(positions) else {
+        return None;
+    };
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width().max(80.0), 16.0),
+        egui::Sense::click_and_drag(),
+    );
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(32, 34, 38));
+
+    // 样本刻度。
+    for offset in blend_axis_offsets(positions, rect.width()) {
+        let x = rect.left() + offset;
+        painter.line_segment(
+            [
+                egui::pos2(x, rect.top() + 3.0),
+                egui::pos2(x, rect.bottom() - 3.0),
+            ],
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(120, 124, 132)),
+        );
+    }
+
+    // 当前参数（夹到样本范围内）。
+    let span = max - min;
+    let normalized = if span <= 1e-6 {
+        0.5
+    } else {
+        ((parameter.clamp(min, max) - min) / span).clamp(0.0, 1.0)
+    };
+    let marker = rect.left() + normalized * rect.width();
+    painter.circle_filled(
+        egui::pos2(marker, rect.center().y),
+        4.0,
+        egui::Color32::from_rgb(255, 206, 84),
+    );
+
+    if response.clicked() || response.dragged() {
+        if let Some(pointer) = response.interact_pointer_pos() {
+            return blend_axis_value_at(pointer.x - rect.left(), rect.width(), min, max);
+        }
+    }
+    response.on_hover_text("Blend parameter — click or drag to scrub the blend");
+    None
+}
+
 fn animator_editor(
     ui: &mut Ui,
     workspace: &mut Workspace,
@@ -3078,6 +3184,21 @@ fn animator_editor(
         .and_then(Value::as_bool)
         .unwrap_or(true);
     let mut looped = value.get("looped").and_then(Value::as_bool).unwrap_or(true);
+    let blend_positions: Vec<f32> = value
+        .get("blend_positions")
+        .and_then(Value::as_array)
+        .map(|positions| {
+            positions
+                .iter()
+                .filter_map(Value::as_f64)
+                .map(|value| value as f32)
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut blend_parameter = value
+        .get("blend_parameter")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0) as f32;
     let mut edited = false;
 
     ui.horizontal(|ui| {
@@ -3151,11 +3272,32 @@ fn animator_editor(
         ui.label(RichText::new("speed").size(10.0).weak());
     });
 
+    // 一维混合空间：参数轴 + 当前落点（#560 P1）。
+    if blend_positions.len() >= 2 {
+        ui.label(
+            RichText::new(format!("blend parameter {blend_parameter:.2}"))
+                .size(10.0)
+                .weak(),
+        );
+        if let Some(next) = draw_blend_axis(ui, &blend_positions, blend_parameter) {
+            blend_parameter = next;
+            edited = true;
+        }
+    }
+
     if edited {
         workspace.set_field(entity_id, component, "time", Value::from(time as f64));
         workspace.set_field(entity_id, component, "speed", Value::from(speed as f64));
         workspace.set_field(entity_id, component, "playing", Value::Bool(playing));
         workspace.set_field(entity_id, component, "looped", Value::Bool(looped));
+        if blend_positions.len() >= 2 {
+            workspace.set_field(
+                entity_id,
+                component,
+                "blend_parameter",
+                Value::from(blend_parameter as f64),
+            );
+        }
     }
 }
 
@@ -3386,6 +3528,44 @@ mod keyframe_editor_tests {
         assert!(notify_markers(&notifies, 0.0, 200.0).is_empty());
         assert!(notify_markers(&notifies, 2.0, 0.0).is_empty());
         assert!(notify_markers(&[], 2.0, 200.0).is_empty());
+    }
+
+    #[test]
+    fn blend_axis_offsets_span_the_sample_range() {
+        let offsets = blend_axis_offsets(&[0.0, 0.5, 1.0], 200.0);
+        assert_eq!(offsets, vec![0.0, 100.0, 200.0]);
+        // 乱序 / 负值同样按数据自身的范围归一化。
+        let offsets = blend_axis_offsets(&[2.0, -2.0], 100.0);
+        assert_eq!(offsets, vec![100.0, 0.0]);
+    }
+
+    #[test]
+    fn blend_axis_offsets_handle_degenerate_and_broken_input() {
+        // 所有样本一个值：全落在正中，而不是除零。
+        assert_eq!(blend_axis_offsets(&[1.0, 1.0], 100.0), vec![50.0, 50.0]);
+        // 非有限位置被丢掉，零宽度不画。
+        assert_eq!(
+            blend_axis_offsets(&[f32::NAN, 0.0, 1.0], 100.0),
+            vec![0.0, 100.0]
+        );
+        assert!(blend_axis_offsets(&[0.0, 1.0], 0.0).is_empty());
+        assert!(blend_axis_offsets(&[], 100.0).is_empty());
+        assert!(blend_axis_range(&[f32::NAN]).is_none());
+        assert_eq!(blend_axis_range(&[3.0, -1.0, 2.0]), Some((-1.0, 3.0)));
+    }
+
+    #[test]
+    fn clicking_the_blend_axis_maps_back_into_the_parameter_range() {
+        assert_eq!(blend_axis_value_at(0.0, 200.0, 0.0, 2.0), Some(0.0));
+        assert_eq!(blend_axis_value_at(100.0, 200.0, 0.0, 2.0), Some(1.0));
+        assert_eq!(blend_axis_value_at(200.0, 200.0, 0.0, 2.0), Some(2.0));
+        // 点出边界外夹到两端。
+        assert_eq!(blend_axis_value_at(-50.0, 200.0, 0.0, 2.0), Some(0.0));
+        assert_eq!(blend_axis_value_at(999.0, 200.0, 0.0, 2.0), Some(2.0));
+        // 坏输入不产生 NaN。
+        assert!(blend_axis_value_at(f32::NAN, 200.0, 0.0, 2.0).is_none());
+        assert!(blend_axis_value_at(10.0, 0.0, 0.0, 2.0).is_none());
+        assert!(blend_axis_value_at(10.0, 200.0, f32::NAN, 2.0).is_none());
     }
 
     #[test]
