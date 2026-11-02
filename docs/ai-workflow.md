@@ -315,3 +315,8 @@ python scripts/pr_ready.py --base origin/master
 GPU / shader 测试：CI 设置 `PRISM_REQUIRE_VALIDATION=1`，要求 debug 构建真正启用
 `VK_LAYER_KHRONOS_validation`；缺少 layer 时 `VulkanContext` 创建会直接失败，不会静默跳过。
 本地未安装 validation layer 时不要设置该变量。
+
+新增 compute shader 测试时优先复用
+`crates/prism-render/tests/support/mod.rs` 的 `GpuHarness`（SPIR-V + storage buffer +
+可选 push constants → dispatch → readback），不要把 Vulkan 初始化样板再抄一遍。示例见
+`crates/prism-render/tests/shader_harness_gpu.rs`。

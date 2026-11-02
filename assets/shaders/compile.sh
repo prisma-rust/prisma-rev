@@ -175,6 +175,14 @@ echo "  pt_render :: ptMain -> pt_render.comp.spv"
 fix_spv "$OUT/pt_render.comp.spv"
 emit_reflection pt_render ptMain compute
 
+# harness_copy: tiny compute kernel for the reusable GPU shader harness test
+# (`crates/prism-render/tests/shader_harness_gpu.rs`). No bindless state, so
+# the SPIR-V needs no ArrayStride fix-up.
+echo "  harness_copy :: main -> harness_copy.comp.spv"
+"$SLANGC" "$SRC/harness_copy.slang" \
+  -profile "$PROFILE" -target spirv -entry main -stage compute \
+  -fvk-use-entrypoint-name -o "$OUT/harness_copy.comp.spv"
+
 # ui_overlay: vertex + fragment (coloured quads on top of the scene output).
 # Self-contained pipeline (no bindless/IBL).
 compile_stage ui_overlay vertexMain vertex
