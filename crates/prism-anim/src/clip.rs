@@ -152,6 +152,29 @@ impl Clip {
     }
 
     /// 轨道覆盖的时间上限（没有关键帧时是 `duration`）。
+    /// 所有轨道用到的关键帧时间点（升序、去重、只要有限值）。
+    ///
+    /// 编辑器画时间轴刻度用：剪辑里各轨道的关键帧往往错开，合并后才是「这个剪辑
+    /// 在哪些时刻会变」。
+    pub fn key_times(&self) -> Vec<f32> {
+        let mut times: Vec<f32> = Vec::new();
+        for track in &self.tracks {
+            for key in &track.translation {
+                times.push(key.time);
+            }
+            for key in &track.rotation {
+                times.push(key.time);
+            }
+            for key in &track.scale {
+                times.push(key.time);
+            }
+        }
+        times.retain(|time| time.is_finite());
+        times.sort_by(|a, b| a.total_cmp(b));
+        times.dedup_by(|a, b| (*a - *b).abs() <= 1e-6);
+        times
+    }
+
     pub fn max_key_time(&self) -> f32 {
         let mut max = 0.0f32;
         for track in &self.tracks {

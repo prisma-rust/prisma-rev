@@ -234,3 +234,39 @@ fn a_track_pointing_at_a_missing_joint_does_not_stop_the_palette() {
     assert_eq!(animator_system(&mut world, 0.1), 1);
     assert_eq!(world.get::<BonePalette>(entity).unwrap().len(), 2);
 }
+
+#[test]
+fn the_library_reports_clip_key_times_for_the_timeline() {
+    let mut library = SkeletonLibrary::new();
+    let clip = Clip {
+        name: "walk".into(),
+        duration: 2.0,
+        fps: 30.0,
+        looped: true,
+        additive: false,
+        tracks: vec![Track {
+            joint: 1,
+            translation: vec![
+                Vec3Key {
+                    time: 0.0,
+                    value: Vec3::ZERO,
+                },
+                Vec3Key {
+                    time: 1.25,
+                    value: Vec3::X,
+                },
+                Vec3Key {
+                    time: 2.0,
+                    value: Vec3::Y,
+                },
+            ],
+            ..Default::default()
+        }],
+    };
+    library.insert_clip("char/walk.ranim", clip);
+    assert_eq!(
+        library.clip_key_times("char/walk.ranim"),
+        vec![0.0, 1.25, 2.0]
+    );
+    assert!(library.clip_key_times("char/missing.ranim").is_empty());
+}

@@ -47,6 +47,14 @@ impl SkeletonLibrary {
         self.clips.get(path).cloned()
     }
 
+    /// 剪辑里出现的关键帧时间点（升序去重）；没加载过的路径返回空。
+    pub fn clip_key_times(&self, path: &str) -> Vec<f32> {
+        self.clips
+            .get(path)
+            .map(|clip| clip.key_times())
+            .unwrap_or_default()
+    }
+
     pub fn has_skeleton(&self, path: &str) -> bool {
         self.skeletons.contains_key(path)
     }

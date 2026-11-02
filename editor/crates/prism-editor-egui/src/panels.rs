@@ -283,6 +283,9 @@ pub struct UiState {
     /// 已加载剪辑的时长（`Animator.clip_path` → 秒），由 app 每帧从引擎的
     /// `SkeletonLibrary` 填进来，检查器据此给时间轴划范围（#560 P0-4）。
     pub clip_durations: std::collections::HashMap<String, f32>,
+    /// 已加载剪辑的关键帧时间点（`clip_path` → 升序秒数）。时间轴据此画刻度，
+    /// 一眼看出这个剪辑在哪些时刻会变（#560）。
+    pub clip_keys: std::collections::HashMap<String, Vec<f32>>,
     /// 已加载骨架的关节列表（`SkeletonRoot.skeleton_path` → 关节）。检查器
     /// 用它画骨骼树；没有数据的路径不显示（拒绝画一个猜出来的层次）。
     pub skeleton_joints: std::collections::HashMap<String, Vec<SkeletonJointRow>>,
@@ -2836,6 +2839,42 @@ const CLIP_TRACKS: [(&str, &str, [f32; 3]); 3] = [
 ///
 /// 拖动时间轴只改组件的 `time` 字段（一次撤销步），引擎下一帧重新求值姿态；
 /// 时长来自已加载的剪辑，取不到时退化成无上限的拖动 + 「未知时长」提示。
+/// 关键帧在时间轴上的横向偏移（像素，从轨道左边算起）。
+///
+/// 纯函数：`duration <= 0`、非有限时间、落在范围外的关键帧都丢掉，`width <= 0`
+/// 直接返回空 —— 编辑器每帧都会调它，画一条错误的刻度比不画更误导人。
+pub fn key_tick_offsets(times: &[f32], duration: f32, width: f32) -> Vec<f32> {
+    if duration <= 0.0 || !duration.is_finite() || width <= 0.0 {
+        return Vec::new();
+    }
+    times
+        .iter()
+        .filter(|time| time.is_finite() && **time >= 0.0 && **time <= duration)
+        .map(|time| time / duration * width)
+        .collect()
+}
+
+/// 在滑杆下方画一条 6px 的刻度带：每个关键帧一根竖线。
+fn draw_key_ticks(ui: &mut egui::Ui, slider_rect: egui::Rect, times: &[f32], duration: f32) {
+    let offsets = key_tick_offsets(times, duration, slider_rect.width());
+    if offsets.is_empty() {
+        return;
+    }
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(slider_rect.width(), 6.0), egui::Sense::hover());
+    let painter = ui.painter();
+    for offset in offsets {
+        let x = rect.left() + offset;
+        painter.line_segment(
+            [
+                egui::pos2(x, rect.top() + 1.0),
+                egui::pos2(x, rect.bottom() - 1.0),
+            ],
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 206, 84)),
+        );
+    }
+}
+
 fn animator_editor(
     ui: &mut Ui,
     workspace: &mut Workspace,
@@ -2885,6 +2924,9 @@ fn animator_editor(
         );
         if response.changed() {
             edited = true;
+        }
+        if let Some(keys) = state.clip_keys.get(&clip_path) {
+            draw_key_ticks(ui, response.rect, keys, duration);
         }
         ui.label(
             RichText::new(format!("duration {duration:.2}s"))
@@ -3143,6 +3185,27 @@ fn time_of(key: &Value) -> f64 {
 #[cfg(test)]
 mod keyframe_editor_tests {
     use super::*;
+
+    #[test]
+    fn key_ticks_map_time_to_the_track_width() {
+        let offsets = key_tick_offsets(&[0.0, 0.5, 2.0], 2.0, 200.0);
+        assert_eq!(offsets, vec![0.0, 50.0, 200.0]);
+    }
+
+    #[test]
+    fn key_ticks_drop_out_of_range_and_broken_values() {
+        let offsets = key_tick_offsets(&[-0.5, 1.0, 3.0, f32::NAN], 2.0, 100.0);
+        assert_eq!(offsets, vec![50.0], "只留 0..=duration 的有限值");
+        assert!(
+            key_tick_offsets(&[0.5], 0.0, 100.0).is_empty(),
+            "未知时长不画刻度"
+        );
+        assert!(
+            key_tick_offsets(&[0.5], 2.0, 0.0).is_empty(),
+            "零宽度不画刻度"
+        );
+        assert!(key_tick_offsets(&[0.5], f32::NAN, 100.0).is_empty());
+    }
 
     #[test]
     fn the_animator_editor_renders_without_writing_when_nothing_is_touched() {

@@ -163,3 +163,42 @@ fn max_key_time_sees_every_channel() {
     }
     .is_empty());
 }
+
+#[test]
+fn key_times_merge_every_track_and_drop_duplicates() {
+    let clip = Clip {
+        name: "c".into(),
+        duration: 2.0,
+        fps: 30.0,
+        looped: true,
+        additive: false,
+        tracks: vec![
+            Track {
+                joint: 0,
+                translation: vec![v3(0.0, Vec3::ZERO), v3(1.0, Vec3::ONE)],
+                rotation: vec![q(1.0, Quat::IDENTITY)],
+                ..Default::default()
+            },
+            Track {
+                joint: 1,
+                scale: vec![v3(0.5, Vec3::ONE), v3(f32::NAN, Vec3::ONE)],
+                ..Default::default()
+            },
+        ],
+    };
+    // 0.0 / 1.0 各出现两次 → 各留一个；NaN 丢掉。
+    assert_eq!(clip.key_times(), vec![0.0, 0.5, 1.0]);
+}
+
+#[test]
+fn a_clip_without_keys_has_no_key_times() {
+    let clip = Clip {
+        name: "empty".into(),
+        duration: 0.0,
+        fps: 30.0,
+        looped: false,
+        additive: false,
+        tracks: Vec::new(),
+    };
+    assert!(clip.key_times().is_empty());
+}
