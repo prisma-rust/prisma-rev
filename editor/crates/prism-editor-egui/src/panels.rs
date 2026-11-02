@@ -3457,6 +3457,141 @@ fn animator_editor(
         });
     }
 
+    // 动画图层（#560 P1）：路径 / 权重 / additive / 骨骼遮罩都可直接编辑，
+    // 写回场景 JSON 的 `layers` 数组；空遮罩 = 全身。
+    #[derive(Clone)]
+    struct LayerRow {
+        clip_path: String,
+        weight: f32,
+        additive: bool,
+        bone_mask: String,
+    }
+    let mut layers: Vec<LayerRow> = value
+        .get("layers")
+        .and_then(Value::as_array)
+        .map(|layers| {
+            layers
+                .iter()
+                .map(|layer| LayerRow {
+                    clip_path: layer
+                        .get("clip_path")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    weight: layer.get("weight").and_then(Value::as_f64).unwrap_or(1.0) as f32,
+                    additive: layer
+                        .get("additive")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    bone_mask: layer
+                        .get("bone_mask")
+                        .and_then(Value::as_array)
+                        .map(|names| {
+                            names
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_default(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut layers_edited = false;
+    egui::CollapsingHeader::new(format!("Animation Layers ({})", layers.len()))
+        .id_salt("animation-layers")
+        .show(ui, |ui| {
+            let mut remove: Option<usize> = None;
+            let mut add = false;
+            for (index, layer) in layers.iter_mut().enumerate() {
+                ui.push_id(index, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("#{}", index + 1)).strong());
+                        if ui.small_button("remove").clicked() {
+                            remove = Some(index);
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("clip").size(10.0).weak());
+                        if ui
+                            .add(
+                                egui::TextEdit::singleline(&mut layer.clip_path)
+                                    .hint_text("clips/aim.ranim")
+                                    .desired_width(180.0),
+                            )
+                            .changed()
+                        {
+                            layers_edited = true;
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("weight").size(10.0).weak());
+                        if ui
+                            .add(egui::Slider::new(&mut layer.weight, 0.0..=1.0))
+                            .changed()
+                        {
+                            layers_edited = true;
+                        }
+                        if ui.checkbox(&mut layer.additive, "additive").changed() {
+                            layers_edited = true;
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("bones").size(10.0).weak());
+                        if ui
+                            .add(
+                                egui::TextEdit::singleline(&mut layer.bone_mask)
+                                    .hint_text("empty = all bones")
+                                    .desired_width(180.0),
+                            )
+                            .on_hover_text("Comma-separated joint names; empty = whole body.")
+                            .changed()
+                        {
+                            layers_edited = true;
+                        }
+                    });
+                });
+            }
+            if let Some(index) = remove {
+                layers.remove(index);
+                layers_edited = true;
+            }
+            if ui.button("+ Add layer").clicked() {
+                add = true;
+            }
+            if add {
+                layers.push(LayerRow {
+                    clip_path: String::new(),
+                    weight: 1.0,
+                    additive: false,
+                    bone_mask: String::new(),
+                });
+                layers_edited = true;
+            }
+        });
+    if layers_edited {
+        let encoded: Vec<Value> = layers
+            .iter()
+            .map(|layer| {
+                let bone_mask: Vec<Value> = layer
+                    .bone_mask
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(|name| Value::String(name.to_string()))
+                    .collect();
+                json!({
+                    "clip_path": layer.clip_path,
+                    "weight": layer.weight as f64,
+                    "additive": layer.additive,
+                    "bone_mask": bone_mask,
+                })
+            })
+            .collect();
+        workspace.set_field(entity_id, component, "layers", Value::Array(encoded));
+    }
+
     if edited {
         workspace.set_field(entity_id, component, "time", Value::from(time as f64));
         workspace.set_field(entity_id, component, "speed", Value::from(speed as f64));

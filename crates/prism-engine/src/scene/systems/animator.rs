@@ -13,8 +13,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use prism_anim::{
-    palette_to_arrays, AnimParameters, BlendSample, BlendSample2D, BlendSpace1D, BlendSpace2D,
-    Clip, Pose, Skeleton, StateMachine,
+    palette_to_arrays, AnimParameters, BlendLayer, BlendSample, BlendSample2D, BlendSpace1D,
+    BlendSpace2D, BlendStack, BoneMask, Clip, Pose, Skeleton, StateMachine,
 };
 use prism_ecs::{Entity, World};
 use prism_scene::components::{Animator, SkeletonRoot};
@@ -553,6 +553,40 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
                 let reference = skeleton.rest_pose();
                 prism_anim::apply_additive(&mut pose, &additive, &reference, additive_weight);
             }
+        }
+
+        // 动画图层（#560 P1）：在基础剪辑 + 交叉淡入 + 单 additive 层之后，
+        // 按作者顺序把 `Animator::layers` 叠上去。每层用同一时间轴采样，
+        // per-bone mask 只让列出的骨骼参与；BlendStack 负责顺序、权重和
+        // additive 语义，缺失剪辑 / 0 权重的层直接跳过。
+        if !animator.layers.is_empty() {
+            let reference = skeleton.rest_pose();
+            let mut stack = BlendStack::new(pose, reference.clone());
+            for layer in &animator.layers {
+                if layer.clip_path.trim().is_empty() || !(layer.weight > 0.0) {
+                    continue;
+                }
+                let Some(clip) = library.clip(layer.clip_path.as_str()) else {
+                    continue;
+                };
+                let mut layer_pose = reference.clone();
+                clip.sample_into(clip.wrap_time(local), &mut layer_pose);
+                let mask = if layer.bone_mask.is_empty() {
+                    BoneMask::all()
+                } else {
+                    let names: Vec<&str> = layer.bone_mask.iter().map(String::as_str).collect();
+                    BoneMask::from_names(&skeleton, &names)
+                };
+                stack.push(
+                    BlendLayer::new(layer_pose)
+                        .with_weight(layer.weight)
+                        .with_mask(mask)
+                        .with_additive(layer.additive),
+                );
+            }
+            let mut stacked = Pose::default();
+            stack.evaluate_into(&mut stacked);
+            pose = stacked;
         }
 
         // 这份姿态就是下一次过渡的淡出源（不需要 clone：上面已经用完 `pose`）。
