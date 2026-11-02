@@ -855,6 +855,14 @@ impl EngineHost {
             &mut self.packet,
         );
         self.packet.settings = self.settings.clone();
+        // 局部后处理体积（#502 Phase 2）：与玩家路径共用同一个解析函数。
+        self.packet.grade = Some(
+            prism_engine::scene::systems::post_process::resolve_post_grade(
+                self.engine.world(),
+                self.packet.scene.eye,
+                self.packet.settings.post_grade(),
+            ),
+        );
 
         let extent = self.renderer.extent();
         let scene = &self.packet.scene;
@@ -902,7 +910,10 @@ impl EngineHost {
             tonemap_mode: self.settings.tonemap_mode,
             aa_mode: self.settings.aa_mode,
             debug_rt: self.settings.debug_rt,
-            grade: self.settings.post_grade(),
+            grade: self
+                .packet
+                .grade
+                .unwrap_or_else(|| self.settings.post_grade()),
             proj22: scene.proj22,
             proj32: scene.proj32,
             lights: &scene.lights,

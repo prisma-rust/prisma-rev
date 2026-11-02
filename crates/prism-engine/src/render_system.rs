@@ -321,6 +321,13 @@ pub struct FramePacket {
     /// 渲染线程只读——保证 `App::render_settings` 的修改（快捷键、项目配置）
     /// 能真正到达渲染线程。
     pub settings: RenderSettings,
+    /// 本帧已解析的后处理参数（#502 Phase 2 的体积混合）。
+    ///
+    /// `None` = 没有宿主解析，`render_system` 直接退回 `settings.post_grade()`；
+    /// 宿主在写完 `settings` 之后调用
+    /// [`post_process::resolve_post_grade`](crate::scene::systems::post_process::resolve_post_grade)
+    /// 并写入这里，就能让 `PostProcessVolume` 生效。
+    pub grade: Option<prism_render::PostGrade>,
 }
 
 // ---------------------------------------------------------------------------
@@ -695,6 +702,7 @@ pub fn render_system(
         ref ui_overlay,
         ref bone_matrices,
         settings: _,
+        grade,
     } = *packet;
 
     // 1. Diff against the 上一个 帧 via DirtyRouter.
@@ -791,7 +799,7 @@ pub fn render_system(
         tonemap_mode: settings.tonemap_mode,
         aa_mode: settings.aa_mode,
         debug_rt: settings.debug_rt,
-        grade: settings.post_grade(),
+        grade: grade.unwrap_or_else(|| settings.post_grade()),
         proj22: *proj22,
         proj32: *proj32,
         lights,

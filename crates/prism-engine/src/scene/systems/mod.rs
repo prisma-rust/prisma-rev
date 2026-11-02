@@ -18,6 +18,7 @@ pub mod lights;
 pub mod lod;
 pub mod particles;
 pub mod particles2d;
+pub mod post_process;
 pub mod render;
 pub mod skinned_draw;
 pub mod terrain;

@@ -469,7 +469,7 @@ fn render_one_frame(
         tonemap_mode: settings.tonemap_mode,
         aa_mode: settings.aa_mode,
         debug_rt: settings.debug_rt,
-        grade: settings.post_grade(),
+        grade: packet.grade.unwrap_or_else(|| settings.post_grade()),
         proj22: scene.proj22,
         proj32: scene.proj32,
         lights: &scene.lights,

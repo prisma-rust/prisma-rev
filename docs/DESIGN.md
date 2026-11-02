@@ -130,6 +130,7 @@
   swapchain recreate 时重置全部 tracked state。
   第一阶段可先过渡：手动依赖表排顺序 + pass 内显式 barrier，行为不变后再启用自动屏障。
 - **多相机合成（#461）**：`render_system` 枚举所有启用相机（`Camera.depth` 升序），每台相机一份 `CameraView`（view/proj、清屏色、`clear_flags`）。`ForwardPass` 在同一个 render pass 内逐相机 `vkCmdClearAttachments`（`Skybox`/`SolidColor` 清颜色 + 深度，`Depth` 只清深度，`Nothing` 不清）+ 重画一遍场景；UBO 用 `UNORM_BUFFER_DYNAMIC` 的相机槽位切换 view/proj。第一版只支持全屏不透明层叠加，没有逐相机 viewport rect / 后处理栈。
+- **局部后处理体积（#502 Phase 2）**：`PostProcessVolume` 组件用轴对齐盒（`size` 半尺寸 × 实体缩放，旋转忽略）圈出一块区域，带 `priority` / `blend_distance` / `global` 与调色、bloom、色差、颗粒、白平衡参数。主线程在写完 `FramePacket.settings` 后调用 `scene::systems::post_process::resolve_post_grade`：盒内权重 1，盒外 `blend_distance` 内线性淡出，按优先级从低到高把参数混进本帧 `PostGrade`。没有体积时与 `RenderSettings::post_grade()` 逐位一致；多相机合成共用一次后处理，所以只按主相机位置解析。
 - `ShadowMapPass` 已正确实现 `RenderPassNode`，作为参照。**#526 CSM**：`shadow_cascade_count = 1` 时分配旧的 `shadow_size²` 单张阴影图；`= 2` 时分配 `2 × shadow_size` 的 2×1 atlas，左右 tile 分别是近/远级联，片元按相机前向深度选级联。atlas 尺寸在构造渲染图时确定，运行中改设置需要重建。
 
 ### 6.3 Pass 拓扑（重构后）
