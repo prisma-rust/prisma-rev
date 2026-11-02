@@ -1,6 +1,6 @@
 use super::*;
 use glam::{Mat4, Quat, Vec3};
-use prism_anim::{ClipNotify, Joint, JointTransform, Track, Vec3Key};
+use prism_anim::{ClipNotify, Joint, JointTransform, Pose, Track, Vec3Key};
 use prism_scene::components::SkeletonRoot;
 
 fn two_bone_skeleton() -> Skeleton {
@@ -256,10 +256,7 @@ fn switching_clips_crossfades_instead_of_popping() {
     assert!((done.x - 1.0).abs() < 1e-3, "结束该是 90°，得到 {done:?}");
     assert!(done.y.abs() < 1e-3, "结束该是 90°，得到 {done:?}");
     let head = world.get::<AnimatorPlayhead>(entity).unwrap();
-    assert!(
-        head.previous_clip_path.is_empty(),
-        "过渡结束后不该继续持有来源"
-    );
+    assert!(head.previous_pose.is_none(), "过渡结束后不该继续持有来源");
 }
 
 #[test]
@@ -279,8 +276,8 @@ fn a_zero_blend_duration_switches_immediately() {
     assert!(world
         .get::<AnimatorPlayhead>(entity)
         .unwrap()
-        .previous_clip_path
-        .is_empty());
+        .previous_pose
+        .is_none());
 }
 
 #[test]
@@ -299,7 +296,7 @@ fn a_paused_animator_does_not_advance_the_crossfade() {
 
     let head = world.get::<AnimatorPlayhead>(entity).unwrap();
     assert_eq!(head.blend_elapsed, 0.0, "暂停时过渡也不该走");
-    assert_eq!(head.previous_clip_path, "bend.ranim", "来源仍然保留");
+    assert!(head.previous_pose.is_some(), "暂停时快照仍然保留");
     let tip = child_tip(&world, entity);
     assert!(
         (tip.y - 1.0).abs() < 1e-4,
@@ -308,7 +305,9 @@ fn a_paused_animator_does_not_advance_the_crossfade() {
 }
 
 #[test]
-fn losing_the_source_clip_drops_the_fade_instead_of_sticking() {
+fn losing_the_source_clip_keeps_the_snapshot_and_still_completes() {
+    // 过渡源是**姿态快照**，所以旧剪辑从库里消失（删资产 / 热重载）也不影响淡出：
+    // 以前这里会直接硬切，现在必须照常走完过渡。
     let (mut world, entity) = world_with_animator("");
     world
         .get_resource_mut::<SkeletonLibrary>()
@@ -317,7 +316,7 @@ fn losing_the_source_clip_drops_the_fade_instead_of_sticking() {
     animator_system(&mut world, 0.0);
 
     switch_clip(&mut world, entity, "bent90.ranim", 1.0);
-    // 过渡开始的同一帧就把旧剪辑从库里拿掉（热重载/删资产）。
+    // 过渡开始的同一帧就把旧剪辑从库里拿掉。
     {
         let library = world.get_resource_mut::<SkeletonLibrary>().unwrap();
         library.clear();
@@ -327,9 +326,22 @@ fn losing_the_source_clip_drops_the_fade_instead_of_sticking() {
     animator_system(&mut world, 0.0);
 
     let head = world.get::<AnimatorPlayhead>(entity).unwrap();
-    assert!(head.previous_clip_path.is_empty(), "缺来源时直接放弃过渡");
+    assert!(head.previous_pose.is_some(), "快照还在，过渡不该被放弃");
     let tip = child_tip(&world, entity);
-    assert!((tip.x - 1.0).abs() < 1e-3, "直接切到新剪辑，得到 {tip:?}");
+    assert!(
+        (tip.y - 1.0).abs() < 1e-4,
+        "过渡开头仍然是旧姿态，得到 {tip:?}"
+    );
+
+    // 走完：纯新剪辑，快照丢掉。
+    animator_system(&mut world, 1.0);
+    let tip = child_tip(&world, entity);
+    assert!((tip.x - 1.0).abs() < 1e-3, "过渡完该是 90°，得到 {tip:?}");
+    assert!(world
+        .get::<AnimatorPlayhead>(entity)
+        .unwrap()
+        .previous_pose
+        .is_none());
 }
 
 #[test]
@@ -338,8 +350,8 @@ fn blend_weights_are_clamped_and_need_both_a_source_and_a_duration() {
         clip_path: "new".into(),
         time: 0.0,
         finished: false,
-        previous_clip_path: "old".into(),
-        previous_time: 0.0,
+        previous_pose: Some(Pose::default()),
+        pose: Pose::default(),
         blend_elapsed: 0.0,
     };
     assert_eq!(head.blend_weight(1.0), Some(0.0));
@@ -348,7 +360,7 @@ fn blend_weights_are_clamped_and_need_both_a_source_and_a_duration() {
     head.blend_elapsed = 99.0;
     assert_eq!(head.blend_weight(1.0), Some(1.0), "权重夹到 1");
     assert_eq!(head.blend_weight(0.0), None, "0 时长 = 无过渡");
-    head.previous_clip_path.clear();
+    head.previous_pose = None;
     assert_eq!(head.blend_weight(1.0), None, "没有来源就没有权重");
 }
 
@@ -474,7 +486,7 @@ fn entering_a_blend_space_crossfades_from_the_single_clip() {
         "进来第一帧还是旧姿态，得到 {tip:?}"
     );
     let head = world.get::<AnimatorPlayhead>(entity).unwrap();
-    assert_eq!(head.previous_clip_path, "bend.ranim");
+    assert!(head.previous_pose.is_some(), "进来时冻住了旧姿态");
     assert_eq!(head.clip_path, BLEND_SPACE_KEY);
 
     // 走完过渡：纯混合空间姿态（90°），来源清空。
@@ -484,8 +496,8 @@ fn entering_a_blend_space_crossfades_from_the_single_clip() {
     assert!(world
         .get::<AnimatorPlayhead>(entity)
         .unwrap()
-        .previous_clip_path
-        .is_empty());
+        .previous_pose
+        .is_none());
 }
 
 #[test]
@@ -672,4 +684,42 @@ fn a_reversed_animator_does_not_fire_notifies() {
     // 0.9 → 0.5 倒着跨过 0.5：倒放不触发（宁可少一次，也不倒着播）。
     animator_system(&mut world, 0.4);
     assert!(world.get_resource::<AnimEvents>().unwrap().is_empty());
+}
+
+#[test]
+fn leaving_a_blend_space_crossfades_from_the_frozen_pose() {
+    // 以前「混合空间 → 单剪辑」是硬切（来源是占位键，库里没有可采样的剪辑）。
+    // 现在过渡源是**姿态快照**，所以这里必须真的淡出。
+    let (mut world, entity) = world_with_animator("");
+    install_bent90(&mut world);
+    use_blend_space(&mut world, entity, 0.5);
+    world.get_mut::<Animator>(entity).unwrap().playing = false;
+    animator_system(&mut world, 0.0);
+    let mixed = child_tip(&world, entity);
+    assert!(
+        (mixed.x - (2.0 - std::f32::consts::FRAC_PI_4.sin())).abs() < 1e-3,
+        "混合空间该是 45°，得到 {mixed:?}"
+    );
+
+    // 切到单剪辑（90°），1 秒过渡。
+    {
+        let animator = world.get_mut::<Animator>(entity).unwrap();
+        animator.blend_clip_paths.clear();
+        animator.blend_positions.clear();
+        animator.clip_path = "bent90.ranim".into();
+        animator.blend_duration = 1.0;
+        animator.playing = true;
+        animator.time = 0.0;
+    }
+    animator_system(&mut world, 0.0);
+    let tip = child_tip(&world, entity);
+    assert!(
+        (tip.x - (2.0 - std::f32::consts::FRAC_PI_4.sin())).abs() < 1e-3,
+        "过渡开头仍是 45° 的旧姿态，得到 {tip:?}"
+    );
+
+    // 走完：纯 90°。
+    animator_system(&mut world, 1.0);
+    let tip = child_tip(&world, entity);
+    assert!((tip.x - 1.0).abs() < 1e-3, "过渡完该是 90°，得到 {tip:?}");
 }

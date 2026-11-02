@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use prism_anim::{palette_to_arrays, BlendSample, BlendSpace1D, Clip, Skeleton};
+use prism_anim::{palette_to_arrays, BlendSample, BlendSpace1D, Clip, Pose, Skeleton};
 use prism_ecs::{Entity, World};
 use prism_scene::components::{Animator, SkeletonRoot};
 
@@ -149,13 +149,13 @@ pub struct AnimatorPlayhead {
     pub time: f32,
     /// 单次播放且已经播完。
     pub finished: bool,
-    /// 交叉淡入的来源剪辑。空 = 没有正在进行的过渡。
+    /// 交叉淡入的淡出源姿态（`None` = 当前没有过渡），过渡开始时冻结、权重到 1 丢掉。
     ///
-    /// 过渡期间**冻结**在这个剪辑的 `previous_time` 上：冻结比让旧剪辑继续跑
-    /// 更容易预测（不会出现"刚切走的动画还在往前跑"），也是 UE 简单
-    /// cross-fade 的语义。
-    pub previous_clip_path: String,
-    pub previous_time: f32,
+    /// 存姿态而不是「旧剪辑 + 时间」：混合空间的退出、来源剪辑被删、连续换剪辑这些
+    /// 情况都没有（或不该再找）一个可采样的剪辑，快照让它们都能正常淡出。
+    pub previous_pose: Option<Pose>,
+    /// 上一帧**实际显示**的姿态：下一次过渡的淡出源就是它。
+    pub pose: Pose,
     /// 过渡已经进行的秒数（`>= blend_duration` 时清掉来源）。
     pub blend_elapsed: f32,
 }
@@ -163,7 +163,7 @@ pub struct AnimatorPlayhead {
 impl AnimatorPlayhead {
     /// 过渡权重：`0` = 完全是旧剪辑，`1` = 完全是新剪辑。
     pub fn blend_weight(&self, blend_duration: f32) -> Option<f32> {
-        if self.previous_clip_path.is_empty() || !(blend_duration > 0.0) {
+        if self.previous_pose.is_none() || !(blend_duration > 0.0) {
             return None;
         }
         Some((self.blend_elapsed / blend_duration).clamp(0.0, 1.0))
@@ -236,20 +236,26 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
         let mut playhead = match world.get::<AnimatorPlayhead>(entity) {
             Some(head) if head.clip_path == playback_key => head.clone(),
             Some(head) => AnimatorPlayhead {
-                // 换剪辑：从旧剪辑停住的那一刻淡出（#560 P1）。
+                // 换剪辑：把旧剪辑**停住那一刻**的姿态冻下来，作为淡出源（#560 P1）。
+                // 旧剪辑已经不在库里（删资产 / 上一帧是混合空间）时沿用已有快照 ——
+                // 连续换两次也不会丢掉正在淡出的那一份。
                 clip_path: playback_key.clone(),
                 time: sanitize_time(animator.time),
                 finished: false,
-                previous_clip_path: head.clip_path.clone(),
-                previous_time: head.time,
+                previous_pose: if head.pose.len() > 0 {
+                    Some(head.pose.clone())
+                } else {
+                    head.previous_pose.clone()
+                },
+                pose: Pose::default(),
                 blend_elapsed: 0.0,
             },
             None => AnimatorPlayhead {
                 clip_path: playback_key.clone(),
                 time: sanitize_time(animator.time),
                 finished: false,
-                previous_clip_path: String::new(),
-                previous_time: 0.0,
+                previous_pose: None,
+                pose: Pose::default(),
                 blend_elapsed: 0.0,
             },
         };
@@ -323,37 +329,30 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
         // 过渡就该从那一刻开始计时，否则最后一帧永远到不了权重 1。
         let blend_duration = sanitize_blend_duration(animator.blend_duration);
         if blend_duration <= 0.0 {
-            // 没有过渡时长 = 硬切：顺手清掉来源，否则以后把时长调回来的第一帧
+            // 没有过渡时长 = 硬切：顺手丢掉快照，否则以后把时长调回来的第一帧
             // 会突然淡入一个早已过期的姿态。
-            playhead.previous_clip_path.clear();
+            playhead.previous_pose = None;
             playhead.blend_elapsed = 0.0;
-        } else if !playhead.previous_clip_path.is_empty() && animator.playing && dt.is_finite() {
+        } else if playhead.previous_pose.is_some() && animator.playing && dt.is_finite() {
             playhead.blend_elapsed += dt.abs();
         }
         if let Some(weight) = playhead.blend_weight(blend_duration) {
-            match library.clip(&playhead.previous_clip_path) {
-                Some(previous) => {
-                    let mut fading = skeleton.rest_pose();
-                    previous.sample_into(previous.wrap_time(playhead.previous_time), &mut fading);
-                    // `pose` 是新剪辑、`fading` 是旧剪辑：`t = weight` 时 0 → 旧、1 → 新。
-                    let mut blended = skeleton.rest_pose();
-                    prism_anim::blend_into(&mut blended, &fading, &pose, weight);
-                    pose = blended;
-                    // 权重已经到 1：新姿态就是完整的新剪辑，来源可以丢了。
-                    if weight >= 1.0 {
-                        playhead.previous_clip_path.clear();
-                        playhead.blend_elapsed = 0.0;
-                    }
-                }
-                None => {
-                    // 来源剪辑不在库里（被删了 / 路径写错）：直接切，别卡在过渡里。
-                    playhead.previous_clip_path.clear();
-                    playhead.blend_elapsed = 0.0;
-                }
+            if let Some(fading) = playhead.previous_pose.as_ref() {
+                // `fading` 是旧姿态、`pose` 是新姿态：`t = weight` 时 0 → 旧、1 → 新。
+                let mut blended = skeleton.rest_pose();
+                prism_anim::blend_into(&mut blended, fading, &pose, weight);
+                pose = blended;
+            }
+            // 权重已经到 1：新姿态就是完整的新剪辑，快照可以丢了。
+            if weight >= 1.0 {
+                playhead.previous_pose = None;
+                playhead.blend_elapsed = 0.0;
             }
         }
 
-        let palette = BonePalette::from_matrices(&skeleton.bone_palette(&pose));
+        // 这份姿态就是下一次过渡的淡出源（不需要 clone：上面已经用完 `pose`）。
+        playhead.pose = pose;
+        let palette = BonePalette::from_matrices(&skeleton.bone_palette(&playhead.pose));
         updates.push((entity, palette, playhead));
     }
 

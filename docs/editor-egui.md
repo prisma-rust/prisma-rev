@@ -398,8 +398,8 @@ cook 阶段把 glTF 的 `skins` / `JOINTS_0` / `WEIGHTS_0` / `animations` 烘成
   刻度带标出所有轨道的关键帧时刻（`Clip::key_times` 合并去重），拖的时候能看出哪里会变。
   改时间 / 勾 Loop 直接写回组件字段（一次撤销步），引擎的 `animator::pose` 系统下一帧按
   新时间重算骨骼调色板。**`blend_duration`**（秒，默认 0.2）是运行时换剪辑的交叉淡入时长：
-  旧剪辑冻结在切走那一刻的姿态，按时长淡出到新剪辑；`0` 表示硬切。换剪辑、出入混合空间
-  都走它。
+  **淡出源是上一帧实际显示姿态的快照**（不是「旧剪辑 + 时间」），所以换剪辑、出入混合空间、
+  甚至旧剪辑被删 / 热重载，都能正常淡出而不是硬跳；`0` 表示硬切。权重到 1 就丢掉快照。
 - **`SkeletonRoot`**：检查器里画骨骼树（`CollapsingHeader` 按父链缩进，成环有护栏）。
 - **一维混合空间**：`Animator` 的 `blend_clip_paths` / `blend_positions` / `blend_parameter`
   是一条参数轴（速度 0 → 走 → 跑 这种）。填了 ≥2 条剪辑、且 `blend_positions` 与之一一对应
