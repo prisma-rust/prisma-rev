@@ -606,7 +606,14 @@ impl GpuAssetResolver {
                 //   由渲染器回落到默认材质槽）；
                 // - 运行时组件缺失 = 结果无处写回，投递出去只会每帧重复 enqueue；
                 // - 失败缓存命中 = 同一个坏路径不再重试。
-                let wants_mesh = !mr.mesh_path.is_empty()
+                // 蒙皮实体（#560 P0-4）的 `MeshRenderer.mesh_path` 只是「源 glTF 路径」
+                // —— 打包器靠它 stage 资源。真正画的是 `.rskin`，所以这里别再上传
+                // 一份静态 RMES（浪费显存，静态绘制也会被 `skinned_draw` 跳过）。
+                let skinned = world
+                    .get::<crate::scene::components::SkinnedMeshRenderer>(entity)
+                    .is_some();
+                let wants_mesh = !skinned
+                    && !mr.mesh_path.is_empty()
                     && world
                         .get::<MeshRef>(entity)
                         .is_some_and(|r| r.generation == 0)

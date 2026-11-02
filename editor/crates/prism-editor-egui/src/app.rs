@@ -18,6 +18,7 @@ use serde_json::json;
 use crate::engine_host::ViewKind;
 use crate::gpu::SharedVulkan;
 use crate::logging;
+use crate::panels::SkeletonJointRow;
 use crate::panels::{self, UiState};
 use crate::project_module::ModuleState;
 use crate::selection_history::{SelectionHistory, SelectionSnapshot};
@@ -5513,6 +5514,80 @@ impl EditorApp {
     }
 }
 
+impl EditorApp {
+    /// 把剪辑时长 / 骨架关节同步给检查器（#560 P0-4）。
+    ///
+    /// 数据来源是**引擎里已加载的** `SkeletonLibrary`：资产还没解析完时检查器
+    /// 显示「未加载」，而不是画一个猜出来的层次。
+    fn sync_animation_preview(&mut self) {
+        use prism_engine::scene::systems::animator::SkeletonLibrary;
+
+        let mut wanted_clips: Vec<String> = Vec::new();
+        let mut wanted_skeletons: Vec<String> = Vec::new();
+        for entity in &self.workspace.document().doc.entities {
+            let components = &entity.components;
+            if let Some(serde_json::Value::Object(animator)) =
+                components.get("prism_engine::scene::Animator")
+            {
+                if let Some(path) = animator
+                    .get("clip_path")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    if !path.is_empty() {
+                        wanted_clips.push(path.to_string());
+                    }
+                }
+            }
+            if let Some(serde_json::Value::Object(root)) =
+                components.get("prism_engine::scene::SkeletonRoot")
+            {
+                if let Some(path) = root
+                    .get("skeleton_path")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    if !path.is_empty() {
+                        wanted_skeletons.push(path.to_string());
+                    }
+                }
+            }
+        }
+        wanted_clips.sort();
+        wanted_clips.dedup();
+        wanted_skeletons.sort();
+        wanted_skeletons.dedup();
+
+        let Some(library) = self
+            .scene_view
+            .as_ref()
+            .and_then(|view| view.host.world().get_resource::<SkeletonLibrary>())
+        else {
+            return;
+        };
+
+        let durations: std::collections::HashMap<String, f32> = wanted_clips
+            .into_iter()
+            .filter_map(|path| library.clip(&path).map(|clip| (path, clip.duration)))
+            .collect();
+        let skeletons: std::collections::HashMap<String, Vec<SkeletonJointRow>> = wanted_skeletons
+            .into_iter()
+            .filter_map(|path| {
+                let skeleton = library.skeleton(&path)?;
+                let joints = skeleton
+                    .joints()
+                    .iter()
+                    .map(|joint| SkeletonJointRow {
+                        name: joint.name.clone(),
+                        parent: joint.parent,
+                    })
+                    .collect();
+                Some((path, joints))
+            })
+            .collect();
+        self.state.clip_durations = durations;
+        self.state.skeleton_joints = skeletons;
+    }
+}
+
 impl App for EditorApp {
     /// egui-ash 在 winit `CloseRequested` 里已经先 `event_loop.exit()` 了，app 的
     /// `ui` 可能来不及看到 `close_requested`。`LoopExiting` 是事件循环结束前
@@ -5605,6 +5680,11 @@ impl App for EditorApp {
         if re_resolved > 0 {
             self.state.status = format!("hot-reloaded assets: {re_resolved} reference(s)");
         }
+
+        // 骨骼动画的检查器数据（#560 P0-4）：把已加载剪辑的时长与骨架的关节表
+        // 塞进 `UiState`，检查器就能画时间轴和骨骼树。只在文档引用变化时重建 ——
+        // 每帧拼 HashMap 会白扔掉一堆 String。
+        self.sync_animation_preview();
 
         // Play 时无论 Game 面板是否可见都推进模拟（切走 tab 不能暂停游戏）。
         if self.playing {

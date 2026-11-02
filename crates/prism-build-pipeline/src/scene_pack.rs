@@ -1010,6 +1010,7 @@ fn cook_scene_file(
 ) -> Result<Vec<u8>> {
     let data = fs::read(path).with_context(|| format!("read {}", path.display()))?;
     let rewritten = rewrite_gltf_material_paths(&data, asset_root, scene_rel)?;
+    let rewritten = rewrite_skinned_components(&rewritten, asset_root, scene_rel)?;
     cooker
         .cook_json_bytes(&rewritten)
         .with_context(|| format!("cook {}", path.display()))
@@ -1105,6 +1106,158 @@ fn rewrite_gltf_material_paths(data: &[u8], asset_root: &Path, scene_rel: &str) 
     }
 }
 
+/// 给「引用带蒙皮 glTF」的实体自动挂上 `SkinnedMeshRenderer` /
+/// `SkeletonRoot` / `Animator`（#560 P0-4）。
+///
+/// 以前打包器只写 `MeshRenderer`，导入一个带骨骼的角色后场景里画出来的是
+/// bind pose 的静态网格 —— 想让角色动起来必须手改 `.scene.json`。这里按
+/// [`prism_cooker::importer::GltfImporter::rig_paths`] 生成的路径补齐组件：
+///
+/// - `SkinnedMeshRenderer.skinned_mesh_path` = `{mesh}.skinning/mesh.rskin`
+///   （材质沿用 `MeshRenderer` 上作者写的 / 上一轮自动补的路径）；
+/// - `SkeletonRoot.skeleton_path` = `{mesh}.skinning/skeleton.rskel`，
+///   `default_clip_path` = 第一条剪辑；
+/// - `Animator.clip_path` = 第一条剪辑（默认播放、循环）。
+///
+/// **作者写的组件优先**：任何一种已经存在就整块跳过。`MeshRenderer` 保留原样 ——
+/// 打包器还要靠它的 `mesh_path` 去 stage glTF 与 side assets，运行时则会因为
+/// 实体有 `SkinnedMeshRenderer` 而跳过静态上传（见 `asset_resolver`）。
+fn rewrite_skinned_components(data: &[u8], asset_root: &Path, scene_rel: &str) -> Result<Vec<u8>> {
+    let Ok(mut document) = serde_json::from_slice::<serde_json::Value>(data) else {
+        // Let `SceneCooker` produce the canonical parse error.
+        return Ok(data.to_vec());
+    };
+    let Some(entities) = document
+        .get_mut("entities")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return Ok(data.to_vec());
+    };
+
+    let mut changed = false;
+    for entity in entities {
+        let Some(components) = entity
+            .get_mut("components")
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            continue;
+        };
+        if components.contains_key("prism_engine::scene::SkinnedMeshRenderer")
+            || components.contains_key("prism_engine::scene::SkeletonRoot")
+        {
+            continue;
+        }
+        let Some(mesh_path) = components
+            .get("prism_engine::scene::MeshRenderer")
+            .and_then(|renderer| renderer.get("mesh_path"))
+            .and_then(serde_json::Value::as_str)
+            .filter(|path| !path.is_empty())
+        else {
+            continue;
+        };
+        if !is_gltf_path(mesh_path) {
+            continue;
+        }
+        let Some(pak_path) = resolve_asset_path(asset_root, scene_rel, mesh_path) else {
+            continue;
+        };
+        let source = asset_root.join(&pak_path);
+        if !source.is_file() {
+            continue;
+        }
+        let rig = match prism_cooker::importer::GltfImporter::rig_paths(&source, &pak_path) {
+            Ok(rig) => rig,
+            Err(error) => {
+                log::warn!("{scene_rel}: cannot read rig of '{pak_path}': {error}");
+                continue;
+            }
+        };
+        // 只有骨架没有权重（或反过来）时没有可画的蒙皮网格，保持静态。
+        if insert_rig_components(components, &rig) {
+            changed = true;
+            log::info!(
+                "{scene_rel}: rigged '{pak_path}' ({} clip(s)) — added skinned components",
+                rig.clips.len()
+            );
+        }
+    }
+
+    if changed {
+        serde_json::to_vec(&document).context("serialize scene with generated skinned components")
+    } else {
+        Ok(data.to_vec())
+    }
+}
+
+/// 把 `rig` 描述的三个组件写进实体；已经存在的组件不覆盖。
+///
+/// 返回是否真的写了东西。拆出来是为了能单测（不需要真的 glTF 文件）。
+fn insert_rig_components(
+    components: &mut serde_json::Map<String, serde_json::Value>,
+    rig: &prism_cooker::importer::GltfRigPaths,
+) -> bool {
+    let (Some(skeleton), Some(skinned_mesh)) = (rig.skeleton.clone(), rig.skinned_mesh.clone())
+    else {
+        return false;
+    };
+    if components.contains_key("prism_engine::scene::SkinnedMeshRenderer")
+        || components.contains_key("prism_engine::scene::SkeletonRoot")
+    {
+        return false;
+    }
+
+    {
+        // 材质沿用 MeshRenderer（作者写的优先，其次上一轮补的 glTF 材质）。
+        let renderer = components
+            .get("prism_engine::scene::MeshRenderer")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        let material_path = renderer
+            .get("material_path")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!(""));
+        let material_paths = renderer
+            .get("material_paths")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([]));
+        let shadow_mode = renderer
+            .get("shadow_casting_mode")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!("On"));
+
+        let default_clip = rig.clips.first().cloned().unwrap_or_default();
+        components.insert(
+            "prism_engine::scene::SkinnedMeshRenderer".to_string(),
+            serde_json::json!({
+                "skinned_mesh_path": skinned_mesh,
+                "material_path": material_path,
+                "material_paths": material_paths,
+                "shadow_casting_mode": shadow_mode,
+            }),
+        );
+        components.insert(
+            "prism_engine::scene::SkeletonRoot".to_string(),
+            serde_json::json!({
+                "skeleton_path": skeleton,
+                "default_clip_path": default_clip,
+            }),
+        );
+        if !rig.clips.is_empty() {
+            components.insert(
+                "prism_engine::scene::Animator".to_string(),
+                serde_json::json!({
+                    "clip_path": rig.clips[0],
+                    "time": 0.0,
+                    "speed": 1.0,
+                    "looped": true,
+                    "playing": true,
+                }),
+            );
+        }
+    }
+    true
+}
+
 fn is_gltf_path(path: &str) -> bool {
     Path::new(path)
         .extension()
@@ -1156,6 +1309,97 @@ fn safe_relative(path: &str) -> Result<PathBuf> {
 mod tests {
     use super::*;
     use prism_asset::runtime::ResourceManager;
+
+    fn rig() -> prism_cooker::importer::GltfRigPaths {
+        prism_cooker::importer::GltfRigPaths {
+            skeleton: Some("meshes/hero.glb.skinning/skeleton.rskel".into()),
+            skinned_mesh: Some("meshes/hero.glb.skinning/mesh.rskin".into()),
+            clips: vec!["meshes/hero.glb.skinning/clips/0_walk.ranim".into()],
+        }
+    }
+
+    fn components(json: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        json.as_object().cloned().expect("component map")
+    }
+
+    #[test]
+    fn a_rigged_mesh_gets_skinned_components() {
+        let mut map = components(serde_json::json!({
+            "prism_engine::scene::MeshRenderer": {
+                "mesh_path": "meshes/hero.glb",
+                "material_path": "meshes/hero.glb.materials/0_skin.mat.json",
+                "material_paths": ["meshes/hero.glb.materials/0_skin.mat.json"],
+                "shadow_casting_mode": "TwoSided",
+            }
+        }));
+
+        assert!(insert_rig_components(&mut map, &rig()));
+
+        let skinned = &map["prism_engine::scene::SkinnedMeshRenderer"];
+        assert_eq!(
+            skinned["skinned_mesh_path"],
+            "meshes/hero.glb.skinning/mesh.rskin"
+        );
+        // 材质与阴影模式沿用 MeshRenderer（作者写的那份）。
+        assert_eq!(
+            skinned["material_path"],
+            "meshes/hero.glb.materials/0_skin.mat.json"
+        );
+        assert_eq!(skinned["shadow_casting_mode"], "TwoSided");
+
+        let root = &map["prism_engine::scene::SkeletonRoot"];
+        assert_eq!(
+            root["skeleton_path"],
+            "meshes/hero.glb.skinning/skeleton.rskel"
+        );
+        assert_eq!(
+            root["default_clip_path"],
+            "meshes/hero.glb.skinning/clips/0_walk.ranim"
+        );
+        let animator = &map["prism_engine::scene::Animator"];
+        assert_eq!(
+            animator["clip_path"],
+            "meshes/hero.glb.skinning/clips/0_walk.ranim"
+        );
+        assert_eq!(animator["playing"], true);
+        assert_eq!(animator["looped"], true);
+        assert_eq!(animator["speed"], 1.0);
+        // MeshRenderer 必须留着：打包器还要靠 mesh_path 去 stage glTF。
+        assert_eq!(
+            map["prism_engine::scene::MeshRenderer"]["mesh_path"],
+            "meshes/hero.glb"
+        );
+    }
+
+    #[test]
+    fn author_components_win_over_generated_ones() {
+        let mut map = components(serde_json::json!({
+            "prism_engine::scene::MeshRenderer": { "mesh_path": "meshes/hero.glb" },
+            "prism_engine::scene::SkinnedMeshRenderer": {
+                "skinned_mesh_path": "custom/mine.rskin"
+            }
+        }));
+        assert!(!insert_rig_components(&mut map, &rig()));
+        assert_eq!(
+            map["prism_engine::scene::SkinnedMeshRenderer"]["skinned_mesh_path"],
+            "custom/mine.rskin"
+        );
+        assert!(!map.contains_key("prism_engine::scene::SkeletonRoot"));
+    }
+
+    #[test]
+    fn a_skeleton_without_weights_stays_static() {
+        let mut map = components(serde_json::json!({
+            "prism_engine::scene::MeshRenderer": { "mesh_path": "meshes/hero.glb" }
+        }));
+        let rig = prism_cooker::importer::GltfRigPaths {
+            skeleton: Some("meshes/hero.glb.skinning/skeleton.rskel".into()),
+            skinned_mesh: None,
+            clips: vec![],
+        };
+        assert!(!insert_rig_components(&mut map, &rig));
+        assert!(!map.contains_key("prism_engine::scene::SkinnedMeshRenderer"));
+    }
 
     fn write_minimal_scene(path: &Path) {
         let json = br#"{

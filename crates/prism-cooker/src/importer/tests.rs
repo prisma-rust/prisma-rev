@@ -1366,6 +1366,44 @@ fn skinned_glb() -> Vec<u8> {
 }
 
 #[test]
+fn rig_paths_predict_exactly_what_side_assets_cook() {
+    // 打包器用 `rig_paths`（只读 glTF）把组件填进场景，用 `side_assets` 真正
+    // 编码并落盘 —— 两边路径必须逐字节一致，否则场景会指向不存在的资产（#560 P0-4）。
+    let glb = skinned_glb();
+    let path = std::env::temp_dir().join("prisma_rig_paths.glb");
+    std::fs::write(&path, &glb).unwrap();
+
+    let rig = GltfImporter::rig_paths(&path, "models/hero.glb").expect("rig paths");
+    let side = GltfImporter::side_assets(&path, "models/hero.glb").expect("side assets");
+    std::fs::remove_file(&path).ok();
+
+    assert_eq!(rig.skeleton, side.skeleton_path);
+    assert_eq!(rig.skinned_mesh, side.skinned_mesh_path);
+    assert_eq!(rig.clips, side.clip_paths);
+    assert_eq!(
+        rig.skeleton.as_deref(),
+        Some("models/hero.glb.skinning/skeleton.rskel")
+    );
+    assert_eq!(
+        rig.skinned_mesh.as_deref(),
+        Some("models/hero.glb.skinning/mesh.rskin")
+    );
+    assert!(rig.clips[0].starts_with("models/hero.glb.skinning/clips/0_"));
+    for path in rig
+        .clips
+        .iter()
+        .chain(rig.skeleton.iter())
+        .chain(rig.skinned_mesh.iter())
+    {
+        assert!(
+            side.assets.iter().any(|asset| &asset.path == path),
+            "{path} was planned but never cooked"
+        );
+    }
+    assert!(!rig.is_empty());
+}
+
+#[test]
 fn gltf_side_assets_cook_rskel_rskin_and_ranim() {
     use prism_asset::formats_skinned::{decode_ranim, decode_rskel, decode_rskin};
 
