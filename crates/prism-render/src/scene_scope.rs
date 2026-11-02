@@ -13,6 +13,7 @@ use ash::vk;
 use std::sync::Arc;
 
 use crate::context::VulkanContext;
+use crate::shader_bindings::scene_frag;
 
 /// Scene-level probe-volume 全局光照 resources 集合 5).
 ///
@@ -47,13 +48,13 @@ impl SceneScope {
         let gi_bindings = [
             // 绑定 0: probe 音量 3D 纹理 (SAMPLED_IMAGE, no 采样器
             vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
+                .binding(scene_frag::PROBE_VOLUME_BINDING)
                 .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
             // 绑定 1: ProbeVolumeInfo UBO (48 字节
             vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
+                .binding(scene_frag::PROBE_INFO_BINDING)
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
@@ -428,12 +429,12 @@ impl SceneScope {
         let writes = [
             vk::WriteDescriptorSet::default()
                 .dst_set(self.descriptor_set)
-                .dst_binding(0)
+                .dst_binding(scene_frag::PROBE_VOLUME_BINDING)
                 .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                 .image_info(std::slice::from_ref(&img_info)),
             vk::WriteDescriptorSet::default()
                 .dst_set(self.descriptor_set)
-                .dst_binding(1)
+                .dst_binding(scene_frag::PROBE_INFO_BINDING)
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .buffer_info(std::slice::from_ref(&buf_info)),
         ];

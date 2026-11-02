@@ -27,7 +27,14 @@ use crate::render_graph::{
     FORWARD_DEPTH_H, FORWARD_NORMAL_H,
 };
 use crate::shader;
+use crate::shader_bindings::{mesh_vert, scene_frag};
 use crate::skybox_pass::SkyboxPass;
+
+// The reflected push-constant block and the Rust mirror must stay in lockstep;
+// a mismatch would make `cmd_push_constants` write past the pipeline range.
+const _: () = assert!(
+    std::mem::size_of::<scene_frag::PbrBindlessPush>() as u32 == scene_frag::PUSH_CONSTANT_SIZE
+);
 
 /// `assets/shaders/slang/outline.slang::OutlinePush` 的 Rust 镜像。
 ///
@@ -540,17 +547,17 @@ impl ForwardPass {
         // 内置 once here; never rewritten at 运行时
         let frame_set_bindings = [
             vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
+                .binding(scene_frag::FRAME_BINDING)
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
             vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
+                .binding(scene_frag::MATERIALS_BINDING)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
             vk::DescriptorSetLayoutBinding::default()
-                .binding(2)
+                .binding(scene_frag::POINT_LIGHTS_BINDING)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
@@ -686,21 +693,21 @@ impl ForwardPass {
             writes.push(
                 vk::WriteDescriptorSet::default()
                     .dst_set(*set)
-                    .dst_binding(0)
+                    .dst_binding(scene_frag::FRAME_BINDING)
                     .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                     .buffer_info(std::slice::from_ref(&ubo_infos[i])),
             );
             writes.push(
                 vk::WriteDescriptorSet::default()
                     .dst_set(*set)
-                    .dst_binding(1)
+                    .dst_binding(scene_frag::MATERIALS_BINDING)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                     .buffer_info(std::slice::from_ref(&mat_info)),
             );
             writes.push(
                 vk::WriteDescriptorSet::default()
                     .dst_set(*set)
-                    .dst_binding(2)
+                    .dst_binding(scene_frag::POINT_LIGHTS_BINDING)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                     .buffer_info(std::slice::from_ref(&light_infos[i])),
             );
@@ -714,12 +721,12 @@ impl ForwardPass {
         // ---- 集合 3: shadow 映射表 (SAMPLED_IMAGE + 比较 采样器 ----
         let shadow_bindings = [
             vk::DescriptorSetLayoutBinding::default()
-                .binding(0)
+                .binding(scene_frag::SHADOW_MAP_BINDING)
                 .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
             vk::DescriptorSetLayoutBinding::default()
-                .binding(1)
+                .binding(scene_frag::SHADOW_SAMPLER_BINDING)
                 .descriptor_type(vk::DescriptorType::SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
@@ -778,12 +785,12 @@ impl ForwardPass {
         let writes = [
             vk::WriteDescriptorSet::default()
                 .dst_set(ds)
-                .dst_binding(0)
+                .dst_binding(scene_frag::SHADOW_MAP_BINDING)
                 .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                 .image_info(std::slice::from_ref(&image_info)),
             vk::WriteDescriptorSet::default()
                 .dst_set(ds)
-                .dst_binding(1)
+                .dst_binding(scene_frag::SHADOW_SAMPLER_BINDING)
                 .descriptor_type(vk::DescriptorType::SAMPLER)
                 .image_info(std::slice::from_ref(&sampler_info)),
         ];
@@ -799,7 +806,7 @@ impl ForwardPass {
         // Here we only 创建 the 布局 + 池 + 采样器 + 描述符 集合 the
         // image_info 写入 happens in `set_ao` once a 视图 is available.
         let ao_bindings = [vk::DescriptorSetLayoutBinding::default()
-            .binding(0)
+            .binding(scene_frag::AO_TEX_BINDING)
             .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
@@ -923,7 +930,7 @@ impl ForwardPass {
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
         let write = vk::WriteDescriptorSet::default()
             .dst_set(self.ao_descriptor_sets[i])
-            .dst_binding(0)
+            .dst_binding(scene_frag::AO_TEX_BINDING)
             .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .image_info(std::slice::from_ref(&image_info));
         unsafe { device.update_descriptor_sets(&[write], &[]) };
@@ -1219,8 +1226,8 @@ impl ForwardPass {
         let frag_module =
             shader::load_shader_module(device, FRAG_SPV).context("ForwardPass: load frag")?;
 
-        let vert_entry = std::ffi::CString::new("vertexMain").unwrap();
-        let frag_entry = std::ffi::CString::new("fragmentMain").unwrap();
+        let vert_entry = std::ffi::CString::new(mesh_vert::ENTRY_VERTEX_MAIN).unwrap();
+        let frag_entry = std::ffi::CString::new(scene_frag::ENTRY_FRAGMENT_MAIN).unwrap();
         let vert_stage = shader::shader_stage(
             vk::ShaderStageFlags::VERTEX,
             vert_module,
@@ -1270,14 +1277,12 @@ impl ForwardPass {
         ];
 
         // Push constants: PbrBindlessPush (108 字节 std140, VERTEX|FRAGMENT).
-        // The range keeps a 128-byte slot so it stays a superset of the block
-        // even if a field is added; `size_of` is what `cmd_push_constants` sends.
-        // Matches scene_frag.slang::PbrBindlessPush and the generated
-        // `shader_bindings::scene_frag::PbrBindlessPush`.
+        // The reflected size is also what `cmd_push_constants` sends, and the
+        // module-level assertion guarantees the Rust mirror matches it.
         let push = [vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
             .offset(0)
-            .size(128)];
+            .size(scene_frag::PUSH_CONSTANT_SIZE)];
 
         for state in missing {
             // MRT: 附件 0 = 颜色（按 `DrawState` 混合），附件 1 = 视图法线（不混合）。
@@ -1855,7 +1860,7 @@ impl RenderPassNode for ForwardPass {
                     0,
                     std::slice::from_raw_parts(
                         &pc as *const _ as *const u8,
-                        std::mem::size_of::<crate::shader_bindings::scene_frag::PbrBindlessPush>(),
+                        scene_frag::PUSH_CONSTANT_SIZE as usize,
                     ),
                 );
 
