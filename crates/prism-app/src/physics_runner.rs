@@ -134,6 +134,8 @@ pub struct BodyTransform {
     pub entity: EntityId,
     pub position: [f32; 3],
     pub rotation: [f32; 4],
+    /// 上一步结束时 rapier 是否已让该刚体休眠（仅动态刚体会回传）。
+    pub sleeping: bool,
 }
 
 // ── helpers ───────────────────────────────────────────────────────────
@@ -333,6 +335,7 @@ pub fn physics_thread_main(step_rx: Receiver<PhysicsStep>, result_tx: Sender<Phy
                         pose.rotation.z,
                         pose.rotation.w,
                     ],
+                    sleeping: body.is_sleeping(),
                 })
             })
             .collect();
@@ -353,6 +356,8 @@ pub struct PhysicsRuntime {
     result_rx: Receiver<PhysicsResult>,
     thread: Option<JoinHandle<()>>,
     bodies: HashMap<EntityId, TrackedBody>,
+    /// 上一步动态刚体的休眠状态（仅用于无窗口的观测 / 测试）。
+    sleeping: HashMap<EntityId, bool>,
     /// 线程已退出 / 通道已断：之后 `step` 直接返回，不再刷日志。
     failed: bool,
 }
@@ -383,8 +388,17 @@ impl PhysicsRuntime {
             result_rx,
             thread,
             bodies: HashMap::new(),
+            sleeping: HashMap::new(),
             failed: false,
         }
+    }
+
+    /// 上一步结束后实体是否处于休眠状态。
+    ///
+    /// 只对动态刚体有值；静态 / 运动学刚体回传 `None`。主要供无窗口的
+    /// 场景测试观察堆叠稳定性。
+    pub fn is_sleeping(&self, entity: Entity) -> Option<bool> {
+        self.sleeping.get(&entity_key(entity)).copied()
     }
 
     /// 推进一个固定步：同步 spawn/despawn/kinematic → 等线程积分 → 写回
@@ -406,6 +420,10 @@ impl PhysicsRuntime {
         }
         match self.result_rx.recv() {
             Ok(result) => {
+                self.sleeping.clear();
+                for body in &result.transforms {
+                    self.sleeping.insert(body.entity, body.sleeping);
+                }
                 apply_result(world, &result);
                 true
             }

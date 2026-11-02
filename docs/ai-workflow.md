@@ -339,6 +339,14 @@ dispatch 层，覆盖文档列表 / 读取、组件增删、反射字段写入�
 浮点字段并给出 `entities.Cube.position[0]` 这样的路径；不要用 sleep 或墙钟推进时间。
 示例见 `crates/prism-engine/tests/sim_harness.rs`。
 
+物理场景测试（需要 `--features physics`）优先复用
+`crates/prism-app/tests/support` 的 `PhysicsHarness`：用 `BodySpec` / `Scenario`
+声明地面、盒 / 球 / 胶囊、静态 / 动态 / 运动学、sensor、CCD 和父子关系，再按固定
+步数驱动真实 `PhysicsRuntime`。观测接口覆盖 body pose、休眠状态、带实体名的
+Started/Stopped `PhysicsEvents`，并提供 `assert_position_within` /
+`assert_world_position_within` 等带显式容差的断言。示例见
+`crates/prism-app/tests/physics_harness.rs`。
+
 需要比较多个 kernel 配置时，用 `GpuHarness::dispatch_repeated` 在**一次提交**里重复
 dispatch 并返回 `TimedDispatch { outputs, elapsed }`；每个候选先校验 readback，再按
 `elapsed / repeats` 选最快。kernel 必须是幂等的（例如读 A 写 B），因为后一次 dispatch
