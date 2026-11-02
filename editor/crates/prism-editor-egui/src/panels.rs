@@ -286,6 +286,8 @@ pub struct UiState {
     /// 已加载剪辑的关键帧时间点（`clip_path` → 升序秒数）。时间轴据此画刻度，
     /// 一眼看出这个剪辑在哪些时刻会变（#560）。
     pub clip_keys: std::collections::HashMap<String, Vec<f32>>,
+    /// 已加载剪辑的 Notify（`clip_path` → `(时间, 名字)`，按时间升序）。
+    pub clip_notifies: std::collections::HashMap<String, Vec<(f32, String)>>,
     /// 已加载骨架的关节列表（`SkeletonRoot.skeleton_path` → 关节）。检查器
     /// 用它画骨骼树；没有数据的路径不显示（拒绝画一个猜出来的层次）。
     pub skeleton_joints: std::collections::HashMap<String, Vec<SkeletonJointRow>>,
@@ -2946,6 +2948,60 @@ pub fn key_tick_hit(
 const KEY_TICK_HIT_TOLERANCE: f32 = 4.0;
 
 /// 在滑杆下方画一条 6px 的刻度带：每个关键帧一根竖线；点中刻度返回该时间。
+/// Notify 在时间轴上的标记：`(像素偏移, 名字)`，只保留落在 `0..=duration` 的有限时间。
+///
+/// 与 [`key_tick_offsets`] 同一套过滤规则，多带一个名字给 tooltip。`duration` 或
+/// `width` 不合法时返回空（宁可这条色带不画）。
+pub fn notify_markers(notifies: &[(f32, String)], duration: f32, width: f32) -> Vec<(f32, String)> {
+    if duration <= 0.0 || !duration.is_finite() || width <= 0.0 {
+        return Vec::new();
+    }
+    notifies
+        .iter()
+        .filter(|(time, _)| time.is_finite() && *time >= 0.0 && *time <= duration)
+        .map(|(time, name)| (time / duration * width, name.clone()))
+        .collect()
+}
+
+/// 在滑杆下方画 Notify 标记（小三角 + 悬停名字）。放在关键帧刻度带**下面**。
+fn draw_notify_markers(
+    ui: &mut egui::Ui,
+    slider_rect: egui::Rect,
+    notifies: &[(f32, String)],
+    duration: f32,
+) {
+    let markers = notify_markers(notifies, duration, slider_rect.width());
+    if markers.is_empty() {
+        return;
+    }
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(slider_rect.width(), 7.0), egui::Sense::hover());
+    let painter = ui.painter();
+    let mut hovered: Option<&str> = None;
+    for (offset, name) in &markers {
+        let x = rect.left() + offset;
+        let near = response
+            .hover_pos()
+            .is_some_and(|pos| (pos.x - x).abs() <= KEY_TICK_HIT_TOLERANCE);
+        if near {
+            hovered = Some(name.as_str());
+        }
+        // 朝上的三角：和关键帧的竖线区分开，一眼能看出这是事件而不是关键帧。
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                egui::pos2(x, rect.top() + 1.0),
+                egui::pos2(x - 2.5, rect.bottom() - 1.0),
+                egui::pos2(x + 2.5, rect.bottom() - 1.0),
+            ],
+            egui::Color32::from_rgb(110, 200, 255),
+            egui::Stroke::NONE,
+        ));
+    }
+    if let Some(name) = hovered {
+        response.on_hover_text(format!("Notify: {name}"));
+    }
+}
+
 fn draw_key_ticks(
     ui: &mut egui::Ui,
     slider_rect: egui::Rect,
@@ -3052,6 +3108,9 @@ fn animator_editor(
                 time = key_time;
                 edited = true;
             }
+        }
+        if let Some(notifies) = state.clip_notifies.get(&clip_path) {
+            draw_notify_markers(ui, response.rect, notifies, duration);
         }
         ui.label(
             RichText::new(format!("duration {duration:.2}s"))
@@ -3310,6 +3369,24 @@ fn time_of(key: &Value) -> f64 {
 #[cfg(test)]
 mod keyframe_editor_tests {
     use super::*;
+
+    #[test]
+    fn notify_markers_keep_their_names_and_drop_out_of_range_ones() {
+        let notifies = vec![
+            (0.0, "Footstep.L".to_string()),
+            (0.5, "Footstep.R".to_string()),
+            (9.0, "too late".to_string()),
+            (f32::NAN, "broken".to_string()),
+        ];
+        let markers = notify_markers(&notifies, 2.0, 200.0);
+        assert_eq!(markers.len(), 2);
+        assert_eq!(markers[0], (0.0, "Footstep.L".to_string()));
+        assert_eq!(markers[1], (50.0, "Footstep.R".to_string()));
+
+        assert!(notify_markers(&notifies, 0.0, 200.0).is_empty());
+        assert!(notify_markers(&notifies, 2.0, 0.0).is_empty());
+        assert!(notify_markers(&[], 2.0, 200.0).is_empty());
+    }
 
     #[test]
     fn key_ticks_map_time_to_the_track_width() {

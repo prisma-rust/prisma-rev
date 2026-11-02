@@ -791,3 +791,28 @@ fn a_missing_or_disabled_additive_layer_leaves_the_base_pose_alone() {
     animator_system(&mut world, 0.0);
     assert!((child_tip(&world, entity).y - 1.0).abs() < 1e-4);
 }
+
+#[test]
+fn the_library_reports_clip_notifies_for_the_timeline() {
+    let mut library = SkeletonLibrary::new();
+    let mut clip = bent_90_clip("with-notify");
+    clip.notifies = vec![
+        prism_anim::ClipNotify {
+            time: 0.25,
+            name: "Footstep.L".into(),
+        },
+        prism_anim::ClipNotify {
+            time: 0.5,
+            name: "Footstep.R".into(),
+        },
+    ];
+    library.insert_clip("char/walk.ranim", clip);
+    assert_eq!(
+        library.clip_notifies("char/walk.ranim"),
+        vec![
+            (0.25, "Footstep.L".to_string()),
+            (0.5, "Footstep.R".to_string())
+        ]
+    );
+    assert!(library.clip_notifies("char/missing.ranim").is_empty());
+}
