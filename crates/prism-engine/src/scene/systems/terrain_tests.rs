@@ -204,6 +204,7 @@ fn the_terrain_system_builds_a_mesh_and_points_the_renderer_at_it() {
         entity,
         Terrain {
             chunks: 1,
+            lod_distances: Vec::new(),
             ..Terrain::default()
         },
     );
@@ -266,6 +267,7 @@ fn the_terrain_system_splits_large_terrains_into_cullable_chunks() {
         Terrain {
             chunks: 2,
             resolution: 32,
+            lod_distances: Vec::new(),
             ..Terrain::default()
         },
     );
@@ -290,8 +292,13 @@ fn the_terrain_system_splits_large_terrains_into_cullable_chunks() {
         .map(|(chunk_entity, chunk)| (chunk_entity, chunk.clone()))
         .collect();
     assert_eq!(chunks.len(), 4, "2×2 chunks");
+    let sets: Vec<_> = world
+        .query::<TerrainLodSet>()
+        .map(|(set_entity, set)| (set_entity, set.clone()))
+        .collect();
+    assert_eq!(sets.len(), 1, "没有 LOD 阈值时只有一级 set");
     let children = world.get::<Child>(entity).expect("children");
-    assert_eq!(children.0.len(), 4);
+    assert_eq!(children.0, vec![sets[0].0]);
 
     {
         let meshes = world.get_resource::<ProceduralMeshes>().expect("meshes");
@@ -332,6 +339,7 @@ fn the_terrain_system_splits_large_terrains_into_cullable_chunks() {
     world.get_mut::<Terrain>(entity).unwrap().chunks = 1;
     terrain_system(&mut world);
     assert_eq!(world.query::<TerrainChunk>().count(), 0);
+    assert_eq!(world.query::<TerrainLodSet>().count(), 0);
     assert!(world.get::<Child>(entity).is_none(), "空 Child 应被移除");
     assert!(world.get::<MeshRef>(entity).is_some());
     let data = world.get::<TerrainData>(entity).unwrap();
@@ -376,6 +384,84 @@ fn adjacent_chunks_share_the_seam_and_keep_global_uvs() {
 }
 
 #[test]
+fn terrain_lod_switches_all_chunks_together() {
+    let mut world = prism_ecs::World::new();
+    let entity = world.spawn();
+    world.insert(
+        entity,
+        Terrain {
+            chunks: 2,
+            resolution: 32,
+            lod_distances: vec![10.0],
+            ..Terrain::default()
+        },
+    );
+    world.insert(entity, LocalTransform::default());
+    world.insert(entity, LocalToWorld(glam::Mat4::IDENTITY));
+    let camera = world.spawn();
+    world.insert(camera, LocalToWorld(glam::Mat4::IDENTITY));
+    world.insert(camera, prism_scene::components::Camera::default());
+
+    terrain_system(&mut world);
+
+    let sets: Vec<_> = world
+        .query::<TerrainLodSet>()
+        .map(|(set_entity, set)| (set_entity, set.clone()))
+        .collect();
+    assert_eq!(sets.len(), 2, "one threshold → LOD0 + LOD1");
+    assert_eq!(world.query::<TerrainChunk>().count(), 8);
+    let visible_level = |world: &prism_ecs::World| -> usize {
+        sets.iter()
+            .find(|(set_entity, _)| {
+                world.get::<Child>(*set_entity).is_some_and(|children| {
+                    children.0.iter().any(|child| {
+                        !world
+                            .get::<crate::scene::components::LodHidden>(*child)
+                            .is_some_and(|hidden| hidden.0)
+                    })
+                })
+            })
+            .map(|(_, set)| set.level)
+            .unwrap_or(usize::MAX)
+    };
+    assert_eq!(visible_level(&world), 0, "camera at the origin → LOD0");
+
+    world.insert(
+        camera,
+        LocalToWorld(glam::Mat4::from_translation(glam::vec3(100.0, 0.0, 0.0))),
+    );
+    terrain_system(&mut world);
+    assert_eq!(visible_level(&world), 1, "far camera → LOD1");
+}
+
+#[test]
+fn lod_meshes_reduce_resolution_but_keep_the_boundary() {
+    let field = ramp(9);
+    let full = field.build_chunk_mesh([10.0, 10.0], 1.0, 0, 8, 0, 8);
+    let half = field.build_chunk_mesh_lod([10.0, 10.0], 1.0, 0, 8, 0, 8, 2);
+    let quarter = field.build_chunk_mesh_lod([10.0, 10.0], 1.0, 0, 8, 0, 8, 4);
+    assert_eq!(full.positions.len(), 9 * 9);
+    assert_eq!(half.positions.len(), 5 * 5);
+    assert_eq!(quarter.positions.len(), 3 * 3);
+
+    // 四个角必须完全一致，否则相邻块 / 切换级别会露出裂缝。
+    for mesh in [&half, &quarter] {
+        let side = (mesh.positions.len() as f64).sqrt() as usize;
+        for (full_index, lod_index) in [
+            (0, 0),
+            (8, side - 1),
+            (72, (side - 1) * side),
+            (80, side * side - 1),
+        ] {
+            assert_eq!(
+                full.positions[full_index], mesh.positions[lod_index],
+                "corner {full_index}"
+            );
+        }
+    }
+}
+
+#[test]
 fn despawning_a_terrain_removes_its_chunks_and_meshes() {
     let mut world = prism_ecs::World::new();
     let entity = world.spawn();
@@ -384,6 +470,7 @@ fn despawning_a_terrain_removes_its_chunks_and_meshes() {
         Terrain {
             chunks: 2,
             resolution: 16,
+            lod_distances: Vec::new(),
             ..Terrain::default()
         },
     );
@@ -399,6 +486,7 @@ fn despawning_a_terrain_removes_its_chunks_and_meshes() {
     terrain_system(&mut world);
 
     assert_eq!(world.query::<TerrainChunk>().count(), 0);
+    assert_eq!(world.query::<TerrainLodSet>().count(), 0);
     let meshes = world.get_resource::<ProceduralMeshes>().expect("meshes");
     for path in paths {
         assert!(meshes.get(&path).is_none(), "{path} should be gone");

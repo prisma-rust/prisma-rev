@@ -2354,7 +2354,8 @@ impl Animator {
 ///
 /// 只是一个数据组件：运行时按 `heightmap`（f32 little-endian 高度数组）+ 网格参数生成
 /// 地形网格。`chunks == 1` 时挂到同一实体的 [`MeshRenderer`] 上；`chunks > 1` 时
-/// 每块生成一个运行时子实体，便于逐块视锥剔除。材质仍然由 MeshRenderer 决定。
+/// 每块生成一个运行时子实体，便于逐块视锥剔除。`lod_distances` 再按距离生成
+/// 1–3 级整地形 LOD。材质仍然由 MeshRenderer 决定。
 ///
 /// 高度数组是行优先的 `resolution × resolution` 个 f32（`resolution = 0` 按 32 处理），
 /// 世界尺寸是 `size` 米（x / z），`height_scale` 把 `[0, 1]` 的高度放大成米。
@@ -2380,6 +2381,12 @@ pub struct Terrain {
     ///
     /// 运行时钳到 `1..=16`，并且不会超过 `cells - 1`（每块至少一个 quad）。
     pub chunks: u32,
+    /// 地形 LOD 的距离阈值（米），按 LOD0、LOD1……排列（#517 Phase 2）。
+    ///
+    /// 空数组 = 不生成 LOD；默认两级阈值，生成 3 级（步长 1 / 2 / 4）。
+    /// 距离取最近启用相机到地形原点的距离，**整张地形统一切级**，避免相邻
+    /// chunk 用不同 LOD 时出现接缝裂缝。
+    pub lod_distances: Vec<f32>,
 }
 
 impl Default for Terrain {
@@ -2390,6 +2397,7 @@ impl Default for Terrain {
             height_scale: 1.0,
             resolution: 0,
             chunks: 4,
+            lod_distances: vec![80.0, 200.0],
         }
     }
 }
@@ -2416,6 +2424,11 @@ impl Terrain {
         } else {
             self.chunks.clamp(1, 16) as usize
         }
+    }
+
+    /// LOD 级数：没有阈值时 1 级，否则 `1 + 阈值数`，最多 3 级（步长 1/2/4）。
+    pub fn lod_level_count(&self) -> usize {
+        (1 + self.lod_distances.len()).min(3)
     }
 }
 
