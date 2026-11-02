@@ -109,9 +109,13 @@ let pose = evaluator.evaluate(&assets, &skeleton, dt)?;
 - `BlendStack` / `LayeredBlend` 的第一个输入是 base，其余输入按 weight 与骨骼遮罩叠加。
 - `Slot` / `CachedPose` / `Output` 当前是透明传递；Slot 的 Montage 队列是后续切片。
 - StateMachine 节点内部维护当前状态、状态时间和转移交叉淡入；Trigger 按状态机语义消耗。
+- `evaluate_with_events` 额外返回 `GraphNotifyEvent`：ClipPlayer / StateMachine 跨过
+  剪辑 Notify 时触发，循环回绕分两段扫描，第一帧不补发 time 0，共享节点只发一次。
+  BlendSpace 暂不产生事件（避免多个样本重复脚步声）。
 - 剪辑 / 状态机缺失、空混合空间、空状态机、成环都返回 `GraphEvalError`，不会 panic。
 
 引擎侧：`Animator.anim_graph_path` 非空且图已加载时优先于状态机 / 混合空间 /
 单剪辑；`load_animation_assets` 会加载 `.rag` / `*.animgraph.json`，再补加载图引用的
 状态机和剪辑。`animator_system` 为每个实体持久化一个求值器，把项目参数表的
-float/bool/trigger 同步进去；图失败时回退到普通剪辑路径并记录警告。
+float/bool/trigger 同步进去，并把图 Notify 合并进现有 `AnimEvents`；图失败时
+回退到普通剪辑路径并记录警告。

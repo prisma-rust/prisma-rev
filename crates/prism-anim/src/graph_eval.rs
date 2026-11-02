@@ -40,6 +40,18 @@ pub trait AnimGraphSource {
     fn state_machine(&self, path: &str) -> Option<Arc<StateMachine>>;
 }
 
+/// 图求值过程中跨过的一个剪辑 Notify（#560 P1）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct GraphNotifyEvent {
+    /// 触发事件的图节点名。
+    pub node: String,
+    /// 事件所属剪辑路径。
+    pub clip_path: String,
+    pub name: String,
+    /// 事件在剪辑里的本地时间（秒）。
+    pub time: f32,
+}
+
 /// 图求值错误。坏数据不应该 panic，也不应该让宿主渲染一半姿态。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GraphEvalError {
@@ -103,6 +115,7 @@ pub struct AnimGraphEvaluator {
     runtime: Vec<NodeRuntime>,
     parameters: AnimParameters,
     frame: u64,
+    pending_events: Vec<GraphNotifyEvent>,
 }
 
 impl AnimGraphEvaluator {
@@ -126,6 +139,7 @@ impl AnimGraphEvaluator {
             runtime,
             parameters,
             frame: 0,
+            pending_events: Vec::new(),
         }
     }
 
@@ -158,11 +172,27 @@ impl AnimGraphEvaluator {
         skeleton: &Skeleton,
         dt: f32,
     ) -> Result<Pose, GraphEvalError> {
+        self.evaluate_with_events(source, skeleton, dt)
+            .map(|(pose, _)| pose)
+    }
+
+    /// 求值一帧并返回这一帧跨过的 Notify。
+    ///
+    /// 只有 ClipPlayer / StateMachine 节点会产生事件；BlendSpace 同时采样多个
+    /// 剪辑，重复发事件会把一声脚步放大成几声，留给后续「主导样本」策略。
+    /// 第一帧不会补发 time = 0 的事件，循环回绕会按两段扫描。
+    pub fn evaluate_with_events(
+        &mut self,
+        source: &impl AnimGraphSource,
+        skeleton: &Skeleton,
+        dt: f32,
+    ) -> Result<(Pose, Vec<GraphNotifyEvent>), GraphEvalError> {
         let dt = if dt.is_finite() { dt.max(0.0) } else { 0.0 };
         self.frame = self.frame.wrapping_add(1);
+        self.pending_events.clear();
         let reference = skeleton.rest_pose();
         let mut visiting = vec![false; self.graph.nodes.len()];
-        self.evaluate_node(
+        let pose = self.evaluate_node(
             self.graph.output,
             source,
             skeleton,
@@ -170,7 +200,26 @@ impl AnimGraphEvaluator {
             dt,
             &mut visiting,
             &mut HashSet::new(),
-        )
+        )?;
+        Ok((pose, std::mem::take(&mut self.pending_events)))
+    }
+
+    fn record_notifies(
+        &mut self,
+        node: &str,
+        clip_path: &str,
+        clip: &Clip,
+        previous_local: f32,
+        current_local: f32,
+    ) {
+        for notify in clip.notifies_between(previous_local, current_local) {
+            self.pending_events.push(GraphNotifyEvent {
+                node: node.to_string(),
+                clip_path: clip_path.to_string(),
+                name: notify.name.clone(),
+                time: notify.time,
+            });
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -250,9 +299,14 @@ impl AnimGraphEvaluator {
                 node: node.name.clone(),
                 path: path.clone(),
             })?;
-        let runtime = &mut self.runtime[index];
-        runtime.time = advance_time(runtime.time, dt, node.speed);
-        let local = local_time(clip.duration, node.looped, runtime.time);
+        let previous_time = self.runtime[index].time;
+        let time = advance_time(previous_time, dt, node.speed);
+        self.runtime[index].time = time;
+        let previous_local = local_time(clip.duration, node.looped, previous_time);
+        let local = local_time(clip.duration, node.looped, time);
+        if dt > 0.0 && node.speed >= 0.0 {
+            self.record_notifies(&node.name, path, &clip, previous_local, local);
+        }
         let mut pose = reference.clone();
         clip.sample_into(local, &mut pose);
         Ok(pose)
@@ -402,7 +456,9 @@ impl AnimGraphEvaluator {
             });
         }
 
-        let mut state = self.runtime[index].state.min(machine.states.len() - 1);
+        let previous_state = self.runtime[index].state.min(machine.states.len() - 1);
+        let previous_time = self.runtime[index].time;
+        let mut state = previous_state;
         let mut state_time = self.runtime[index].time;
         let current = &machine.states[state];
         let current_clip =
@@ -417,8 +473,22 @@ impl AnimGraphEvaluator {
                 })?)
             };
         let current_duration = current_clip.as_ref().map_or(0.0, |clip| clip.duration);
+        let current_looped = current.looped;
         let speed = sanitize_speed(current.speed);
+        let previous_local = local_time(current_duration, current_looped, previous_time);
         state_time = advance_time(state_time, dt, speed);
+        let active_local = local_time(current_duration, current_looped, state_time);
+        if dt > 0.0 && speed >= 0.0 {
+            if let Some(clip) = current_clip.as_ref() {
+                self.record_notifies(
+                    &node.name,
+                    &current.clip_path,
+                    clip,
+                    previous_local,
+                    active_local,
+                );
+            }
+        }
 
         let transition =
             machine.next_transition(state, &mut self.parameters, state_time, current_duration);

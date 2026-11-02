@@ -4,7 +4,7 @@ use std::sync::Arc;
 use glam::{Mat4, Vec3};
 
 use super::{AnimGraphEvaluator, AnimGraphSource, GraphEvalError};
-use crate::clip::{Clip, Track, Vec3Key};
+use crate::clip::{Clip, ClipNotify, Track, Vec3Key};
 use crate::graph_eval::GraphNodeKind;
 use prism_asset::formats_anim_graph::{
     AnimGraphInfo, GraphInputInfo, GraphNodeInfo, GraphParameterInfo, GraphParameterKind,
@@ -322,4 +322,116 @@ fn every_node_kind_is_covered_by_the_switch() {
         .evaluate(&source, &skeleton(), 0.0)
         .expect("evaluates");
     assert!((x(&pose) - 3.0).abs() < 1e-5);
+}
+
+fn clip_with_notify(name: &str, time: f32, notify: &str) -> Clip {
+    let mut clip = translation_clip(name, 0.0);
+    clip.notifies.push(ClipNotify {
+        time,
+        name: notify.into(),
+    });
+    clip
+}
+
+fn single_clip_graph(path: &str, looped: bool) -> AnimGraphInfo {
+    let mut clip = node("clip", GraphNodeKind::ClipPlayer);
+    clip.clips.push(path.into());
+    clip.looped = looped;
+    graph(vec![clip, output(0)], 1)
+}
+
+#[test]
+fn a_clip_player_emits_notifies_between_frames() {
+    let mut evaluator = AnimGraphEvaluator::new(single_clip_graph("foot.ranim", false));
+    let skeleton = skeleton();
+    let source = Source::new(&[("foot.ranim", clip_with_notify("foot", 0.5, "Footstep.L"))]);
+
+    let (_, events) = evaluator
+        .evaluate_with_events(&source, &skeleton, 0.4)
+        .expect("evaluates");
+    assert!(events.is_empty(), "event is still ahead: {events:?}");
+
+    let (_, events) = evaluator
+        .evaluate_with_events(&source, &skeleton, 0.2)
+        .expect("evaluates");
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].name, "Footstep.L");
+    assert_eq!(events[0].node, "clip");
+    assert_eq!(events[0].clip_path, "foot.ranim");
+    assert!((events[0].time - 0.5).abs() < 1e-5);
+}
+
+#[test]
+fn a_notify_at_time_zero_is_not_retroactively_emitted() {
+    let mut evaluator = AnimGraphEvaluator::new(single_clip_graph("foot.ranim", false));
+    let skeleton = skeleton();
+    let source = Source::new(&[("foot.ranim", clip_with_notify("foot", 0.0, "Start"))]);
+    let (_, events) = evaluator
+        .evaluate_with_events(&source, &skeleton, 0.5)
+        .expect("evaluates");
+    assert!(events.is_empty(), "{events:?}");
+}
+
+#[test]
+fn a_looping_clip_emits_notifies_across_the_wrap() {
+    let mut evaluator = AnimGraphEvaluator::new(single_clip_graph("foot.ranim", true));
+    let skeleton = skeleton();
+    let source = Source::new(&[("foot.ranim", clip_with_notify("foot", 0.9, "Wrap"))]);
+    let (_, events) = evaluator
+        .evaluate_with_events(&source, &skeleton, 0.5)
+        .expect("first half");
+    assert!(events.is_empty(), "{events:?}");
+    let (_, events) = evaluator
+        .evaluate_with_events(&source, &skeleton, 0.5)
+        .expect("wrap");
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].name, "Wrap");
+}
+
+#[test]
+fn a_shared_clip_node_emits_each_notify_only_once() {
+    let mut clip = node("clip", GraphNodeKind::ClipPlayer);
+    clip.clips.push("foot.ranim".into());
+    clip.looped = false;
+    let mut stack = node("stack", GraphNodeKind::BlendStack);
+    stack.inputs = vec![
+        GraphInputInfo {
+            node: 0,
+            weight: 1.0,
+            bone_mask: Vec::new(),
+        },
+        GraphInputInfo {
+            node: 0,
+            weight: 1.0,
+            bone_mask: Vec::new(),
+        },
+    ];
+    let mut evaluator = AnimGraphEvaluator::new(graph(vec![clip, stack, output(1)], 2));
+    let skeleton = skeleton();
+    let source = Source::new(&[("foot.ranim", clip_with_notify("foot", 0.5, "Once"))]);
+    let (_, events) = evaluator
+        .evaluate_with_events(&source, &skeleton, 0.6)
+        .expect("evaluates");
+    assert_eq!(events.len(), 1, "{events:?}");
+}
+
+#[test]
+fn a_state_machine_emits_notifies_from_its_current_state_clip() {
+    let mut machine_node = node("sm", GraphNodeKind::StateMachine);
+    machine_node.state_machine_path = "hero.rasm".into();
+    let mut evaluator = AnimGraphEvaluator::new(graph(vec![machine_node, output(0)], 1));
+    let skeleton = skeleton();
+    let machine = StateMachine::new(vec![AnimState::new("idle", "foot.ranim")], Vec::new());
+    let source = Source::new(&[("foot.ranim", clip_with_notify("foot", 0.5, "IdleStep"))])
+        .with_machine("hero.rasm", machine);
+
+    let (_, events) = evaluator
+        .evaluate_with_events(&source, &skeleton, 0.4)
+        .expect("before");
+    assert!(events.is_empty(), "{events:?}");
+    let (_, events) = evaluator
+        .evaluate_with_events(&source, &skeleton, 0.2)
+        .expect("after");
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].name, "IdleStep");
 }

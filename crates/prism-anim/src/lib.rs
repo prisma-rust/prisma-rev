@@ -34,7 +34,7 @@ pub use blend::{
 pub use blend_space2d::{BlendSample2D, BlendSpace2D};
 pub use blend_stack::{BlendLayer, BlendStack, BoneMask};
 pub use clip::{sample_quat, sample_vec3, Clip, ClipNotify, QuatKey, Track, Vec3Key};
-pub use graph_eval::{AnimGraphEvaluator, AnimGraphSource, GraphEvalError};
+pub use graph_eval::{AnimGraphEvaluator, AnimGraphSource, GraphEvalError, GraphNotifyEvent};
 pub use pose::Pose;
 pub use skeleton::{Joint, JointTransform, Skeleton};
 pub use skinning::{palette_to_arrays, skin_matrices, skin_normals, skin_positions};
