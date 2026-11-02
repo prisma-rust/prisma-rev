@@ -164,8 +164,8 @@ pub struct ForwardPass {
     /// 格式 of the view-space 法线 MRT 附件 (SV_Target1). Written by
     /// the scene 片元 着色器 and 读取 by the GTAO pass
     normal_format: vk::Format,
-    /// #883 Phase 2: RG16F screen-space motion vectors (SV_Target2). Sampled
-    /// by TaaPass so moving objects reproject correctly.
+    /// #883 Phase 2: screen-space motion vectors (SV_Target2). RGBA16F keeps
+    /// linear sampling universally available; only .xy are used.
     velocity_format: vk::Format,
     /// Bindless handle for the BRDF LUT (registered in the bindless 纹理 表
     brdf_handle: u32,
@@ -311,7 +311,7 @@ impl ForwardPass {
             // can be 负 in any axis) 存储 without bias/packing. 4th
             // 通道 unused 着色器 writes 0).
             normal_format: vk::Format::R16G16B16A16_SFLOAT,
-            velocity_format: vk::Format::R16G16_SFLOAT,
+            velocity_format: vk::Format::R16G16B16A16_SFLOAT,
             brdf_handle: u32::MAX,
             camera_stride: 0,
             framebuffers: Vec::new(),
@@ -1547,7 +1547,7 @@ impl ForwardPass {
             .attachment(2)
             .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
 
-        // 附件 3: screen-space motion vectors (#883 Phase 2), RG16F. Cleared
+        // 附件 3: screen-space motion vectors (#883 Phase 2), RGBA16F (.xy used). Cleared
         // to zero; every mesh draw overwrites its footprint. Stored so TaaPass
         // can sample it after the pass.
         let velocity_attachment = vk::AttachmentDescription::default()
