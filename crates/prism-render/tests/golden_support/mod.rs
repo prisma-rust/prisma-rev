@@ -87,6 +87,11 @@ impl FrameHarness {
         self.size
     }
 
+    /// The unit box mesh registered by this harness.
+    pub fn mesh_handle(&self) -> MeshHandle {
+        self.mesh
+    }
+
     pub fn supports_wireframe(&self) -> bool {
         self.renderer.context().wireframe_supported
     }
@@ -112,14 +117,21 @@ impl FrameHarness {
 
     /// Render the fixed scene once and return tightly packed RGBA8 pixels.
     pub fn render(&mut self, options: FrameOptions) -> Vec<u8> {
+        let item = draw_item(self.mesh);
+        self.render_draws(&[item], options)
+    }
+
+    /// Render an explicit draw list with the fixed camera / lighting setup.
+    ///
+    /// Used by the instancing test to submit several copies of the same mesh.
+    pub fn render_draws(&mut self, items: &[DrawItem], options: FrameOptions) -> Vec<u8> {
         let camera_position = options.camera_position.unwrap_or([0.0, 0.0, 3.0]);
         let (view_proj, view) = camera_at(camera_position);
         let frame_data = frame_data(view_proj, view, self.size, camera_position);
-        let item = draw_item(self.mesh);
 
         self.renderer
             .render(
-                std::slice::from_ref(&item),
+                items,
                 &frame_data,
                 frame_data.light_view_proj,
                 [[0.0; 4]; 4],
@@ -214,7 +226,7 @@ fn frame_data(
     }
 }
 
-fn draw_item(mesh: MeshHandle) -> DrawItem {
+pub fn draw_item(mesh: MeshHandle) -> DrawItem {
     DrawItem {
         mesh,
         entity_id: 7,

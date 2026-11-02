@@ -12,6 +12,7 @@
 use anyhow::Context as _;
 use anyhow::Result;
 use ash::vk;
+use std::collections::HashMap;
 use std::time::Instant;
 
 use crate::context::VulkanContext;
@@ -35,6 +36,102 @@ use crate::skybox_pass::SkyboxPass;
 const _: () = assert!(
     std::mem::size_of::<scene_frag::PbrBindlessPush>() as u32 == scene_frag::PUSH_CONSTANT_SIZE
 );
+
+/// Grouping key for static draws that can share one instanced draw call (#491).
+///
+/// The model matrix is deliberately absent: it becomes one entry in the bone
+/// SSBO. Skinned, transparent and missing-mesh draws never enter this path.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct StaticBatchKey {
+    mesh: crate::managers::MeshHandle,
+    material: Option<u32>,
+    state: DrawState,
+    index_start: u32,
+    index_count: Option<u32>,
+}
+
+struct StaticBatch {
+    items: Vec<usize>,
+    /// First entry in the packed bone/instance SSBO; `None` = single draw.
+    instance_offset: Option<u32>,
+}
+
+/// Group visible opaque static draws by mesh / material / pipeline state.
+fn build_static_batches_with(
+    draw_list: &[crate::render_graph::DrawItem],
+    mesh_exists: impl Fn(crate::managers::MeshHandle) -> bool,
+) -> Vec<StaticBatch> {
+    let mut batches: Vec<StaticBatch> = Vec::new();
+    let mut slots: HashMap<StaticBatchKey, usize> = HashMap::new();
+    for (index, item) in draw_list.iter().enumerate() {
+        if !item.visible_in_main_pass || item.index_count == Some(0) || !mesh_exists(item.mesh) {
+            continue;
+        }
+        // Skinned draws need their own bone offset and transparent draws need
+        // their back-to-front order; both stay single-draw batches.
+        let groupable = item.bone_offset.is_none()
+            && item.state.render_queue <= prism_gfx::RenderQueue::GEOMETRY_LAST;
+        if !groupable {
+            batches.push(StaticBatch {
+                items: vec![index],
+                instance_offset: None,
+            });
+            continue;
+        }
+        let key = StaticBatchKey {
+            mesh: item.mesh,
+            material: item.material,
+            state: item.state,
+            index_start: item.index_start,
+            index_count: item.index_count,
+        };
+        let slot = *slots.entry(key).or_insert_with(|| {
+            batches.push(StaticBatch {
+                items: Vec::new(),
+                instance_offset: None,
+            });
+            batches.len() - 1
+        });
+        batches[slot].items.push(index);
+    }
+    batches
+}
+
+/// Assign instance offsets and split groups that do not fit `capacity`.
+fn prepare_static_batches(
+    draw_list: &[crate::render_graph::DrawItem],
+    mesh_manager: &crate::managers::RenderMeshManager,
+    capacity: usize,
+) -> (Vec<StaticBatch>, Vec<[[f32; 4]; 4]>) {
+    prepare_static_batches_with(draw_list, |mesh| mesh_manager.get(mesh).is_some(), capacity)
+}
+
+fn prepare_static_batches_with(
+    draw_list: &[crate::render_graph::DrawItem],
+    mesh_exists: impl Fn(crate::managers::MeshHandle) -> bool,
+    capacity: usize,
+) -> (Vec<StaticBatch>, Vec<[[f32; 4]; 4]>) {
+    let mut out = Vec::new();
+    let mut matrices: Vec<[[f32; 4]; 4]> = Vec::new();
+    for batch in build_static_batches_with(draw_list, mesh_exists) {
+        if batch.items.len() > 1 && matrices.len() + batch.items.len() <= capacity {
+            let mut batch = batch;
+            batch.instance_offset = Some(matrices.len() as u32);
+            matrices.extend(batch.items.iter().map(|&i| draw_list[i].model));
+            out.push(batch);
+        } else if batch.items.len() == 1 {
+            out.push(batch);
+        } else {
+            // Capacity exhausted: keep correctness by falling back to one draw
+            // per entity instead of truncating the instance range.
+            out.extend(batch.items.into_iter().map(|i| StaticBatch {
+                items: vec![i],
+                instance_offset: None,
+            }));
+        }
+    }
+    (out, matrices)
+}
 
 /// `assets/shaders/slang/outline.slang::OutlinePush` 的 Rust 镜像。
 ///
@@ -2061,21 +2158,33 @@ impl RenderPassNode for ForwardPass {
                 // 循环开始前刚绑定的是默认（不透明）管线；只有遇到别的状态才重绑
                 // （剔除 / 深度写 / 混合都是管线状态）。描述符与推送常量布局在所有
                 // 变体之间一致，所以不需要重新绑定描述符集。
+                // #491: pack static instance matrices after the live bone
+                // palette in the same SSBO. Skinned draws keep their existing
+                // offsets; instanced draws start at `bone_count`.
+                let bone_count = ctx
+                    .frame
+                    .bone_matrices
+                    .len()
+                    .min(ForwardPass::BONE_CAPACITY);
+                let capacity = ForwardPass::BONE_CAPACITY.saturating_sub(bone_count);
+                let (batches, instance_matrices) =
+                    prepare_static_batches(ctx.frame.draw_list, ctx.frame.mesh_manager, capacity);
+                if !instance_matrices.is_empty() {
+                    let mut packed = Vec::with_capacity(bone_count + instance_matrices.len());
+                    packed.extend_from_slice(&ctx.frame.bone_matrices[..bone_count]);
+                    packed.extend_from_slice(&instance_matrices);
+                    self.update_bones(ctx.device, ctx.frame_index, &packed)?;
+                }
+
                 let mut bound_state = (DrawState::default(), wireframe, false);
-                for item in ctx.frame.draw_list {
-                    // `ShadowsOnly` 物体不参与相机主通道（`ShadowCastingMode`）。
-                    if !item.visible_in_main_pass {
-                        continue;
-                    }
+                for batch in &batches {
+                    let item = &ctx.frame.draw_list[batch.items[0]];
                     let uploaded_mesh = match ctx.frame.mesh_manager.get(item.mesh) {
                         Some(m) => m,
                         None => continue,
                     };
                     let uploaded = &uploaded_mesh.mesh;
                     let skinned = item.bone_offset.is_some();
-                    // Skinned draws read joints/weights from vertex buffer 1. A
-                    // skinned draw without an uploaded skin buffer is skipped
-                    // rather than drawn with garbage weights.
                     let skin = if skinned {
                         uploaded_mesh.skin.as_ref()
                     } else {
@@ -2110,29 +2219,27 @@ impl RenderPassNode for ForwardPass {
                             .cmd_bind_vertex_buffers(ctx.cmd, 0, &vertex_buffers, &offsets);
                     }
 
-                    // 推送 per-draw constants: 模型 + 材质 SSBO 槽 The
-                    // remaining fields (albedo_idx/normal_idx) are
-                    // unused by scene_frag.slang (it reads 纹理 indices
-                    // from the SSBO record, not the 推送 常量 so we 集合 them
-                    // to 无效 env_handle carries the BRDF LUT bindless handle.
-                    // material_slot comes from DrawItem.material
-                    // (already resolved to an SSBO 槽 in app.rs); None -> 槽 0
-                    // (the 回退 材质
+                    // #491: multi-item batches read their model matrices from
+                    // the bone SSBO; count 0 keeps the old push-model path.
+                    let instance_count = batch
+                        .instance_offset
+                        .map(|_| batch.items.len() as u32)
+                        .unwrap_or(0);
+                    let instance_offset = batch
+                        .instance_offset
+                        .map(|offset| bone_count as u32 + offset)
+                        .unwrap_or(0);
                     let pc = crate::shader_bindings::scene_frag::PbrBindlessPush {
                         model: item.model,
                         material_slot: item.material.unwrap_or(0),
                         env_handle: self.brdf_handle,
                         albedo_idx: u32::MAX,
                         normal_idx: u32::MAX,
-                        // PBR 分量 toggles from the app (15-bit bitmask).
                         debug_flags: ctx.frame.debug_flags,
-                        // Skinning (#560 P0-3): `bone_offset` picks the first
-                        // palette matrix of this draw; unskinned draws keep
-                        // `skin_mode = 0` so the vertex stage never reads the SSBO.
                         bone_offset: item.bone_offset.unwrap_or(0),
                         skin_mode: u32::from(item.bone_offset.is_some()),
-                        _pad_92: 0,
-                        _padding: [0; 3],
+                        _pad_92: instance_offset,
+                        _padding: [instance_count, 0, 0],
                     };
                     ctx.device.cmd_push_constants(
                         ctx.cmd,
@@ -2145,6 +2252,7 @@ impl RenderPassNode for ForwardPass {
                         ),
                     );
 
+                    let draw_instances = instance_count.max(1);
                     if let Some(ib) = uploaded.index_buffer {
                         let index_count = item.index_count.unwrap_or(uploaded.index_count);
                         if index_count == 0 {
@@ -2155,13 +2263,14 @@ impl RenderPassNode for ForwardPass {
                         ctx.device.cmd_draw_indexed(
                             ctx.cmd,
                             index_count,
-                            1,
+                            draw_instances,
                             item.index_start,
                             0,
                             0,
                         );
                     } else {
-                        ctx.device.cmd_draw(ctx.cmd, uploaded.vertex_count, 1, 0, 0);
+                        ctx.device
+                            .cmd_draw(ctx.cmd, uploaded.vertex_count, draw_instances, 0, 0);
                     }
                 }
             }
@@ -2539,5 +2648,87 @@ mod tests {
         let pass = ForwardPass::new(vk::Format::B8G8R8A8_UNORM);
         assert!(pass.light_buffers.is_empty());
         assert!(pass.light_memories.is_empty());
+    }
+
+    fn static_draw(mesh: crate::managers::MeshHandle, material: Option<u32>) -> crate::DrawItem {
+        crate::DrawItem {
+            mesh,
+            entity_id: 1,
+            model: [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            material,
+            cast_shadow: false,
+            visible_in_main_pass: true,
+            cast_shadow_two_sided: false,
+            bone_offset: None,
+            state: DrawState::default(),
+            world_bounds: None,
+            index_start: 0,
+            index_count: None,
+        }
+    }
+
+    #[test]
+    fn static_batches_group_identical_mesh_and_material() {
+        let mesh = crate::managers::MeshHandle::default();
+        let draws = [
+            static_draw(mesh, Some(3)),
+            static_draw(mesh, Some(3)),
+            static_draw(mesh, Some(4)),
+        ];
+        let batches = build_static_batches_with(&draws, |_| true);
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0].items, vec![0, 1]);
+        assert_eq!(batches[1].items, vec![2]);
+    }
+
+    #[test]
+    fn static_batches_keep_skinned_and_transparent_as_singletons() {
+        let mesh = crate::managers::MeshHandle::default();
+        let mut skinned = static_draw(mesh, None);
+        skinned.bone_offset = Some(0);
+        let mut transparent = static_draw(mesh, None);
+        transparent.state.render_queue = prism_gfx::RenderQueue::TRANSPARENT;
+        let mut invisible = static_draw(mesh, None);
+        invisible.visible_in_main_pass = false;
+        let mut empty = static_draw(mesh, None);
+        empty.index_count = Some(0);
+        let draws = [skinned, transparent, invisible, empty];
+        let batches = build_static_batches_with(&draws, |_| true);
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0].items, vec![0]);
+        assert_eq!(batches[0].instance_offset, None);
+        assert_eq!(batches[1].items, vec![1]);
+        assert_eq!(batches[1].instance_offset, None);
+        let draws = [static_draw(mesh, None), static_draw(mesh, None)];
+        assert!(build_static_batches_with(&draws, |_| false).is_empty());
+    }
+
+    #[test]
+    fn static_batches_do_not_overflow_the_instance_capacity() {
+        let mesh = crate::managers::MeshHandle::default();
+        let capacity = 4;
+        let draws: Vec<_> = (0..=capacity).map(|_| static_draw(mesh, None)).collect();
+        let (batches, matrices) = prepare_static_batches_with(&draws, |_| true, capacity);
+        assert!(matrices.is_empty());
+        assert_eq!(batches.len(), draws.len());
+        assert!(batches.iter().all(|batch| batch.instance_offset.is_none()));
+    }
+
+    #[test]
+    fn static_batches_assign_offsets_to_the_first_group() {
+        let mesh = crate::managers::MeshHandle::default();
+        let mut draws = vec![static_draw(mesh, None), static_draw(mesh, None)];
+        draws.push(static_draw(mesh, Some(1)));
+        let (batches, matrices) = prepare_static_batches_with(&draws, |_| true, 8);
+        assert_eq!(matrices.len(), 2);
+        assert_eq!(batches[0].instance_offset, Some(0));
+        assert_eq!(batches[0].items.len(), 2);
+        assert_eq!(batches[1].instance_offset, None);
+        assert_eq!(batches[1].items.len(), 1);
     }
 }
