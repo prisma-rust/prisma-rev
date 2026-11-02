@@ -9,13 +9,17 @@
 //! [`terrain_height`] / [`terrain_sample`] 在世界上按 `TerrainData` 找覆盖点，
 //! [`terrain_raycast`] 用同样的采样做解析射线查询（玩法落地 / 拾取用）。
 //!
-//! 还没做（见 issue 的 Phase 2）：多 chunk + LOD、分层 splat、植被、
-//! rapier 地形碰撞体（现在是解析查询，不参与物理积分）。
+//! 多 chunk 已实现（#517 Phase 2）：`Terrain.chunks > 1` 时每个块是独立子实体
+//! / 独立网格，渲染与阴影可以逐块剔除；LOD、分层 splat、植被仍待后续。
+//! rapier 地形碰撞体由 `prism-app` 的物理线程维护（见 `physics_runner`）。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::scene::components::{LocalToWorld, MeshRef, MeshRenderer, Terrain};
+use crate::scene::components::{
+    Child, LocalToWorld, LocalTransform, MeshRef, MeshRenderer, Terrain,
+};
+use crate::scene::helpers::HierarchyHelper;
 use prism_render::managers::mesh_manager::MeshHandle;
 use prism_render::managers::mesh_manager::MeshUploadInput;
 use prism_scene::components::SceneAssetId;
@@ -121,31 +125,63 @@ impl Heightfield {
         }
     }
 
-    /// 生成 `MeshUploadInput`：沿 `size` 铺开，`y = height * height_scale`。
+    /// 生成整张地形的网格（单 chunk）：沿 `size` 铺开，`y = height * height_scale`。
     pub fn build_mesh(&self, size: [f32; 2], height_scale: f32) -> MeshUploadInput {
+        self.build_chunk_mesh(size, height_scale, 0, self.cells - 1, 0, self.cells - 1)
+    }
+
+    /// 生成 `[x0, x1] × [z0, z1]` 格子范围的网格（#517 Phase 2）。
+    ///
+    /// 顶点坐标相对**这一块的中心**，方便把块实体挂在父地形下；UV 仍用整张
+    /// 地形的 `[0, 1]`，所以相邻块的材质不会在接缝处重置。范围会自动排序、
+    /// 夹到 `0..=cells-1`，并至少保留一个 quad。
+    pub fn build_chunk_mesh(
+        &self,
+        size: [f32; 2],
+        height_scale: f32,
+        x0: usize,
+        x1: usize,
+        z0: usize,
+        z1: usize,
+    ) -> MeshUploadInput {
         let cells = self.cells;
+        let last = cells - 1;
+        let (x0, x1) = if x0 <= x1 { (x0, x1) } else { (x1, x0) };
+        let (z0, z1) = if z0 <= z1 { (z0, z1) } else { (z1, z0) };
+        let x0 = x0.min(last.saturating_sub(1));
+        let x1 = x1.min(last).max(x0 + 1);
+        let z0 = z0.min(last.saturating_sub(1));
+        let z1 = z1.min(last).max(z0 + 1);
+
         let [size_x, size_z] = [size[0].max(0.001), size[1].max(0.001)];
-        let mut positions = Vec::with_capacity(cells * cells);
-        let mut normals = Vec::with_capacity(cells * cells);
-        let mut uvs = Vec::with_capacity(cells * cells);
-        for y in 0..cells {
-            for x in 0..cells {
-                let (u, v) = (x as f32 / (cells - 1) as f32, y as f32 / (cells - 1) as f32);
+        let last_f = last as f32;
+        // 块中心在整张地形局部空间里的位置；顶点再减掉它。
+        let center_x = ((x0 + x1) as f32 * 0.5 / last_f - 0.5) * size_x;
+        let center_z = ((z0 + z1) as f32 * 0.5 / last_f - 0.5) * size_z;
+        let columns = x1 - x0 + 1;
+        let rows = z1 - z0 + 1;
+
+        let mut positions = Vec::with_capacity(columns * rows);
+        let mut normals = Vec::with_capacity(columns * rows);
+        let mut uvs = Vec::with_capacity(columns * rows);
+        for z in z0..=z1 {
+            for x in x0..=x1 {
+                let (u, v) = (x as f32 / last_f, z as f32 / last_f);
                 positions.push([
-                    (u - 0.5) * size_x,
-                    self.at(x, y) * height_scale,
-                    (v - 0.5) * size_z,
+                    (u - 0.5) * size_x - center_x,
+                    self.at(x, z) * height_scale,
+                    (v - 0.5) * size_z - center_z,
                 ]);
                 normals.push(self.sample_normal(u, v, height_scale));
                 uvs.push([u, 1.0 - v]);
             }
         }
-        let mut indices = Vec::with_capacity((cells - 1) * (cells - 1) * 6);
-        for y in 0..cells - 1 {
-            for x in 0..cells - 1 {
-                let top_left = (y * cells + x) as u32;
+        let mut indices = Vec::with_capacity((columns - 1) * (rows - 1) * 6);
+        for z in 0..rows - 1 {
+            for x in 0..columns - 1 {
+                let top_left = (z * columns + x) as u32;
                 let top_right = top_left + 1;
-                let bottom_left = ((y + 1) * cells + x) as u32;
+                let bottom_left = ((z + 1) * columns + x) as u32;
                 let bottom_right = bottom_left + 1;
                 indices.extend_from_slice(&[top_left, bottom_left, top_right]);
                 indices.extend_from_slice(&[top_right, bottom_left, bottom_right]);
@@ -201,9 +237,21 @@ impl ProceduralMeshes {
 pub struct TerrainData {
     pub key: String,
     pub field: Arc<Heightfield>,
+    /// 单块模式是实体自己的网格；多块模式是第 0 块（用于调试 / 兼容旧测试）。
     pub mesh_path: String,
     pub size: [f32; 2],
     pub height_scale: f32,
+}
+
+/// 运行时生成的地形分块实体（#517 Phase 2）。
+///
+/// 每块是一个挂在 `owner` 下的普通实体，带自己的 `MeshRenderer` / `MeshRef` /
+/// `LocalTransform`；主相机与阴影视锥因此能逐块剔除。它没有 `SceneEntityId`，
+/// 不会被场景状态保存。
+#[derive(Debug, Clone)]
+pub struct TerrainChunk {
+    pub owner: prism_ecs::Entity,
+    pub mesh_path: String,
 }
 
 /// 世界坐标 `(x, z)` 上的地形高度（米）。没被任何地形覆盖时返回 `None`。
@@ -354,12 +402,13 @@ fn none_entity() -> prism_ecs::Entity {
 /// `Terrain` 的网格参数指纹：变了就要重建网格。
 pub fn terrain_key(entity_id: u32, terrain: &Terrain) -> String {
     format!(
-        "{entity_id}|{}|{}x{}|{}|{}",
+        "{entity_id}|{}|{}x{}|{}|{}|{}",
         terrain.heightmap,
         terrain.size[0],
         terrain.size[1],
         terrain.height_scale,
-        terrain.cells()
+        terrain.cells(),
+        terrain.chunks
     )
 }
 
@@ -412,6 +461,8 @@ pub fn load_heightfield(terrain: &Terrain) -> Option<Heightfield> {
 /// [`ProceduralMeshes`] → 让同一实体的 `MeshRenderer` 指向它，并把 `MeshRef`
 /// 的 generation 清零，交给资产解析器上传。材质沿用 MeshRenderer 上作者设置的路径。
 pub fn terrain_system(world: &mut prism_ecs::World) {
+    cleanup_orphan_chunks(world);
+
     let mut pending = Vec::new();
     for (entity, terrain) in world.query::<Terrain>() {
         let key = terrain_key(entity.id(), terrain);
@@ -427,28 +478,115 @@ pub fn terrain_system(world: &mut prism_ecs::World) {
     }
 
     for (entity, key, terrain) in pending {
-        let Some(field) = load_heightfield(&terrain) else {
-            continue;
-        };
-        let mesh = field.build_mesh(terrain.size, terrain.height_scale);
-        let path = format!(
-            "{PROCEDURAL_PREFIX}terrain/{}-{:x}",
-            entity.id(),
-            fnv1a64(&key)
-        );
+        rebuild_terrain(world, entity, key, terrain);
+    }
+}
 
-        // 旧的那份网格没有实体引用了，顺手回收。
-        if let Some(previous) = world.get::<TerrainData>(entity) {
-            let previous_path = previous.mesh_path.clone();
-            if previous_path != path {
-                if let Some(meshes) = world.get_resource_mut::<ProceduralMeshes>() {
-                    meshes.remove(&previous_path);
-                }
+/// 每边块数对应的格子边界：长度 `chunks + 1`，至少每块一个 quad。
+fn chunk_bounds(cells: usize, chunks: usize) -> Vec<usize> {
+    let segments = cells.saturating_sub(1);
+    (0..=chunks)
+        .map(|index| index * segments / chunks)
+        .collect()
+}
+
+/// 回收某个地形 owner 名下的所有分块实体与程序化网格。
+fn despawn_chunks(world: &mut prism_ecs::World, owner: prism_ecs::Entity) {
+    let stale: Vec<(prism_ecs::Entity, String)> = world
+        .query::<TerrainChunk>()
+        .filter(|(_, chunk)| chunk.owner == owner)
+        .map(|(entity, chunk)| (entity, chunk.mesh_path.clone()))
+        .collect();
+    if stale.is_empty() {
+        return;
+    }
+    let stale_ids: HashSet<prism_ecs::Entity> = stale.iter().map(|(entity, _)| *entity).collect();
+    if let Some(meshes) = world.get_resource_mut::<ProceduralMeshes>() {
+        for (_, path) in &stale {
+            meshes.remove(path);
+        }
+    }
+    if world.is_alive(owner) {
+        if let Some(children) = world.get_mut::<Child>(owner) {
+            children.0.retain(|entity| !stale_ids.contains(entity));
+        }
+        if world
+            .get::<Child>(owner)
+            .is_some_and(|children| children.0.is_empty())
+        {
+            world.remove::<Child>(owner);
+        }
+    }
+    for (entity, _) in stale {
+        world.despawn(entity);
+    }
+}
+
+/// 地形实体被删除后，清掉它遗留的分块（没有 owner 的块不会自己消失）。
+fn cleanup_orphan_chunks(world: &mut prism_ecs::World) {
+    let live: HashSet<prism_ecs::Entity> =
+        world.query::<Terrain>().map(|(entity, _)| entity).collect();
+    let stale: HashSet<prism_ecs::Entity> = world
+        .query::<TerrainChunk>()
+        .map(|(_, chunk)| chunk.owner)
+        .filter(|owner| !live.contains(owner))
+        .collect();
+    for owner in stale {
+        despawn_chunks(world, owner);
+    }
+}
+
+/// 确保实体进入「等待资产解析」状态。
+fn ensure_mesh_ref(world: &mut prism_ecs::World, entity: prism_ecs::Entity) {
+    match world.get_mut::<MeshRef>(entity) {
+        Some(reference) => reference.generation = 0,
+        None => {
+            world.insert(
+                entity,
+                MeshRef {
+                    asset_id: SceneAssetId::generate(),
+                    render_handle: MeshHandle::default(),
+                    generation: 0,
+                },
+            );
+        }
+    }
+}
+
+/// 重建一个地形的网格：一个整块，或 `chunks × chunks` 个独立子实体。
+fn rebuild_terrain(
+    world: &mut prism_ecs::World,
+    entity: prism_ecs::Entity,
+    key: String,
+    terrain: Terrain,
+) {
+    let Some(field) = load_heightfield(&terrain) else {
+        return;
+    };
+    despawn_chunks(world, entity);
+
+    // 旧的那份网格没有实体引用了，顺手回收。
+    if let Some(previous) = world.get::<TerrainData>(entity) {
+        let previous_path = previous.mesh_path.clone();
+        if !previous_path.is_empty() {
+            if let Some(meshes) = world.get_resource_mut::<ProceduralMeshes>() {
+                meshes.remove(&previous_path);
             }
         }
-        if world.get_resource_mut::<ProceduralMeshes>().is_none() {
-            world.insert_resource(ProceduralMeshes::default());
-        }
+    }
+    if world.get_resource_mut::<ProceduralMeshes>().is_none() {
+        world.insert_resource(ProceduralMeshes::default());
+    }
+
+    let size = terrain.size;
+    let height_scale = terrain.height_scale;
+    let hash = fnv1a64(&key);
+    // 每块至少一个 quad；小网格（cells = 2）自动退化成单块。
+    let chunks = terrain.chunk_count().min(field.cells() - 1).max(1);
+
+    if chunks == 1 {
+        let path = format!("{PROCEDURAL_PREFIX}terrain/{}-{hash:x}", entity.id());
+        let mesh = field.build_mesh(size, height_scale);
         if let Some(meshes) = world.get_resource_mut::<ProceduralMeshes>() {
             meshes.insert(path.clone(), mesh);
         }
@@ -466,30 +604,99 @@ pub fn terrain_system(world: &mut prism_ecs::World) {
                 );
             }
         }
-        match world.get_mut::<MeshRef>(entity) {
-            Some(reference) => reference.generation = 0,
-            None => {
-                world.insert(
-                    entity,
-                    MeshRef {
-                        asset_id: SceneAssetId::generate(),
-                        render_handle: MeshHandle::default(),
-                        generation: 0,
-                    },
-                );
-            }
-        }
+        ensure_mesh_ref(world, entity);
         world.insert(
             entity,
             TerrainData {
                 key,
                 field: Arc::new(field),
                 mesh_path: path,
-                size: terrain.size,
-                height_scale: terrain.height_scale,
+                size,
+                height_scale,
             },
         );
+        return;
     }
+
+    // 多块：owner 只保留材质 / 阴影设置，不再直接绘制；每块是独立实体。
+    let renderer_template = world
+        .get::<MeshRenderer>(entity)
+        .cloned()
+        .unwrap_or_default();
+    let bounds = chunk_bounds(field.cells(), chunks);
+    let last = (field.cells() - 1) as f32;
+    let size_x = size[0].max(0.001);
+    let size_z = size[1].max(0.001);
+    let mut first_path = String::new();
+
+    for z in 0..chunks {
+        for x in 0..chunks {
+            let path = format!(
+                "{PROCEDURAL_PREFIX}terrain/{}-{hash:x}/c{x}_{z}",
+                entity.id()
+            );
+            let mesh = field.build_chunk_mesh(
+                size,
+                height_scale,
+                bounds[x],
+                bounds[x + 1],
+                bounds[z],
+                bounds[z + 1],
+            );
+            if let Some(meshes) = world.get_resource_mut::<ProceduralMeshes>() {
+                meshes.insert(path.clone(), mesh);
+            }
+            if first_path.is_empty() {
+                first_path = path.clone();
+            }
+
+            let center_x = (((bounds[x] + bounds[x + 1]) as f32 * 0.5 / last) - 0.5) * size_x;
+            let center_z = (((bounds[z] + bounds[z + 1]) as f32 * 0.5 / last) - 0.5) * size_z;
+            let chunk_entity = world.spawn();
+            world.insert(
+                chunk_entity,
+                LocalTransform {
+                    position: glam::Vec3::new(center_x, 0.0, center_z),
+                    ..Default::default()
+                },
+            );
+            let mut renderer = renderer_template.clone();
+            renderer.mesh_path = path.clone();
+            world.insert(chunk_entity, renderer);
+            world.insert(
+                chunk_entity,
+                MeshRef {
+                    asset_id: SceneAssetId::generate(),
+                    render_handle: MeshHandle::default(),
+                    generation: 0,
+                },
+            );
+            world.insert(
+                chunk_entity,
+                TerrainChunk {
+                    owner: entity,
+                    mesh_path: path,
+                },
+            );
+            HierarchyHelper::reparent(world, chunk_entity, Some(entity));
+        }
+    }
+
+    // owner 不再有 MeshRef，因此不会被主通道重复绘制。
+    world.remove::<MeshRef>(entity);
+    if let Some(renderer) = world.get_mut::<MeshRenderer>(entity) {
+        renderer.mesh_path.clear();
+    }
+    world.insert(
+        entity,
+        TerrainData {
+            key,
+            field: Arc::new(field),
+            mesh_path: first_path,
+            size,
+            height_scale,
+        },
+    );
 }
 
 /// FNV-1a：网格路径里的短指纹（不需要密码学强度，只要稳定）。

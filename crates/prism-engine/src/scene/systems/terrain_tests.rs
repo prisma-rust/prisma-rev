@@ -191,13 +191,22 @@ fn the_terrain_key_changes_with_the_parameters() {
     let mut smoother = base.clone();
     smoother.resolution = 64;
     assert_ne!(key, terrain_key(1, &smoother));
+    let mut chunked = base.clone();
+    chunked.chunks = 8;
+    assert_ne!(key, terrain_key(1, &chunked));
 }
 
 #[test]
 fn the_terrain_system_builds_a_mesh_and_points_the_renderer_at_it() {
     let mut world = prism_ecs::World::new();
     let entity = world.spawn();
-    world.insert(entity, Terrain::default());
+    world.insert(
+        entity,
+        Terrain {
+            chunks: 1,
+            ..Terrain::default()
+        },
+    );
     world.insert(entity, MeshRenderer::default());
 
     terrain_system(&mut world);
@@ -246,4 +255,152 @@ fn the_terrain_height_follows_the_entity_placement() {
     assert!((height - 2.0).abs() < 1e-4);
     // 范围外没有地形。
     assert!(terrain_height(&world, 1000.0, -5.0).is_none());
+}
+
+#[test]
+fn the_terrain_system_splits_large_terrains_into_cullable_chunks() {
+    let mut world = prism_ecs::World::new();
+    let entity = world.spawn();
+    world.insert(
+        entity,
+        Terrain {
+            chunks: 2,
+            resolution: 32,
+            ..Terrain::default()
+        },
+    );
+    world.insert(
+        entity,
+        MeshRenderer {
+            material_path: "materials/terrain.mat.json".to_string(),
+            ..Default::default()
+        },
+    );
+    terrain_system(&mut world);
+
+    assert!(
+        world.get::<MeshRef>(entity).is_none(),
+        "多块模式下 owner 不再直接绘制"
+    );
+    let data = world.get::<TerrainData>(entity).expect("terrain data");
+    assert!(data.mesh_path.starts_with(PROCEDURAL_PREFIX));
+
+    let chunks: Vec<_> = world
+        .query::<TerrainChunk>()
+        .map(|(chunk_entity, chunk)| (chunk_entity, chunk.clone()))
+        .collect();
+    assert_eq!(chunks.len(), 4, "2×2 chunks");
+    let children = world.get::<Child>(entity).expect("children");
+    assert_eq!(children.0.len(), 4);
+
+    {
+        let meshes = world.get_resource::<ProceduralMeshes>().expect("meshes");
+        for (chunk_entity, chunk) in &chunks {
+            assert_eq!(chunk.owner, entity);
+            assert!(world
+                .get::<prism_scene::components::Parent>(*chunk_entity)
+                .is_some());
+            assert!(world.get::<LocalTransform>(*chunk_entity).is_some());
+            assert!(world.get::<MeshRef>(*chunk_entity).is_some());
+            let renderer = world
+                .get::<MeshRenderer>(*chunk_entity)
+                .expect("chunk renderer");
+            assert_eq!(renderer.mesh_path, chunk.mesh_path);
+            assert_eq!(renderer.material_path, "materials/terrain.mat.json");
+            let mesh = meshes.get(&chunk.mesh_path).expect("chunk mesh");
+            assert!(!mesh.positions.is_empty());
+        }
+        // 32 samples / 2 chunks：接缝行被两边各存一次，所以顶点总数是 (16+17)²；
+        // 三角形仍然只覆盖 31×31 个 quad。
+        let total_vertices: usize = chunks
+            .iter()
+            .map(|(_, chunk)| meshes.get(&chunk.mesh_path).unwrap().positions.len())
+            .sum();
+        let total_indices: usize = chunks
+            .iter()
+            .map(|(_, chunk)| meshes.get(&chunk.mesh_path).unwrap().indices.len())
+            .sum();
+        assert_eq!(total_vertices, 33 * 33, "接缝行被两边各存一次");
+        assert_eq!(total_indices, 31 * 31 * 6);
+    }
+
+    // 参数没变：不重建。
+    terrain_system(&mut world);
+    assert_eq!(world.query::<TerrainChunk>().count(), 4);
+
+    // 切回单块：子实体与旧网格都回收，owner 重新进入上传队列。
+    world.get_mut::<Terrain>(entity).unwrap().chunks = 1;
+    terrain_system(&mut world);
+    assert_eq!(world.query::<TerrainChunk>().count(), 0);
+    assert!(world.get::<Child>(entity).is_none(), "空 Child 应被移除");
+    assert!(world.get::<MeshRef>(entity).is_some());
+    let data = world.get::<TerrainData>(entity).unwrap();
+    assert!(world
+        .get_resource::<ProceduralMeshes>()
+        .is_some_and(|meshes| meshes.get(&data.mesh_path).is_some()));
+    assert!(world
+        .get::<MeshRenderer>(entity)
+        .is_some_and(|renderer| renderer.mesh_path == data.mesh_path));
+}
+
+#[test]
+fn adjacent_chunks_share_the_seam_and_keep_global_uvs() {
+    let field = ramp(5);
+    let left = field.build_chunk_mesh([10.0, 10.0], 1.0, 0, 2, 0, 2);
+    let right = field.build_chunk_mesh([10.0, 10.0], 1.0, 2, 4, 0, 2);
+    assert_eq!(left.positions.len(), 9);
+    assert_eq!(right.positions.len(), 9);
+
+    // 左块右边缘在局部 x=+2.5，右块左边缘在局部 x=-2.5；加上块中心后都落在世界 x=0。
+    let left_edge: Vec<_> = left
+        .positions
+        .iter()
+        .filter(|position| (position[0] - 2.5).abs() < 1e-5)
+        .collect();
+    let right_edge: Vec<_> = right
+        .positions
+        .iter()
+        .filter(|position| (position[0] + 2.5).abs() < 1e-5)
+        .collect();
+    assert_eq!(left_edge.len(), 3);
+    assert_eq!(right_edge.len(), 3);
+    for (left, right) in left_edge.iter().zip(right_edge.iter()) {
+        assert!((left[1] - right[1]).abs() < 1e-5, "seam heights differ");
+        assert!((left[2] - right[2]).abs() < 1e-5, "seam z differs");
+    }
+
+    // UV 用整张地形的 [0,1]，接缝两侧都是 u=0.5。
+    let seam_u = 2.0 / 4.0;
+    assert!(left.uvs.iter().any(|uv| (uv[0] - seam_u).abs() < 1e-5));
+    assert!(right.uvs.iter().any(|uv| (uv[0] - seam_u).abs() < 1e-5));
+}
+
+#[test]
+fn despawning_a_terrain_removes_its_chunks_and_meshes() {
+    let mut world = prism_ecs::World::new();
+    let entity = world.spawn();
+    world.insert(
+        entity,
+        Terrain {
+            chunks: 2,
+            resolution: 16,
+            ..Terrain::default()
+        },
+    );
+    terrain_system(&mut world);
+
+    let paths: Vec<String> = world
+        .query::<TerrainChunk>()
+        .map(|(_, chunk)| chunk.mesh_path.clone())
+        .collect();
+    assert_eq!(paths.len(), 4);
+
+    world.despawn(entity);
+    terrain_system(&mut world);
+
+    assert_eq!(world.query::<TerrainChunk>().count(), 0);
+    let meshes = world.get_resource::<ProceduralMeshes>().expect("meshes");
+    for path in paths {
+        assert!(meshes.get(&path).is_none(), "{path} should be gone");
+    }
 }
