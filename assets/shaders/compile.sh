@@ -132,6 +132,10 @@ echo "  reflect skybox -> reflection/skybox.json"
   -o "$REFL/skybox.tmp.spv"
 rm -f "$REFL/skybox.tmp.spv"
 
+# TAA resolve (#883).
+compile_stage taa vertexMain vertex
+compile_stage taa fragmentMain fragment
+emit_reflection taa vertexMain vertex fragmentMain fragment
 # scene_frag: fragment only (RenderGraph ForwardPass bindless PBR + rasterized
 # shadow map). Pairs with mesh_vert.vert.spv. The light-space view-projection
 # for the shadow map is read from the per-frame UBO (not push constants) so

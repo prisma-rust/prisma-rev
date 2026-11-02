@@ -959,6 +959,8 @@ impl EngineHost {
             self.settings.internal_resolution,
             self.settings.internal_scale_mode,
         );
+        self.renderer
+            .set_taa(self.settings.taa, self.settings.taa_strength);
         let Some(ctx) = self.renderer.begin_frame()? else {
             return Ok(None);
         };

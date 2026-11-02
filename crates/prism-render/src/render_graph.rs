@@ -44,6 +44,9 @@ pub const PT_COLOR_H: ResourceHandle = ResourceHandle(1003);
 /// Directional light depth shadow map — written by `ShadowMapPass` and
 /// sampled in `ForwardPass` fragment shader for shadowing.
 pub const SHADOW_MAP_H: ResourceHandle = ResourceHandle(1004);
+/// TAA-resolved HDR color (#883). Written by `TaaPass`, read by `PostPass`
+/// instead of `FORWARD_COLOR_H` when `RenderSettings::taa` is enabled.
+pub const TAA_COLOR_H: ResourceHandle = ResourceHandle(1005);
 
 impl ResourceHandle {
     pub const INVALID: ResourceHandle = ResourceHandle(u32::MAX);
@@ -275,6 +278,10 @@ pub struct RenderSettings {
     /// 0 = accumulate forever 默认
     pub pt_max_iterations: u32,
 
+    /// Temporal anti-aliasing (#883). `false` keeps the pre-TAA path.
+    pub taa: bool,
+    /// History blend weight for TAA, clamped to `0..=0.95`; 0 = current frame.
+    pub taa_strength: f32,
     /// 内部渲染分辨率 `[宽度, 高度]`（#613）；`[0, 0]` = 关闭。
     ///
     /// 开启后场景（网格 / 2D 精灵 / 瓦片 / 粒子 / PT）按这个尺寸渲染，
@@ -300,6 +307,8 @@ impl Default for RenderSettings {
             pt_max_bounces: 3,
             pt_ray_max_distance: 1000.0,
             pt_max_iterations: 0,
+            taa: false,
+            taa_strength: 0.9,
             internal_resolution: [0, 0],
             internal_scale_mode: InternalScaleMode::Stretch,
         }
@@ -1008,6 +1017,10 @@ pub struct GraphFrame<'a> {
     /// 表面 旋转 Used by the world-space gizmo (drawn on 顶部 of the
     /// scene) so the axes track the 相机
     pub view_proj: [[f32; 4]; 4],
+    /// Subpixel jitter applied to `view_proj` this frame, in NDC units
+    /// (#883). Zero when TAA is off; `TaaPass` subtracts it to recover the
+    /// unjittered camera matrix for history reprojection.
+    pub view_proj_jitter: [f32; 2],
     /// Point lights collected from the ECS this 帧 rewritten into the
     /// scene shader's 光源 SSBO. Forwarded to `ForwardPass::execute` so it can
     /// 更新 its 描述符 集合 without `GraphRenderer` poking it directly.

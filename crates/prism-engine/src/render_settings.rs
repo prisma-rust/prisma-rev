@@ -142,6 +142,11 @@ pub struct RenderSettings {
     pub motion_blur: f32,
     /// 运动模糊最大拖影长度（像素，0–64）。
     pub motion_blur_max_pixels: f32,
+    /// Temporal anti-aliasing (#883). Default off; when on the renderer jitters
+    /// the camera and resolves against the previous frame.
+    pub taa: bool,
+    /// TAA history weight (`0.0..=0.95`); ignored when `taa` is off.
+    pub taa_strength: f32,
     /// 内部渲染分辨率 `[宽, 高]`（#613）；`[0, 0]` = 关闭。
     ///
     /// 开启后场景按这个尺寸渲染，`PostPass` 再放大到窗口；相机的宽高比也跟着
@@ -236,6 +241,8 @@ impl Default for RenderSettings {
             lut_strength: 0.0,
             motion_blur: 0.0,
             motion_blur_max_pixels: 16.0,
+            taa: false,
+            taa_strength: 0.9,
             shadow_distance: DEFAULT_SHADOW_DISTANCE,
             shadow_map_size: prism_render::SHADOW_MAP_SIZE,
             shadow_cascade_count: 1,

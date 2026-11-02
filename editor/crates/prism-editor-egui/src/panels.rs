@@ -6754,6 +6754,20 @@ pub fn render_graph(
                 .changed();
             ui.end_row();
 
+            ui.label("TAA");
+            changed |= ui.checkbox(&mut settings.taa, "Enable").changed();
+            ui.end_row();
+
+            ui.label("TAA Strength");
+            changed |= ui
+                .add_enabled(
+                    settings.taa,
+                    egui::Slider::new(&mut settings.taa_strength, 0.0..=0.95),
+                )
+                .on_hover_text("History blend weight; 0 is current frame only.")
+                .changed();
+            ui.end_row();
+
             ui.label("Bloom");
             changed |= ui.checkbox(&mut settings.bloom, "Enable").changed();
             ui.end_row();
