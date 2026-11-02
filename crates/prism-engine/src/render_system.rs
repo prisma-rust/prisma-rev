@@ -213,6 +213,14 @@ pub fn extract_frame_packet_into_with_shadow(
     // 引擎的 `renderQueue` 顺序：不透明段按队列升序，透明段按距离从远到近。
     // 排序必须在提交给渲染器之前完成（`ForwardPass` 只按列表顺序绘制）。
     scene_view.draw_items_with_frustum_into(frustum.as_ref(), &mut packet.draw_items);
+    // 蒙皮实体：静态那条循环会跳过它们，这里追加绘制项并把各自的骨骼调色板
+    // 塞进同一份缓冲（#560 P0-3b）。
+    scene::systems::skinned_draw::append_skinned_draw_items(
+        world,
+        frustum.as_ref(),
+        &mut packet.draw_items,
+        &mut packet.bone_matrices,
+    );
     prism_render::sort_draw_items(&mut packet.draw_items, packet.scene.eye.to_array());
     // 光源视锥剔除（#526）：阴影盒子外的投射者不必进 shadow pass。必须放在
     // 主相机剔除之后——相机外的对象既不画主通道，也不再浪费阴影贴图。
@@ -267,6 +275,9 @@ pub struct FramePacket {
     /// `ParticleSystem` emitters resolved into world-space billboards
     /// (already sorted back-to-front).
     pub particle_items: Vec<prism_render::ParticleDrawItem>,
+    /// 本帧的骨骼调色板（列主序 mat4），蒙皮绘制项的 `bone_offset` 指向这里
+    /// （#560 P0-3b）。
+    pub bone_matrices: Vec<[[f32; 4]; 4]>,
     pub ui_overlay: UiOverlayInput,
     /// 应用层渲染设置（调试标志 / 色调映射 / PT 参数）。主线程每帧写入，
     /// 渲染线程只读——保证 `App::render_settings` 的修改（快捷键、项目配置）
@@ -582,6 +593,7 @@ pub fn render_system(
         ref sprite_lights,
         ref particle_items,
         ref ui_overlay,
+        ref bone_matrices,
         settings: _,
     } = *packet;
 
@@ -660,9 +672,7 @@ pub fn render_system(
         sprite_items,
         sprite_lights,
         particle_items,
-        // 蒙皮调色板（#560 P0-3）：引擎侧在 P0-3b 里把 `BonePalette` 打进
-        // `FramePacket`，这里先按“没有蒙皮绘制项”填充。
-        bone_matrices: &[],
+        bone_matrices,
         skybox,
         frame_data: &frame_data,
         light_view_proj: light_view_proj.to_cols_array_2d(),

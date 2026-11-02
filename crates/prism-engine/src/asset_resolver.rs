@@ -22,11 +22,13 @@ use prism_asset::core::AssetId;
 use prism_asset::formats::{
     RTEX_FORMAT_BC1, RTEX_FORMAT_BC3, RTEX_FORMAT_BC5, RTEX_FORMAT_BC6H, RTEX_FORMAT_RGBA8,
 };
-use prism_asset::runtime::{MaterialAsset, MeshAsset, ResourceManager, TextureAsset};
+use prism_asset::runtime::{
+    MaterialAsset, MeshAsset, ResourceManager, SkinnedMeshAsset, TextureAsset,
+};
 use prism_ecs::Entity;
 use prism_ecs::World;
 use prism_render::asset_bridge::{AssetRelease, AssetResolveRequest, MaterialResolveData};
-use prism_render::managers::{MeshUploadInput, TextureFormat, TextureUploadInput};
+use prism_render::managers::{MeshUploadInput, SkinAttributes, TextureFormat, TextureUploadInput};
 
 use crate::scene::components::{
     MaterialRef, MeshRef, MeshRenderer, SpriteRef, SpriteRenderer, Tilemap,
@@ -80,6 +82,29 @@ struct LoadedMesh {
     submeshes: Vec<MeshSubmesh>,
 }
 
+/// 蒙皮网格的 CPU 段产物：顶点数据 + 蒙皮属性一起上传（#560 P0-3b）。
+struct LoadedSkinnedMesh {
+    input: MeshUploadInput,
+    submeshes: Vec<MeshSubmesh>,
+    skin: SkinAttributes,
+}
+
+/// `.rskin` 的子网格表 → 渲染侧的材质区间。
+fn skinned_submeshes(info: &prism_asset::formats_skinned::SkinnedMeshInfo) -> Vec<MeshSubmesh> {
+    info.submeshes
+        .iter()
+        .map(|submesh| MeshSubmesh {
+            index_start: submesh.index_offset,
+            index_count: submesh.index_count,
+            material_index: if submesh.material_index == u32::MAX {
+                None
+            } else {
+                Some(submesh.material_index)
+            },
+        })
+        .collect()
+}
+
 /// 一个实体本帧要解析的资源（只包含仍然缺失的那几半）。
 struct PendingRequest {
     entity: Entity,
@@ -94,6 +119,9 @@ struct PendingRequest {
     tileset: bool,
     /// `sprite_path` 是 UI `Style::image`（#591）。
     ui_image: bool,
+    /// 蒙皮网格路径（#560 P0-3b）：`.rskin` 走另一条解码路径，
+    /// 同时产出 `SkinAttributes`。
+    skinned_path: Option<String>,
 }
 
 /// On-demand 资源 loader + GPU uploader + cache.
@@ -604,6 +632,43 @@ impl GpuAssetResolver {
                         sprite_path: None,
                         tileset: false,
                         ui_image: false,
+                        skinned_path: None,
+                    });
+                    self.enqueued.insert(entity);
+                }
+            }
+            // 1b. 蒙皮网格（#560 P0-3b）：`.rskin` 自带顶点 + 权重，走专用解码；
+            // 材质解析与静态网格共用同一套（`renderer` 是等价的 MeshRenderer）。
+            for (entity, skinned) in world.query::<prism_scene::components::SkinnedMeshRenderer>() {
+                let path = &skinned.skinned_mesh_path;
+                let wants_mesh = !path.is_empty()
+                    && world
+                        .get::<MeshRef>(entity)
+                        .is_some_and(|r| r.generation == 0)
+                    && !self.failed_before(entity, AssetSlot::Mesh, path);
+                let wants_material = world
+                    .get::<MaterialRef>(entity)
+                    .is_some_and(|r| r.generation == 0)
+                    && ((!skinned.material_path.is_empty()
+                        && !self.failed_before(
+                            entity,
+                            AssetSlot::Material,
+                            &skinned.material_path,
+                        ))
+                        || skinned.material_paths.iter().any(|path| {
+                            !path.is_empty()
+                                && !self.failed_before(entity, AssetSlot::Material, path)
+                        }));
+                if (wants_mesh || wants_material) && !self.enqueued.contains(&entity) {
+                    out.push(PendingRequest {
+                        entity,
+                        mesh_path: None,
+                        renderer: skinned.as_mesh_renderer(),
+                        wants_material,
+                        sprite_path: None,
+                        tileset: false,
+                        ui_image: false,
+                        skinned_path: wants_mesh.then(|| path.clone()),
                     });
                     self.enqueued.insert(entity);
                 }
@@ -634,6 +699,7 @@ impl GpuAssetResolver {
                         sprite_path: Some(sprite.sprite_path.clone()),
                         tileset: false,
                         ui_image: false,
+                        skinned_path: None,
                     });
                     self.enqueued.insert(entity);
                     self.sprite_paths.insert(entity, sprite.sprite_path.clone());
@@ -664,6 +730,7 @@ impl GpuAssetResolver {
                         sprite_path: Some(tilemap.tileset_path.clone()),
                         tileset: true,
                         ui_image: false,
+                        skinned_path: None,
                     });
                     self.enqueued.insert(entity);
                     self.tileset_paths
@@ -695,6 +762,7 @@ impl GpuAssetResolver {
                         sprite_path: Some(style.image.clone()),
                         tileset: false,
                         ui_image: true,
+                        skinned_path: None,
                     });
                     self.enqueued.insert(entity);
                     self.ui_image_paths.insert(entity, style.image.clone());
@@ -724,6 +792,24 @@ impl GpuAssetResolver {
                     loaded
                 }
                 None => None,
+            };
+            // 蒙皮网格（#560 P0-3b）：顶点 + 权重一起上传，其余流程与静态网格一致。
+            let mut skin = None;
+            let loaded = match item.skinned_path.as_deref() {
+                Some(path) => {
+                    let loaded = self.load_skinned_mesh_inputs(path);
+                    if loaded.is_none() {
+                        self.record_failure(item.entity, AssetSlot::Mesh, path);
+                    }
+                    if let Some(skinned) = loaded.as_ref() {
+                        skin = Some(skinned.skin.clone());
+                    }
+                    loaded.map(|skinned| LoadedMesh {
+                        input: skinned.input,
+                        submeshes: skinned.submeshes,
+                    })
+                }
+                None => loaded,
             };
             let (mesh, submeshes) = match loaded {
                 Some(loaded) => (Some(loaded.input), loaded.submeshes),
@@ -822,7 +908,7 @@ impl GpuAssetResolver {
             reqs.push((
                 item.entity,
                 AssetResolveRequest {
-                    skin: None,
+                    skin,
                     mesh,
                     materials,
                     texture,
@@ -1156,6 +1242,42 @@ impl GpuAssetResolver {
     pub fn load_animation_assets(&mut self, world: &mut World) -> usize {
         use crate::scene::systems::animator::SkeletonLibrary;
 
+        // 蒙皮实体不一定有 `MeshRef` / `MaterialRef`（loader 只为 `MeshRenderer`
+        // 插入），没有它们 `prepare_requests` 就不会给它排上传（#560 P0-3b）。
+        let mut missing_refs = Vec::new();
+        for (entity, renderer) in world.query::<prism_scene::components::SkinnedMeshRenderer>() {
+            if renderer.skinned_mesh_path.trim().is_empty() {
+                continue;
+            }
+            if world.get::<MeshRef>(entity).is_none() {
+                missing_refs.push((entity, true));
+            } else if world.get::<MaterialRef>(entity).is_none() {
+                missing_refs.push((entity, false));
+            }
+        }
+        for (entity, needs_mesh) in missing_refs {
+            if needs_mesh {
+                world.insert(
+                    entity,
+                    MeshRef {
+                        asset_id: crate::scene::components::SceneAssetId::generate(),
+                        render_handle: prism_render::managers::MeshHandle::default(),
+                        generation: 0,
+                    },
+                );
+            }
+            if world.get::<MaterialRef>(entity).is_none() {
+                world.insert(
+                    entity,
+                    MaterialRef {
+                        asset_id: crate::scene::components::SceneAssetId::generate(),
+                        material_slot: 0,
+                        generation: 0,
+                    },
+                );
+            }
+        }
+
         let mut requested: Vec<String> = Vec::new();
         for (entity, root) in world.query::<prism_scene::components::SkeletonRoot>() {
             if !root.skeleton_path.trim().is_empty() {
@@ -1240,6 +1362,67 @@ impl GpuAssetResolver {
     // -----------------------------------------------------------------------
 
     /// CPU 段：加载网格资源 + 解交织顶点 data → `MeshUploadInput` + submesh 表。
+    /// CPU 段：把 `.rskin` 解成顶点数据 + 蒙皮属性（#560 P0-3b）。
+    ///
+    /// 顶点布局与静态 RMES 一致（positions/normals/uv0/tangents/indices），额外
+    /// 带上每顶点 4 个骨骼索引与权重 —— 渲染侧把它们放进第二个顶点缓冲。
+    fn load_skinned_mesh_inputs(&mut self, path: &str) -> Option<LoadedSkinnedMesh> {
+        let id = self.resource_manager.id_by_path(path).or_else(|| {
+            report_missing_reference(path, "skinned mesh");
+            None
+        })?;
+        let handle = self
+            .resource_manager
+            .load_with_deps::<SkinnedMeshAsset>(id)
+            .map_err(|e| log::warn!("load_skinned_mesh_inputs: load '{path}' failed: {e}"))
+            .ok()?;
+        let mesh = self
+            .resource_manager
+            .get(handle)
+            .map_err(|e| log::warn!("load_skinned_mesh_inputs: get '{path}' failed: {e}"))
+            .ok()?;
+        let info = &mesh.info;
+
+        let skin = SkinAttributes {
+            joints: info.joints.clone(),
+            weights: info.weights.clone(),
+        };
+        if !skin.matches_vertex_count(info.positions.len()) {
+            log::warn!(
+                "load_skinned_mesh_inputs: '{path}' has {} skin entries for {} vertices; \
+                 drawing it with the bind pose",
+                skin.joints.len(),
+                info.positions.len()
+            );
+            return Some(LoadedSkinnedMesh {
+                input: MeshUploadInput {
+                    positions: info.positions.clone(),
+                    normals: info.normals.clone(),
+                    colors: Vec::new(),
+                    uvs: info.uv0.clone(),
+                    tangents: info.tangents.clone(),
+                    indices: info.indices.clone(),
+                },
+                submeshes: skinned_submeshes(info),
+                skin: SkinAttributes::default(),
+            });
+        }
+
+        let submeshes = skinned_submeshes(info);
+        Some(LoadedSkinnedMesh {
+            input: MeshUploadInput {
+                positions: info.positions.clone(),
+                normals: info.normals.clone(),
+                colors: Vec::new(),
+                uvs: info.uv0.clone(),
+                tangents: info.tangents.clone(),
+                indices: info.indices.clone(),
+            },
+            submeshes,
+            skin,
+        })
+    }
+
     fn load_mesh_inputs(&mut self, path: &str) -> Option<LoadedMesh> {
         // 内置基础网格（编辑器 3D Object 预设）：不读 `.pak`、不需要 cook。
         if prism_render::primitives::is_builtin(path) {

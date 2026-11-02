@@ -107,6 +107,14 @@ pub fn scene_render_system_into_with_frustum(
     out.clear();
     let bounds = world.get_resource::<MeshBounds>();
     for (entity, wt, mr) in world.query2::<LocalToWorld, MeshRef>() {
+        // 蒙皮实体走 `skinned_draw::append_skinned_draw_items`（#560 P0-3b）：
+        // 同一个实体同时挂两个渲染组件时也只画一次。
+        if world
+            .get::<crate::scene::components::SkinnedMeshRenderer>(entity)
+            .is_some()
+        {
+            continue;
+        }
         if !crate::scene::systems::hierarchy::is_active_in_hierarchy(world, entity) {
             continue;
         }
