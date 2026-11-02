@@ -6548,6 +6548,27 @@ pub fn render_graph(
                 .changed();
             ui.end_row();
 
+            ui.label("LUT");
+            changed |= ui
+                .add(
+                    egui::TextEdit::singleline(&mut settings.lut)
+                        .hint_text("luts/grade.cube")
+                        .desired_width(180.0),
+                )
+                .on_hover_text("3D LUT path relative to assets/. Empty disables it.")
+                .changed();
+            ui.end_row();
+
+            ui.label("LUT Strength");
+            changed |= ui
+                .add_enabled(
+                    !settings.lut.trim().is_empty(),
+                    egui::Slider::new(&mut settings.lut_strength, 0.0..=1.0),
+                )
+                .on_hover_text("Blend toward the LUT; 0 disables it, 1 uses it fully.")
+                .changed();
+            ui.end_row();
+
             ui.label("Bloom");
             changed |= ui.checkbox(&mut settings.bloom, "Enable").changed();
             ui.end_row();

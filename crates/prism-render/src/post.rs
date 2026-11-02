@@ -28,7 +28,9 @@
 use anyhow::Context as _;
 use ash::vk;
 
+use crate::buffer::create_buffer;
 use crate::context::VulkanContext;
+use crate::lut::Lut3d;
 use crate::pipeline::{GraphicsPipeline, PipelineDesc};
 use crate::render_graph::{
     GraphResources, PassInfo, PassKind, RenderContext, RenderGraphBuilder, RenderMode,
@@ -84,6 +86,14 @@ pub struct PostPass {
     bound_nearest: Vec<bool>,
     /// 每个 in-flight 帧当前绑定的深度视图（#502 DOF）。
     bound_depths: Vec<vk::ImageView>,
+    /// 3D color-grading LUT (#502). Always bound (identity by default), so
+    /// `lutStrength = 0` can skip the sample without an unbound descriptor.
+    lut_image: vk::Image,
+    lut_view: vk::ImageView,
+    lut_memory: vk::DeviceMemory,
+    /// Edge length of the bound LUT, forwarded to the shader for texel-centre
+    /// sampling. A loaded `.cube` may have any size in `2..=128`.
+    lut_size: u32,
     device: Option<ash::Device>,
 }
 
@@ -154,8 +164,9 @@ impl PostPass {
         .context("PostPass: create depth sampler")?;
 
         // binding 0 = HDR colour, binding 1 = scene depth for depth of field
-        // (#502 Phase 2). The depth binding is always present so the pipeline
-        // layout never changes between frames.
+        // (#502 Phase 2), binding 2 = 3D color-grading LUT (#502). All three
+        // bindings are always present so the pipeline layout never changes
+        // between frames, even when no LUT is configured.
         let bindings = [
             vk::DescriptorSetLayoutBinding::default()
                 .binding(shader_bindings::post::HDR_TEX_BINDING)
@@ -164,6 +175,11 @@ impl PostPass {
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
             vk::DescriptorSetLayoutBinding::default()
                 .binding(shader_bindings::post::DEPTH_TEX_BINDING)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(shader_bindings::post::LUT_TEX_BINDING)
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
@@ -183,8 +199,8 @@ impl PostPass {
                     .max_sets(fif)
                     .pool_sizes(&[vk::DescriptorPoolSize {
                         ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                        // One colour + one depth view per frame-in-flight.
-                        descriptor_count: fif * 2,
+                        // One colour + one depth + one LUT view per frame-in-flight.
+                        descriptor_count: fif * 3,
                     }]),
                 None,
             )
@@ -201,6 +217,25 @@ impl PostPass {
         }
         .context("PostPass: allocate ds")?;
         let descriptor_sets: Vec<vk::DescriptorSet> = descriptor_sets;
+
+        // Every project gets an identity LUT so the descriptor is valid even
+        // before `[render] lut` is set. 32³ matches the common `.cube` size
+        // and makes `lut_strength = 1` with no file a no-op.
+        let identity = Lut3d::identity(32);
+        let (lut_image, lut_memory, lut_view) =
+            create_lut_image(context, &identity).context("PostPass: create default LUT")?;
+        for &set in &descriptor_sets {
+            let info = vk::DescriptorImageInfo::default()
+                .image_view(lut_view)
+                .sampler(sampler)
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+            let write = vk::WriteDescriptorSet::default()
+                .dst_set(set)
+                .dst_binding(shader_bindings::post::LUT_TEX_BINDING)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(std::slice::from_ref(&info));
+            unsafe { device.update_descriptor_sets(&[write], &[]) };
+        }
 
         let render_pass = create_render_pass(device, color_format, final_layout)?;
 
@@ -224,6 +259,10 @@ impl PostPass {
             bound_hdrs: vec![vk::ImageView::null(); fif as usize],
             bound_nearest: vec![false; fif as usize],
             bound_depths: vec![vk::ImageView::null(); fif as usize],
+            lut_image,
+            lut_view,
+            lut_memory,
+            lut_size: identity.size,
             device: Some(device.clone()),
         })
     }
@@ -307,6 +346,46 @@ impl PostPass {
             self.framebuffers[idx] = Some(fb);
             self.target_views[idx] = view;
         }
+        Ok(())
+    }
+
+    /// Replace the 3D color-grading LUT (#502).
+    ///
+    /// Uploads `lut` as an `R32G32B32A32_SFLOAT` 3D image and rebinds it on
+    /// every frame-in-flight descriptor set. The old image is destroyed only
+    /// after `vkDeviceWaitIdle`, because a previously submitted frame may still
+    /// be sampling it. LUT changes are user-driven and rare, so the stall is
+    /// preferable to tracking per-frame retirement.
+    pub fn set_lut(&mut self, context: &VulkanContext, lut: &Lut3d) -> anyhow::Result<()> {
+        let device = &context.device;
+        let (image, memory, view) =
+            create_lut_image(context, lut).context("PostPass: upload LUT")?;
+
+        // No frame may still reference the old image before it is freed.
+        unsafe { device.device_wait_idle() }.context("PostPass: wait before LUT swap")?;
+
+        for &set in &self.descriptor_sets {
+            let info = vk::DescriptorImageInfo::default()
+                .image_view(view)
+                .sampler(self.sampler)
+                .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+            let write = vk::WriteDescriptorSet::default()
+                .dst_set(set)
+                .dst_binding(shader_bindings::post::LUT_TEX_BINDING)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(std::slice::from_ref(&info));
+            unsafe { device.update_descriptor_sets(&[write], &[]) };
+        }
+
+        unsafe {
+            device.destroy_image_view(self.lut_view, None);
+            device.destroy_image(self.lut_image, None);
+            device.free_memory(self.lut_memory, None);
+        }
+        self.lut_image = image;
+        self.lut_view = view;
+        self.lut_memory = memory;
+        self.lut_size = lut.size;
         Ok(())
     }
 
@@ -573,6 +652,11 @@ impl PostPass {
         unsafe { device.destroy_sampler(self.sampler, None) };
         unsafe { device.destroy_sampler(self.sampler_nearest, None) };
         unsafe { device.destroy_sampler(self.sampler_depth, None) };
+        unsafe {
+            device.destroy_image_view(self.lut_view, None);
+            device.destroy_image(self.lut_image, None);
+            device.free_memory(self.lut_memory, None);
+        }
         self.device = None;
     }
 }
@@ -744,6 +828,14 @@ impl RenderPassNode for PostPass {
             dofFocusDistance: ctx.frame.grade.dof_focus_distance,
             dofAperture: dof_aperture,
             dofMaxBlur: ctx.frame.grade.dof_max_blur,
+            // Debug RT views (depth / normals) must stay readable; a grade LUT
+            // would tint the visualization, so it is disabled there like DOF.
+            lutStrength: if ctx.frame.debug_rt == 0 {
+                ctx.frame.grade.lut_strength
+            } else {
+                0.0
+            },
+            lutSize: self.lut_size as f32,
             // #613：FXAA 采样的是**内部渲染目标**，一个 texel 的 UV 尺寸按它的
             // 分辨率算；用交换链尺寸会在内部分辨率缩小时把采样步长算小。
             invTexelSize: [
@@ -907,6 +999,247 @@ pub(crate) fn select_input_target(
     }
 }
 
+/// Create a sampled 3D image and upload `lut` into it.
+///
+/// The image is left in `SHADER_READ_ONLY_OPTIMAL`. `R32G32B32A32_SFLOAT`
+/// keeps the interpolation exact enough that an identity LUT is a no-op up to
+/// 8-bit display quantization; a 32³ LUT costs 512 KiB, which is negligible
+/// next to the HDR targets.
+fn create_lut_image(
+    context: &VulkanContext,
+    lut: &Lut3d,
+) -> anyhow::Result<(vk::Image, vk::DeviceMemory, vk::ImageView)> {
+    let device = &context.device;
+    let n = lut.size.max(2);
+    debug_assert_eq!(lut.data.len(), (n * n * n) as usize);
+
+    let image_info = vk::ImageCreateInfo::default()
+        .image_type(vk::ImageType::TYPE_3D)
+        .format(vk::Format::R32G32B32A32_SFLOAT)
+        .extent(vk::Extent3D {
+            width: n,
+            height: n,
+            depth: n,
+        })
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(vk::ImageTiling::OPTIMAL)
+        .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .initial_layout(vk::ImageLayout::UNDEFINED);
+    let image = unsafe { device.create_image(&image_info, None) }.context("create LUT image")?;
+
+    let requirements = unsafe { device.get_image_memory_requirements(image) };
+    let memory_type = find_memory_type(
+        &context.physical_device_memory_properties,
+        requirements.memory_type_bits,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+    )
+    .context("find LUT image memory type")?;
+    let memory = match unsafe {
+        device.allocate_memory(
+            &vk::MemoryAllocateInfo::default()
+                .allocation_size(requirements.size)
+                .memory_type_index(memory_type),
+            None,
+        )
+    } {
+        Ok(memory) => memory,
+        Err(error) => {
+            unsafe { device.destroy_image(image, None) };
+            return Err(error).context("allocate LUT image memory");
+        }
+    };
+    if let Err(error) = unsafe { device.bind_image_memory(image, memory, 0) } {
+        unsafe {
+            device.destroy_image(image, None);
+            device.free_memory(memory, None);
+        }
+        return Err(error).context("bind LUT image memory");
+    }
+
+    let view = match unsafe {
+        device.create_image_view(
+            &vk::ImageViewCreateInfo::default()
+                .image(image)
+                .view_type(vk::ImageViewType::TYPE_3D)
+                .format(vk::Format::R32G32B32A32_SFLOAT)
+                .subresource_range(
+                    vk::ImageSubresourceRange::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .base_mip_level(0)
+                        .level_count(1)
+                        .base_array_layer(0)
+                        .layer_count(1),
+                ),
+            None,
+        )
+    } {
+        Ok(view) => view,
+        Err(error) => {
+            unsafe {
+                device.destroy_image(image, None);
+                device.free_memory(memory, None);
+            }
+            return Err(error).context("create LUT image view");
+        }
+    };
+
+    let pixels = lut.to_rgba_f32();
+    let byte_len = (pixels.len() * std::mem::size_of::<f32>()) as vk::DeviceSize;
+    let (staging, staging_memory) = create_buffer(
+        context,
+        byte_len,
+        vk::BufferUsageFlags::TRANSFER_SRC,
+        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+    )
+    .context("create LUT staging buffer")?;
+    let ptr =
+        unsafe { device.map_memory(staging_memory, 0, byte_len, vk::MemoryMapFlags::empty()) }
+            .context("map LUT staging buffer")?;
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            pixels.as_ptr() as *const u8,
+            ptr as *mut u8,
+            byte_len as usize,
+        );
+        device.unmap_memory(staging_memory);
+    }
+
+    let pool = unsafe {
+        device.create_command_pool(
+            &vk::CommandPoolCreateInfo::default()
+                .flags(vk::CommandPoolCreateFlags::TRANSIENT)
+                .queue_family_index(context.graphics_queue_family),
+            None,
+        )
+    }
+    .context("create LUT upload command pool")?;
+    let cmd = unsafe {
+        device.allocate_command_buffers(
+            &vk::CommandBufferAllocateInfo::default()
+                .command_pool(pool)
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_buffer_count(1),
+        )
+    }
+    .context("allocate LUT upload command buffer")?[0];
+
+    let range = vk::ImageSubresourceRange::default()
+        .aspect_mask(vk::ImageAspectFlags::COLOR)
+        .base_mip_level(0)
+        .level_count(1)
+        .base_array_layer(0)
+        .layer_count(1);
+    let to_transfer = vk::ImageMemoryBarrier::default()
+        .old_layout(vk::ImageLayout::UNDEFINED)
+        .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+        .src_access_mask(vk::AccessFlags::empty())
+        .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+        .image(image)
+        .subresource_range(range);
+    let to_shader = vk::ImageMemoryBarrier::default()
+        .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+        .dst_access_mask(vk::AccessFlags::SHADER_READ)
+        .image(image)
+        .subresource_range(range);
+    let copy = vk::BufferImageCopy::default()
+        .buffer_offset(0)
+        .buffer_row_length(0)
+        .buffer_image_height(0)
+        .image_subresource(
+            vk::ImageSubresourceLayers::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .mip_level(0)
+                .base_array_layer(0)
+                .layer_count(1),
+        )
+        .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+        .image_extent(vk::Extent3D {
+            width: n,
+            height: n,
+            depth: n,
+        });
+
+    let record = unsafe {
+        device.begin_command_buffer(
+            cmd,
+            &vk::CommandBufferBeginInfo::default()
+                .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+        )?;
+        device.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[to_transfer],
+        );
+        device.cmd_copy_buffer_to_image(
+            cmd,
+            staging,
+            image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &[copy],
+        );
+        device.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::FRAGMENT_SHADER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[to_shader],
+        );
+        device.end_command_buffer(cmd)
+    };
+    if let Err(error) = record {
+        unsafe {
+            device.free_command_buffers(pool, &[cmd]);
+            device.destroy_command_pool(pool, None);
+            device.destroy_buffer(staging, None);
+            device.free_memory(staging_memory, None);
+            device.destroy_image_view(view, None);
+            device.destroy_image(image, None);
+            device.free_memory(memory, None);
+        }
+        return Err(error).context("record LUT upload");
+    }
+
+    let fence = unsafe { device.create_fence(&vk::FenceCreateInfo::default(), None) }
+        .context("create LUT upload fence")?;
+    let submit = vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&cmd));
+    let submitted = unsafe { device.queue_submit(context.graphics_queue, &[submit], fence) };
+    if let Err(error) = submitted {
+        unsafe {
+            device.destroy_fence(fence, None);
+            device.free_command_buffers(pool, &[cmd]);
+            device.destroy_command_pool(pool, None);
+            device.destroy_buffer(staging, None);
+            device.free_memory(staging_memory, None);
+            device.destroy_image_view(view, None);
+            device.destroy_image(image, None);
+            device.free_memory(memory, None);
+        }
+        return Err(error).context("submit LUT upload");
+    }
+    let waited = unsafe { device.wait_for_fences(&[fence], true, u64::MAX) };
+    unsafe {
+        device.destroy_fence(fence, None);
+        device.free_command_buffers(pool, &[cmd]);
+        device.destroy_command_pool(pool, None);
+        device.destroy_buffer(staging, None);
+        device.free_memory(staging_memory, None);
+    }
+    waited.context("wait for LUT upload")?;
+
+    Ok((image, memory, view))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -973,8 +1306,11 @@ mod tests {
         assert_eq!(std::mem::offset_of!(PostPush, dofFocusDistance), 60);
         assert_eq!(std::mem::offset_of!(PostPush, dofAperture), 64);
         assert_eq!(std::mem::offset_of!(PostPush, dofMaxBlur), 68);
-        assert_eq!(std::mem::size_of::<PostPush>(), 72);
-        assert_eq!(PUSH_CONSTANT_SIZE, 72);
+        // #502 3D LUT: strength plus the edge length used for texel centres.
+        assert_eq!(std::mem::offset_of!(PostPush, lutStrength), 72);
+        assert_eq!(std::mem::offset_of!(PostPush, lutSize), 76);
+        assert_eq!(std::mem::size_of::<PostPush>(), 80);
+        assert_eq!(PUSH_CONSTANT_SIZE, 80);
     }
 
     #[test]

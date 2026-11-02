@@ -889,6 +889,17 @@ impl EngineHost {
             _pad3: [0.0; 2],
         };
 
+        // #502：LUT 强度跟随全局设置，路径解析到 assets/ 下。
+        let mut resolved_grade = self
+            .packet
+            .grade
+            .unwrap_or_else(|| self.settings.post_grade());
+        resolved_grade.lut_strength = self.settings.lut_strength;
+        let lut_path = if self.settings.lut.trim().is_empty() {
+            None
+        } else {
+            prism_engine::asset_paths::asset_path(self.settings.lut.trim())
+        };
         let input = FrameInput {
             draw_items: &self.packet.draw_items,
             gizmos: &self.packet.gizmos,
@@ -910,10 +921,8 @@ impl EngineHost {
             tonemap_mode: self.settings.tonemap_mode,
             aa_mode: self.settings.aa_mode,
             debug_rt: self.settings.debug_rt,
-            grade: self
-                .packet
-                .grade
-                .unwrap_or_else(|| self.settings.post_grade()),
+            grade: resolved_grade,
+            lut_path: lut_path.as_deref(),
             proj22: scene.proj22,
             proj32: scene.proj32,
             lights: &scene.lights,

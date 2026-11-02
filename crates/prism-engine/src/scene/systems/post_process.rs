@@ -120,6 +120,9 @@ fn volume_grade(volume: &PostProcessVolume) -> PostGrade {
         dof_focus_distance: volume.dof_focus_distance,
         dof_aperture: volume.dof_aperture,
         dof_max_blur: volume.dof_max_blur,
+        // LUT 是全局资源；体积只混合上面这些逐像素参数，强度由
+        // `render_system` 在解析后统一覆盖为 `settings.lut_strength`。
+        lut_strength: 0.0,
     }
     .sanitized()
 }
@@ -145,6 +148,7 @@ fn lerp_grade(a: PostGrade, b: PostGrade, t: f32) -> PostGrade {
         dof_focus_distance: mix(a.dof_focus_distance, b.dof_focus_distance),
         dof_aperture: mix(a.dof_aperture, b.dof_aperture),
         dof_max_blur: mix(a.dof_max_blur, b.dof_max_blur),
+        lut_strength: 0.0,
     }
     .sanitized()
 }

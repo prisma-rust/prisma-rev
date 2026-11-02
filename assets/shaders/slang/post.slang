@@ -8,6 +8,8 @@
 //
 // Sets (must match `PostPass::ensure_pipeline`):
 //   set 0, binding 0 - HDR color texture (combined Sampler2D)
+//   set 0, binding 1 - scene depth (combined Sampler2D, DOF)
+//   set 0, binding 2 - 3D color-grading LUT (combined Sampler3D, #502)
 //
 // Push constants: PostPush - `tonemapMode` (0 = Reinhard, 1 = ACES,
 // 2 = passthrough for 2D scenes so the sprite palette survives untouched),
@@ -29,6 +31,13 @@ Sampler2D hdrTex;
 // on the Rust side, so the depth texture is only sampled for effect.
 [[vk::binding(1, 0)]]
 Sampler2D depthTex;
+
+// ---- set 0, binding 2 - 3D color-grading LUT (#502).
+// `lutStrength == 0` skips the fetch entirely, so an unconfigured project is
+// bit-identical to the pre-LUT shader. The pass always binds an identity LUT
+// (or the loaded `.cube`) so the descriptor is never unbound.
+[[vk::binding(2, 0)]]
+Sampler3D lutTex;
 
 // Push constants: tonemap operator selector (matches `tonemapMode` in FrameUBO).
 //
@@ -73,6 +82,11 @@ public struct PostPush
     public float dofFocusDistance;
     public float dofAperture;
     public float dofMaxBlur;
+    // 3D LUT color grading (#502). `lutStrength` is in [0, 1] and 0 skips the
+    // fetch; `lutSize` is the edge length of the bound cube texture (usually
+    // 32) and is used to place samples on texel centres.
+    public float lutStrength;
+    public float lutSize;
 };
 [[vk::push_constant]]
 PostPush pc;
@@ -256,6 +270,17 @@ float3 shade(float2 uv)
     return grade(saturate(tonemap(hdr)));
 }
 
+// Sample the 3D color-grading LUT at `c` (display-referred, [0, 1]).
+// The texel-centre remap keeps the two outer slices from being clumped: a
+// coordinate of exactly 0 / 1 would otherwise sample half a texel outside the
+// cube and clamp, flattening the darkest / brightest slice.
+float3 sampleLut(float3 c)
+{
+    float n = max(pc.lutSize, 2.0);
+    float3 coord = saturate(c) * ((n - 1.0) / n) + (0.5 / n);
+    return lutTex.Sample(coord).rgb;
+}
+
 // Perceptual luma for edge detection. Gamma 2.0 (sqrt) is used instead of the
 // exact 2.2/sRGB curve: it is the cheap approximation FXAA luma is usually fed
 // with, and each tap already costs a texture fetch plus a tonemap.
@@ -319,6 +344,12 @@ public void fragmentMain(
 )
 {
     float3 color = (pc.aaMode == 1u) ? fxaa(uv) : shade(uv);
+
+    // 3D LUT color grading (#502). Runs after AA (so FXAA compares pre-LUT
+    // edge luma) and before vignette / grain, like a photo-editor LUT layer.
+    // `lutStrength == 0` skips the sample and the lerp entirely.
+    if (pc.lutStrength > 0.0)
+        color = lerp(color, sampleLut(color), saturate(pc.lutStrength));
 
     // Vignette: darken towards the frame corners. `vignette == 0` skips the
     // multiply entirely so the default path is bit-identical to pre-#502.

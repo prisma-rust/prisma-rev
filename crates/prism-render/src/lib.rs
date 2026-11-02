@@ -61,6 +61,7 @@ pub mod hdr;
 /// 图像光照（Lego 砖块 `ibl`）的内部实现；模块本身始终存在，
 /// 关闭时只保留描述符布局与 1×1 中性灰回退（见 `make_ibl`）。
 pub mod ibl;
+pub mod lut;
 pub mod managers;
 pub mod mesh;
 pub mod offscreen;

@@ -5953,6 +5953,8 @@ fn render_settings_json(
         "dofFocusDistance": settings.dof_focus_distance,
         "dofAperture": settings.dof_aperture,
         "dofMaxBlur": settings.dof_max_blur,
+        "lut": settings.lut,
+        "lutStrength": settings.lut_strength,
         "shadowDistance": settings.shadow_distance,
         "shadowCascadeCount": settings.shadow_cascade_count,
         "debugRt": settings.debug_rt,
@@ -6011,6 +6013,12 @@ fn render_settings_from_json(
         dof_focus_distance: f32_field("dofFocusDistance", base.dof_focus_distance),
         dof_aperture: f32_field("dofAperture", base.dof_aperture),
         dof_max_blur: f32_field("dofMaxBlur", base.dof_max_blur),
+        lut: value
+            .get("lut")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .unwrap_or(base.lut),
+        lut_strength: f32_field("lutStrength", base.lut_strength),
         shadow_distance: f32_field("shadowDistance", base.shadow_distance),
         // #526：贴图边长只在构造渲染器时生效；编辑器 UI 还没暴露滑杆时保持默认。
         shadow_map_size: u32_field("shadowMapSize", base.shadow_map_size),
@@ -6372,6 +6380,8 @@ mod tests {
         settings.dof_focus_distance = 4.5;
         settings.dof_aperture = 0.55;
         settings.dof_max_blur = 10.0;
+        settings.lut = "luts/grade.cube".to_string();
+        settings.lut_strength = 0.8;
         settings.shadow_distance = 90.0;
         settings.shadow_cascade_count = 2;
         settings.shaded_wireframe = true;
@@ -6393,6 +6403,8 @@ mod tests {
         assert_eq!(loaded.dof_focus_distance, 4.5);
         assert_eq!(loaded.dof_aperture, 0.55);
         assert_eq!(loaded.dof_max_blur, 10.0);
+        assert_eq!(loaded.lut, "luts/grade.cube");
+        assert_eq!(loaded.lut_strength, 0.8);
         assert_eq!(loaded.shadow_distance, 90.0);
         assert_eq!(loaded.shadow_cascade_count, 2);
         assert!(loaded.shaded_wireframe);

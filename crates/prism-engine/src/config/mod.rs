@@ -74,6 +74,10 @@ pub struct RenderConfig {
     pub dof_aperture: Option<f32>,
     /// 景深最大模糊半径（像素，#502 Phase 2）。
     pub dof_max_blur: Option<f32>,
+    /// 3D 调色 LUT 的 `assets/` 相对路径（`.cube`，#502）；空 = 关闭。
+    pub lut: Option<String>,
+    /// LUT 混合强度（`0.0`..=`1.0`，#502）。
+    pub lut_strength: Option<f32>,
     /// 0 = HDR tonemap, 1 = depth, 2 = view-space normal。
     pub debug_rt: Option<u32>,
     /// 前向管线线框模式（#431）。
@@ -186,6 +190,12 @@ impl RenderConfig {
         if let Some(value) = self.dof_max_blur {
             settings.dof_max_blur = value.clamp(0.0, 32.0);
         }
+        if let Some(value) = &self.lut {
+            settings.lut = value.trim().to_string();
+        }
+        if let Some(value) = self.lut_strength {
+            settings.lut_strength = value.clamp(0.0, 1.0);
+        }
         if let Some(rt) = self.debug_rt {
             settings.debug_rt = rt;
         }
@@ -239,6 +249,8 @@ impl RenderConfig {
             dof_focus_distance: ini.get_f32("render", "dof_focus_distance"),
             dof_aperture: ini.get_f32("render", "dof_aperture"),
             dof_max_blur: ini.get_f32("render", "dof_max_blur"),
+            lut: ini.get("render", "lut").map(str::to_string),
+            lut_strength: ini.get_f32("render", "lut_strength"),
             debug_rt: ini.get_u32("render", "debug_rt"),
             wireframe: ini.get_bool("render", "wireframe"),
             shaded_wireframe: ini.get_bool("render", "shaded_wireframe"),
@@ -474,6 +486,8 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "dof_focus_distance",
             "dof_aperture",
             "dof_max_blur",
+            "lut",
+            "lut_strength",
             "debug_rt",
             "wireframe",
             "shaded_wireframe",
@@ -595,7 +609,7 @@ mod tests {
         use crate::render_settings::{RenderMode, RenderSettings};
 
         let cfg = AppConfig::from_ini(
-            "[render]\nrender_mode = \"path_trace\"\ntonemap_mode = 1\naa_mode = 1\ncontrast = 1.4\nsaturation = 0.6\nvignette = 0.3\nbloom = true\nbloom_intensity = 0.4\nbloom_threshold = 2.5\nchromatic_aberration = 0.25\nfilm_grain = 0.35\ntemperature = -0.4\ntint = 0.2\ndof_focus_distance = 4.5\ndof_aperture = 0.6\ndof_max_blur = 12\nshadow_distance = 120.0\nshadow_map_size = 1024\nshadow_cascade_count = 2\nwireframe = true\nshaded_wireframe = true\npt_max_bounces = 7\n",
+            "[render]\nrender_mode = \"path_trace\"\ntonemap_mode = 1\naa_mode = 1\ncontrast = 1.4\nsaturation = 0.6\nvignette = 0.3\nbloom = true\nbloom_intensity = 0.4\nbloom_threshold = 2.5\nchromatic_aberration = 0.25\nfilm_grain = 0.35\ntemperature = -0.4\ntint = 0.2\ndof_focus_distance = 4.5\ndof_aperture = 0.6\ndof_max_blur = 12\nlut = \"luts/grade.cube\"\nlut_strength = 0.8\nshadow_distance = 120.0\nshadow_map_size = 1024\nshadow_cascade_count = 2\nwireframe = true\nshaded_wireframe = true\npt_max_bounces = 7\n",
         );
         let mut settings = RenderSettings::default();
         cfg.render.apply(&mut settings);
@@ -616,6 +630,8 @@ mod tests {
         assert_eq!(settings.dof_focus_distance, 4.5);
         assert_eq!(settings.dof_aperture, 0.6);
         assert_eq!(settings.dof_max_blur, 12.0);
+        assert_eq!(settings.lut, "luts/grade.cube");
+        assert_eq!(settings.lut_strength, 0.8);
         assert_eq!(settings.pt_max_bounces, 7);
         // #526：阴影覆盖距离与贴图边长都是可配置的质量旋钮。
         assert_eq!(settings.shadow_distance, 120.0);
@@ -635,12 +651,14 @@ mod tests {
         extreme.dof_focus_distance = Some(-1.0);
         extreme.dof_aperture = Some(3.0);
         extreme.dof_max_blur = Some(100.0);
+        extreme.lut_strength = Some(5.0);
         extreme.apply(&mut clamped);
         assert_eq!(clamped.temperature, 1.0);
         assert_eq!(clamped.tint, -1.0);
         assert_eq!(clamped.dof_focus_distance, 0.001);
         assert_eq!(clamped.dof_aperture, 1.0);
         assert_eq!(clamped.dof_max_blur, 32.0);
+        assert_eq!(clamped.lut_strength, 1.0);
     }
 
     #[test]

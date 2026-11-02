@@ -5,6 +5,7 @@
 //!（网格、纹理、材质）。它构建包含 [`ShadowMapPass`] 和 [`ForwardPass`]
 //! 的 [`RenderGraph`]，每帧执行并呈现到交换链。
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context as _;
@@ -129,6 +130,10 @@ pub struct FrameInput<'a> {
     /// Display-referred color grading (#502). `PostPass` applies it after
     /// tonemapping; [`crate::PostGrade::default`] is an exact no-op.
     pub grade: crate::render_graph::PostGrade,
+    /// Asset-resolved path to a `.cube` 3D LUT (#502). `None` leaves the
+    /// currently bound LUT alone (the pass starts with an identity LUT), so
+    /// clearing the setting cannot accidentally sample an unbound texture.
+    pub lut_path: Option<&'a Path>,
     pub proj22: f32,
     pub proj32: f32,
     pub lights: &'a [GpuLight],
@@ -267,6 +272,9 @@ pub struct GraphRenderer {
     /// `graph.execute` and reaches into them only for lifecycle ops
     /// (`recreate_swapchain`) via `graph.pass_mut`.
     settings: RenderSettings,
+    /// Path of the `.cube` LUT currently bound to `PostPass` (#502). `None`
+    /// means the pass still holds its startup identity LUT.
+    applied_lut: Option<PathBuf>,
     /// 当前需要画选中描边的 ECS 实体 id（#487）。编辑器每帧通过
     /// [`Self::set_outline_entities`] 更新；空 = 不画。
     outline_entities: Vec<u32>,
@@ -649,6 +657,7 @@ impl GraphRenderer {
             brdf_bindless_slot: brdf_handle.0,
             graph,
             settings,
+            applied_lut: None,
             outline_entities: Vec::new(),
             shadow_sampler,
             shadow_view,
@@ -1065,6 +1074,7 @@ impl GraphRenderer {
             brdf_bindless_slot: brdf_handle.0,
             graph,
             settings,
+            applied_lut: None,
             outline_entities: Vec::new(),
             shadow_sampler,
             shadow_view,
@@ -1615,6 +1625,47 @@ impl GraphRenderer {
     /// 每帧调用是安全的：值没变时直接返回。改动后 `ForwardPass` 会在下一次
     /// `execute` 发现 extent 不同并重建目标（`ensure_target` 已经按 extent
     /// 做了失效判断）。
+    /// Load a `.cube` LUT and bind it to `PostPass` (#502).
+    ///
+    /// This is the explicit entry point used by tests and tools; the per-frame
+    /// path calls it lazily from [`Self::prepare`] when `FrameInput::lut_path`
+    /// changes. Parsing/validation errors are returned so callers can report
+    /// them; the per-frame path logs and keeps the previous LUT.
+    pub fn set_lut_cube(&mut self, path: impl AsRef<Path>) -> anyhow::Result<()> {
+        let path = path.as_ref();
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("read LUT {}", path.display()))?;
+        let lut = crate::lut::parse_cube(&text)
+            .map_err(|error| anyhow::anyhow!("parse LUT {}: {error}", path.display()))?;
+        let context = &self.runtime.context;
+        if let Some(post) = self.graph.pass_mut::<crate::post::PostPass>() {
+            post.set_lut(context, &lut)?;
+        }
+        self.applied_lut = Some(path.to_path_buf());
+        Ok(())
+    }
+
+    /// Lazily apply `FrameInput::lut_path`. A broken/missing file logs once and
+    /// keeps rendering with the previous LUT instead of failing the frame.
+    fn ensure_lut(&mut self, path: Option<&Path>) -> anyhow::Result<()> {
+        let Some(path) = path else {
+            return Ok(());
+        };
+        if self.applied_lut.as_deref() == Some(path) {
+            return Ok(());
+        }
+        if let Err(error) = self.set_lut_cube(path) {
+            log::warn!(
+                "post LUT {} could not be applied: {error:#}",
+                path.display()
+            );
+            // Remember the failed path so a broken file is not re-read every
+            // frame; editing the path (or reloading the project) retries.
+            self.applied_lut = Some(path.to_path_buf());
+        }
+        Ok(())
+    }
+
     pub fn set_internal_resolution(
         &mut self,
         resolution: [u32; 2],
@@ -2163,6 +2214,8 @@ impl GraphRenderer {
     /// 准备阶段：在命令录制前批量同步 CPU 场景状态和 GPU 资源。
     /// 当前实现：校验输入 + 日志脏标记，为下一步扩展 DirtyDispatch 预留上传点。
     pub fn prepare(&mut self, _ctx: &FrameCtx, input: &FrameInput<'_>) -> anyhow::Result<()> {
+        // #502：LUT 文件只在路径变化时重新读取/上传，避免每帧 I/O。
+        self.ensure_lut(input.lut_path)?;
         // 未来在此消费 DirtyFlags 并调度 RenderTextureManager / RenderMeshManager 等批量上传
         // 当前仅做输入校验与同步点预留，保证五阶段调用链完整（DESIGN §8）
         if input.pt_accum_dirty {
@@ -2214,6 +2267,7 @@ impl GraphRenderer {
             aa_mode,
             debug_rt,
             grade,
+            lut_path: _,
             proj22,
             proj32,
             lights,
@@ -2763,6 +2817,7 @@ impl GraphRenderer {
             aa_mode,
             debug_rt,
             grade,
+            lut_path: None,
             proj22,
             proj32,
             lights,

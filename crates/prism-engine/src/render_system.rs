@@ -778,6 +778,15 @@ pub fn render_system(
         Some(c) => c,
         None => return Ok(()),
     };
+    // #502：PostProcessVolume 可以覆盖调色参数，但 LUT 是全局资源；强度
+    // 始终跟随全局设置，路径解析到 assets/ 下（失败时渲染器保留上一张）。
+    let mut resolved_grade = grade.unwrap_or_else(|| settings.post_grade());
+    resolved_grade.lut_strength = settings.lut_strength;
+    let lut_path = if settings.lut.trim().is_empty() {
+        None
+    } else {
+        crate::asset_paths::asset_path(settings.lut.trim())
+    };
     let input = prism_render::FrameInput {
         draw_items,
         gizmos,
@@ -799,7 +808,8 @@ pub fn render_system(
         tonemap_mode: settings.tonemap_mode,
         aa_mode: settings.aa_mode,
         debug_rt: settings.debug_rt,
-        grade: grade.unwrap_or_else(|| settings.post_grade()),
+        grade: resolved_grade,
+        lut_path: lut_path.as_deref(),
         proj22: *proj22,
         proj32: *proj32,
         lights,
