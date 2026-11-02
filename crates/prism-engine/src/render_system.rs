@@ -18,25 +18,6 @@ use prism_render::{
 use prism_scene::CameraClearFlags;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// 上一次提示的「被忽略相机」数量。
-static LAST_IGNORED_CAMERAS: AtomicUsize = AtomicUsize::new(0);
-
-/// 场景里有比主相机更多的启用相机时提示一次（#461）。
-///
-/// 整条渲染链是单相机的，只有 `depth` 最大的那台会出图。以前这件事完全不吭声，
-/// 用户在编辑器里加第二台相机、调 `depth` / `clear_flags` / 背景色都看不到变化，
-/// 很容易以为是自己参数错了。每帧都 warn 会刷屏，所以只在数量**变多**时提示。
-fn warn_ignored_cameras(world: &World) {
-    let ignored = scene::systems::camera::ignored_cameras(world).len();
-    let previous = LAST_IGNORED_CAMERAS.swap(ignored, Ordering::Relaxed);
-    if ignored > previous {
-        log::warn!(
-            "{ignored} extra enabled camera(s) are ignored: this build renders only the \
-             highest-`depth` camera (see #461)"
-        );
-    }
-}
-
 /// 上一次提示的「被丢弃局部光」数量（数量变化时才 warn，避免刷屏）。
 static LAST_DROPPED_LIGHTS: AtomicUsize = AtomicUsize::new(0);
 
@@ -83,6 +64,10 @@ pub struct SceneChanges {
     pub light_direction: Vec4,
     /// 光源 颜色 + ambient, packed as `[r, g, b, ambient]`.
     pub light_color: Vec4,
+    /// Enabled cameras composited this frame, ordered by `Camera.depth`
+    /// ascending (#461). Always non-empty: a synthetic fallback entry keeps the
+    /// "no camera" gray frame working.
+    pub cameras: Vec<prism_render::render_graph::CameraView>,
     /// Light-space 正交 view-projection (shadow 映射表
     pub light_view_proj: Mat4,
     /// Far-cascade light-space VP (#526 CSM); only used when
@@ -390,9 +375,8 @@ fn collect_scene_changes_into(
     );
     let fallback_col = Vec4::new(1.0, 1.0, 1.0, 0.0);
 
-    // 1. 相机 — 真正会被渲染的那台（`active_camera`：`depth` 最大的可渲染启用相机）。
-    //    取景、清屏、aspect 写回都是同一个实体，不会各挑一次。
-    warn_ignored_cameras(world);
+    // 1. 相机 — 主相机（`active_camera`：`depth` 最大的可渲染启用相机）负责
+    //    取景、清屏、阴影取景与 aspect 写回；其余启用相机作为叠加层参与合成（#461）。
     let (view_proj, eye, view, projection, exposure, has_camera, camera_entity) = {
         // 宽高比写到**将被渲染**的相机上（`active_camera` 与下面的取景选择一致）。
         if let Some(cam_entity) = scene::systems::camera::active_camera(world) {
@@ -433,6 +417,63 @@ fn collect_scene_changes_into(
     let proj22 = projection.col(2).z;
     let proj32 = projection.col(3).z;
     let _ = projection;
+
+    // 1.2 多相机合成（#461）：所有启用相机按 `Camera.depth` 升序各出一层。
+    //     全屏叠加（无 viewport rect），每层的 `clearFlags` 决定清颜色 / 深度。
+    //     所有相机都用同一个显示宽高比：这一版还没有逐相机视口。
+    let camera_entities = scene::systems::camera::all_cameras(world);
+    for entity in &camera_entities {
+        // 只有真正能出图的相机（有 `LocalToWorld`）才写回视口 aspect。
+        if world
+            .get::<crate::scene::components::LocalToWorld>(*entity)
+            .is_some()
+        {
+            if let Some(cam) = world.get_mut::<Camera>(*entity) {
+                cam.aspect = display_aspect;
+            }
+        }
+    }
+    let mut cameras: Vec<prism_render::render_graph::CameraView> = camera_entities
+        .iter()
+        .filter_map(|entity| {
+            let out = scene::systems::camera::compute_camera_output_for(
+                world,
+                *entity,
+                surface_rotation,
+            )?;
+            let flags = scene::systems::camera::clear_flags(world, *entity);
+            Some(prism_render::render_graph::CameraView {
+                view_proj: out.view_proj.to_cols_array_2d(),
+                view: out.view.to_cols_array_2d(),
+                inv_view: out.view.inverse().to_cols_array_2d(),
+                eye: out.eye.to_array(),
+                clear_color: scene::systems::camera::clear_color(world, *entity),
+                clear_color_enabled: flags.clears_color(),
+                clear_depth: flags.clears_depth(),
+                draw_skybox: flags.draws_skybox(),
+                exposure: out.exposure,
+                has_camera: true,
+            })
+        })
+        .collect();
+    if cameras.is_empty() {
+        // 没有可用相机：保留旧的灰底回退，不画天空盒。
+        let fallback =
+            scene::systems::camera::fallback_camera_output(surface_rotation, display_aspect);
+        cameras.push(prism_render::render_graph::CameraView {
+            view_proj: fallback.view_proj.to_cols_array_2d(),
+            view: fallback.view.to_cols_array_2d(),
+            inv_view: fallback.view.inverse().to_cols_array_2d(),
+            eye: fallback.eye.to_array(),
+            clear_color: scene::systems::camera::DEFAULT_CLEAR_COLOR,
+            clear_color_enabled: true,
+            clear_depth: true,
+            draw_skybox: false,
+            exposure: fallback.exposure,
+            has_camera: false,
+        });
+    }
+    out.cameras = cameras;
 
     // 1.5 正交标志 —— 与取景/清屏来自**同一台**相机。PT 主光线据此决定
     //     是共享相机原点（透视）还是逐像素近平面起点（正交，issue #10）。
@@ -726,6 +767,7 @@ pub fn render_system(
         bone_matrices,
         skybox,
         frame_data: &frame_data,
+        cameras: &scene.cameras,
         light_view_proj: light_view_proj.to_cols_array_2d(),
         light_view_proj1: frame_data.light_view_proj1,
         shadow_split: frame_data.shadow_split,
@@ -904,6 +946,75 @@ fn norm3(a: [f32; 3]) -> [f32; 3] {
 mod tests {
     use super::*;
     use crate::scene::components::LocalToWorld;
+
+    /// 每台启用相机各出一层，按 `Camera.depth` 升序；`clearFlags` 映射到
+    /// 颜色 / 深度清除位（#461）。
+    #[test]
+    fn every_enabled_camera_becomes_a_composited_layer_in_depth_order() {
+        use crate::scene::components::{Camera, LocalTransform};
+        use prism_scene::CameraClearFlags;
+
+        let mut world = World::new();
+        let near = world.spawn();
+        world.insert(
+            near,
+            Camera {
+                depth: 1.0,
+                clear_flags: CameraClearFlags::Depth,
+                ..Default::default()
+            },
+        );
+        world.insert(near, LocalTransform::default());
+        world.insert(near, LocalToWorld(Mat4::IDENTITY));
+
+        let far = world.spawn();
+        world.insert(
+            far,
+            Camera {
+                depth: 2.0,
+                clear_flags: CameraClearFlags::SolidColor,
+                background_color: [0.0, 1.0, 0.0, 1.0],
+                ..Default::default()
+            },
+        );
+        world.insert(
+            far,
+            LocalTransform {
+                position: Vec3::new(0.0, 0.0, 5.0),
+                ..Default::default()
+            },
+        );
+        world.insert(
+            far,
+            LocalToWorld(Mat4::from_translation(Vec3::new(0.0, 0.0, 5.0))),
+        );
+
+        let mut out = SceneChanges::default();
+        collect_scene_changes_into(&mut world, 16.0 / 9.0, &Mat4::IDENTITY, 60.0, 1, &mut out);
+
+        assert_eq!(out.cameras.len(), 2, "both cameras must be composited");
+        // Depth: clear depth only, keep whatever the previous layer drew.
+        assert!(!out.cameras[0].clear_color_enabled);
+        assert!(out.cameras[0].clear_depth);
+        assert!(!out.cameras[0].draw_skybox);
+        // SolidColor: clear colour (and depth), no skybox.
+        assert!(out.cameras[1].clear_color_enabled);
+        assert!(out.cameras[1].clear_depth);
+        assert_eq!(out.cameras[1].clear_color, [0.0, 1.0, 0.0, 1.0]);
+        assert!(!out.cameras[1].draw_skybox);
+    }
+
+    /// 没有相机时仍然合成一层灰色回退（不画天空盒），与旧行为一致。
+    #[test]
+    fn a_scene_without_cameras_still_composites_one_fallback_layer() {
+        let mut world = World::new();
+        let mut out = SceneChanges::default();
+        collect_scene_changes_into(&mut world, 16.0 / 9.0, &Mat4::IDENTITY, 60.0, 1, &mut out);
+        assert_eq!(out.cameras.len(), 1);
+        assert!(!out.cameras[0].has_camera);
+        assert!(out.cameras[0].clear_color_enabled);
+        assert!(!out.cameras[0].draw_skybox);
+    }
 
     /// 阴影盒子以相机**前方**为中心，不是以相机位置为中心（#526）。
     #[test]

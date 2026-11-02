@@ -72,7 +72,7 @@ impl CameraClearFlags {
     ///
     /// 只有 [`Skybox`](Self::Skybox) 会在背景填充天空盒材质；其余清屏方式
     /// （纯色 / 仅清深度 / 不清）即使场景里挂着启用的 `Skybox` 实体也不应绘制。
-    /// 真正的纯色填充与多相机深度叠加属于后续阶段。
+    /// 纯色填充与多相机按 `depth` 叠加由 `prism-render` 的 forward pass 实现（#461）。
     pub const fn draws_skybox(self) -> bool {
         matches!(self, Self::Skybox)
     }

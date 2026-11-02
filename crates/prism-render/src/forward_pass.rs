@@ -69,6 +69,8 @@ pub struct ForwardPass {
     normal_format: vk::Format,
     /// Bindless handle for the BRDF LUT (registered in the bindless 纹理 表
     brdf_handle: u32,
+    /// Byte stride between camera slots in the per-frame UBO (#461).
+    camera_stride: u32,
     /// One 帧缓冲 per 交换链 图像 With N 交换链 images and N
     /// frames in flight, several 命令 buffers can 引用 their
     /// respective framebuffers concurrently - so we can't keep just one
@@ -202,6 +204,7 @@ impl ForwardPass {
             // 通道 unused 着色器 writes 0).
             normal_format: vk::Format::R16G16B16A16_SFLOAT,
             brdf_handle: u32::MAX,
+            camera_stride: 0,
             framebuffers: Vec::new(),
             color_images: Vec::new(),
             depth_images: Vec::new(),
@@ -543,6 +546,7 @@ impl ForwardPass {
         brdf_handle: u32,
         gi_descriptor_set: vk::DescriptorSet,
         gi_layout: vk::DescriptorSetLayout,
+        camera_stride: u32,
     ) -> Result<()> {
         let device = &context.device;
         self.ibl_descriptor_set = ibl_descriptor_set;
@@ -550,6 +554,7 @@ impl ForwardPass {
         self.bindless_set = bindless_set;
         self.bindless_layout = bindless_layout;
         self.brdf_handle = brdf_handle;
+        self.camera_stride = camera_stride;
         self.gi_descriptor_set = gi_descriptor_set;
         self.gi_layout = gi_layout;
         // Skybox reuses the IBL env cubemap 描述符 集合 + 布局 集合 0).
@@ -1224,7 +1229,10 @@ impl ForwardPass {
         let color_attachment = vk::AttachmentDescription::default()
             .format(self.color_format)
             .samples(vk::SampleCountFlags::TYPE_1)
-            .load_op(vk::AttachmentLoadOp::CLEAR)
+            // #461: every camera after the first must preserve what came
+            // before, so the load op is LOAD and the pass clears explicitly
+            // with `vkCmdClearAttachments` according to `Camera.clearFlags`.
+            .load_op(vk::AttachmentLoadOp::LOAD)
             .store_op(vk::AttachmentStoreOp::STORE)
             .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
             .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
@@ -1247,7 +1255,7 @@ impl ForwardPass {
         let depth_attachment = vk::AttachmentDescription::default()
             .format(vk::Format::D32_SFLOAT)
             .samples(vk::SampleCountFlags::TYPE_1)
-            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .load_op(vk::AttachmentLoadOp::LOAD)
             .store_op(vk::AttachmentStoreOp::STORE)
             .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
             .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
@@ -1264,7 +1272,7 @@ impl ForwardPass {
         let normal_attachment = vk::AttachmentDescription::default()
             .format(self.normal_format)
             .samples(vk::SampleCountFlags::TYPE_1)
-            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .load_op(vk::AttachmentLoadOp::LOAD)
             .store_op(vk::AttachmentStoreOp::STORE)
             .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
             .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
@@ -1805,10 +1813,16 @@ impl RenderPassNode for ForwardPass {
             .context("ForwardPass: no framebuffer for image_index (call set_target first)")?;
         // 描述符 / 推送常量布局在所有状态变体之间完全相同，所以用默认
         // （不透明、背面剔除）变体的 layout 绑定一次即可；循环里只按需重绑管线。
-        let pipeline = self
-            .pipelines
-            .get(&(DrawState::default(), wireframe, false))
-            .context("ForwardPass: default pipeline missing")?;
+        // Copy the Vulkan handles out: `pipeline` borrows `self.pipelines`,
+        // and the per-camera loop below may lazily create the outline pipeline
+        // (`&mut self`). Handles are `Copy`, the borrow is not.
+        let (scene_pipeline, scene_layout) = {
+            let pipeline = self
+                .pipelines
+                .get(&(DrawState::default(), wireframe, false))
+                .context("ForwardPass: default pipeline missing")?;
+            (pipeline.pipeline, pipeline.layout)
+        };
 
         // 解析 the per-frame 描述符 集合 now (used after the skybox 绘制
         // when we re-bind the scene 管线 + descriptors).
@@ -1859,442 +1873,510 @@ impl RenderPassNode for ForwardPass {
                 .cmd_begin_render_pass(ctx.cmd, &begin_info, vk::SubpassContents::INLINE)
         };
 
-        // 绘制 the skybox 第一个 (background). It uses its own 管线 + IBL
-        // env 描述符 集合 and writes no 深度 so scene geometry drawn
-        // afterwards always occludes it. Runs before the scene 管线 is
-        // (re)bound below.
-        // Skipped when no usable 相机 实体 存在 so the gray 清空 颜色
-        // shows through 一致 with the "No 相机 HUD 叠加
-        if ctx.frame.has_camera {
-            if let Some(skybox) = ctx.frame.skybox {
-                if let Err(e) = self.skybox.draw(
-                    ctx.device,
-                    ctx.cmd,
-                    self.render_pass.unwrap(),
-                    self.extent,
-                    &ctx.frame.inv_view_rot,
-                    skybox,
-                ) {
-                    log::warn!("SkyboxPass draw failed (skybox skipped): {e:#}");
+        // #461: composite every enabled camera, in `Camera.depth` order.
+        // The legacy path (`cameras` empty) synthesises one camera from the
+        // frame UBO so existing callers keep the exact old frame.
+        let cameras: Vec<crate::render_graph::CameraView> = if ctx.frame.cameras.is_empty() {
+            vec![crate::render_graph::CameraView::legacy(
+                ctx.frame.view_proj,
+                ctx.frame.inv_view_rot,
+                ctx.frame.clear_color,
+                ctx.frame.has_camera,
+            )]
+        } else {
+            ctx.frame
+                .cameras
+                .iter()
+                .take(crate::descriptor::MAX_CAMERAS)
+                .copied()
+                .collect()
+        };
+
+        // 统计真正提交的绘制数（`ShadowsOnly` 会被跳过）。多相机时累加。
+        let mut drawn = 0usize;
+        for (camera_index, camera) in cameras.iter().enumerate() {
+            // Clear according to `Camera.clearFlags`: `Skybox` / `SolidColor`
+            // clear colour (and the view-normal MRT), everything except
+            // `Nothing` also clears depth. Camera 0 always ends up with a
+            // defined image because the default flags clear both.
+            let mut clears: Vec<vk::ClearAttachment> = Vec::new();
+            if camera.clear_color_enabled {
+                clears.push(vk::ClearAttachment {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    color_attachment: 0,
+                    clear_value: vk::ClearValue {
+                        color: vk::ClearColorValue {
+                            float32: camera.clear_color,
+                        },
+                    },
+                });
+                clears.push(vk::ClearAttachment {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    color_attachment: 2,
+                    clear_value: vk::ClearValue {
+                        color: vk::ClearColorValue {
+                            float32: [0.0, 0.0, 0.0, 0.0],
+                        },
+                    },
+                });
+            }
+            if camera.clear_depth {
+                clears.push(vk::ClearAttachment {
+                    aspect_mask: vk::ImageAspectFlags::DEPTH,
+                    color_attachment: 1,
+                    clear_value: vk::ClearValue {
+                        depth_stencil: vk::ClearDepthStencilValue {
+                            depth: 1.0,
+                            stencil: 0,
+                        },
+                    },
+                });
+            }
+            if !clears.is_empty() {
+                let rect = vk::ClearRect {
+                    rect: vk::Rect2D {
+                        offset: vk::Offset2D { x: 0, y: 0 },
+                        extent: self.extent,
+                    },
+                    base_array_layer: 0,
+                    layer_count: 1,
+                };
+                unsafe {
+                    ctx.device
+                        .cmd_clear_attachments(ctx.cmd, &clears, std::slice::from_ref(&rect));
                 }
             }
-        }
 
-        // Re-bind the scene 管线 + all 描述符 sets AFTER the skybox
-        // 绘制 The skybox binds its own 管线 (different 布局 + IBL
-        // 描述符 集合 at 集合 0, which invalidates the scene's 描述符
-        // bindings (pipeline-layout 兼容性 a 管线 bind with an
-        // incompatible 布局 voids previously-bound sets at the differing
-        // indices). Without this re-bind, the scene's `cmd_draw_indexed`
-        // fires with 集合 0 still holding the skybox's combined-image-sampler
-        // instead of the 帧 UBO, triggering
-        // VUID-vkCmdDrawIndexed-None-08600 and producing a black 屏幕
-        unsafe {
-            ctx.device.cmd_bind_pipeline(
-                ctx.cmd,
-                vk::PipelineBindPoint::GRAPHICS,
-                pipeline.pipeline,
-            );
-            // 集合 0: 帧 UBO + materials SSBO + 光源 SSBO
-            ctx.device.cmd_bind_descriptor_sets(
-                ctx.cmd,
-                vk::PipelineBindPoint::GRAPHICS,
-                pipeline.layout,
-                0,
-                std::slice::from_ref(&frame_set),
-                &[],
-            );
-            // 集合 1: bindless 纹理 表
-            ctx.device.cmd_bind_descriptor_sets(
-                ctx.cmd,
-                vk::PipelineBindPoint::GRAPHICS,
-                pipeline.layout,
-                1,
-                std::slice::from_ref(&self.bindless_set),
-                &[],
-            );
-            // 集合 2: IBL cubemap
-            ctx.device.cmd_bind_descriptor_sets(
-                ctx.cmd,
-                vk::PipelineBindPoint::GRAPHICS,
-                pipeline.layout,
-                2,
-                std::slice::from_ref(&self.ibl_descriptor_set),
-                &[],
-            );
-            // 集合 3: shadow 映射表
-            ctx.device.cmd_bind_descriptor_sets(
-                ctx.cmd,
-                vk::PipelineBindPoint::GRAPHICS,
-                pipeline.layout,
-                3,
-                std::slice::from_ref(&self.shadow_descriptor_set),
-                &[],
-            );
-            // 集合 4: previous-frame GTAO 可见性 (combined 图像 采样器
-            // Bound every 帧 only sampled when PBR_FLAG_AO is 集合 Uses
-            // the per-frame-in-flight 描述符 集合 so updating the 视图 for
-            // 帧 N doesn't disturb 帧 N-1's still-in-flight 集合
-            let ao_set = self
-                .ao_descriptor_sets
-                .get(ctx.frame_index as usize)
-                .copied()
-                .unwrap_or(vk::DescriptorSet::null());
-            ctx.device.cmd_bind_descriptor_sets(
-                ctx.cmd,
-                vk::PipelineBindPoint::GRAPHICS,
-                pipeline.layout,
-                4,
-                std::slice::from_ref(&ao_set),
-                &[],
-            );
-            // 集合 5: probe 音量 全局光照 (scene-level, 静态 — same 集合 every 帧
-            ctx.device.cmd_bind_descriptor_sets(
-                ctx.cmd,
-                vk::PipelineBindPoint::GRAPHICS,
-                pipeline.layout,
-                5,
-                std::slice::from_ref(&self.gi_descriptor_set),
-                &[],
-            );
-        }
-
-        // 统计真正提交的绘制数（`ShadowsOnly` 会被跳过）。
-        let mut drawn = 0usize;
-        unsafe {
-            ctx.device.cmd_set_viewport(
-                ctx.cmd,
-                0,
-                &[vk::Viewport {
-                    x: 0.0,
-                    y: 0.0,
-                    width: self.extent.width as f32,
-                    height: self.extent.height as f32,
-                    min_depth: 0.0,
-                    max_depth: 1.0,
-                }],
-            );
-            ctx.device.cmd_set_scissor(
-                ctx.cmd,
-                0,
-                &[vk::Rect2D {
-                    offset: vk::Offset2D { x: 0, y: 0 },
-                    extent: self.extent,
-                }],
-            );
-
-            // 循环开始前刚绑定的是默认（不透明）管线；只有遇到别的状态才重绑
-            // （剔除 / 深度写 / 混合都是管线状态）。描述符与推送常量布局在所有
-            // 变体之间一致，所以不需要重新绑定描述符集。
-            let mut bound_state = (DrawState::default(), wireframe, false);
-            for item in ctx.frame.draw_list {
-                // `ShadowsOnly` 物体不参与相机主通道（`ShadowCastingMode`）。
-                if !item.visible_in_main_pass {
-                    continue;
+            // 绘制 the skybox 第一个 (background) for cameras whose clear
+            // flags ask for it. It uses its own 管线 + IBL env set and writes
+            // no depth, so scene geometry always occludes it.
+            if camera.draw_skybox && camera.has_camera {
+                if let Some(skybox) = ctx.frame.skybox {
+                    if let Err(e) = self.skybox.draw(
+                        ctx.device,
+                        ctx.cmd,
+                        self.render_pass.unwrap(),
+                        self.extent,
+                        &camera.inv_view,
+                        skybox,
+                    ) {
+                        log::warn!("SkyboxPass draw failed (skybox skipped): {e:#}");
+                    }
                 }
-                let uploaded_mesh = match ctx.frame.mesh_manager.get(item.mesh) {
-                    Some(m) => m,
-                    None => continue,
-                };
-                let uploaded = &uploaded_mesh.mesh;
-                let skinned = item.bone_offset.is_some();
-                // Skinned draws read joints/weights from vertex buffer 1. A
-                // skinned draw without an uploaded skin buffer is skipped
-                // rather than drawn with garbage weights.
-                let skin = if skinned {
-                    uploaded_mesh.skin.as_ref()
-                } else {
-                    None
-                };
-                if skinned && skin.is_none() {
-                    continue;
+            }
+
+            // Re-bind the scene 管线 + all 描述符 sets. Required after the
+            // skybox draw (incompatible layout at set 0) and per camera because
+            // set 0 carries a camera-slot dynamic offset (#461).
+            let dynamic_offset = camera_index as u32 * self.camera_stride;
+            unsafe {
+                ctx.device.cmd_bind_pipeline(
+                    ctx.cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    scene_pipeline,
+                );
+                // 集合 0: 帧 UBO + materials SSBO + 光源 SSBO
+                ctx.device.cmd_bind_descriptor_sets(
+                    ctx.cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    scene_layout,
+                    0,
+                    std::slice::from_ref(&frame_set),
+                    std::slice::from_ref(&dynamic_offset),
+                );
+                // 集合 1: bindless 纹理 表
+                ctx.device.cmd_bind_descriptor_sets(
+                    ctx.cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    scene_layout,
+                    1,
+                    std::slice::from_ref(&self.bindless_set),
+                    &[],
+                );
+                // 集合 2: IBL cubemap
+                ctx.device.cmd_bind_descriptor_sets(
+                    ctx.cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    scene_layout,
+                    2,
+                    std::slice::from_ref(&self.ibl_descriptor_set),
+                    &[],
+                );
+                // 集合 3: shadow 映射表
+                ctx.device.cmd_bind_descriptor_sets(
+                    ctx.cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    scene_layout,
+                    3,
+                    std::slice::from_ref(&self.shadow_descriptor_set),
+                    &[],
+                );
+                // 集合 4: previous-frame GTAO 可见性 (combined 图像 采样器).
+                let ao_set = self
+                    .ao_descriptor_sets
+                    .get(ctx.frame_index as usize)
+                    .copied()
+                    .unwrap_or(vk::DescriptorSet::null());
+                ctx.device.cmd_bind_descriptor_sets(
+                    ctx.cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    scene_layout,
+                    4,
+                    std::slice::from_ref(&ao_set),
+                    &[],
+                );
+                // 集合 5: probe 音量 全局光照 (scene-level, 静态).
+                ctx.device.cmd_bind_descriptor_sets(
+                    ctx.cmd,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    scene_layout,
+                    5,
+                    std::slice::from_ref(&self.gi_descriptor_set),
+                    &[],
+                );
+            }
+
+            unsafe {
+                ctx.device.cmd_set_viewport(
+                    ctx.cmd,
+                    0,
+                    &[vk::Viewport {
+                        x: 0.0,
+                        y: 0.0,
+                        width: self.extent.width as f32,
+                        height: self.extent.height as f32,
+                        min_depth: 0.0,
+                        max_depth: 1.0,
+                    }],
+                );
+                ctx.device.cmd_set_scissor(
+                    ctx.cmd,
+                    0,
+                    &[vk::Rect2D {
+                        offset: vk::Offset2D { x: 0, y: 0 },
+                        extent: self.extent,
+                    }],
+                );
+
+                // 循环开始前刚绑定的是默认（不透明）管线；只有遇到别的状态才重绑
+                // （剔除 / 深度写 / 混合都是管线状态）。描述符与推送常量布局在所有
+                // 变体之间一致，所以不需要重新绑定描述符集。
+                let mut bound_state = (DrawState::default(), wireframe, false);
+                for item in ctx.frame.draw_list {
+                    // `ShadowsOnly` 物体不参与相机主通道（`ShadowCastingMode`）。
+                    if !item.visible_in_main_pass {
+                        continue;
+                    }
+                    let uploaded_mesh = match ctx.frame.mesh_manager.get(item.mesh) {
+                        Some(m) => m,
+                        None => continue,
+                    };
+                    let uploaded = &uploaded_mesh.mesh;
+                    let skinned = item.bone_offset.is_some();
+                    // Skinned draws read joints/weights from vertex buffer 1. A
+                    // skinned draw without an uploaded skin buffer is skipped
+                    // rather than drawn with garbage weights.
+                    let skin = if skinned {
+                        uploaded_mesh.skin.as_ref()
+                    } else {
+                        None
+                    };
+                    if skinned && skin.is_none() {
+                        continue;
+                    }
+                    let key = (item.state, wireframe, skinned);
+                    if key != bound_state {
+                        let variant = self.pipelines.get(&key).with_context(|| {
+                            format!("ForwardPass: no pipeline for {:?}", item.state)
+                        })?;
+                        ctx.device.cmd_bind_pipeline(
+                            ctx.cmd,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            variant.pipeline,
+                        );
+                        bound_state = key;
+                    }
+                    drawn += 1;
+
+                    if let Some(skin) = skin {
+                        let vertex_buffers = [uploaded.vertex_buffer, skin.buffer];
+                        let offsets = [0u64, 0u64];
+                        ctx.device
+                            .cmd_bind_vertex_buffers(ctx.cmd, 0, &vertex_buffers, &offsets);
+                    } else {
+                        let vertex_buffers = [uploaded.vertex_buffer];
+                        let offsets = [0u64];
+                        ctx.device
+                            .cmd_bind_vertex_buffers(ctx.cmd, 0, &vertex_buffers, &offsets);
+                    }
+
+                    // 推送 per-draw constants: 模型 + 材质 SSBO 槽 The
+                    // remaining fields (albedo_idx/normal_idx) are
+                    // unused by scene_frag.slang (it reads 纹理 indices
+                    // from the SSBO record, not the 推送 常量 so we 集合 them
+                    // to 无效 env_handle carries the BRDF LUT bindless handle.
+                    // material_slot comes from DrawItem.material
+                    // (already resolved to an SSBO 槽 in app.rs); None -> 槽 0
+                    // (the 回退 材质
+                    let pc = crate::shader_bindings::scene_frag::PbrBindlessPush {
+                        model: item.model,
+                        material_slot: item.material.unwrap_or(0),
+                        env_handle: self.brdf_handle,
+                        albedo_idx: u32::MAX,
+                        normal_idx: u32::MAX,
+                        // PBR 分量 toggles from the app (15-bit bitmask).
+                        debug_flags: ctx.frame.debug_flags,
+                        // Skinning (#560 P0-3): `bone_offset` picks the first
+                        // palette matrix of this draw; unskinned draws keep
+                        // `skin_mode = 0` so the vertex stage never reads the SSBO.
+                        bone_offset: item.bone_offset.unwrap_or(0),
+                        skin_mode: u32::from(item.bone_offset.is_some()),
+                        _pad_92: 0,
+                        _padding: [0; 3],
+                    };
+                    ctx.device.cmd_push_constants(
+                        ctx.cmd,
+                        scene_layout,
+                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                        0,
+                        std::slice::from_raw_parts(
+                            &pc as *const _ as *const u8,
+                            scene_frag::PUSH_CONSTANT_SIZE as usize,
+                        ),
+                    );
+
+                    if let Some(ib) = uploaded.index_buffer {
+                        let index_count = item.index_count.unwrap_or(uploaded.index_count);
+                        if index_count == 0 {
+                            continue;
+                        }
+                        ctx.device
+                            .cmd_bind_index_buffer(ctx.cmd, ib, 0, vk::IndexType::UINT32);
+                        ctx.device.cmd_draw_indexed(
+                            ctx.cmd,
+                            index_count,
+                            1,
+                            item.index_start,
+                            0,
+                            0,
+                        );
+                    } else {
+                        ctx.device.cmd_draw(ctx.cmd, uploaded.vertex_count, 1, 0, 0);
+                    }
                 }
-                let key = (item.state, wireframe, skinned);
-                if key != bound_state {
-                    let variant = self.pipelines.get(&key).with_context(|| {
-                        format!("ForwardPass: no pipeline for {:?}", item.state)
-                    })?;
+            }
+
+            // 填充 + 线框叠加（#431）：填充已经画完，再用 outline 着色器画一遍
+            // `POLYGON_MODE_LINE`；负深度 bias + 不写深度让线稳定压在面上。
+            if shaded_wireframe {
+                let overlay = self
+                    .shaded_wireframe_pipeline
+                    .as_ref()
+                    .context("ForwardPass: shaded wireframe pipeline missing")?;
+                unsafe {
                     ctx.device.cmd_bind_pipeline(
                         ctx.cmd,
                         vk::PipelineBindPoint::GRAPHICS,
-                        variant.pipeline,
+                        overlay.pipeline,
                     );
-                    bound_state = key;
+                    ctx.device.cmd_bind_descriptor_sets(
+                        ctx.cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        overlay.layout,
+                        0,
+                        std::slice::from_ref(&frame_set),
+                        std::slice::from_ref(&dynamic_offset),
+                    );
                 }
-                drawn += 1;
-
-                if let Some(skin) = skin {
-                    let vertex_buffers = [uploaded.vertex_buffer, skin.buffer];
-                    let offsets = [0u64, 0u64];
-                    ctx.device
-                        .cmd_bind_vertex_buffers(ctx.cmd, 0, &vertex_buffers, &offsets);
-                } else {
-                    let vertex_buffers = [uploaded.vertex_buffer];
-                    let offsets = [0u64];
-                    ctx.device
-                        .cmd_bind_vertex_buffers(ctx.cmd, 0, &vertex_buffers, &offsets);
-                }
-
-                // 推送 per-draw constants: 模型 + 材质 SSBO 槽 The
-                // remaining fields (albedo_idx/normal_idx) are
-                // unused by scene_frag.slang (it reads 纹理 indices
-                // from the SSBO record, not the 推送 常量 so we 集合 them
-                // to 无效 env_handle carries the BRDF LUT bindless handle.
-                // material_slot comes from DrawItem.material
-                // (already resolved to an SSBO 槽 in app.rs); None -> 槽 0
-                // (the 回退 材质
-                let pc = crate::shader_bindings::scene_frag::PbrBindlessPush {
-                    model: item.model,
-                    material_slot: item.material.unwrap_or(0),
-                    env_handle: self.brdf_handle,
-                    albedo_idx: u32::MAX,
-                    normal_idx: u32::MAX,
-                    // PBR 分量 toggles from the app (15-bit bitmask).
-                    debug_flags: ctx.frame.debug_flags,
-                    // Skinning (#560 P0-3): `bone_offset` picks the first
-                    // palette matrix of this draw; unskinned draws keep
-                    // `skin_mode = 0` so the vertex stage never reads the SSBO.
-                    bone_offset: item.bone_offset.unwrap_or(0),
-                    skin_mode: u32::from(item.bone_offset.is_some()),
-                    _pad_92: 0,
-                    _padding: [0; 3],
-                };
-                ctx.device.cmd_push_constants(
-                    ctx.cmd,
-                    pipeline.layout,
-                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                    0,
-                    std::slice::from_raw_parts(
-                        &pc as *const _ as *const u8,
-                        scene_frag::PUSH_CONSTANT_SIZE as usize,
-                    ),
-                );
-
-                if let Some(ib) = uploaded.index_buffer {
-                    let index_count = item.index_count.unwrap_or(uploaded.index_count);
-                    if index_count == 0 {
+                for item in ctx.frame.draw_list {
+                    if !item.visible_in_main_pass {
                         continue;
                     }
-                    ctx.device
-                        .cmd_bind_index_buffer(ctx.cmd, ib, 0, vk::IndexType::UINT32);
-                    ctx.device
-                        .cmd_draw_indexed(ctx.cmd, index_count, 1, item.index_start, 0, 0);
-                } else {
-                    ctx.device.cmd_draw(ctx.cmd, uploaded.vertex_count, 1, 0, 0);
-                }
-            }
-        }
-
-        // 填充 + 线框叠加（#431）：填充已经画完，再用 outline 着色器画一遍
-        // `POLYGON_MODE_LINE`；负深度 bias + 不写深度让线稳定压在面上。
-        if shaded_wireframe {
-            let overlay = self
-                .shaded_wireframe_pipeline
-                .as_ref()
-                .context("ForwardPass: shaded wireframe pipeline missing")?;
-            unsafe {
-                ctx.device.cmd_bind_pipeline(
-                    ctx.cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    overlay.pipeline,
-                );
-                ctx.device.cmd_bind_descriptor_sets(
-                    ctx.cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    overlay.layout,
-                    0,
-                    std::slice::from_ref(&frame_set),
-                    &[],
-                );
-            }
-            for item in ctx.frame.draw_list {
-                if !item.visible_in_main_pass {
-                    continue;
-                }
-                let Some(uploaded) = ctx.frame.mesh_manager.get(item.mesh) else {
-                    continue;
-                };
-                let pc = OutlinePush {
-                    model: item.model,
-                    // 深色线在亮面上可读；不随材质变化，接近 Unity 的
-                    // Shaded Wireframe。
-                    color: [0.02, 0.02, 0.02, 1.0],
-                    thickness: 0.0,
-                    _pad: [0.0; 3],
-                };
-                unsafe {
-                    let vertex_buffers = [uploaded.mesh.vertex_buffer];
-                    let offsets = [0u64];
-                    ctx.device
-                        .cmd_bind_vertex_buffers(ctx.cmd, 0, &vertex_buffers, &offsets);
-                    ctx.device.cmd_push_constants(
-                        ctx.cmd,
-                        overlay.layout,
-                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                        0,
-                        std::slice::from_raw_parts(
-                            &pc as *const _ as *const u8,
-                            std::mem::size_of::<OutlinePush>(),
-                        ),
-                    );
-                    if let Some(ib) = uploaded.mesh.index_buffer {
-                        let index_count = item.index_count.unwrap_or(uploaded.mesh.index_count);
-                        if index_count == 0 {
-                            continue;
-                        }
+                    let Some(uploaded) = ctx.frame.mesh_manager.get(item.mesh) else {
+                        continue;
+                    };
+                    let pc = OutlinePush {
+                        model: item.model,
+                        // 深色线在亮面上可读；不随材质变化，接近 Unity 的
+                        // Shaded Wireframe。
+                        color: [0.02, 0.02, 0.02, 1.0],
+                        thickness: 0.0,
+                        _pad: [0.0; 3],
+                    };
+                    unsafe {
+                        let vertex_buffers = [uploaded.mesh.vertex_buffer];
+                        let offsets = [0u64];
                         ctx.device
-                            .cmd_bind_index_buffer(ctx.cmd, ib, 0, vk::IndexType::UINT32);
-                        ctx.device.cmd_draw_indexed(
+                            .cmd_bind_vertex_buffers(ctx.cmd, 0, &vertex_buffers, &offsets);
+                        ctx.device.cmd_push_constants(
                             ctx.cmd,
-                            index_count,
-                            1,
-                            item.index_start,
+                            overlay.layout,
+                            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                             0,
-                            0,
+                            std::slice::from_raw_parts(
+                                &pc as *const _ as *const u8,
+                                std::mem::size_of::<OutlinePush>(),
+                            ),
                         );
-                    } else {
-                        ctx.device
-                            .cmd_draw(ctx.cmd, uploaded.mesh.vertex_count, 1, 0, 0);
+                        if let Some(ib) = uploaded.mesh.index_buffer {
+                            let index_count = item.index_count.unwrap_or(uploaded.mesh.index_count);
+                            if index_count == 0 {
+                                continue;
+                            }
+                            ctx.device
+                                .cmd_bind_index_buffer(ctx.cmd, ib, 0, vk::IndexType::UINT32);
+                            ctx.device.cmd_draw_indexed(
+                                ctx.cmd,
+                                index_count,
+                                1,
+                                item.index_start,
+                                0,
+                                0,
+                            );
+                        } else {
+                            ctx.device
+                                .cmd_draw(ctx.cmd, uploaded.mesh.vertex_count, 1, 0, 0);
+                        }
                     }
                 }
             }
-        }
 
-        // 选中描边（#487）：把选中的网格再画一遍，正面剔除 + 法线外扩。
-        // 放在不透明网格之后、粒子 / 精灵之前：被其它几何挡住的部分会正常
-        // 被深度测试丢弃，不会像屏幕空间线框那样浮在最上面。
-        let outline_requested = ctx.frame.draw_list.iter().any(|item| {
-            item.visible_in_main_pass && ctx.frame.outline_entities.contains(&item.entity_id)
-        });
-        if outline_requested {
-            self.ensure_outline_pipeline(ctx.device)?;
-            let outline = self
-                .outline_pipeline
-                .as_ref()
-                .context("ForwardPass: outline pipeline missing")?;
-            unsafe {
-                ctx.device.cmd_bind_pipeline(
-                    ctx.cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    outline.pipeline,
-                );
-                ctx.device.cmd_bind_descriptor_sets(
-                    ctx.cmd,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    outline.layout,
-                    0,
-                    std::slice::from_ref(&frame_set),
-                    &[],
-                );
-            }
-
-            for item in ctx.frame.draw_list {
-                if !item.visible_in_main_pass
-                    || !ctx.frame.outline_entities.contains(&item.entity_id)
-                {
-                    continue;
-                }
-                let Some(uploaded) = ctx.frame.mesh_manager.get(item.mesh) else {
-                    continue;
-                };
-                // 线宽随物体尺度走，缩放很大的物体不会只剩一条细缝。
-                let scale = (0..3)
-                    .map(|column| {
-                        let c = &item.model[column];
-                        (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt()
-                    })
-                    .fold(0.0f32, f32::max);
-                let pc = OutlinePush {
-                    model: item.model,
-                    color: [4.0, 0.25, 0.02, 1.0],
-                    thickness: 0.02 * scale.max(1e-4),
-                    _pad: [0.0; 3],
-                };
+            // 选中描边（#487）：把选中的网格再画一遍，正面剔除 + 法线外扩。
+            // 放在不透明网格之后、粒子 / 精灵之前：被其它几何挡住的部分会正常
+            // 被深度测试丢弃，不会像屏幕空间线框那样浮在最上面。
+            let outline_requested = ctx.frame.draw_list.iter().any(|item| {
+                item.visible_in_main_pass && ctx.frame.outline_entities.contains(&item.entity_id)
+            });
+            if outline_requested {
+                self.ensure_outline_pipeline(ctx.device)?;
+                let outline = self
+                    .outline_pipeline
+                    .as_ref()
+                    .context("ForwardPass: outline pipeline missing")?;
                 unsafe {
-                    let vertex_buffers = [uploaded.mesh.vertex_buffer];
-                    let offsets = [0u64];
-                    ctx.device
-                        .cmd_bind_vertex_buffers(ctx.cmd, 0, &vertex_buffers, &offsets);
-                    ctx.device.cmd_push_constants(
+                    ctx.device.cmd_bind_pipeline(
                         ctx.cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        outline.pipeline,
+                    );
+                    ctx.device.cmd_bind_descriptor_sets(
+                        ctx.cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
                         outline.layout,
-                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                         0,
-                        std::slice::from_raw_parts(
-                            &pc as *const _ as *const u8,
-                            std::mem::size_of::<OutlinePush>(),
-                        ),
+                        std::slice::from_ref(&frame_set),
+                        std::slice::from_ref(&dynamic_offset),
                     );
-                    if let Some(ib) = uploaded.mesh.index_buffer {
-                        let index_count = item.index_count.unwrap_or(uploaded.index_count());
-                        if index_count == 0 {
-                            continue;
-                        }
+                }
+
+                for item in ctx.frame.draw_list {
+                    if !item.visible_in_main_pass
+                        || !ctx.frame.outline_entities.contains(&item.entity_id)
+                    {
+                        continue;
+                    }
+                    let Some(uploaded) = ctx.frame.mesh_manager.get(item.mesh) else {
+                        continue;
+                    };
+                    // 线宽随物体尺度走，缩放很大的物体不会只剩一条细缝。
+                    let scale = (0..3)
+                        .map(|column| {
+                            let c = &item.model[column];
+                            (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt()
+                        })
+                        .fold(0.0f32, f32::max);
+                    let pc = OutlinePush {
+                        model: item.model,
+                        color: [4.0, 0.25, 0.02, 1.0],
+                        thickness: 0.02 * scale.max(1e-4),
+                        _pad: [0.0; 3],
+                    };
+                    unsafe {
+                        let vertex_buffers = [uploaded.mesh.vertex_buffer];
+                        let offsets = [0u64];
                         ctx.device
-                            .cmd_bind_index_buffer(ctx.cmd, ib, 0, vk::IndexType::UINT32);
-                        ctx.device.cmd_draw_indexed(
+                            .cmd_bind_vertex_buffers(ctx.cmd, 0, &vertex_buffers, &offsets);
+                        ctx.device.cmd_push_constants(
                             ctx.cmd,
-                            index_count,
-                            1,
-                            item.index_start,
+                            outline.layout,
+                            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                             0,
-                            0,
+                            std::slice::from_raw_parts(
+                                &pc as *const _ as *const u8,
+                                std::mem::size_of::<OutlinePush>(),
+                            ),
                         );
-                    } else {
-                        ctx.device
-                            .cmd_draw(ctx.cmd, uploaded.vertex_count(), 1, 0, 0);
+                        if let Some(ib) = uploaded.mesh.index_buffer {
+                            let index_count = item.index_count.unwrap_or(uploaded.index_count());
+                            if index_count == 0 {
+                                continue;
+                            }
+                            ctx.device
+                                .cmd_bind_index_buffer(ctx.cmd, ib, 0, vk::IndexType::UINT32);
+                            ctx.device.cmd_draw_indexed(
+                                ctx.cmd,
+                                index_count,
+                                1,
+                                item.index_start,
+                                0,
+                                0,
+                            );
+                        } else {
+                            ctx.device
+                                .cmd_draw(ctx.cmd, uploaded.vertex_count(), 1, 0, 0);
+                        }
                     }
                 }
             }
-        }
 
-        // 世界空间粒子：深度测试开启（被前面的几何遮挡），所以画在不透明网格
-        // 之后、2D 精灵之前；透明排序由引擎在提交前完成（远到近）。
-        if !ctx.frame.particle_items.is_empty() {
-            if let Err(e) = self.particles.draw(
-                ctx.device,
-                ctx.context,
-                ctx.cmd,
-                self.render_pass.unwrap(),
-                &ctx.frame.view_proj,
-                &ctx.frame.inv_view_rot,
-                ctx.frame.particle_items,
-            ) {
-                log::warn!("ParticlePass draw failed (particles skipped): {e:#}");
+            // 世界空间粒子：深度测试开启（被前面的几何遮挡），所以画在不透明网格
+            // 之后、2D 精灵之前；透明排序由引擎在提交前完成（远到近）。
+            if !ctx.frame.particle_items.is_empty() {
+                if let Err(e) = self.particles.draw(
+                    ctx.device,
+                    ctx.context,
+                    ctx.cmd,
+                    self.render_pass.unwrap(),
+                    &camera.view_proj,
+                    &camera.inv_view,
+                    ctx.frame.particle_items,
+                ) {
+                    log::warn!("ParticlePass draw failed (particles skipped): {e:#}");
+                }
             }
-        }
 
-        // 2D sprites, drawn after the mesh list so they overlay 3D geometry.
-        // The pass disables depth test/write; ordering comes from the engine's
-        // CPU-side sort (sorting_layer -> order_in_layer -> z).
-        if !ctx.frame.sprite_items.is_empty() {
-            if let Err(e) = self.sprites.draw(
-                ctx.device,
-                ctx.context,
-                ctx.cmd,
-                self.render_pass.unwrap(),
-                self.bindless_set,
-                self.bindless_layout,
-                &ctx.frame.view_proj,
-                ctx.frame.sprite_items,
-                ctx.frame.sprite_lights,
-            ) {
-                log::warn!("SpritePass draw failed (sprites skipped): {e:#}");
+            // 2D sprites, drawn after the mesh list so they overlay 3D geometry.
+            // The pass disables depth test/write; ordering comes from the engine's
+            // CPU-side sort (sorting_layer -> order_in_layer -> z).
+            if !ctx.frame.sprite_items.is_empty() {
+                if let Err(e) = self.sprites.draw(
+                    ctx.device,
+                    ctx.context,
+                    ctx.cmd,
+                    self.render_pass.unwrap(),
+                    self.bindless_set,
+                    self.bindless_layout,
+                    &camera.view_proj,
+                    ctx.frame.sprite_items,
+                    ctx.frame.sprite_lights,
+                ) {
+                    log::warn!("SpritePass draw failed (sprites skipped): {e:#}");
+                }
             }
-        }
 
-        // 绘制地面参考网格（深度测试开启，被场景实体遮挡）
-        if ctx.frame.show_grid {
-            if let Some(grid) = &self.ground_grid {
-                grid.draw(ctx.cmd, &ctx.frame.view_proj, ctx.frame.camera_orthographic);
+            // 绘制地面参考网格（深度测试开启，被场景实体遮挡）
+            if ctx.frame.show_grid {
+                if let Some(grid) = &self.ground_grid {
+                    grid.draw(ctx.cmd, &camera.view_proj, ctx.frame.camera_orthographic);
+                }
             }
-        }
 
-        // 绘制 the world-space XYZ gizmo on 顶部 of the scene (its 管线 has
-        // 深度 test 禁用 so it is never occluded). Uses the same
-        // view-projection the scene was drawn with.
-        if let Some(gizmo) = &self.gizmo {
-            gizmo.draw(ctx.cmd, &ctx.frame.view_proj, ctx.frame.gizmos);
+            // 绘制 the world-space XYZ gizmo on 顶部 of the scene (its 管线 has
+            // 深度 test 禁用 so it is never occluded). Uses the same
+            // view-projection the scene was drawn with.
+            if let Some(gizmo) = &self.gizmo {
+                gizmo.draw(ctx.cmd, &camera.view_proj, ctx.frame.gizmos);
+            }
         }
 
         unsafe { ctx.device.cmd_end_render_pass(ctx.cmd) };
