@@ -96,6 +96,11 @@ pub struct RenderSettings {
     pub bloom_intensity: f32,
     /// bloom 亮度阈值；高于该 HDR 亮度的像素才会发光。
     pub bloom_threshold: f32,
+    /// 镜头色差强度（#502 Phase 2）：`0.0` = 关闭，`1.0` = 最强。
+    ///
+    /// 在 HDR 采样阶段按到画面中心的距离把红/蓝通道向相反方向偏移，
+    /// 绿色保持不动；默认 0 与旧画面逐位一致。
+    pub chromatic_aberration: f32,
     /// 内部渲染分辨率 `[宽, 高]`（#613）；`[0, 0]` = 关闭。
     ///
     /// 开启后场景按这个尺寸渲染，`PostPass` 再放大到窗口；相机的宽高比也跟着
@@ -126,6 +131,7 @@ impl RenderSettings {
                 0.0
             },
             bloom_threshold: self.bloom_threshold,
+            chromatic_aberration: self.chromatic_aberration,
         }
     }
 
@@ -166,6 +172,7 @@ impl Default for RenderSettings {
             bloom: false,
             bloom_intensity: 0.15,
             bloom_threshold: 1.0,
+            chromatic_aberration: 0.0,
             shadow_distance: DEFAULT_SHADOW_DISTANCE,
             shadow_map_size: prism_render::SHADOW_MAP_SIZE,
             internal_resolution: [0, 0],
@@ -205,6 +212,9 @@ mod tests {
         let grade = settings.post_grade();
         assert_eq!(grade.bloom_intensity, 0.7);
         assert_eq!(grade.bloom_threshold, settings.bloom_threshold);
+
+        settings.chromatic_aberration = 0.35;
+        assert_eq!(settings.post_grade().chromatic_aberration, 0.35);
     }
 
     #[test]

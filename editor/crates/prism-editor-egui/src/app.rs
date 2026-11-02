@@ -5933,6 +5933,7 @@ fn render_settings_json(
         "bloom": settings.bloom,
         "bloomIntensity": settings.bloom_intensity,
         "bloomThreshold": settings.bloom_threshold,
+        "chromaticAberration": settings.chromatic_aberration,
         "shadowDistance": settings.shadow_distance,
         "debugRt": settings.debug_rt,
         "wireframe": settings.wireframe,
@@ -5983,6 +5984,7 @@ fn render_settings_from_json(
             .unwrap_or(base.bloom),
         bloom_intensity: f32_field("bloomIntensity", base.bloom_intensity),
         bloom_threshold: f32_field("bloomThreshold", base.bloom_threshold),
+        chromatic_aberration: f32_field("chromaticAberration", base.chromatic_aberration),
         shadow_distance: f32_field("shadowDistance", base.shadow_distance),
         // #526：贴图边长只在构造渲染器时生效；编辑器 UI 还没暴露滑杆时保持默认。
         shadow_map_size: u32_field("shadowMapSize", base.shadow_map_size),
@@ -6335,6 +6337,7 @@ mod tests {
         settings.bloom = true;
         settings.bloom_intensity = 0.4;
         settings.bloom_threshold = 2.5;
+        settings.chromatic_aberration = 0.25;
         settings.shadow_distance = 90.0;
         settings.shaded_wireframe = true;
         let value = render_settings_json(&settings);
@@ -6348,6 +6351,7 @@ mod tests {
         assert!(loaded.bloom);
         assert_eq!(loaded.bloom_intensity, 0.4);
         assert_eq!(loaded.bloom_threshold, 2.5);
+        assert_eq!(loaded.chromatic_aberration, 0.25);
         assert_eq!(loaded.shadow_distance, 90.0);
         assert!(loaded.shaded_wireframe);
         assert_eq!(

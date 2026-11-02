@@ -5750,6 +5750,16 @@ pub fn render_graph(
                 .changed();
             ui.end_row();
 
+            ui.label("Chromatic Aberration");
+            changed |= ui
+                .add(egui::Slider::new(
+                    &mut settings.chromatic_aberration,
+                    0.0..=1.0,
+                ))
+                .on_hover_text("Radial red/blue split toward the frame edges.")
+                .changed();
+            ui.end_row();
+
             ui.label("Bloom");
             changed |= ui.checkbox(&mut settings.bloom, "Enable").changed();
             ui.end_row();
