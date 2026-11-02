@@ -332,6 +332,13 @@ MCP 文档工具测试优先复用
 dispatch 层，覆盖文档列表 / 读取、组件增删、反射字段写入和结构化错误；示例见
 `crates/prism-editor-mcp/tests/mcp_harness.rs`。
 
+引擎模拟测试优先复用 `crates/prism-engine/tests/support` 的 `SimHarness`：固定
+`step` 的 `Engine::update`、脚本化输入、种子化随机游走，以及逐 tick 的 `Snapshot`
+（实体/组件集合、局部/世界变换、动画播放头与事件、UI 布局与绘制四边形、场景代数
+和 harness 记录的 load/unload 请求）。`Snapshot::diff(other, tolerance)` 递归比较
+浮点字段并给出 `entities.Cube.position[0]` 这样的路径；不要用 sleep 或墙钟推进时间。
+示例见 `crates/prism-engine/tests/sim_harness.rs`。
+
 需要比较多个 kernel 配置时，用 `GpuHarness::dispatch_repeated` 在**一次提交**里重复
 dispatch 并返回 `TimedDispatch { outputs, elapsed }`；每个候选先校验 readback，再按
 `elapsed / repeats` 选最快。kernel 必须是幂等的（例如读 A 写 B），因为后一次 dispatch
