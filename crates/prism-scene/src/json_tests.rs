@@ -556,7 +556,13 @@ fn an_animator_survives_cook_and_decode() {
                         "speed": 2.0,
                         "looped": false,
                         "playing": true,
-                        "blend_duration": 0.35
+                        "blend_duration": 0.35,
+                        "layers": [{
+                            "clip_path": "models/hero.skinning/clips/2_aim.ranim",
+                            "weight": 0.5,
+                            "additive": true,
+                            "bone_mask": ["spine_02", "hand_r"]
+                        }]
                     }
                 }
             }]
@@ -584,6 +590,14 @@ fn an_animator_survives_cook_and_decode() {
     assert!(!animator.looped);
     assert!(animator.playing);
     assert_eq!(animator.blend_duration, 0.35, "交叉淡入时长要进 RSCN");
+    assert_eq!(animator.layers.len(), 1, "动画图层要进 RSCN");
+    assert_eq!(
+        animator.layers[0].clip_path,
+        "models/hero.skinning/clips/2_aim.ranim"
+    );
+    assert_eq!(animator.layers[0].weight, 0.5);
+    assert!(animator.layers[0].additive);
+    assert_eq!(animator.layers[0].bone_mask, ["spine_02", "hand_r"]);
 }
 
 #[test]

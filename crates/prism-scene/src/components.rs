@@ -2255,6 +2255,36 @@ impl SkinnedMeshRenderer {
 // 蒙皮动画
 // ---------------------------------------------------------------------------
 
+/// 一层叠加在基础动画上的动画（#560 P1 的 Layer / Avatar Mask）。
+///
+/// `clip_path` 与基础剪辑同一时间轴采样；`weight` 为 0 时整层跳过。
+/// `bone_mask` 为空表示全身；否则只有列出的骨骼受影响（名字与
+/// `SkeletonRoot` 的骨架关节名一致，找不到的名字忽略）。
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect, PartialEq)]
+#[reflect(name = "prism_engine::scene::AnimLayer")]
+#[serde(default)]
+pub struct AnimLayer {
+    /// 该层的剪辑路径（`.ranim`，相对 `assets/`）。
+    pub clip_path: String,
+    /// 混合权重（`0..=1`，NaN / 越界会被引擎清洗）。
+    pub weight: f32,
+    /// `true` = 相对 reference（bind）姿态的增量层；`false` = 普通覆盖层。
+    pub additive: bool,
+    /// 只有这些骨骼参与该层；空 = 全身。
+    pub bone_mask: Vec<String>,
+}
+
+impl Default for AnimLayer {
+    fn default() -> Self {
+        Self {
+            clip_path: String::new(),
+            weight: 1.0,
+            additive: false,
+            bone_mask: Vec::new(),
+        }
+    }
+}
+
 /// 骨架的播放控制（#560 P0-2）。
 ///
 /// 事件源是 cooked 的 `.ranim` 剪辑；骨架由同一实体上的 [`SkeletonRoot`] 指定。
@@ -2308,6 +2338,11 @@ pub struct Animator {
     /// 而不是硬切（硬切会让角色"跳"一下）。`0` = 直接切换；负值 / NaN 同样按 0
     /// 处理。过渡本身只影响姿态，不改变组件里的 `time`。
     pub blend_duration: f32,
+    /// 基础姿态之上的附加动画层（#560 P1）。按数组顺序依次叠加，后面的层
+    /// 覆盖前面的结果；`additive` 层按相对 bind 姿态的增量应用。
+    ///
+    /// 这些层在交叉淡入之后求值，不参与基础剪辑之间的过渡。
+    pub layers: Vec<AnimLayer>,
 }
 
 impl Default for Animator {
@@ -2330,6 +2365,7 @@ impl Default for Animator {
             additive_weight: 1.0,
             // 0.2s ≈ UE 的默认混合时间：短到不拖沓，又能盖住大部分姿势差。
             blend_duration: 0.2,
+            layers: Vec::new(),
         }
     }
 }

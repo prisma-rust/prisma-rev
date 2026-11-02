@@ -4,7 +4,7 @@ use prism_anim::{
     AnimState, AnimTransition, ClipNotify, Joint, JointTransform, Pose, StateMachine, Track,
     TransitionCondition, Vec3Key,
 };
-use prism_scene::components::SkeletonRoot;
+use prism_scene::components::{AnimLayer, SkeletonRoot};
 
 fn two_bone_skeleton() -> Skeleton {
     Skeleton::new(vec![
@@ -1040,5 +1040,128 @@ fn a_two_dimensional_blend_space_needs_an_area_and_falls_back() {
     assert_eq!(
         world.get::<AnimatorPlayhead>(entity).unwrap().clip_path,
         "bend.ranim"
+    );
+}
+
+/// 动画图层测试用：基础剪辑停在 0°，图层是 90° 的 bent90。
+fn layered_setup() -> (World, Entity) {
+    let (mut world, entity) = world_with_animator("");
+    world
+        .get_resource_mut::<SkeletonLibrary>()
+        .unwrap()
+        .insert_clip("bent90.ranim", bent_90_clip("bent90"));
+    {
+        let animator = world.get_mut::<Animator>(entity).unwrap();
+        animator.playing = false;
+        animator.time = 0.0;
+    }
+    (world, entity)
+}
+
+fn push_layer(world: &mut World, entity: Entity, layer: AnimLayer) {
+    world
+        .get_mut::<Animator>(entity)
+        .unwrap()
+        .layers
+        .push(layer);
+}
+
+#[test]
+fn an_animation_layer_blends_over_the_base_pose() {
+    let (mut world, entity) = layered_setup();
+    push_layer(
+        &mut world,
+        entity,
+        AnimLayer {
+            clip_path: "bent90.ranim".into(),
+            weight: 1.0,
+            ..Default::default()
+        },
+    );
+    animator_system(&mut world, 0.0);
+    let tip = child_tip(&world, entity);
+    assert!(
+        (tip.x - 1.0).abs() < 1e-3 && tip.y.abs() < 1e-3,
+        "整层 90° 应覆盖 0° 基础姿态，得到 {tip:?}"
+    );
+
+    // 权重 0.5：只转 45°。
+    world.get_mut::<Animator>(entity).unwrap().layers[0].weight = 0.5;
+    animator_system(&mut world, 0.0);
+    let tip = child_tip(&world, entity);
+    assert!(
+        (tip.x - (2.0 - std::f32::consts::FRAC_PI_4.sin())).abs() < 1e-3,
+        "半权重该是 45°，得到 {tip:?}"
+    );
+}
+
+#[test]
+fn a_layer_bone_mask_limits_which_joints_move() {
+    let (mut world, entity) = layered_setup();
+    push_layer(
+        &mut world,
+        entity,
+        AnimLayer {
+            clip_path: "bent90.ranim".into(),
+            weight: 1.0,
+            bone_mask: vec!["root".into()],
+            ..Default::default()
+        },
+    );
+    animator_system(&mut world, 0.0);
+    let tip = child_tip(&world, entity);
+    assert!(
+        (tip.y - 1.0).abs() < 1e-4 && (tip.x - 2.0).abs() < 1e-4,
+        "遮罩只含 root，child 不该转，得到 {tip:?}"
+    );
+}
+
+#[test]
+fn an_additive_layer_uses_the_reference_delta() {
+    let (mut world, entity) = layered_setup();
+    push_layer(
+        &mut world,
+        entity,
+        AnimLayer {
+            clip_path: "bent90.ranim".into(),
+            weight: 1.0,
+            additive: true,
+            ..Default::default()
+        },
+    );
+    animator_system(&mut world, 0.0);
+    let tip = child_tip(&world, entity);
+    assert!(
+        (tip.x - 1.0).abs() < 1e-3 && tip.y.abs() < 1e-3,
+        "additive 90° 应加到 0° 基础姿态，得到 {tip:?}"
+    );
+}
+
+#[test]
+fn a_missing_or_zero_weight_layer_is_ignored() {
+    let (mut world, entity) = layered_setup();
+    push_layer(
+        &mut world,
+        entity,
+        AnimLayer {
+            clip_path: "missing.ranim".into(),
+            weight: 1.0,
+            ..Default::default()
+        },
+    );
+    push_layer(
+        &mut world,
+        entity,
+        AnimLayer {
+            clip_path: "bent90.ranim".into(),
+            weight: f32::NAN,
+            ..Default::default()
+        },
+    );
+    animator_system(&mut world, 0.0);
+    let tip = child_tip(&world, entity);
+    assert!(
+        (tip.y - 1.0).abs() < 1e-4,
+        "无效图层不该改变基础姿态，得到 {tip:?}"
     );
 }
