@@ -327,6 +327,11 @@ GPU / shader 测试：CI 设置 `PRISM_REQUIRE_VALIDATION=1`，要求 debug 构�
 保存和重载，并同时断言内存与磁盘状态。示例见
 `editor/crates/prism-editor-gpui-core/tests/workspace_harness.rs`。
 
+MCP 文档工具测试优先复用
+`crates/prism-editor-mcp/tests/support` 的 `McpHarness`：临时项目 + `tools::call` 直连
+dispatch 层，覆盖文档列表 / 读取、组件增删、反射字段写入和结构化错误；示例见
+`crates/prism-editor-mcp/tests/mcp_harness.rs`。
+
 需要比较多个 kernel 配置时，用 `GpuHarness::dispatch_repeated` 在**一次提交**里重复
 dispatch 并返回 `TimedDispatch { outputs, elapsed }`；每个候选先校验 readback，再按
 `elapsed / repeats` 选最快。kernel 必须是幂等的（例如读 A 写 B），因为后一次 dispatch

@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use crate::protocol::ToolDef;
+use prism_editor_mcp::protocol::ToolDef;
 
 /// 由 `editor_launch` 启动的进程。
 #[derive(Default)]
@@ -363,7 +363,7 @@ fn capture(root: &Path, args: &Value) -> Result<String, String> {
 
 fn quit(host: &EditorHost) -> Result<String, String> {
     // 控件通道按 `--project` 找不到项目根时也能用：直接用已知端口文件。
-    let root = crate::resolve_root().map_err(|err| err.to_string())?;
+    let root = prism_editor_mcp::resolve_root().map_err(|err| err.to_string())?;
     let response = request(&root, json!({ "cmd": "quit" }))?;
     let mut guard = host
         .child

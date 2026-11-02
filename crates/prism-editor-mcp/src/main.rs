@@ -14,12 +14,10 @@
 
 mod editor_egui;
 mod game;
-mod protocol;
-mod tools;
 
 use std::io::{BufRead, Write};
-use std::path::PathBuf;
 
+use prism_editor_mcp::{protocol, resolve_root, tools};
 use protocol::{Request, ToolDef};
 use serde_json::{json, Value};
 
@@ -112,26 +110,4 @@ fn handle(
         }
         other => protocol::failure(id, -32601, format!("不支持的方法 '{other}'")),
     }
-}
-
-/// `--project <path>` → `PRISMREV_PROJECT` → 从 cwd 向上找 `assets/`。
-fn resolve_root() -> Result<PathBuf, String> {
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
-        if arg == "--project" {
-            let value = args.next().ok_or("--project 需要一个路径")?;
-            return std::fs::canonicalize(&value)
-                .map_err(|err| format!("项目根 '{value}' 不存在: {err}"));
-        }
-    }
-    if let Some(value) = std::env::var_os("PRISMREV_PROJECT") {
-        let value = PathBuf::from(value);
-        return std::fs::canonicalize(&value).map_err(|err| {
-            format!(
-                "PRISMREV_PROJECT 指向的 '{}' 不存在: {err}",
-                value.display()
-            )
-        });
-    }
-    prism_editor_api::scene::find_project_root()
 }
