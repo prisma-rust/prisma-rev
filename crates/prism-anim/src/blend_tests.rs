@@ -322,3 +322,111 @@ fn non_finite_positions_are_dropped_when_building() {
     );
     assert_eq!(space.samples().len(), 1);
 }
+
+/// 绕 +Y 转 `deg` 的局部变换。
+fn rotated(deg: f32) -> JointTransform {
+    JointTransform::new(
+        Vec3::ZERO,
+        Quat::from_rotation_y(deg.to_radians()),
+        Vec3::ONE,
+    )
+}
+
+#[test]
+fn a_zero_weight_additive_layer_leaves_the_base_untouched() {
+    let mut base = pose(vec![rotated(30.0), t(Vec3::X)]);
+    let before = base.clone();
+    let layer = pose(vec![rotated(90.0), t(Vec3::new(5.0, 0.0, 0.0))]);
+    let reference = pose(vec![rotated(0.0), t(Vec3::ZERO)]);
+
+    assert_eq!(apply_additive(&mut base, &layer, &reference, 0.0), 0);
+    assert_eq!(base, before, "权重 0 不该动任何关节");
+}
+
+#[test]
+fn additive_rotation_and_translation_are_applied_on_top_of_the_base() {
+    // 参考姿态是 0°，叠加层采样到 90° → 增量就是 90°；底姿态 30° 之上再转 90°。
+    let mut base = pose(vec![rotated(30.0), t(Vec3::ZERO)]);
+    let layer = pose(vec![rotated(90.0), t(Vec3::new(2.0, 0.0, 0.0))]);
+    let reference = pose(vec![rotated(0.0), t(Vec3::ZERO)]);
+
+    apply_additive(&mut base, &layer, &reference, 1.0);
+
+    let joint = base.local(0).expect("joint 0");
+    let expected = Quat::from_rotation_y((120.0f32).to_radians());
+    assert!(
+        joint.rotation.dot(expected).abs() > 0.9999,
+        "30° + 90° = 120°，得到 {:?}",
+        joint.rotation
+    );
+    // 平移是相对参考姿态的差值：参考在原点，所以直接把叠加层的位移加上去。
+    assert!((base.local(1).unwrap().translation.x - 2.0).abs() < 1e-6);
+}
+
+#[test]
+fn half_weight_additive_halves_the_delta() {
+    let mut base = pose(vec![rotated(0.0)]);
+    let layer = pose(vec![rotated(90.0)]);
+    let reference = pose(vec![rotated(30.0)]);
+
+    apply_additive(&mut base, &layer, &reference, 0.5);
+
+    // 增量 = 90° − 30° = 60°，一半 = 30°。
+    let joint = base.local(0).expect("joint 0");
+    let expected = Quat::from_rotation_y((30.0f32).to_radians());
+    assert!(
+        joint.rotation.dot(expected).abs() > 0.9999,
+        "得到 {:?}",
+        joint.rotation
+    );
+}
+
+#[test]
+fn additive_scale_is_multiplicative_and_ignores_a_zero_reference() {
+    let mut base = pose(vec![JointTransform::new(
+        Vec3::ZERO,
+        Quat::IDENTITY,
+        Vec3::new(2.0, 2.0, 2.0),
+    )]);
+    let layer = pose(vec![JointTransform::new(
+        Vec3::ZERO,
+        Quat::IDENTITY,
+        Vec3::new(3.0, 4.0, 8.0),
+    )]);
+    // 参考缩放为 0（坏数据）时按 1 处理，而不是除出 inf。
+    let reference = pose(vec![JointTransform::new(
+        Vec3::ZERO,
+        Quat::IDENTITY,
+        Vec3::new(0.0, 2.0, 4.0),
+    )]);
+
+    apply_additive(&mut base, &layer, &reference, 1.0);
+
+    let scale = base.local(0).unwrap().scale;
+    // 参考缩放为 0 → 增量按 1 处理（不动），而不是除出 inf / 塌成 0。
+    assert!(
+        (scale.x - 2.0).abs() < 1e-5,
+        "参考 0 时保持 2，得到 {scale:?}"
+    );
+    assert!(
+        (scale.y - 4.0).abs() < 1e-5,
+        "2 × (4/2) = 4，得到 {scale:?}"
+    );
+    assert!(
+        (scale.z - 4.0).abs() < 1e-5,
+        "2 × (8/4) = 4，得到 {scale:?}"
+    );
+}
+
+#[test]
+fn an_additive_layer_only_touches_the_joints_it_shares() {
+    let mut base = pose(vec![rotated(0.0), rotated(0.0), rotated(0.0)]);
+    let layer = pose(vec![rotated(90.0)]);
+    let reference = pose(vec![rotated(0.0), rotated(0.0), rotated(0.0)]);
+
+    assert_eq!(apply_additive(&mut base, &layer, &reference, 1.0), 1);
+    assert!(
+        base.local(1).unwrap().rotation.dot(Quat::IDENTITY).abs() > 0.9999,
+        "未覆盖的关节保持不动"
+    );
+}

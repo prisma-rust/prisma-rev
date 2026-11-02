@@ -2086,6 +2086,14 @@ pub struct Animator {
     pub blend_positions: Vec<f32>,
     /// 混合参数（游戏侧每帧写，通常就是速度）。范围外夹到两端。
     pub blend_parameter: f32,
+    /// 叠加（additive）剪辑路径（#560 P1）。空 = 没有叠加层。
+    ///
+    /// 叠加剪辑的局部变换相对 reference（bind）姿态求差后再按
+    /// [`Self::additive_weight`] 打到最终姿态上 —— 呼吸、瞄准偏移、受击抖动这类
+    /// 只改一部分骨骼的剪辑不需要再做一份基础剪辑。
+    pub additive_clip_path: String,
+    /// 叠加层权重（`0` = 关闭，`1` = 完整增量）。负数 / NaN 按 0 处理。
+    pub additive_weight: f32,
     /// 换剪辑时的交叉淡入时长（秒）。
     ///
     /// `clip_path` 在运行时被改掉时，从**旧剪辑停在那一刻的姿态**过渡到新剪辑，
@@ -2105,6 +2113,8 @@ impl Default for Animator {
             blend_clip_paths: Vec::new(),
             blend_positions: Vec::new(),
             blend_parameter: 0.0,
+            additive_clip_path: String::new(),
+            additive_weight: 1.0,
             // 0.2s ≈ UE 的默认混合时间：短到不拖沓，又能盖住大部分姿势差。
             blend_duration: 0.2,
         }

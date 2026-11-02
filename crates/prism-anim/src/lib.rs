@@ -23,7 +23,8 @@ pub mod skeleton;
 pub mod skinning;
 
 pub use blend::{
-    blend_into, blend_joint, blend_poses, blend_space_weights, BlendSample, BlendSpace1D,
+    additive_joint, apply_additive, blend_into, blend_joint, blend_poses, blend_space_weights,
+    BlendSample, BlendSpace1D,
 };
 pub use clip::{sample_quat, sample_vec3, Clip, ClipNotify, QuatKey, Track, Vec3Key};
 pub use pose::Pose;
