@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use crate::protocol::ToolDef;
+use prism_editor_mcp::protocol::ToolDef;
 
 /// 日志缓冲上限：够定位问题，又不会把内存吃满。
 const LOG_CAPACITY: usize = 2000;
