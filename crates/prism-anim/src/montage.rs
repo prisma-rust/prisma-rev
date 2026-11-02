@@ -67,6 +67,8 @@ impl Montage {
 /// 跨过的一个 Montage Notify。
 #[derive(Debug, Clone, PartialEq)]
 pub struct MontageNotify {
+    /// 事件所属剪辑名（`Clip.name`，便于上层映射回资产）。
+    pub clip_name: String,
     pub name: String,
     /// 事件在剪辑里的本地时间（秒）。
     pub time: f32,
@@ -176,6 +178,7 @@ impl MontagePlayer {
         if dt > 0.0 && speed >= 0.0 {
             for notify in active.montage.clip.notifies_between(previous_local, local) {
                 self.pending_notifies.push(MontageNotify {
+                    clip_name: active.montage.clip.name.clone(),
                     name: notify.name.clone(),
                     time: notify.time,
                 });

@@ -17,11 +17,14 @@
 //! 用 [`StateMachine::next_transition`] 求值，Trigger 会被消耗；转移时长 > 0 时
 //! 从转移前的姿态淡入。这和引擎 `animator` 的播放头语义一致，但这一层不碰 ECS。
 //!
-//! 已知边界：Slot 的 montage 只支持循环 / 单次播放与权重覆盖，还没有
-//! 显式的 start/stop 队列和 Montage Notify 区间；CachedPose 复用每帧缓存，
-//! 不跨帧冻结姿态。
+//! Slot 的 montage 可以通过 [`AnimGraphEvaluator::play_montage`] /
+//! [`AnimGraphEvaluator::enqueue_montage`] 立即覆盖或排队，`stop_montage` /
+//! `stop_montage_after_current` 清空对应状态；Montage Notify 会并入图事件。
+//!
+//! 已知边界：Montage Notify 区间（State Notify）还未实现；CachedPose 复用
+//! 每帧缓存，不跨帧冻结姿态。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use prism_asset::formats_anim_graph::{
@@ -32,6 +35,7 @@ use crate::blend::{blend_into, BlendSample, BlendSpace1D};
 use crate::blend_space2d::{BlendSample2D, BlendSpace2D};
 use crate::blend_stack::{BlendLayer, BlendStack, BoneMask};
 use crate::clip::Clip;
+use crate::montage::{Montage, MontagePlayer};
 use crate::pose::Pose;
 use crate::skeleton::Skeleton;
 use crate::state_machine::{AnimParameters, StateMachine};
@@ -118,6 +122,8 @@ pub struct AnimGraphEvaluator {
     parameters: AnimParameters,
     frame: u64,
     pending_events: Vec<GraphNotifyEvent>,
+    /// 每个 Slot 节点自己的 Montage 播放队列（#560 P1）。
+    montages: HashMap<String, MontagePlayer>,
 }
 
 impl AnimGraphEvaluator {
@@ -142,6 +148,7 @@ impl AnimGraphEvaluator {
             parameters,
             frame: 0,
             pending_events: Vec::new(),
+            montages: HashMap::new(),
         }
     }
 
@@ -155,6 +162,40 @@ impl AnimGraphEvaluator {
 
     pub fn parameters_mut(&mut self) -> &mut AnimParameters {
         &mut self.parameters
+    }
+
+    /// 立即在命名为 `slot` 的 Slot 节点上播放 Montage（替换该槽当前段）。
+    pub fn play_montage(&mut self, slot: &str, montage: Montage) -> bool {
+        self.montages
+            .entry(slot.to_string())
+            .or_default()
+            .play_now(montage)
+    }
+
+    /// 在 `slot` 上排队一段 Montage；空闲时立即开始。
+    pub fn enqueue_montage(&mut self, slot: &str, montage: Montage) -> bool {
+        self.montages
+            .entry(slot.to_string())
+            .or_default()
+            .enqueue(montage)
+    }
+
+    /// 停止 `slot` 的活动段与队列。
+    pub fn stop_montage(&mut self, slot: &str) {
+        if let Some(player) = self.montages.get_mut(slot) {
+            player.stop();
+        }
+    }
+
+    /// 让 `slot` 当前段播完后停止，不接队列下一段。
+    pub fn stop_montage_after_current(&mut self, slot: &str) {
+        if let Some(player) = self.montages.get_mut(slot) {
+            player.stop_after_current();
+        }
+    }
+
+    pub fn montage_player(&self, slot: &str) -> Option<&MontagePlayer> {
+        self.montages.get(slot)
     }
 
     /// 当前状态机节点的状态下标（调试面板 / 测试用）；不是状态机节点时返回 `None`。
@@ -425,6 +466,39 @@ impl AnimGraphEvaluator {
         };
         let base =
             self.evaluate_node(input.node, source, skeleton, reference, dt, visiting, stack)?;
+        // MontagePlayer 优先：游戏侧 play/enqueue 的段覆盖作者写的静态 slot 剪辑。
+        let mut montage_events = Vec::new();
+        let mut montage_pose = None;
+        if let Some(player) = self.montages.get_mut(&node.name) {
+            if player.is_playing() {
+                player.tick(dt);
+                montage_events = player.take_notifies();
+                let mut overlay = reference.clone();
+                if player.sample_into(reference, &mut overlay) {
+                    montage_pose = Some((overlay, player.active_weight()));
+                }
+            }
+        }
+        for event in montage_events {
+            self.pending_events.push(GraphNotifyEvent {
+                node: node.name.clone(),
+                clip_path: event.clip_name,
+                name: event.name,
+                time: event.time,
+            });
+        }
+        if let Some((overlay, weight)) = montage_pose {
+            if weight >= 1.0 {
+                return Ok(overlay);
+            }
+            if weight <= 0.0 {
+                return Ok(base);
+            }
+            let mut blended = Pose::default();
+            blend_into(&mut blended, &base, &overlay, weight);
+            return Ok(blended);
+        }
+
         let Some(path) = node.clips.first().filter(|path| !path.trim().is_empty()) else {
             return Ok(base);
         };

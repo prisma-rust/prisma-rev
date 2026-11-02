@@ -116,7 +116,9 @@ let pose = evaluator.evaluate(&assets, &skeleton, dt)?;
 
 Montage 播放由 `prism_anim::MontagePlayer` 负责：`play_now` 立即覆盖、`enqueue`
 FIFO 排队、单次播完自动接下一段，`stop` / `stop_after_current` 清空对应状态，
-`tick` 收集跨帧 Notify。它只维护播放头；姿态如何合成由调用方决定。
+`tick` 收集跨帧 Notify。求值器把它接到 Slot 节点：`play_montage` /
+`enqueue_montage` / `stop_montage` 按节点名操作，活动段按权重覆盖 Slot 输入；
+没有活动段时回退到作者写的 `clips[0]`。
 
 引擎侧：`Animator.anim_graph_path` 非空且图已加载时优先于状态机 / 混合空间 /
 单剪辑；`load_animation_assets` 会加载 `.rag` / `*.animgraph.json`，再补加载图引用的
