@@ -2248,6 +2248,67 @@ fn sprite_bounds(
     })
 }
 
+/// 碰撞体的本地 AABB（#522）。
+///
+/// 编辑器拾取之前只看网格/精灵包围盒；有 `Collider` 时优先用它，
+/// 这样点选范围和物理形状一致（盒 / 球 / 胶囊都折算成局部 AABB）。
+fn collider_bounds(
+    doc: &prism_editor_core::SceneDoc,
+    index: usize,
+) -> Option<vm::PickBounds> {
+    const COLLIDER: &str = "prism_engine::scene::Collider";
+    let collider = doc.entities.get(index)?.component(COLLIDER)?;
+    let number = |value: Option<&serde_json::Value>, default: f32| {
+        value
+            .and_then(serde_json::Value::as_f64)
+            .map(|value| value as f32)
+            .unwrap_or(default)
+    };
+    let center = [0usize, 1, 2].map(|axis| {
+        number(
+            collider
+                .get("center")
+                .and_then(|center| center.get(axis)),
+            0.0,
+        )
+    });
+    let shape = collider
+        .get("shape")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("Box");
+    let (half_x, half_y, half_z) = match shape {
+        "Sphere" => {
+            let radius = number(collider.get("radius"), 0.5).max(1.0e-4);
+            (radius, radius, radius)
+        }
+        "Capsule" => {
+            let radius = number(collider.get("radius"), 0.5).max(1.0e-4);
+            let half_height = number(collider.get("half_height"), 0.5).max(0.0);
+            (radius, half_height + radius, radius)
+        }
+        _ => {
+            let half = collider.get("half_extents");
+            (
+                number(half.and_then(|value| value.get(0)), 0.5).max(1.0e-4),
+                number(half.and_then(|value| value.get(1)), 0.5).max(1.0e-4),
+                number(half.and_then(|value| value.get(2)), 0.5).max(1.0e-4),
+            )
+        }
+    };
+    Some(vm::PickBounds {
+        min: [
+            center[0] - half_x,
+            center[1] - half_y,
+            center[2] - half_z,
+        ],
+        max: [
+            center[0] + half_x,
+            center[1] + half_y,
+            center[2] + half_z,
+        ],
+    })
+}
+
 fn proxies(
     workspace: &Workspace,
     host: Option<&EngineHost>,
@@ -2261,10 +2322,12 @@ fn proxies(
                 .is_some_and(|id| hidden.contains(&id))
         })
         .map(|index| {
-            let bounds = sprite_bounds(doc, index, host).or_else(|| {
-                host.and_then(|host| host.mesh_bounds(index))
-                    .map(|(min, max)| vm::PickBounds { min, max })
-            });
+            let bounds = collider_bounds(doc, index)
+                .or_else(|| sprite_bounds(doc, index, host))
+                .or_else(|| {
+                    host.and_then(|host| host.mesh_bounds(index))
+                        .map(|(min, max)| vm::PickBounds { min, max })
+                });
             (
                 index,
                 TransformJson {
@@ -2376,6 +2439,44 @@ mod tests {
 
         let after = proxies(&workspace, None).len();
         assert_eq!(after, before - 2, "隐藏的父级和子树都不参与点选");
+    }
+
+    #[test]
+    fn collider_bounds_follow_the_authored_shape() {
+        let mut workspace = Workspace::sample();
+        let collider = serde_json::json!({
+            "shape": "Sphere",
+            "center": [1.0, 2.0, 3.0],
+            "radius": 0.25
+        });
+        workspace.document_mut().doc.entities[0]
+            .components
+            .insert("prism_engine::scene::Collider".to_string(), collider);
+
+        let sphere = collider_bounds(&workspace.document().doc, 0).expect("sphere bounds");
+        assert_eq!(sphere.min, [0.75, 1.75, 2.75]);
+        assert_eq!(sphere.max, [1.25, 2.25, 3.25]);
+
+        let collider = serde_json::json!({
+            "shape": "Capsule",
+            "radius": 0.5,
+            "half_height": 2.0
+        });
+        workspace.document_mut().doc.entities[0].components
+            ["prism_engine::scene::Collider"] = collider;
+        let capsule = collider_bounds(&workspace.document().doc, 0).expect("capsule bounds");
+        assert_eq!(capsule.min, [-0.5, -2.5, -0.5]);
+        assert_eq!(capsule.max, [0.5, 2.5, 0.5]);
+
+        let collider = serde_json::json!({
+            "shape": "Box",
+            "half_extents": [1.0, 2.0, 3.0]
+        });
+        workspace.document_mut().doc.entities[0].components
+            ["prism_engine::scene::Collider"] = collider;
+        let cuboid = collider_bounds(&workspace.document().doc, 0).expect("box bounds");
+        assert_eq!(cuboid.min, [-1.0, -2.0, -3.0]);
+        assert_eq!(cuboid.max, [1.0, 2.0, 3.0]);
     }
 
     #[test]
