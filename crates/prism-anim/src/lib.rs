@@ -21,6 +21,7 @@ pub mod clip;
 pub mod pose;
 pub mod skeleton;
 pub mod skinning;
+pub mod state_machine;
 
 pub use blend::{
     additive_joint, apply_additive, blend_into, blend_joint, blend_poses, blend_space_weights,
@@ -30,3 +31,7 @@ pub use clip::{sample_quat, sample_vec3, Clip, ClipNotify, QuatKey, Track, Vec3K
 pub use pose::Pose;
 pub use skeleton::{Joint, JointTransform, Skeleton};
 pub use skinning::{palette_to_arrays, skin_matrices, skin_normals, skin_positions};
+pub use state_machine::{
+    AnimParameters, AnimState, AnimTransition, StateMachine, TransitionCondition, TransitionTarget,
+    ANY_STATE,
+};
