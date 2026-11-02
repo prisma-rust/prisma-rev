@@ -158,6 +158,21 @@ pub fn scene_render_system_into_with_frustums(
         let material_ref = world.get::<MaterialRef>(entity);
         let material_slots = world.get::<MaterialSlots>(entity);
         let submeshes = world.get::<MeshSubmeshes>(entity);
+        let mut splat_slots = [u32::MAX; 4];
+        let splat_tiling = if let Some(splat) =
+            world.get::<crate::scene::systems::terrain::TerrainSplat>(entity)
+        {
+            if let Some(slots) = world.get::<MaterialSlots>(entity) {
+                for (index, slot) in slots.slots.iter().take(4).enumerate() {
+                    if let Some(slot) = slot {
+                        splat_slots[index] = *slot;
+                    }
+                }
+            }
+            splat.tiling
+        } else {
+            0.0
+        };
 
         // 有 submesh 表时按区间拆成多个 DrawItem（#520）；否则保持旧行为：
         // 一个实体一次绘制，覆盖整个索引缓冲。
@@ -182,6 +197,8 @@ pub fn scene_render_system_into_with_frustums(
                     index_count: Some(submesh.index_count),
                     // 蒙皮绘制项由专用的 `SkinnedMeshRenderer` 分支生成（P0-3b）。
                     bone_offset: None,
+                    splat_slots,
+                    splat_tiling,
                 });
             }
         } else {
@@ -203,6 +220,8 @@ pub fn scene_render_system_into_with_frustums(
                 index_count: None,
                 // 蒙皮绘制项由专用的 `SkinnedMeshRenderer` 分支生成（P0-3b）。
                 bone_offset: None,
+                splat_slots,
+                splat_tiling,
             });
         }
     }

@@ -428,6 +428,10 @@ pub struct DrawItem {
     /// `None` = static mesh; the vertex stage then skips the bone buffer
     /// entirely, so existing draws cost exactly what they did before.
     pub bone_offset: Option<u32>,
+    /// 纹理层 splat 的 4 个材质槽（#517）；`u32::MAX` = 该层缺失。
+    pub splat_slots: [u32; 4],
+    /// 纹理层 splat 的 UV 平铺倍数；`0` = 不是 splat 绘制。
+    pub splat_tiling: f32,
 }
 
 impl DrawItem {

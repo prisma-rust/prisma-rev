@@ -105,6 +105,8 @@ pub fn append_skinned_draw_items_with_frustums(
                     index_start: submesh.index_start,
                     index_count: Some(submesh.index_count),
                     bone_offset,
+                    splat_slots: [u32::MAX; 4],
+                    splat_tiling: 0.0,
                 });
                 appended += 1;
             }
@@ -126,6 +128,8 @@ pub fn append_skinned_draw_items_with_frustums(
                 index_start: 0,
                 index_count: None,
                 bone_offset,
+                splat_slots: [u32::MAX; 4],
+                splat_tiling: 0.0,
             });
             appended += 1;
         }

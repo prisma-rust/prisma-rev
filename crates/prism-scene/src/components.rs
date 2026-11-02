@@ -2441,6 +2441,13 @@ pub struct Terrain {
     /// 程序化色带 splat（#517）：按高度 / 坡度把沙 / 草 / 岩石 / 雪写进顶点色，
     /// 前向 PBR 用顶点色调制 albedo。默认关闭，现有场景不受影响。
     pub splat: bool,
+    /// 纹理层 splat（#517）：最多 4 个材质路径，按高度 / 坡度混合。
+    ///
+    /// 非空时顶点色改为 4 层权重（R/G/B 是前三层，第四层 = 1 - R - G - B），
+    /// 前向 PBR 采样各材质的 albedo / normal / metallic-roughness。空数组 = 关闭。
+    pub splat_materials: Vec<String>,
+    /// 纹理层 splat 的 UV 平铺倍数（默认 16；仅 `splat_materials` 非空时生效）。
+    pub splat_tiling: f32,
 }
 
 impl Default for Terrain {
@@ -2457,6 +2464,8 @@ impl Default for Terrain {
             vegetation_material: String::new(),
             vegetation_size: 1.0,
             splat: false,
+            splat_materials: Vec::new(),
+            splat_tiling: 16.0,
         }
     }
 }

@@ -10,7 +10,7 @@
 pub const ENTRY_VERTEX_MAIN: &str = "vertexMain"; // stage: VERTEX
 
 /// Push-constant block size in bytes (reflected).
-pub const PUSH_CONSTANT_SIZE: u32 = 108;
+pub const PUSH_CONSTANT_SIZE: u32 = 120;
 
 // --- descriptor set 0 ---
 pub const FRAME_SET: u32 = 0;
@@ -23,7 +23,7 @@ pub const PREV_MODELS_BINDING: u32 = 4; // UNIFORM_BUFFER
 /// Push-constant struct (auto-generated from Slang `MeshPush`).
 ///
 /// Field offsets are the reflected std140 ones — alignment holes are emitted as
-/// explicit `_pad_*` fillers, so `size_of` is 108 bytes and every field sits
+/// explicit `_pad_*` fillers, so `size_of` is 120 bytes and every field sits
 /// where the shader expects it.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -35,17 +35,27 @@ pub struct MeshPush {
     /// offset 68, size 4
     pub env_handle: u32,
     /// offset 72, size 4
-    pub albedo_idx: u32,
-    /// offset 76, size 4
-    pub normal_idx: u32,
-    /// offset 80, size 4
     pub debug_flags: u32,
-    /// offset 84, size 4
+    /// offset 76, size 4
     pub bone_offset: u32,
-    /// offset 88, size 4
+    /// offset 80, size 4
     pub skin_mode: u32,
+    /// offset 84, size 4
+    pub instance_offset: u32,
+    /// offset 88, size 4
+    pub instance_count: u32,
     /// offset 92, size 4
-    pub _pad_92: u32,
-    /// offset 96, size 12
-    pub _padding: [u32; 3],
+    pub prev_draw_index: u32,
+    /// offset 96, size 4
+    pub reactive_mask: u32,
+    /// offset 100, size 4
+    pub splat_slot0: u32,
+    /// offset 104, size 4
+    pub splat_slot1: u32,
+    /// offset 108, size 4
+    pub splat_slot2: u32,
+    /// offset 112, size 4
+    pub splat_slot3: u32,
+    /// offset 116, size 4
+    pub splat_tiling: f32,
 }
