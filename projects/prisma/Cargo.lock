@@ -1420,6 +1420,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "prism-anim"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "prism-asset",
+]
+
+[[package]]
 name = "prism-app"
 version = "0.1.0"
 dependencies = [
@@ -1470,8 +1478,10 @@ dependencies = [
  "glam",
  "jni",
  "log",
+ "prism-anim",
  "prism-asset",
  "prism-ecs",
+ "prism-project-api",
  "prism-reflect",
  "prism-render",
  "prism-scene",
@@ -1546,6 +1556,8 @@ dependencies = [
  "log",
  "prism-gfx",
  "raw-window-handle",
+ "serde",
+ "serde_json",
  "slotmap",
  "windows",
 ]

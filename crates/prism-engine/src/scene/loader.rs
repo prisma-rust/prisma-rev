@@ -726,6 +726,32 @@ impl SceneLoader {
             for (comp_name, comp_data) in &ej.components {
                 registry.apply(world, entity, comp_name, comp_data);
             }
+
+            // Runtime GPU handles are derived from the authoring bundle for
+            // JSON scenes too. Without this, editor-authored MeshRenderer
+            // entities never enter the draw query because MeshRef is absent.
+            if let Some(renderer) = world.get::<MeshRenderer>(entity).cloned() {
+                if renderer.has_mesh() {
+                    world.insert(
+                        entity,
+                        MeshRef {
+                            asset_id: SceneAssetId::generate(),
+                            render_handle: prism_render::managers::MeshHandle::default(),
+                            generation: 0,
+                        },
+                    );
+                }
+                if renderer.has_material() {
+                    world.insert(
+                        entity,
+                        MaterialRef {
+                            asset_id: SceneAssetId::generate(),
+                            material_slot: 0,
+                            generation: 0,
+                        },
+                    );
+                }
+            }
         }
 
         // Phase 2: hierarchy.

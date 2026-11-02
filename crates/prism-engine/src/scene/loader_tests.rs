@@ -760,6 +760,49 @@ fn load_rscn_v4_mesh_without_material_still_draws() {
     assert_eq!(items[0].material, None, "缺失材质应回落到默认材质槽");
 }
 
+#[test]
+fn load_json_mesh_without_material_derives_mesh_ref() {
+    let json = r#"{
+            "version": 3,
+            "entities": [{
+                "id": 1,
+                "name": "MeshOnly",
+                "parent": null,
+                "transform": {},
+                "components": {
+                    "prism_engine::scene::MeshRenderer": {
+                        "mesh_path": "__builtin/box",
+                        "material_path": ""
+                    }
+                }
+            }]
+        }"#;
+
+    let mut registry = crate::scene::ComponentRegistry::new();
+    crate::scene::register_builtin_components(&mut registry);
+    let mut world = World::new();
+    let loader = SceneLoader::new();
+    loader
+        .spawn_from_json_text(
+            &mut world,
+            json,
+            "mesh-only.scene.json",
+            SceneAssetId::generate(),
+            &registry,
+        )
+        .expect("json scene should load");
+
+    let entity = world
+        .query::<MeshRef>()
+        .next()
+        .map(|(entity, _)| entity)
+        .expect("json mesh entity should derive MeshRef");
+    assert!(world.get::<MaterialRef>(entity).is_none());
+    let items = crate::scene::SceneReadView::new(&world).draw_items();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].material, None);
+}
+
 // ── integration via load_and_spawn ──────────────────────────────
 
 #[test]
