@@ -39,6 +39,12 @@ use crate::render_pass::find_memory_type;
 use crate::shader;
 use crate::shader_bindings;
 
+// Keep the reflected push-constant size and the generated Rust layout in sync.
+const _: () = assert!(
+    std::mem::size_of::<shader_bindings::post::PostPush>() as u32
+        == shader_bindings::post::PUSH_CONSTANT_SIZE
+);
+
 /// Fullscreen-triangle 色调映射 pass 高动态范围 scene 颜色 -> sRGB 交换链
 pub struct PostPass {
     render_pass: Option<vk::RenderPass>,
@@ -128,7 +134,7 @@ impl PostPass {
         .context("PostPass: create nearest sampler")?;
 
         let bindings = [vk::DescriptorSetLayoutBinding::default()
-            .binding(0)
+            .binding(shader_bindings::post::HDR_TEX_BINDING)
             .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
@@ -440,8 +446,9 @@ impl PostPass {
         let frag_module =
             shader::load_shader_module(device, FRAG_SPV).context("PostPass: load frag")?;
 
-        let vert_entry = std::ffi::CString::new("vertexMain").unwrap();
-        let frag_entry = std::ffi::CString::new("fragmentMain").unwrap();
+        let vert_entry = std::ffi::CString::new(shader_bindings::post::ENTRY_VERTEX_MAIN).unwrap();
+        let frag_entry =
+            std::ffi::CString::new(shader_bindings::post::ENTRY_FRAGMENT_MAIN).unwrap();
         let vert_stage = shader::shader_stage(
             vk::ShaderStageFlags::VERTEX,
             vert_module,
@@ -461,7 +468,7 @@ impl PostPass {
         let push = [vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::FRAGMENT)
             .offset(0)
-            .size(std::mem::size_of::<shader_bindings::post::PostPush>() as u32)];
+            .size(shader_bindings::post::PUSH_CONSTANT_SIZE)];
 
         let blend_attachment = vk::PipelineColorBlendAttachmentState::default()
             .color_write_mask(vk::ColorComponentFlags::RGBA)
