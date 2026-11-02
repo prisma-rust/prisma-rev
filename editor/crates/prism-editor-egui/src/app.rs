@@ -3676,6 +3676,28 @@ impl EditorApp {
                     self.set_gizmo_tool(tool);
                 }
             }
+            let sculpting = self
+                .scene_view
+                .as_ref()
+                .is_some_and(|view| view.sculpt);
+            if ui
+                .selectable_label(sculpting, "Sculpt")
+                .on_hover_text(
+                    "Paint the selected Terrain heightmap: drag in the Scene view. \
+                     Brush mode / radius / strength are in the Terrain inspector.",
+                )
+                .clicked()
+            {
+                if let Some(view) = self.scene_view.as_mut() {
+                    view.sculpt = !view.sculpt;
+                    view.dirty = true;
+                    self.state.status = if view.sculpt {
+                        "Sculpt: drag on the selected terrain".to_string()
+                    } else {
+                        "Sculpt disabled".to_string()
+                    };
+                }
+            }
             let space = self.workspace.gizmo_space;
             if ui
                 .button(format!("{:?} (X)", space))
@@ -5377,6 +5399,7 @@ impl EditorApp {
         self.ensure_view(ViewKind::Scene);
         if let Some(view) = self.scene_view.as_mut() {
             view.tool = tool;
+            view.sculpt = false;
             view.mark_dirty();
         }
     }
