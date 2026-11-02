@@ -3109,6 +3109,65 @@ pub fn blend_axis_value_at(x: f32, width: f32, min: f32, max: f32) -> Option<f32
     Some(min + (max - min) * t)
 }
 
+/// 二维混合空间样本的包围盒 `(min, max)`（只统计有限坐标）。
+///
+/// 某个轴跨度退化（所有样本同一行 / 同一列）时把该轴扩成 ±1，避免画图与拖动时
+/// 除零；没有任何有效样本返回 `None`。
+pub fn blend_pad_bounds(positions: &[[f32; 2]]) -> Option<([f32; 2], [f32; 2])> {
+    let mut min = [f32::INFINITY; 2];
+    let mut max = [f32::NEG_INFINITY; 2];
+    let mut any = false;
+    for position in positions {
+        if !position[0].is_finite() || !position[1].is_finite() {
+            continue;
+        }
+        any = true;
+        min[0] = min[0].min(position[0]);
+        min[1] = min[1].min(position[1]);
+        max[0] = max[0].max(position[0]);
+        max[1] = max[1].max(position[1]);
+    }
+    if !any {
+        return None;
+    }
+    for axis in 0..2 {
+        if max[axis] - min[axis] <= 1e-6 {
+            min[axis] -= 1.0;
+            max[axis] += 1.0;
+        }
+    }
+    Some((min, max))
+}
+
+/// 把二维混合空间画布上的相对坐标 `(x, y)`（像素，原点在左上）映射回参数平面。
+///
+/// 屏幕 y 向下，参数 y 向上，所以第二个轴取反；越界夹到包围盒内。零 / 非有限
+/// 画布尺寸返回 `None`。
+pub fn blend_pad_value_at(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    min: [f32; 2],
+    max: [f32; 2],
+) -> Option<[f32; 2]> {
+    if width <= 0.0
+        || height <= 0.0
+        || !width.is_finite()
+        || !height.is_finite()
+        || !x.is_finite()
+        || !y.is_finite()
+    {
+        return None;
+    }
+    let tx = (x / width).clamp(0.0, 1.0);
+    let ty = (1.0 - (y / height).clamp(0.0, 1.0)).clamp(0.0, 1.0);
+    Some([
+        min[0] + (max[0] - min[0]) * tx,
+        min[1] + (max[1] - min[1]) * ty,
+    ])
+}
+
 /// 画一条混合空间参数轴：底色条 + 每个样本一根竖线 + 当前参数的位置；点一下改参数。
 ///
 /// 返回被点出来的新参数值（`None` = 没动）。拖动时间轴看姿态时，这条轴是唯一
@@ -3159,6 +3218,56 @@ fn draw_blend_axis(ui: &mut egui::Ui, positions: &[f32], parameter: f32) -> Opti
     None
 }
 
+/// 画二维混合空间：样本点 + 当前参数位置；点 / 拖画布改参数。
+///
+/// 返回新的 `[x, y]`（`None` = 没动）。样本的包围盒就是可拖范围，凸包外的点
+/// 运行时会被夹到边界上。
+fn draw_blend_pad(ui: &mut egui::Ui, positions: &[[f32; 2]], point: [f32; 2]) -> Option<[f32; 2]> {
+    let Some((min, max)) = blend_pad_bounds(positions) else {
+        return None;
+    };
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width().max(120.0), 120.0),
+        egui::Sense::click_and_drag(),
+    );
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(32, 34, 38));
+
+    let to_screen = |value: [f32; 2]| {
+        let tx = (value[0] - min[0]) / (max[0] - min[0]);
+        let ty = (value[1] - min[1]) / (max[1] - min[1]);
+        egui::pos2(
+            rect.left() + tx.clamp(0.0, 1.0) * rect.width(),
+            rect.bottom() - ty.clamp(0.0, 1.0) * rect.height(),
+        )
+    };
+    for position in positions {
+        if position[0].is_finite() && position[1].is_finite() {
+            painter.circle_filled(
+                to_screen(*position),
+                3.0,
+                egui::Color32::from_rgb(120, 124, 132),
+            );
+        }
+    }
+    painter.circle_filled(to_screen(point), 5.0, egui::Color32::from_rgb(255, 206, 84));
+
+    if response.clicked() || response.dragged() {
+        if let Some(pointer) = response.interact_pointer_pos() {
+            return blend_pad_value_at(
+                pointer.x - rect.left(),
+                pointer.y - rect.top(),
+                rect.width(),
+                rect.height(),
+                min,
+                max,
+            );
+        }
+    }
+    response.on_hover_text("2D blend parameter — click or drag on the plane");
+    None
+}
+
 fn animator_editor(
     ui: &mut Ui,
     workspace: &mut Workspace,
@@ -3197,6 +3306,26 @@ fn animator_editor(
         .unwrap_or_default();
     let mut blend_parameter = value
         .get("blend_parameter")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0) as f32;
+    let blend_2d_positions: Vec<[f32; 2]> = value
+        .get("blend_2d_positions")
+        .and_then(Value::as_array)
+        .map(|positions| {
+            positions
+                .iter()
+                .filter_map(|position| {
+                    let pair = position.as_array()?;
+                    Some([
+                        pair.first()?.as_f64()? as f32,
+                        pair.get(1)?.as_f64()? as f32,
+                    ])
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut blend_parameter_y = value
+        .get("blend_parameter_y")
         .and_then(Value::as_f64)
         .unwrap_or(0.0) as f32;
     let mut edited = false;
@@ -3272,8 +3401,26 @@ fn animator_editor(
         ui.label(RichText::new("speed").size(10.0).weak());
     });
 
-    // 一维混合空间：参数轴 + 当前落点（#560 P1）。
-    if blend_positions.len() >= 2 {
+    // 二维混合空间：参数平面 + 样本点（#560 P1）。样本够三角化时优先显示；
+    // 否则退回一维参数轴。
+    if blend_2d_positions.len() >= 3 {
+        ui.label(
+            RichText::new(format!(
+                "blend parameter ({blend_parameter:.2}, {blend_parameter_y:.2})"
+            ))
+            .size(10.0)
+            .weak(),
+        );
+        if let Some(next) = draw_blend_pad(
+            ui,
+            &blend_2d_positions,
+            [blend_parameter, blend_parameter_y],
+        ) {
+            blend_parameter = next[0];
+            blend_parameter_y = next[1];
+            edited = true;
+        }
+    } else if blend_positions.len() >= 2 {
         ui.label(
             RichText::new(format!("blend parameter {blend_parameter:.2}"))
                 .size(10.0)
@@ -3310,12 +3457,20 @@ fn animator_editor(
         workspace.set_field(entity_id, component, "speed", Value::from(speed as f64));
         workspace.set_field(entity_id, component, "playing", Value::Bool(playing));
         workspace.set_field(entity_id, component, "looped", Value::Bool(looped));
-        if blend_positions.len() >= 2 {
+        if blend_positions.len() >= 2 || blend_2d_positions.len() >= 3 {
             workspace.set_field(
                 entity_id,
                 component,
                 "blend_parameter",
                 Value::from(blend_parameter as f64),
+            );
+        }
+        if blend_2d_positions.len() >= 3 {
+            workspace.set_field(
+                entity_id,
+                component,
+                "blend_parameter_y",
+                Value::from(blend_parameter_y as f64),
             );
         }
     }
@@ -3548,6 +3703,55 @@ mod keyframe_editor_tests {
         assert!(notify_markers(&notifies, 0.0, 200.0).is_empty());
         assert!(notify_markers(&notifies, 2.0, 0.0).is_empty());
         assert!(notify_markers(&[], 2.0, 200.0).is_empty());
+    }
+
+    #[test]
+    fn blend_pad_bounds_cover_finite_samples_and_expand_degenerate_axes() {
+        let (min, max) = blend_pad_bounds(&[[0.0, 0.0], [10.0, 4.0]]).expect("bounds");
+        assert_eq!(min, [0.0, 0.0]);
+        assert_eq!(max, [10.0, 4.0]);
+
+        // 所有样本同一行：y 轴扩成 ±1，避免除零。
+        let (min, max) = blend_pad_bounds(&[[0.0, 2.0], [10.0, 2.0]]).expect("bounds");
+        assert_eq!(min[1], 1.0);
+        assert_eq!(max[1], 3.0);
+
+        // 非有限坐标被忽略；全坏 / 空 → None。
+        let (min, max) = blend_pad_bounds(&[[f32::NAN, 0.0], [1.0, 2.0]]).expect("bounds");
+        // 只剩一个点：两个轴都退化，各扩成 ±1。
+        assert_eq!(min, [0.0, 1.0]);
+        assert_eq!(max, [2.0, 3.0]);
+        assert!(blend_pad_bounds(&[]).is_none());
+        assert!(blend_pad_bounds(&[[f32::INFINITY, 0.0]]).is_none());
+    }
+
+    #[test]
+    fn blend_pad_clicks_map_back_to_the_parameter_plane() {
+        // 左上 = (min x, max y)，右下 = (max x, min y)。
+        let min = [0.0, 0.0];
+        let max = [10.0, 20.0];
+        assert_eq!(
+            blend_pad_value_at(0.0, 0.0, 100.0, 100.0, min, max),
+            Some([0.0, 20.0])
+        );
+        assert_eq!(
+            blend_pad_value_at(100.0, 100.0, 100.0, 100.0, min, max),
+            Some([10.0, 0.0])
+        );
+        assert_eq!(
+            blend_pad_value_at(50.0, 50.0, 100.0, 100.0, min, max),
+            Some([5.0, 10.0])
+        );
+        // 画布外夹到边界；坏尺寸 / 坏坐标返回 None。
+        assert_eq!(
+            blend_pad_value_at(-40.0, 400.0, 100.0, 100.0, min, max),
+            Some([0.0, 0.0])
+        );
+        assert_eq!(blend_pad_value_at(0.0, 0.0, 0.0, 100.0, min, max), None);
+        assert_eq!(
+            blend_pad_value_at(f32::NAN, 0.0, 100.0, 100.0, min, max),
+            None
+        );
     }
 
     #[test]

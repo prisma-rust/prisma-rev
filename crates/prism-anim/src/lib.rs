@@ -17,6 +17,7 @@
 //! 约定：矩阵列主序（与 `prism-render` / 引擎一致），四元数 `xyzw`，右手 +Y up。
 
 pub mod blend;
+pub mod blend_space2d;
 pub mod clip;
 pub mod pose;
 pub mod skeleton;
@@ -27,6 +28,7 @@ pub use blend::{
     additive_joint, apply_additive, blend_into, blend_joint, blend_poses, blend_space_weights,
     BlendSample, BlendSpace1D,
 };
+pub use blend_space2d::{BlendSample2D, BlendSpace2D};
 pub use clip::{sample_quat, sample_vec3, Clip, ClipNotify, QuatKey, Track, Vec3Key};
 pub use pose::Pose;
 pub use skeleton::{Joint, JointTransform, Skeleton};
