@@ -143,3 +143,34 @@ fn chainable_nodes_need_inputs() {
     let error = parse_anim_graph_json(&document).expect_err("must fail");
     assert!(error.contains("at least one input"), "{error}");
 }
+
+#[test]
+fn the_anim_graph_cooker_validates_and_passes_ragp_through() {
+    use crate::cooker::{AnimGraphCooker, CookContext, Cooker};
+    use crate::db::AssetRecord;
+    use prism_asset::core::AssetId;
+
+    let graph = parse_anim_graph_json(&document()).unwrap();
+    let bytes = encode_rag(&graph).unwrap();
+    let record = AssetRecord::new(
+        AssetId::generate(),
+        "hero.animgraph.json".into(),
+        prism_asset::core::AssetType::AnimGraph,
+        "anim-graph-importer",
+    );
+    let settings = crate::cooker::profile::CookSettings::default();
+    let ctx = CookContext {
+        record: &record,
+        imported_data: &bytes,
+        settings: &settings,
+    };
+    let result = AnimGraphCooker.cook(&ctx).expect("cooks");
+    assert_eq!(result.cooked_data, bytes);
+
+    let bad = CookContext {
+        record: &record,
+        imported_data: b"not a graph",
+        settings: &settings,
+    };
+    assert!(AnimGraphCooker.cook(&bad).is_err());
+}

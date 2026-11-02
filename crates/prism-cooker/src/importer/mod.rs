@@ -1988,6 +1988,84 @@ impl Importer for ObjImporter {
 }
 
 // ---------------------------------------------------------------------------
+// 动画图 Importer (*.animgraph.json -> RAGP intermediate)
+// ---------------------------------------------------------------------------
+
+/// 把作者的 `*.animgraph.json` 解析成 RAGP 二进制，并记录剪辑 / 状态机依赖。
+///
+/// 图格式本身在 `prism_asset::formats_anim_graph`；校验与编码在
+/// `crate::cooker::anim_graph`。这个 importer 只负责「文件 → 中间数据 +
+/// 依赖」，cooker 再把 RAGP 原样打进 `.pak`。
+pub struct AnimGraphImporter;
+
+impl Importer for AnimGraphImporter {
+    fn name(&self) -> &'static str {
+        "anim-graph-importer"
+    }
+
+    fn version(&self) -> u32 {
+        1
+    }
+
+    fn can_import(&self, path: &Path) -> bool {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.to_ascii_lowercase().ends_with(".animgraph.json"))
+    }
+
+    fn import(&self, ctx: &ImportContext) -> Result<ImportResult, ImportError> {
+        let text = std::fs::read_to_string(&ctx.source_path)?;
+        let document: Value = serde_json::from_str(&text).map_err(|error| {
+            ImportError::ImportFailed(format!(
+                "{}: invalid animation graph JSON: {error}",
+                ctx.source_path.display()
+            ))
+        })?;
+        let graph = crate::cooker::anim_graph::parse_anim_graph_json(&document)
+            .map_err(ImportError::ImportFailed)?;
+        let data = crate::cooker::anim_graph::encode_rag(&graph).ok_or_else(|| {
+            ImportError::ImportFailed(format!(
+                "{}: animation graph could not be encoded",
+                ctx.source_path.display()
+            ))
+        })?;
+
+        // 剪辑 / 状态机路径是资源依赖；找不到的路径保持原样（构建时再报），
+        // 不因为资产库尚未扫描完就拒绝整张图。
+        let mut dependencies = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for path in graph.nodes.iter().flat_map(|node| node.clips.iter()).chain(
+            graph
+                .nodes
+                .iter()
+                .map(|node| &node.state_machine_path)
+                .filter(|path| !path.is_empty()),
+        ) {
+            let normalized = path.replace('\\', "/");
+            if let Some(id) = ctx.db.id_by_path(&normalized) {
+                if seen.insert(id) {
+                    dependencies.push(id);
+                }
+            }
+        }
+
+        let metadata = serde_json::json!({
+            "parameter_count": graph.parameters.len(),
+            "node_count": graph.nodes.len(),
+            "output": graph.output,
+            "dependency_count": dependencies.len(),
+        });
+
+        Ok(ImportResult {
+            asset_type: AssetType::AnimGraph,
+            dependencies,
+            output_data: data,
+            metadata: Some(metadata),
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // JSON Importer
 // ---------------------------------------------------------------------------
 
@@ -2419,6 +2497,7 @@ pub fn default_importer_registry() -> ImporterRegistry {
     reg.register(Box::new(ObjImporter));
     reg.register(Box::new(MaterialImporter));
     reg.register(Box::new(ShaderImporter));
+    reg.register(Box::new(AnimGraphImporter));
     reg.register(Box::new(JsonImporter));
     reg.register(Box::new(RawImporter)); // catch-all last
     reg
