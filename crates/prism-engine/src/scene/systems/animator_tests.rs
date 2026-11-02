@@ -1287,3 +1287,173 @@ fn graph_notifies_reach_the_engine_event_queue() {
     assert_eq!(events.events[0].name, "Footstep.L");
     assert!((events.events[0].time - 0.5).abs() < 1e-5);
 }
+
+/// Slot 图：ClipPlayer(base) -> Slot -> Output。
+fn slot_graph(base: &str) -> AnimGraphInfo {
+    let base_node = GraphNodeInfo {
+        name: "base".into(),
+        kind: GraphNodeKind::ClipPlayer,
+        looped: false,
+        additive: false,
+        speed: 1.0,
+        weight: 1.0,
+        clips: vec![base.into()],
+        positions: Vec::new(),
+        parameter_x: String::new(),
+        parameter_y: String::new(),
+        state_machine_path: String::new(),
+        inputs: Vec::new(),
+    };
+    let slot = GraphNodeInfo {
+        name: "slot".into(),
+        kind: GraphNodeKind::Slot,
+        looped: false,
+        additive: false,
+        speed: 1.0,
+        weight: 1.0,
+        clips: Vec::new(),
+        positions: Vec::new(),
+        parameter_x: String::new(),
+        parameter_y: String::new(),
+        state_machine_path: String::new(),
+        inputs: vec![GraphInputInfo {
+            node: 0,
+            weight: 1.0,
+            bone_mask: Vec::new(),
+        }],
+    };
+    let output = GraphNodeInfo {
+        name: "out".into(),
+        kind: GraphNodeKind::Output,
+        looped: false,
+        additive: false,
+        speed: 1.0,
+        weight: 1.0,
+        clips: Vec::new(),
+        positions: Vec::new(),
+        parameter_x: String::new(),
+        parameter_y: String::new(),
+        state_machine_path: String::new(),
+        inputs: vec![GraphInputInfo {
+            node: 1,
+            weight: 1.0,
+            bone_mask: Vec::new(),
+        }],
+    };
+    AnimGraphInfo {
+        parameters: Vec::new(),
+        nodes: vec![base_node, slot, output],
+        output: 2,
+    }
+}
+
+fn setup_slot_world() -> (World, Entity) {
+    let (mut world, entity) = world_with_animator("");
+    world.insert_resource(AnimGraphLibrary::new());
+    world
+        .get_resource_mut::<AnimGraphLibrary>()
+        .unwrap()
+        .insert("slot.rag", slot_graph("bend.ranim"));
+    world.get_mut::<Animator>(entity).unwrap().anim_graph_path = "slot.rag".into();
+    world.insert_resource(AnimMontageRequests::new());
+    (world, entity)
+}
+
+fn montage_clip(notify: &str, time: f32) -> Clip {
+    let mut clip = bend_clip();
+    clip.name = "montage".into();
+    clip.notifies.push(ClipNotify {
+        time,
+        name: notify.into(),
+    });
+    clip
+}
+
+#[test]
+fn a_montage_request_plays_on_the_named_slot_and_emits_notifies() {
+    let (mut world, entity) = setup_slot_world();
+    world
+        .get_resource_mut::<SkeletonLibrary>()
+        .unwrap()
+        .insert_clip("montage.ranim", montage_clip("MontageStep", 0.5));
+    world
+        .get_resource_mut::<AnimMontageRequests>()
+        .unwrap()
+        .push(MontageRequest::play(entity, "slot", "montage.ranim"));
+
+    animator_system(&mut world, 0.6);
+    let events = world.get_resource::<AnimEvents>().expect("events");
+    assert_eq!(
+        events.names_for(entity).collect::<Vec<_>>(),
+        ["MontageStep"]
+    );
+    assert_eq!(
+        world
+            .get_resource::<AnimMontageRequests>()
+            .expect("requests")
+            .len(),
+        0,
+        "the system consumes requests"
+    );
+}
+
+#[test]
+fn a_stop_request_clears_the_slot_montage() {
+    let (mut world, entity) = setup_slot_world();
+    world
+        .get_resource_mut::<SkeletonLibrary>()
+        .unwrap()
+        .insert_clip("montage.ranim", montage_clip("MontageStep", 0.5));
+    {
+        let requests = world.get_resource_mut::<AnimMontageRequests>().unwrap();
+        requests.push(MontageRequest::play(entity, "slot", "montage.ranim").with_looping(true));
+    }
+    animator_system(&mut world, 0.1);
+    {
+        let requests = world.get_resource_mut::<AnimMontageRequests>().unwrap();
+        requests.stop(entity, "slot");
+    }
+    animator_system(&mut world, 0.6);
+    let events = world.get_resource::<AnimEvents>().expect("events");
+    assert!(events.is_empty(), "{:?}", events.events);
+}
+
+#[test]
+fn an_enqueue_request_waits_for_the_current_montage_to_finish() {
+    let (mut world, entity) = setup_slot_world();
+    let library = world.get_resource_mut::<SkeletonLibrary>().unwrap();
+    library.insert_clip("a.ranim", bend_clip());
+    library.insert_clip("b.ranim", montage_clip("SecondStep", 0.1));
+    world
+        .get_resource_mut::<AnimMontageRequests>()
+        .unwrap()
+        .push(MontageRequest::play(entity, "slot", "a.ranim").with_looping(false));
+    world
+        .get_resource_mut::<AnimMontageRequests>()
+        .unwrap()
+        .push(MontageRequest::enqueue(entity, "slot", "b.ranim"));
+
+    animator_system(&mut world, 0.6);
+    animator_system(&mut world, 0.6);
+    let events = world.get_resource::<AnimEvents>().expect("events");
+    assert!(
+        events.is_empty(),
+        "B starts at time 0; its 0.1s notify has not been crossed: {:?}",
+        events.events
+    );
+    animator_system(&mut world, 0.2);
+    let events = world.get_resource::<AnimEvents>().expect("events");
+    assert_eq!(events.names_for(entity).collect::<Vec<_>>(), ["SecondStep"]);
+}
+
+#[test]
+fn a_montage_request_with_an_unloaded_clip_is_ignored() {
+    let (mut world, entity) = setup_slot_world();
+    world
+        .get_resource_mut::<AnimMontageRequests>()
+        .unwrap()
+        .play(entity, "slot", "missing.ranim");
+    animator_system(&mut world, 0.6);
+    let head = world.get::<AnimatorPlayhead>(entity).expect("playhead");
+    assert_eq!(head.clip_path, ANIM_GRAPH_KEY);
+}
