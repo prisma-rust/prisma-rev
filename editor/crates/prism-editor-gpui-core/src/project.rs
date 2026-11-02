@@ -49,6 +49,33 @@ pub fn scan_assets(root: &Path) -> Vec<crate::assets::AssetInfo> {
     files
 }
 
+/// 构建产物 / 导入设置这类**派生文件**不生成 sidecar：它们随构建出现和消失，
+/// 给它们 GUID 只会让 `git status` 变吵，也没有引用需要稳定身份。
+fn is_derived_asset(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".import.json") {
+        return true;
+    }
+    let extension = lower
+        .rsplit_once('.')
+        .map(|(_, extension)| extension)
+        .unwrap_or("");
+    matches!(
+        extension,
+        "pak"
+            | "rscn"
+            | "spv"
+            | "rmes"
+            | "rtex"
+            | "rmat"
+            | "rskel"
+            | "rskin"
+            | "ranim"
+            | "rasm"
+            | "rbsp"
+    )
+}
+
 /// 给 `assets/` 下所有还缺 sidecar 的资产生成 `<path>.rmeta`，返回新写入的数量。
 ///
 /// 已有且有效的 sidecar 不动（GUID 跨重命名稳定）；损坏的按缺失处理并重写。
@@ -58,6 +85,9 @@ pub fn ensure_asset_metas(root: &Path) -> usize {
     let assets = scan_assets(root);
     let mut written = 0;
     for asset in assets {
+        if is_derived_asset(&asset.path) {
+            continue;
+        }
         if crate::asset_meta::AssetMeta::read(root, &asset.path).is_some() {
             continue;
         }
@@ -911,7 +941,20 @@ mod tests {
         std::fs::create_dir_all(project.root.join("assets/textures")).unwrap();
         std::fs::write(project.root.join("assets/textures/wood.png"), b"png").unwrap();
 
+        // 派生文件不生成 sidecar。
+        std::fs::write(project.root.join("assets/scenes.pak"), b"pak").unwrap();
+        std::fs::write(
+            project.root.join("assets/textures/wood.png.import.json"),
+            b"{}",
+        )
+        .unwrap();
+
         assert_eq!(ensure_asset_metas(&project.root), 1);
+        assert!(!project.root.join("assets/scenes.pak.rmeta").exists());
+        assert!(!project
+            .root
+            .join("assets/textures/wood.png.import.json.rmeta")
+            .exists());
         let assets = scan_assets(&project.root);
         assert!(
             !assets.iter().any(|asset| asset.path.ends_with(".rmeta")),
