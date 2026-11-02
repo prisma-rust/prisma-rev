@@ -14,8 +14,8 @@ use std::sync::Arc;
 
 use prism_anim::{
     palette_to_arrays, AnimGraphEvaluator, AnimGraphSource, AnimParameters, BlendLayer,
-    BlendSample, BlendSample2D, BlendSpace1D, BlendSpace2D, BlendStack, BoneMask, Clip, Pose,
-    Skeleton, StateMachine,
+    BlendSample, BlendSample2D, BlendSpace1D, BlendSpace2D, BlendStack, BoneMask, Clip, Montage,
+    Pose, Skeleton, StateMachine,
 };
 use prism_asset::formats_anim_graph::AnimGraphInfo;
 use prism_ecs::{Entity, World};
@@ -269,6 +269,186 @@ impl AnimGraphRuntimes {
     }
 }
 
+/// 一次 Montage 请求的动作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MontageAction {
+    /// 立即播放并清空该 Slot 的队列。
+    PlayNow,
+    /// 排到该 Slot 的队尾；空闲时立即开始。
+    Enqueue,
+    /// 停止该 Slot 并清空队列。
+    Stop,
+    /// 当前段播完后停止，不接下一段。
+    StopAfterCurrent,
+}
+
+/// 项目侧对某个实体 Slot 发起的 Montage 请求（#560 P1）。
+///
+/// 请求只活一帧：加入 [`AnimMontageRequests`] 后，下一次 [`animator_system`] 会消费它。
+/// 剪辑路径必须在 [`SkeletonLibrary`] 里已经加载；实体必须正在驱动动画图，且图里有
+/// 同名 Slot 节点，否则请求会被忽略并打日志。
+#[derive(Debug, Clone, PartialEq)]
+pub struct MontageRequest {
+    pub entity: Entity,
+    pub slot: String,
+    pub action: MontageAction,
+    pub clip_path: String,
+    pub looped: bool,
+    pub speed: f32,
+    pub weight: f32,
+    pub start_time: f32,
+}
+
+impl MontageRequest {
+    /// 立即播放。默认单次、速度 1、权重 1、从 0 开始。
+    pub fn play(entity: Entity, slot: impl Into<String>, clip_path: impl Into<String>) -> Self {
+        Self {
+            entity,
+            slot: slot.into(),
+            action: MontageAction::PlayNow,
+            clip_path: clip_path.into(),
+            looped: false,
+            speed: 1.0,
+            weight: 1.0,
+            start_time: 0.0,
+        }
+    }
+
+    /// 排队播放。默认单次、速度 1、权重 1、从 0 开始。
+    pub fn enqueue(entity: Entity, slot: impl Into<String>, clip_path: impl Into<String>) -> Self {
+        Self {
+            action: MontageAction::Enqueue,
+            ..Self::play(entity, slot, clip_path)
+        }
+    }
+
+    /// 停止 Slot 的活动段与队列。
+    pub fn stop(entity: Entity, slot: impl Into<String>) -> Self {
+        Self {
+            action: MontageAction::Stop,
+            ..Self::play(entity, slot, "")
+        }
+    }
+
+    /// 当前段播完后停止。
+    pub fn stop_after_current(entity: Entity, slot: impl Into<String>) -> Self {
+        Self {
+            action: MontageAction::StopAfterCurrent,
+            ..Self::play(entity, slot, "")
+        }
+    }
+
+    pub fn with_looping(mut self, looped: bool) -> Self {
+        self.looped = looped;
+        self
+    }
+
+    pub fn with_speed(mut self, speed: f32) -> Self {
+        self.speed = speed;
+        self
+    }
+
+    pub fn with_weight(mut self, weight: f32) -> Self {
+        self.weight = weight;
+        self
+    }
+
+    pub fn with_start_time(mut self, start_time: f32) -> Self {
+        self.start_time = start_time;
+        self
+    }
+}
+
+/// 每帧由项目侧填充、由 [`animator_system`] 消费的 Montage 请求队列。
+#[derive(Debug, Default)]
+pub struct AnimMontageRequests {
+    requests: Vec<MontageRequest>,
+}
+
+impl AnimMontageRequests {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push(&mut self, request: MontageRequest) {
+        self.requests.push(request);
+    }
+
+    pub fn play(&mut self, entity: Entity, slot: impl Into<String>, clip_path: impl Into<String>) {
+        self.push(MontageRequest::play(entity, slot, clip_path));
+    }
+
+    pub fn enqueue(
+        &mut self,
+        entity: Entity,
+        slot: impl Into<String>,
+        clip_path: impl Into<String>,
+    ) {
+        self.push(MontageRequest::enqueue(entity, slot, clip_path));
+    }
+
+    pub fn stop(&mut self, entity: Entity, slot: impl Into<String>) {
+        self.push(MontageRequest::stop(entity, slot));
+    }
+
+    pub fn stop_after_current(&mut self, entity: Entity, slot: impl Into<String>) {
+        self.push(MontageRequest::stop_after_current(entity, slot));
+    }
+
+    pub fn len(&self) -> usize {
+        self.requests.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.requests.is_empty()
+    }
+
+    pub fn requests(&self) -> &[MontageRequest] {
+        &self.requests
+    }
+
+    /// 取走所有待处理请求（系统每帧调用）。
+    pub fn take(&mut self) -> Vec<MontageRequest> {
+        std::mem::take(&mut self.requests)
+    }
+}
+
+/// 把一帧的请求应用到实体的图求值器。
+fn apply_montage_requests(
+    evaluator: &mut AnimGraphEvaluator,
+    requests: Vec<MontageRequest>,
+    clips: &HashMap<String, Arc<Clip>>,
+) {
+    for request in requests {
+        let slot = request.slot.trim();
+        if slot.is_empty() {
+            log::warn!("animator: montage request has an empty slot name");
+            continue;
+        }
+        match request.action {
+            MontageAction::Stop => evaluator.stop_montage(slot),
+            MontageAction::StopAfterCurrent => evaluator.stop_montage_after_current(slot),
+            MontageAction::PlayNow | MontageAction::Enqueue => {
+                let path = request.clip_path.trim();
+                let Some(clip) = clips.get(path).cloned() else {
+                    log::warn!("animator: montage clip '{path}' is not loaded");
+                    continue;
+                };
+                let montage = Montage::new(clip)
+                    .with_start_time(request.start_time)
+                    .with_looping(request.looped)
+                    .with_speed(request.speed)
+                    .with_weight(request.weight);
+                if request.action == MontageAction::PlayNow {
+                    evaluator.play_montage(slot, montage);
+                } else {
+                    evaluator.enqueue_montage(slot, montage);
+                }
+            }
+        }
+    }
+}
+
 /// 播放头（运行时组件，不进场景）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnimatorPlayhead {
@@ -344,6 +524,16 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
         .cloned()
         .unwrap_or_default();
     let mut state_updates: Vec<(Entity, String)> = Vec::new();
+    // 项目侧请求只活一帧；按实体分组，驱动图时消费。
+    let mut montage_requests: HashMap<Entity, Vec<MontageRequest>> = HashMap::new();
+    if let Some(resource) = world.get_resource_mut::<AnimMontageRequests>() {
+        for request in resource.take() {
+            montage_requests
+                .entry(request.entity)
+                .or_default()
+                .push(request);
+        }
+    }
 
     let mut updates: Vec<(Entity, BonePalette, AnimatorPlayhead)> = Vec::new();
     let mut events: Vec<AnimEvent> = Vec::new();
@@ -362,6 +552,9 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
                 graph_entities.insert(entity);
                 let path = animator.anim_graph_path.trim().to_string();
                 let evaluator = graph_runtimes.get_or_create(entity, &path, graph);
+                if let Some(requests) = montage_requests.remove(&entity) {
+                    apply_montage_requests(evaluator, requests, &library.clips);
+                }
                 // 项目侧写入的 float / bool / trigger 同步进图求值器。
                 let declared = evaluator.graph().parameters.clone();
                 for parameter in declared {
@@ -743,6 +936,14 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
         playhead.pose = pose;
         let palette = BonePalette::from_matrices(&skeleton.bone_palette(&playhead.pose));
         updates.push((entity, palette, playhead));
+    }
+
+    for (entity, requests) in montage_requests {
+        for _request in requests {
+            log::warn!(
+                "animator: montage request on entity {entity:?} ignored (no active animation graph)"
+            );
+        }
     }
 
     let count = updates.len();

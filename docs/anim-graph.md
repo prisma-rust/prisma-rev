@@ -107,7 +107,7 @@ let pose = evaluator.evaluate(&assets, &skeleton, dt)?;
 
 - 每个节点每帧只求值一次；ClipPlayer / BlendSpace / StateMachine 各自推进时间。
 - `BlendStack` / `LayeredBlend` 的第一个输入是 base，其余输入按 weight 与骨骼遮罩叠加。
-- `Slot` 在基础输入上按 `weight` 覆盖一段可选 montage 剪辑（`clips[0]`，独立时间/循环/Notify）；没有剪辑时透明传递。`CachedPose` / `Output` 是透明传递。显式 Montage start/stop 队列仍是后续切片。
+- `Slot` 在基础输入上按 `weight` 覆盖一段可选 montage 剪辑（`clips[0]`，独立时间/循环/Notify）；没有剪辑时透明传递；求值器也为每个 Slot 维护 Montage 播放队列（见下）。`CachedPose` / `Output` 是透明传递。
 - StateMachine 节点内部维护当前状态、状态时间和转移交叉淡入；Trigger 按状态机语义消耗。
 - `evaluate_with_events` 额外返回 `GraphNotifyEvent`：ClipPlayer / StateMachine 跨过
   剪辑 Notify 时触发，循环回绕分两段扫描，第一帧不补发 time 0，共享节点只发一次。
@@ -119,6 +119,11 @@ FIFO 排队、单次播完自动接下一段，`stop` / `stop_after_current` 清
 `tick` 收集跨帧 Notify。求值器把它接到 Slot 节点：`play_montage` /
 `enqueue_montage` / `stop_montage` 按节点名操作，活动段按权重覆盖 Slot 输入；
 没有活动段时回退到作者写的 `clips[0]`。
+
+引擎侧项目代码通过 `AnimMontageRequests` 资源发请求（`MontageRequest::play` /
+`enqueue` / `stop` / `stop_after_current`，可带循环 / 速度 / 权重 / 开始时间）；
+`animator_system` 每帧消费一次，把剪辑路径解析成 `Montage` 注入对应实体的 Slot。
+请求只活一帧；剪辑未加载、实体没有图或 Slot 名不存在时忽略并告警。
 
 引擎侧：`Animator.anim_graph_path` 非空且图已加载时优先于状态机 / 混合空间 /
 单剪辑；`load_animation_assets` 会加载 `.rag` / `*.animgraph.json`，再补加载图引用的
