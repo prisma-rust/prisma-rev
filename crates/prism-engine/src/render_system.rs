@@ -85,6 +85,13 @@ pub struct SceneChanges {
     pub light_color: Vec4,
     /// Light-space 正交 view-projection (shadow 映射表
     pub light_view_proj: Mat4,
+    /// Far-cascade light-space VP (#526 CSM); only used when
+    /// `shadow_cascade_count > 1`.
+    pub light_view_proj1: Mat4,
+    /// Camera-forward distance of the near/far cascade split.
+    pub shadow_split: f32,
+    /// 1 = single shadow map, 2 = two-cascade atlas.
+    pub shadow_cascade_count: u32,
     /// Point lights collected from the ECS 世界 上 to `LIGHT_MAX`).
     ///
     /// 超预算时按重要性挑（见 [`lights::local_light_importance`]），不再是文档顺序。
@@ -195,12 +202,33 @@ pub fn extract_frame_packet_into_with_shadow(
     shadow_distance: f32,
     packet: &mut FramePacket,
 ) {
+    extract_frame_packet_into_with_shadow_cascades(
+        world,
+        display_aspect,
+        surface_rotation,
+        shadow_distance,
+        1,
+        packet,
+    );
+}
+
+/// [`extract_frame_packet_into_with_shadow`] plus an explicit cascade count
+/// (1 or 2). Hosts pass `RenderSettings::shadow_cascade_count` (#526 CSM).
+pub fn extract_frame_packet_into_with_shadow_cascades(
+    world: &mut World,
+    display_aspect: f32,
+    surface_rotation: &Mat4,
+    shadow_distance: f32,
+    shadow_cascade_count: u32,
+    packet: &mut FramePacket,
+) {
     // 1. Collect per-frame scene 状态 (needs orientation).
     collect_scene_changes_into(
         world,
         display_aspect,
         surface_rotation,
         shadow_distance,
+        shadow_cascade_count,
         &mut packet.scene,
     );
 
@@ -224,8 +252,21 @@ pub fn extract_frame_packet_into_with_shadow(
     prism_render::sort_draw_items(&mut packet.draw_items, packet.scene.eye.to_array());
     // 光源视锥剔除（#526）：阴影盒子外的投射者不必进 shadow pass。必须放在
     // 主相机剔除之后——相机外的对象既不画主通道，也不再浪费阴影贴图。
-    let light_view_proj = packet.scene.light_view_proj.to_cols_array_2d();
-    scene::systems::render::cull_shadow_casters(&mut packet.draw_items, &light_view_proj);
+    let light_view_projs = if packet.scene.shadow_cascade_count > 1 {
+        [
+            packet.scene.light_view_proj.to_cols_array_2d(),
+            packet.scene.light_view_proj1.to_cols_array_2d(),
+        ]
+    } else {
+        [
+            packet.scene.light_view_proj.to_cols_array_2d(),
+            packet.scene.light_view_proj.to_cols_array_2d(),
+        ]
+    };
+    scene::systems::render::cull_shadow_casters_multi(
+        &mut packet.draw_items,
+        &light_view_projs[..packet.scene.shadow_cascade_count.clamp(1, 2) as usize],
+    );
     scene_view.gizmo_instances_into(&mut packet.gizmos);
     // 只有 `clearFlags == Skybox` 时才绘制天空盒：其余清屏方式（纯色 /
     // 只清深度 / 不清）即使场景里有启用的 `Skybox` 实体也不画。`ForwardPass`
@@ -322,6 +363,7 @@ fn collect_scene_changes_with_shadow(
         display_aspect,
         surface_rotation,
         shadow_distance,
+        1,
         &mut out,
     );
     out
@@ -336,8 +378,10 @@ fn collect_scene_changes_into(
     display_aspect: f32,
     surface_rotation: &Mat4,
     shadow_distance: f32,
+    shadow_cascade_count: u32,
     out: &mut SceneChanges,
 ) {
+    let shadow_cascade_count = shadow_cascade_count.clamp(1, 2);
     let fallback_dir = Vec4::new(
         -std::f32::consts::FRAC_1_SQRT_2,
         std::f32::consts::FRAC_1_SQRT_2,
@@ -526,12 +570,12 @@ fn collect_scene_changes_into(
         DEFAULT_SHADOW_DISTANCE
     };
     let forward = -Vec3::new(view.x_axis.z, view.y_axis.z, view.z_axis.z).normalize_or_zero();
-    let shadow_center = shadow_box_center(eye, forward, distance);
-    let light_view_proj = light_view_proj_snapped(
+    let (light_view_proj, light_view_proj1, shadow_split) = shadow_cascade_matrices(
         &light_direction,
-        distance * 0.5,
-        &shadow_center,
-        prism_render::SHADOW_MAP_SIZE,
+        eye,
+        forward,
+        distance,
+        shadow_cascade_count,
     );
 
     // 6. 清屏色 —— 与取景来自**同一台**相机（`Camera.backgroundColor`）。
@@ -553,6 +597,9 @@ fn collect_scene_changes_into(
     out.light_direction = light_direction;
     out.light_color = light_color;
     out.light_view_proj = light_view_proj;
+    out.light_view_proj1 = light_view_proj1;
+    out.shadow_split = shadow_split;
+    out.shadow_cascade_count = shadow_cascade_count;
     out.exposure = exposure;
     out.has_camera = has_camera;
     out.camera_orthographic = camera_orthographic;
@@ -643,6 +690,9 @@ pub fn render_system(
         light_color: light_color.to_array(),
         view: view.to_cols_array_2d(),
         light_view_proj: light_view_proj.to_cols_array_2d(),
+        light_view_proj1: scene.light_view_proj1.to_cols_array_2d(),
+        shadow_split: scene.shadow_split,
+        shadow_cascade_count: scene.shadow_cascade_count,
         tonemap_mode: settings.tonemap_mode,
         viewport_size: {
             let e = renderer.extent();
@@ -651,6 +701,7 @@ pub fn render_system(
         exposure: *exposure,
         shadow_strength: *shadow_strength,
         _pad2: [0.0; 3],
+        _pad3: [0.0; 2],
     };
 
     // 2.5. 扩展脏检测：draw_items 内容变化（矩阵 / mesh / material / 阴影标志）
@@ -676,6 +727,9 @@ pub fn render_system(
         skybox,
         frame_data: &frame_data,
         light_view_proj: light_view_proj.to_cols_array_2d(),
+        light_view_proj1: frame_data.light_view_proj1,
+        shadow_split: frame_data.shadow_split,
+        shadow_cascade_count: frame_data.shadow_cascade_count,
         inv_projection: inv_projection.to_cols_array_2d(),
         debug_flags: settings.debug_flags,
         wireframe: settings.wireframe,
@@ -771,6 +825,33 @@ fn shadow_box_center(eye: Vec3, forward: Vec3, distance: f32) -> Vec3 {
     eye + forward * (distance * 0.5)
 }
 
+fn shadow_cascade_matrices(
+    light_dir: &Vec4,
+    eye: Vec3,
+    forward: Vec3,
+    distance: f32,
+    count: u32,
+) -> (Mat4, Mat4, f32) {
+    let texels = prism_render::SHADOW_MAP_SIZE;
+    if count <= 1 {
+        let center = shadow_box_center(eye, forward, distance);
+        let matrix = light_view_proj_snapped(light_dir, distance * 0.5, &center, texels);
+        return (matrix, matrix, distance * 0.5);
+    }
+
+    // Two equal-length slabs along camera forward: [0, d/2] and [d/2, d].
+    // Each gets its own snap origin so camera translation cannot make either
+    // cascade swim; the atlas is a 2×1 split of the same total texel budget.
+    let half = distance * 0.25;
+    let near_center = shadow_box_center(eye, forward, distance * 0.5);
+    let far_center = shadow_box_center(eye, forward, distance * 1.5);
+    (
+        light_view_proj_snapped(light_dir, half, &near_center, texels),
+        light_view_proj_snapped(light_dir, half, &far_center, texels),
+        distance * 0.5,
+    )
+}
+
 fn light_view_proj_snapped(light_dir: &Vec4, half: f32, center: &Vec3, texels: u32) -> Mat4 {
     let l = Vec3::new(light_dir.x, light_dir.y, light_dir.z).normalize_or_zero();
     let dist = half * 2.0;
@@ -863,6 +944,55 @@ mod tests {
             (ax - cx).abs() > 1e-3 || (ay - cy).abs() > 1e-3,
             "moving several texels must move the projection"
         );
+    }
+
+    /// 2-cascade CSM：近/远两级各覆盖 `shadow_distance` 的一半，分割点落在
+    /// 相机前方 `distance / 2`（#526）。
+    #[test]
+    fn two_cascades_split_the_shadow_distance() {
+        let dir = Vec4::new(0.0, -1.0, 0.0, 0.0);
+        let eye = Vec3::ZERO;
+        let forward = Vec3::new(0.0, 0.0, -1.0);
+        let (near, far, split) = shadow_cascade_matrices(&dir, eye, forward, 60.0, 2);
+        assert!((split - 30.0).abs() < 1e-5);
+
+        let inside = |matrix: Mat4, point: Vec3| {
+            let clip = matrix * point.extend(1.0);
+            clip.z >= 0.0 && clip.z <= clip.w && clip.x.abs() <= clip.w && clip.y.abs() <= clip.w
+        };
+        let near_point = Vec3::new(0.0, 0.0, -15.0);
+        let far_point = Vec3::new(0.0, 0.0, -45.0);
+        assert!(inside(near, near_point), "near cascade covers 0..30");
+        assert!(!inside(near, far_point), "near cascade must stop at 30");
+        assert!(inside(far, far_point), "far cascade covers 30..60");
+        assert!(!inside(far, near_point), "far cascade starts at 30");
+
+        // 单级联保持旧行为：两个矩阵相同，覆盖整个 distance。
+        let (one_near, one_far, _) = shadow_cascade_matrices(&dir, eye, forward, 60.0, 1);
+        assert_eq!(one_near, one_far);
+    }
+
+    /// 多级联剔除：只被远级联覆盖的投射者必须保留。
+    #[test]
+    fn shadow_culling_keeps_casters_inside_any_cascade() {
+        use prism_render::culling::Aabb;
+
+        let dir = Vec4::new(0.0, -1.0, 0.0, 0.0);
+        let (near, far, _) =
+            shadow_cascade_matrices(&dir, Vec3::ZERO, Vec3::new(0.0, 0.0, -1.0), 60.0, 2);
+        let mut items = vec![
+            shadow_caster(Some(Aabb::new([-1.0; 3], [1.0; 3]))),
+            // 只落在远级联（相机前方 30..60）。
+            shadow_caster(Some(Aabb::new([-1.0, -1.0, -46.0], [1.0, 1.0, -44.0]))),
+            shadow_caster(Some(Aabb::new([499.0, -1.0, -1.0], [501.0, 1.0, 1.0]))),
+        ];
+        scene::systems::render::cull_shadow_casters_multi(
+            &mut items,
+            &[near.to_cols_array_2d(), far.to_cols_array_2d()],
+        );
+        assert!(items[0].cast_shadow, "near caster kept");
+        assert!(items[1].cast_shadow, "far-only caster must not be culled");
+        assert!(!items[2].cast_shadow, "outside both cascades is skipped");
     }
 
     /// 阴影投影必须是 `projection * view`：盒子内的点要落在 Vulkan 的 [0,1]

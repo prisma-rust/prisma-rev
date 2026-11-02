@@ -122,6 +122,9 @@ pub struct RenderSettings {
     pub shadow_distance: f32,
     /// 阴影贴图边长（texel，#526）；构造渲染器时生效，运行中改需要重建渲染图。
     pub shadow_map_size: u32,
+    /// 方向光级联数（#526 CSM）：`1` = 单张阴影图（默认），`2` = 2×1 atlas
+    /// 的近/远两级联。构造渲染器时生效。
+    pub shadow_cascade_count: u32,
 }
 
 /// 默认 PBR 众数 法线 full-PBR 渲染 Reinhard 色调映射 光栅化
@@ -181,6 +184,7 @@ impl Default for RenderSettings {
             chromatic_aberration: 0.0,
             shadow_distance: DEFAULT_SHADOW_DISTANCE,
             shadow_map_size: prism_render::SHADOW_MAP_SIZE,
+            shadow_cascade_count: 1,
             internal_resolution: [0, 0],
             internal_scale_mode: InternalScaleMode::Stretch,
         }

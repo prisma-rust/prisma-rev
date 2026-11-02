@@ -5909,6 +5909,30 @@ pub fn render_graph(
                 .changed();
             ui.end_row();
 
+            ui.label("Shadow Cascades");
+            egui::ComboBox::from_id_salt("shadow-cascades")
+                .selected_text(match settings.shadow_cascade_count {
+                    2 => "2 (atlas)",
+                    _ => "1",
+                })
+                .show_ui(ui, |ui| {
+                    for count in [1u32, 2] {
+                        let label = if count == 1 { "1" } else { "2 (atlas)" };
+                        if ui
+                            .selectable_label(settings.shadow_cascade_count == count, label)
+                            .clicked()
+                        {
+                            settings.shadow_cascade_count = count;
+                            changed = true;
+                        }
+                    }
+                })
+                .response
+                .on_hover_text(
+                    "1 = single shadow map; 2 = near/far cascades in a 2×1 atlas. Requires recreating the renderer.",
+                );
+            ui.end_row();
+
             ui.label("Anti-aliasing");
             egui::ComboBox::from_id_salt("aa-mode")
                 .selected_text(match settings.aa_mode {

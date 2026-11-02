@@ -197,9 +197,20 @@ pub fn scene_render_system_into_with_frustum(
 /// 盒子。没有世界 AABB 的实体（程序化网格 / 句柄还没解析）保持 `cast_shadow`
 /// 不变——和主相机剔除一样，数据未知时不冒险让影子消失。
 pub fn cull_shadow_casters(items: &mut [DrawItem], light_view_proj: &[[f32; 4]; 4]) {
-    let Some(frustum) = prism_render::culling::Frustum::from_view_proj(light_view_proj) else {
+    cull_shadow_casters_multi(items, std::slice::from_ref(light_view_proj));
+}
+
+/// 多级联版本：投射者只要落在**任意一个**级联盒里就保留（#526 CSM）。
+///
+/// 退化矩阵会被跳过；如果所有矩阵都退化，则保守地不剔除任何东西。
+pub fn cull_shadow_casters_multi(items: &mut [DrawItem], light_view_projs: &[[[f32; 4]; 4]]) {
+    let frustums: Vec<_> = light_view_projs
+        .iter()
+        .filter_map(prism_render::culling::Frustum::from_view_proj)
+        .collect();
+    if frustums.is_empty() {
         return;
-    };
+    }
     for item in items {
         if !item.cast_shadow {
             continue;
@@ -207,7 +218,10 @@ pub fn cull_shadow_casters(items: &mut [DrawItem], light_view_proj: &[[f32; 4]; 
         let Some(bounds) = item.world_bounds else {
             continue;
         };
-        if !frustum.intersects_aabb(&bounds) {
+        if !frustums
+            .iter()
+            .any(|frustum| frustum.intersects_aabb(&bounds))
+        {
             item.cast_shadow = false;
         }
     }

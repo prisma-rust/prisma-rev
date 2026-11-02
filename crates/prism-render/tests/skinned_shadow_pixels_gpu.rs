@@ -140,6 +140,10 @@ fn frame_data(shadow_strength: f32) -> FrameUBOData {
         exposure: 1.0,
         shadow_strength,
         _pad2: [0.0; 3],
+        light_view_proj1: IDENTITY,
+        shadow_split: 0.0,
+        shadow_cascade_count: 1,
+        _pad3: [0.0; 2],
     }
 }
 

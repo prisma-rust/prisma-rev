@@ -515,8 +515,17 @@ impl ViewportState {
         context: std::sync::Arc<prism_render::VulkanContext>,
         width: u32,
         height: u32,
+        shadow_map_size: u32,
+        shadow_cascade_count: u32,
     ) -> anyhow::Result<Self> {
-        let host = EngineHost::new(kind, context, width, height)?;
+        let host = EngineHost::new(
+            kind,
+            context,
+            width,
+            height,
+            shadow_map_size,
+            shadow_cascade_count,
+        )?;
         Ok(Self {
             host,
             texture: None,

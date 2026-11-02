@@ -48,6 +48,8 @@ pub struct RenderConfig {
     pub shadow_distance: Option<f32>,
     /// 阴影贴图边长（texel，见 `RenderSettings::shadow_map_size`，#526）。
     pub shadow_map_size: Option<u32>,
+    /// 方向光级联数（1/2，见 `RenderSettings::shadow_cascade_count`，#526）。
+    pub shadow_cascade_count: Option<u32>,
     /// 显示空间饱和度（`1.0` = 不变，`0.0` = 灰度）。
     pub saturation: Option<f32>,
     /// 暗角强度（`0.0` = 关，`1.0` = 四角全黑）。
@@ -125,6 +127,13 @@ impl RenderConfig {
                 );
             }
         }
+        if let Some(count) = self.shadow_cascade_count {
+            if (1..=2).contains(&count) {
+                settings.shadow_cascade_count = count;
+            } else {
+                log::warn!("settings: shadow_cascade_count must be 1 or 2, got {count}");
+            }
+        }
         if let Some(value) = self.contrast {
             // 负对比度会把画面翻负，这里挡在 0。
             settings.contrast = value.max(0.0);
@@ -187,6 +196,7 @@ impl RenderConfig {
             contrast: ini.get_f32("render", "contrast"),
             shadow_distance: ini.get_f32("render", "shadow_distance"),
             shadow_map_size: ini.get_u32("render", "shadow_map_size"),
+            shadow_cascade_count: ini.get_u32("render", "shadow_cascade_count"),
             saturation: ini.get_f32("render", "saturation"),
             vignette: ini.get_f32("render", "vignette"),
             bloom: ini.get_bool("render", "bloom"),
@@ -415,6 +425,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "contrast",
             "shadow_distance",
             "shadow_map_size",
+            "shadow_cascade_count",
             "saturation",
             "vignette",
             "bloom",
@@ -542,7 +553,7 @@ mod tests {
         use crate::render_settings::{RenderMode, RenderSettings};
 
         let cfg = AppConfig::from_ini(
-            "[render]\nrender_mode = \"path_trace\"\ntonemap_mode = 1\naa_mode = 1\ncontrast = 1.4\nsaturation = 0.6\nvignette = 0.3\nbloom = true\nbloom_intensity = 0.4\nbloom_threshold = 2.5\nchromatic_aberration = 0.25\nshadow_distance = 120.0\nshadow_map_size = 1024\nwireframe = true\nshaded_wireframe = true\npt_max_bounces = 7\n",
+            "[render]\nrender_mode = \"path_trace\"\ntonemap_mode = 1\naa_mode = 1\ncontrast = 1.4\nsaturation = 0.6\nvignette = 0.3\nbloom = true\nbloom_intensity = 0.4\nbloom_threshold = 2.5\nchromatic_aberration = 0.25\nshadow_distance = 120.0\nshadow_map_size = 1024\nshadow_cascade_count = 2\nwireframe = true\nshaded_wireframe = true\npt_max_bounces = 7\n",
         );
         let mut settings = RenderSettings::default();
         cfg.render.apply(&mut settings);
@@ -561,10 +572,21 @@ mod tests {
         // #526：阴影覆盖距离与贴图边长都是可配置的质量旋钮。
         assert_eq!(settings.shadow_distance, 120.0);
         assert_eq!(settings.shadow_map_size, 1024);
+        assert_eq!(settings.shadow_cascade_count, 2);
         assert!(settings.wireframe);
         assert!(settings.shaded_wireframe);
         // Unspecified fields keep their defaults.
         assert_eq!(settings.pt_max_iterations, 0);
+    }
+
+    #[test]
+    fn shadow_cascade_count_outside_one_or_two_is_ignored() {
+        use crate::render_settings::RenderSettings;
+
+        let cfg = AppConfig::from_ini("[render]\nshadow_cascade_count = 3\n");
+        let mut settings = RenderSettings::default();
+        cfg.render.apply(&mut settings);
+        assert_eq!(settings.shadow_cascade_count, 1);
     }
 
     #[test]

@@ -234,7 +234,23 @@ float sample_shadow(float3 world_pos, float3 n)
     // samples a neighbour texel instead of its own (acne-prone) silhouette.
     // The amount is small (world units) - tuned for the ~1-unit scene scale.
     float3 biased_pos = world_pos + n * 0.02;
-    float4 light_space = mul(frame.lightViewProj, float4(biased_pos, 1.0));
+
+    // #526 CSM: cascade 0 covers the near half of the shadow distance, cascade
+    // 1 the far half. The split is measured along the camera forward axis, so
+    // use the view matrix rather than raw world distance.
+    float4x4 light_view_proj = frame.lightViewProj;
+    uint cascade = 0u;
+    if (frame.shadowCascadeCount > 1u)
+    {
+        float3 view_pos = mul(frame.view, float4(biased_pos, 1.0)).xyz;
+        if (-view_pos.z > frame.shadowSplit)
+        {
+            cascade = 1u;
+            light_view_proj = frame.lightViewProj1;
+        }
+    }
+
+    float4 light_space = mul(light_view_proj, float4(biased_pos, 1.0));
     if (light_space.w <= 0.0)
         return 1.0;
     float3 proj = light_space.xyz / light_space.w;
@@ -249,6 +265,15 @@ float sample_shadow(float3 world_pos, float3 n)
     float depth = proj.z; // orthographic light projection -> already [0,1]
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || depth > 1.0)
         return 1.0;
+    if (frame.shadowCascadeCount > 1u)
+    {
+        // 2-cascade atlas: cascade 0 is the left half, cascade 1 the right.
+        float tile_min = (cascade == 1u) ? 0.5 : 0.0;
+        uv.x = tile_min + uv.x * 0.5;
+        // Keep the 3x3 PCF footprint inside the tile; otherwise the seam
+        // texels from the other cascade leak into near/far edges.
+        uv.x = clamp(uv.x, tile_min, tile_min + 0.5);
+    }
     // 3x3 PCF: average 9 comparison samples in a texel-spaced grid. Each
     // SampleCmpLevelZero returns 1.0 (pass) or 0.0 (fail) with hardware 2x2
     // bilinear filtering, so the 9-tap average gives a soft shadow edge.

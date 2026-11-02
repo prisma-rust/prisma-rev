@@ -37,8 +37,10 @@ const _: () =
 pub struct ShadowMapPass {
     /// Shadow 映射表 深度 附件 handle (created in `setup`).
     pub shadow_map: ResourceHandle,
-    /// Square shadow 映射表 分辨率 (e.g. 2048).
+    /// Square shadow tile 分辨率 (e.g. 2048).
     shadow_size: u32,
+    /// Allocated atlas width: `shadow_size * cascade_count` (2048 or 4096).
+    shadow_atlas_width: u32,
     /// Depth-only graphics 管线 (lazy-created on 第一个 执行
     ///
     /// 背面剔除版本，供 `ShadowCastingMode::Off` / `On` / `ShadowsOnly` 使用。
@@ -84,6 +86,7 @@ impl ShadowMapPass {
         Self {
             shadow_map: SHADOW_MAP_H,
             shadow_size: SHADOW_MAP_SIZE,
+            shadow_atlas_width: SHADOW_MAP_SIZE,
             pipeline: None,
             pipeline_two_sided: None,
             render_pass: None,
@@ -106,8 +109,8 @@ impl ShadowMapPass {
         self.shadow_map
     }
 
-    /// Square shadow 映射表 extent (`shadow_size` x `shadow_size`). Exposed for
-    /// the render-graph visualizer.
+    /// Shadow-atlas extent (`shadow_size * cascade_count` x `shadow_size`).
+    /// Exposed for the render-graph visualizer; each cascade tile is square.
     /// 上一帧提交的 caster 数：`(静态, 蒙皮)`。
     ///
     /// 蒙皮 caster 曾经被整个跳过（没有蒙皮深度管线），这里留着计数是为了让
@@ -118,7 +121,7 @@ impl ShadowMapPass {
 
     pub fn shadow_extent(&self) -> vk::Extent2D {
         vk::Extent2D {
-            width: self.shadow_size,
+            width: self.shadow_atlas_width,
             height: self.shadow_size,
         }
     }
@@ -541,12 +544,16 @@ impl RenderPassNode for ShadowMapPass {
             .shadow_map_size
             .clamp(crate::MIN_SHADOW_MAP_SIZE, crate::MAX_SHADOW_MAP_SIZE);
         let size = self.shadow_size;
+        let cascades = settings.shadow_cascade_count.clamp(1, 2);
+        self.shadow_atlas_width = size * cascades;
         self.shadow_map = SHADOW_MAP_H;
         graph.create_resource_at(
             SHADOW_MAP_H,
             ResourceType::DepthAttachment {
+                // #526 CSM: one square tile per cascade. With one cascade the
+                // atlas is just the legacy square map; with two it is 2×1.
                 extent: vk::Extent2D {
-                    width: size,
+                    width: self.shadow_atlas_width,
                     height: size,
                 },
                 sample_count: vk::SampleCountFlags::TYPE_1,
@@ -629,7 +636,7 @@ impl RenderPassNode for ShadowMapPass {
                     &vk::FramebufferCreateInfo::default()
                         .render_pass(rp)
                         .attachments(std::slice::from_ref(&shadow_view))
-                        .width(size)
+                        .width(self.shadow_atlas_width)
                         .height(size)
                         .layers(1),
                     None,
@@ -694,7 +701,7 @@ impl RenderPassNode for ShadowMapPass {
             .render_area(vk::Rect2D {
                 offset: vk::Offset2D { x: 0, y: 0 },
                 extent: vk::Extent2D {
-                    width: size,
+                    width: self.shadow_atlas_width,
                     height: size,
                 },
             })
@@ -705,144 +712,169 @@ impl RenderPassNode for ShadowMapPass {
         };
 
         // 统计真正写进阴影贴图的 caster（`ShadowCastingMode::Off` 会被跳过）。
+        // 双级联时同一批 caster 会画两次，这里只按第一遍计数。
+        let allocated_cascades = (self.shadow_atlas_width / size).clamp(1, 2);
+        let cascade_count = ctx.frame.shadow_cascade_count.clamp(1, allocated_cascades);
         let mut casters = 0usize;
         // 其中有多少走的是蒙皮管线（#560 P0-3c）。
         let mut skinned_casters = 0u32;
         unsafe {
-            ctx.device.cmd_set_viewport(
-                ctx.cmd,
-                0,
-                &[vk::Viewport {
-                    x: 0.0,
-                    y: 0.0,
-                    width: size as f32,
-                    height: size as f32,
-                    min_depth: 0.0,
-                    max_depth: 1.0,
-                }],
-            );
-            ctx.device.cmd_set_scissor(
-                ctx.cmd,
-                0,
-                &[vk::Rect2D {
-                    offset: vk::Offset2D { x: 0, y: 0 },
-                    extent: vk::Extent2D {
-                        width: size,
-                        height: size,
-                    },
-                }],
-            );
-
-            // 按 (是否蒙皮, 是否双面) 选管线，只在切换时重绑。
-            let mut bound_pipeline: Option<(bool, bool)> = None;
-            for item in ctx.frame.draw_list {
-                // `ShadowCastingMode::Off` -> 不写阴影贴图。
-                if !item.cast_shadow {
-                    continue;
-                }
-                let uploaded = match ctx.frame.mesh_manager.get(item.mesh) {
-                    Some(m) => &m.mesh,
-                    None => continue,
-                };
-
-                // 蒙皮 caster 走蒙皮管线（读第二个顶点缓冲 + 骨骼调色板）；
-                // 静态 caster 走原来的纯位置管线（#560 P0-3c）。
-                let skinned = item.bone_offset.is_some();
-                let skin_buffer = if skinned {
-                    match ctx.frame.mesh_manager.get(item.mesh) {
-                        Some(m) => match m.skin.as_ref() {
-                            // 声明了蒙皮但缓冲没上传：画出来会是 bind pose 以外的垃圾，
-                            // 宁可这个 caster 不投影。
-                            Some(skin) => Some(skin.buffer),
-                            None => continue,
-                        },
-                        None => continue,
-                    }
+            for cascade in 0..cascade_count {
+                // 每个级联固定占据 atlas 的一个正方形 tile；单级联只用左半边，
+                // 这样 PCF 的 texel 尺寸和旧版 2048² 阴影图完全一致。
+                let viewport_x = (cascade * size) as f32;
+                let viewport_width = size as f32;
+                let light_view_proj = if cascade == 0 {
+                    ctx.frame.light_view_proj
                 } else {
-                    None
+                    ctx.frame.light_view_proj1
                 };
-
-                let two_sided = item.cast_shadow_two_sided;
-                let pipeline = match (skinned, two_sided) {
-                    (true, true) => skinned_two_sided,
-                    (true, false) => skinned_culled,
-                    (false, true) => pipeline_two_sided,
-                    (false, false) => pipeline_culled,
-                };
-                if bound_pipeline != Some((skinned, two_sided)) {
-                    ctx.device.cmd_bind_pipeline(
-                        ctx.cmd,
-                        vk::PipelineBindPoint::GRAPHICS,
-                        pipeline.pipeline,
-                    );
-                    bound_pipeline = Some((skinned, two_sided));
-                }
-
-                casters += 1;
-                if skinned {
-                    skinned_casters += 1;
-                }
-                let vertex_buffers = match skin_buffer {
-                    Some(skin_buffer) => [uploaded.vertex_buffer, skin_buffer],
-                    None => [uploaded.vertex_buffer, vk::Buffer::null()],
-                };
-                let buffer_count = if skin_buffer.is_some() { 2 } else { 1 };
-                let offsets = [0u64, 0u64];
-                ctx.device.cmd_bind_vertex_buffers(
+                ctx.device.cmd_set_viewport(
                     ctx.cmd,
                     0,
-                    &vertex_buffers[..buffer_count],
-                    &offsets[..buffer_count],
+                    &[vk::Viewport {
+                        x: viewport_x,
+                        y: 0.0,
+                        width: viewport_width,
+                        height: size as f32,
+                        min_depth: 0.0,
+                        max_depth: 1.0,
+                    }],
                 );
-
-                if skin_buffer.is_some() {
-                    let bone_set = match self
-                        .bone_sets
-                        .get(ctx.frame_index as usize % self.bone_sets.len().max(1))
-                    {
-                        Some(set) => *set,
-                        None => continue,
-                    };
-                    let sets = [bone_set];
-                    ctx.device.cmd_bind_descriptor_sets(
-                        ctx.cmd,
-                        vk::PipelineBindPoint::GRAPHICS,
-                        pipeline.layout,
-                        0,
-                        &sets,
-                        &[],
-                    );
-                }
-
-                let pc = bindings::ShadowPush {
-                    model: item.model,
-                    lightViewProj: ctx.frame.light_view_proj,
-                    bone_offset: item.bone_offset.unwrap_or(0),
-                    ..Default::default()
-                };
-                // 推送常量必须使用当前绑定管线的布局（两套管线各有独立 layout）。
-                ctx.device.cmd_push_constants(
+                ctx.device.cmd_set_scissor(
                     ctx.cmd,
-                    pipeline.layout,
-                    vk::ShaderStageFlags::VERTEX,
                     0,
-                    std::slice::from_raw_parts(
-                        &pc as *const _ as *const u8,
-                        bindings::PUSH_CONSTANT_SIZE as usize,
-                    ),
+                    &[vk::Rect2D {
+                        offset: vk::Offset2D {
+                            x: viewport_x as i32,
+                            y: 0,
+                        },
+                        extent: vk::Extent2D {
+                            width: viewport_width as u32,
+                            height: size,
+                        },
+                    }],
                 );
 
-                if let Some(ib) = uploaded.index_buffer {
-                    let index_count = item.index_count.unwrap_or(uploaded.index_count);
-                    if index_count == 0 {
+                // 按 (是否蒙皮, 是否双面) 选管线，只在切换时重绑。
+                let mut bound_pipeline: Option<(bool, bool)> = None;
+                for item in ctx.frame.draw_list {
+                    // `ShadowCastingMode::Off` -> 不写阴影贴图。
+                    if !item.cast_shadow {
                         continue;
                     }
-                    ctx.device
-                        .cmd_bind_index_buffer(ctx.cmd, ib, 0, vk::IndexType::UINT32);
-                    ctx.device
-                        .cmd_draw_indexed(ctx.cmd, index_count, 1, item.index_start, 0, 0);
-                } else {
-                    ctx.device.cmd_draw(ctx.cmd, uploaded.vertex_count, 1, 0, 0);
+                    let uploaded = match ctx.frame.mesh_manager.get(item.mesh) {
+                        Some(m) => &m.mesh,
+                        None => continue,
+                    };
+
+                    // 蒙皮 caster 走蒙皮管线（读第二个顶点缓冲 + 骨骼调色板）；
+                    // 静态 caster 走原来的纯位置管线（#560 P0-3c）。
+                    let skinned = item.bone_offset.is_some();
+                    let skin_buffer = if skinned {
+                        match ctx.frame.mesh_manager.get(item.mesh) {
+                            Some(m) => match m.skin.as_ref() {
+                                // 声明了蒙皮但缓冲没上传：画出来会是 bind pose 以外的垃圾，
+                                // 宁可这个 caster 不投影。
+                                Some(skin) => Some(skin.buffer),
+                                None => continue,
+                            },
+                            None => continue,
+                        }
+                    } else {
+                        None
+                    };
+
+                    let two_sided = item.cast_shadow_two_sided;
+                    let pipeline = match (skinned, two_sided) {
+                        (true, true) => skinned_two_sided,
+                        (true, false) => skinned_culled,
+                        (false, true) => pipeline_two_sided,
+                        (false, false) => pipeline_culled,
+                    };
+                    if bound_pipeline != Some((skinned, two_sided)) {
+                        ctx.device.cmd_bind_pipeline(
+                            ctx.cmd,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            pipeline.pipeline,
+                        );
+                        bound_pipeline = Some((skinned, two_sided));
+                    }
+
+                    if cascade == 0 {
+                        casters += 1;
+                        if skinned {
+                            skinned_casters += 1;
+                        }
+                    }
+                    let vertex_buffers = match skin_buffer {
+                        Some(skin_buffer) => [uploaded.vertex_buffer, skin_buffer],
+                        None => [uploaded.vertex_buffer, vk::Buffer::null()],
+                    };
+                    let buffer_count = if skin_buffer.is_some() { 2 } else { 1 };
+                    let offsets = [0u64, 0u64];
+                    ctx.device.cmd_bind_vertex_buffers(
+                        ctx.cmd,
+                        0,
+                        &vertex_buffers[..buffer_count],
+                        &offsets[..buffer_count],
+                    );
+
+                    if skin_buffer.is_some() {
+                        let bone_set = match self
+                            .bone_sets
+                            .get(ctx.frame_index as usize % self.bone_sets.len().max(1))
+                        {
+                            Some(set) => *set,
+                            None => continue,
+                        };
+                        let sets = [bone_set];
+                        ctx.device.cmd_bind_descriptor_sets(
+                            ctx.cmd,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            pipeline.layout,
+                            0,
+                            &sets,
+                            &[],
+                        );
+                    }
+
+                    let pc = bindings::ShadowPush {
+                        model: item.model,
+                        lightViewProj: light_view_proj,
+                        bone_offset: item.bone_offset.unwrap_or(0),
+                        ..Default::default()
+                    };
+                    // 推送常量必须使用当前绑定管线的布局（两套管线各有独立 layout）。
+                    ctx.device.cmd_push_constants(
+                        ctx.cmd,
+                        pipeline.layout,
+                        vk::ShaderStageFlags::VERTEX,
+                        0,
+                        std::slice::from_raw_parts(
+                            &pc as *const _ as *const u8,
+                            bindings::PUSH_CONSTANT_SIZE as usize,
+                        ),
+                    );
+
+                    if let Some(ib) = uploaded.index_buffer {
+                        let index_count = item.index_count.unwrap_or(uploaded.index_count);
+                        if index_count == 0 {
+                            continue;
+                        }
+                        ctx.device
+                            .cmd_bind_index_buffer(ctx.cmd, ib, 0, vk::IndexType::UINT32);
+                        ctx.device.cmd_draw_indexed(
+                            ctx.cmd,
+                            index_count,
+                            1,
+                            item.index_start,
+                            0,
+                            0,
+                        );
+                    } else {
+                        ctx.device.cmd_draw(ctx.cmd, uploaded.vertex_count, 1, 0, 0);
+                    }
                 }
             }
         }
@@ -855,9 +887,9 @@ impl RenderPassNode for ShadowMapPass {
         );
 
         log::trace!(
-            "ShadowMapPass: rendered {} casters into {}x{} shadow map ({} in list)",
+            "ShadowMapPass: rendered {} casters into {}x{} shadow atlas ({} in list)",
             casters,
-            size,
+            size * 2,
             size,
             ctx.frame.draw_list.len()
         );
@@ -1028,6 +1060,30 @@ mod tests {
                 }
                 ref other => panic!("expected a depth attachment, got {other:?}"),
             }
+        }
+    }
+
+    /// #526 CSM: two cascades allocate a 2×1 atlas, one square tile each.
+    #[test]
+    fn two_cascades_allocate_a_side_by_side_atlas() {
+        let settings = RenderSettings {
+            shadow_map_size: 1024,
+            shadow_cascade_count: 2,
+            ..Default::default()
+        };
+        let mut shadow_pass = ShadowMapPass::new();
+        let mut builder = RenderGraphBuilder::new().settings(&settings);
+        shadow_pass.setup(&mut builder, &settings);
+        builder.add_pass(Box::new(shadow_pass));
+        let graph = builder.build();
+
+        let resource = graph.resource(SHADOW_MAP_H).expect("shadow resource");
+        match resource.res_type {
+            ResourceType::DepthAttachment { extent, .. } => {
+                assert_eq!(extent.width, 2048);
+                assert_eq!(extent.height, 1024);
+            }
+            ref other => panic!("expected a depth attachment, got {other:?}"),
         }
     }
 

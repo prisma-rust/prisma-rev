@@ -106,6 +106,7 @@ pub fn render_thread_main(
     warmup: bool,
     overlay_factory: Option<OverlayFactory>,
     shadow_map_size: u32,
+    shadow_cascade_count: u32,
 ) {
     let mut dirty_router = DirtyRouter::new();
     let mut graph_report = crate::render_graph_report::ReportWriter::from_env();
@@ -134,6 +135,7 @@ pub fn render_thread_main(
                 None,
                 *vsync,
                 shadow_map_size,
+                shadow_cascade_count,
             )
         }
         RenderTarget::NativeSurface {
@@ -153,11 +155,16 @@ pub fn render_thread_main(
                 None,
                 *vsync,
                 shadow_map_size,
+                shadow_cascade_count,
             )
         }
-        RenderTarget::Offscreen { width, height } => {
-            GraphRenderer::offscreen_new_with_shadow_size(*width, *height, None, shadow_map_size)
-        }
+        RenderTarget::Offscreen { width, height } => GraphRenderer::offscreen_new_with_shadow_size(
+            *width,
+            *height,
+            None,
+            shadow_map_size,
+            shadow_cascade_count,
+        ),
     };
     let mut renderer = match created {
         Ok(r) => r,
@@ -430,11 +437,15 @@ fn render_one_frame(
         light_color: scene.light_color.to_array(),
         view: scene.view.to_cols_array_2d(),
         light_view_proj: scene.light_view_proj.to_cols_array_2d(),
+        light_view_proj1: scene.light_view_proj1.to_cols_array_2d(),
+        shadow_split: scene.shadow_split,
+        shadow_cascade_count: scene.shadow_cascade_count,
         tonemap_mode: settings.tonemap_mode,
         viewport_size: [extent.width as f32, extent.height as f32],
         exposure: scene.exposure,
         shadow_strength: scene.shadow_strength,
         _pad2: [0.0; 3],
+        _pad3: [0.0; 2],
     };
 
     let input = FrameInput {
@@ -447,6 +458,9 @@ fn render_one_frame(
         skybox: packet.skybox,
         frame_data: &frame_data,
         light_view_proj: scene.light_view_proj.to_cols_array_2d(),
+        light_view_proj1: scene.light_view_proj1.to_cols_array_2d(),
+        shadow_split: scene.shadow_split,
+        shadow_cascade_count: scene.shadow_cascade_count,
         inv_projection: scene.inv_projection.to_cols_array_2d(),
         debug_flags: settings.debug_flags,
         wireframe: settings.wireframe,
