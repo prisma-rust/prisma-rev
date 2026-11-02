@@ -114,6 +114,10 @@ let pose = evaluator.evaluate(&assets, &skeleton, dt)?;
   BlendSpace 暂不产生事件（避免多个样本重复脚步声）。
 - 剪辑 / 状态机缺失、空混合空间、空状态机、成环都返回 `GraphEvalError`，不会 panic。
 
+Montage 播放由 `prism_anim::MontagePlayer` 负责：`play_now` 立即覆盖、`enqueue`
+FIFO 排队、单次播完自动接下一段，`stop` / `stop_after_current` 清空对应状态，
+`tick` 收集跨帧 Notify。它只维护播放头；姿态如何合成由调用方决定。
+
 引擎侧：`Animator.anim_graph_path` 非空且图已加载时优先于状态机 / 混合空间 /
 单剪辑；`load_animation_assets` 会加载 `.rag` / `*.animgraph.json`，再补加载图引用的
 状态机和剪辑。`animator_system` 为每个实体持久化一个求值器，把项目参数表的
