@@ -3457,6 +3457,23 @@ fn animator_editor(
         });
     }
 
+    // 动画图（#560 P1）：只读展示路径；图本身的编辑在后续图面板。
+    let anim_graph_path = value
+        .get("anim_graph_path")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !anim_graph_path.is_empty() {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("graph").size(10.0).weak());
+            ui.label(
+                RichText::new(clip_label(anim_graph_path))
+                    .size(10.0)
+                    .strong(),
+            )
+            .on_hover_text(anim_graph_path);
+        });
+    }
+
     // 动画图层（#560 P1）：路径 / 权重 / additive / 骨骼遮罩都可直接编辑，
     // 写回场景 JSON 的 `layers` 数组；空遮罩 = 全身。
     #[derive(Clone)]

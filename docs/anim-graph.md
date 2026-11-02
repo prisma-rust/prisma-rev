@@ -4,8 +4,8 @@
 作者写 `*.animgraph.json`，cooker 校验后编成 `.rag`（RAGP v1）放进 `.pak`；
 运行时只解码，不在加载时查名字。
 
-> 当前范围：格式、作者 JSON 校验、cooker 编码、构建管线导入、运行时解码、资源类型
-> 和 `AnimGraphEvaluator`。把图自动接进引擎 `Animator` 仍是后续步骤。
+> 当前范围：格式、作者 JSON 校验、cooker 编码、构建管线导入、运行时解码、资源类型、
+> `AnimGraphEvaluator`，以及 `Animator.anim_graph_path` 的运行时驱动。
 
 ## 作者格式
 
@@ -110,3 +110,8 @@ let pose = evaluator.evaluate(&assets, &skeleton, dt)?;
 - `Slot` / `CachedPose` / `Output` 当前是透明传递；Slot 的 Montage 队列是后续切片。
 - StateMachine 节点内部维护当前状态、状态时间和转移交叉淡入；Trigger 按状态机语义消耗。
 - 剪辑 / 状态机缺失、空混合空间、空状态机、成环都返回 `GraphEvalError`，不会 panic。
+
+引擎侧：`Animator.anim_graph_path` 非空且图已加载时优先于状态机 / 混合空间 /
+单剪辑；`load_animation_assets` 会加载 `.rag` / `*.animgraph.json`，再补加载图引用的
+状态机和剪辑。`animator_system` 为每个实体持久化一个求值器，把项目参数表的
+float/bool/trigger 同步进去；图失败时回退到普通剪辑路径并记录警告。

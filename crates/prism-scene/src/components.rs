@@ -2306,6 +2306,9 @@ pub struct Animator {
     /// 状态机（`.rasm`）路径（#560 P1）。非空且已加载时，**状态机决定播哪个剪辑**：
     /// `clip_path` / 混合空间只在状态自己的剪辑为空时兜底。
     pub state_machine_path: String,
+    /// 动画图（`.rag` / `*.animgraph.json`）路径（#560 P1）。非空且已加载时
+    /// **优先于**状态机 / 混合空间 / 单剪辑：由 `AnimGraphEvaluator` 求值。
+    pub anim_graph_path: String,
     /// 当前状态名（引擎每帧写回；作者也可以预置起始状态）。空 / 找不到 = 第一个状态。
     pub state: String,
     /// 一维混合空间的剪辑路径（#560 P1）。≥2 项且能找到剪辑时**优先于**
@@ -2354,6 +2357,7 @@ impl Default for Animator {
             looped: true,
             playing: true,
             state_machine_path: String::new(),
+            anim_graph_path: String::new(),
             state: String::new(),
             blend_clip_paths: Vec::new(),
             blend_positions: Vec::new(),

@@ -1318,6 +1318,10 @@ impl GpuAssetResolver {
                 if !animator.state_machine_path.trim().is_empty() {
                     requested.push(animator.state_machine_path.clone());
                 }
+                // 动画图（#560 P1）：图自己的剪辑 / 状态机在加载完之后再补请求。
+                if !animator.anim_graph_path.trim().is_empty() {
+                    requested.push(animator.anim_graph_path.clone());
+                }
             }
         }
         if requested.is_empty() {
@@ -1335,6 +1339,12 @@ impl GpuAssetResolver {
         {
             world.insert_resource(crate::scene::systems::animator::StateMachineLibrary::new());
         }
+        if world
+            .get_resource::<crate::scene::systems::animator::AnimGraphLibrary>()
+            .is_none()
+        {
+            world.insert_resource(crate::scene::systems::animator::AnimGraphLibrary::new());
+        }
         // 参数表（项目侧每帧写 `speed` / `grounded` / trigger）。引擎不猜值，只保证
         // 资源在：没有它 `animator_system` 会当成空表（所有参数条件恒 false）。
         if world.get_resource::<prism_anim::AnimParameters>().is_none() {
@@ -1348,7 +1358,10 @@ impl GpuAssetResolver {
                 .is_some_and(|library| library.has_skeleton(&path) || library.has_clip(&path))
                 || world
                     .get_resource::<crate::scene::systems::animator::StateMachineLibrary>()
-                    .is_some_and(|library| library.has_state_machine(&path));
+                    .is_some_and(|library| library.has_state_machine(&path))
+                || world
+                    .get_resource::<crate::scene::systems::animator::AnimGraphLibrary>()
+                    .is_some_and(|library| library.has_graph(&path));
             if already {
                 continue;
             }
@@ -1410,6 +1423,68 @@ impl GpuAssetResolver {
                 {
                     loaded += 1;
                 }
+            } else if path.ends_with(".rag") || path.ends_with(".animgraph.json") {
+                let Ok(handle) = self
+                    .resource_manager
+                    .load_with_deps::<prism_asset::runtime::AnimGraphAsset>(id)
+                    .map_err(|error| log::warn!("load_animation_assets: '{path}' failed: {error}"))
+                else {
+                    continue;
+                };
+                let Ok(asset) = self.resource_manager.get(handle) else {
+                    continue;
+                };
+                if world
+                    .get_resource_mut::<crate::scene::systems::animator::AnimGraphLibrary>()
+                    .is_some_and(|library| library.insert(path, asset.info.clone()))
+                {
+                    loaded += 1;
+                }
+            }
+        }
+
+        // 第二轮：图引用的状态机。必须先加载机器，第三轮才能把机器状态剪辑一起补全。
+        let mut graph_machines: Vec<String> = Vec::new();
+        if let Some(library) =
+            world.get_resource::<crate::scene::systems::animator::AnimGraphLibrary>()
+        {
+            for (_, graph) in library.all() {
+                for node in &graph.nodes {
+                    if !node.state_machine_path.trim().is_empty() {
+                        graph_machines.push(node.state_machine_path.clone());
+                    }
+                }
+            }
+        }
+        graph_machines.sort();
+        graph_machines.dedup();
+        for path in graph_machines {
+            let already = world
+                .get_resource::<crate::scene::systems::animator::StateMachineLibrary>()
+                .is_some_and(|library| library.has_state_machine(&path));
+            if already {
+                continue;
+            }
+            let Some(id) = self.resource_manager.id_by_path(&path) else {
+                report_missing_reference(&path, "animation");
+                continue;
+            };
+            let Ok(handle) = self
+                .resource_manager
+                .load_with_deps::<prism_asset::runtime::StateMachineAsset>(id)
+                .map_err(|error| log::warn!("load_animation_assets: '{path}' failed: {error}"))
+            else {
+                continue;
+            };
+            let Ok(asset) = self.resource_manager.get(handle) else {
+                continue;
+            };
+            let machine = prism_anim::StateMachine::from_info(&asset.info);
+            if world
+                .get_resource_mut::<crate::scene::systems::animator::StateMachineLibrary>()
+                .is_some_and(|library| library.insert(path, machine))
+            {
+                loaded += 1;
             }
         }
 
@@ -1423,6 +1498,15 @@ impl GpuAssetResolver {
                     if !state.clip_path.trim().is_empty() {
                         state_clips.push(state.clip_path.clone());
                     }
+                }
+            }
+        }
+        if let Some(library) =
+            world.get_resource::<crate::scene::systems::animator::AnimGraphLibrary>()
+        {
+            for (_, graph) in library.all() {
+                for node in &graph.nodes {
+                    state_clips.extend(node.clips.iter().cloned());
                 }
             }
         }

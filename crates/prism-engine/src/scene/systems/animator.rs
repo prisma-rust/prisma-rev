@@ -9,13 +9,15 @@
 //!
 //! 这一层仍然**不渲染**：GPU 蒙皮在 P0-3，届时 `BonePalette::matrices` 直接上传。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use prism_anim::{
-    palette_to_arrays, AnimParameters, BlendLayer, BlendSample, BlendSample2D, BlendSpace1D,
-    BlendSpace2D, BlendStack, BoneMask, Clip, Pose, Skeleton, StateMachine,
+    palette_to_arrays, AnimGraphEvaluator, AnimGraphSource, AnimParameters, BlendLayer,
+    BlendSample, BlendSample2D, BlendSpace1D, BlendSpace2D, BlendStack, BoneMask, Clip, Pose,
+    Skeleton, StateMachine,
 };
+use prism_asset::formats_anim_graph::AnimGraphInfo;
 use prism_ecs::{Entity, World};
 use prism_scene::components::{Animator, SkeletonRoot};
 
@@ -200,6 +202,73 @@ impl StateMachineLibrary {
     }
 }
 
+/// 已解码的动画图（`.rag` / `.animgraph.json`），按资产路径索引（#560 P1）。
+#[derive(Debug, Default)]
+pub struct AnimGraphLibrary {
+    graphs: HashMap<String, Arc<AnimGraphInfo>>,
+}
+
+impl AnimGraphLibrary {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert(&mut self, path: impl Into<String>, graph: AnimGraphInfo) -> bool {
+        self.graphs.insert(path.into(), Arc::new(graph)).is_none()
+    }
+
+    pub fn graph(&self, path: &str) -> Option<Arc<AnimGraphInfo>> {
+        self.graphs.get(path).cloned()
+    }
+
+    pub fn has_graph(&self, path: &str) -> bool {
+        self.graphs.contains_key(path)
+    }
+
+    pub fn all(&self) -> impl Iterator<Item = (&String, &Arc<AnimGraphInfo>)> {
+        self.graphs.iter()
+    }
+
+    pub fn len(&self) -> usize {
+        self.graphs.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.graphs.is_empty()
+    }
+}
+
+/// 每个实体的图求值器（运行时资源，不进场景）。
+#[derive(Debug, Default)]
+struct AnimGraphRuntimes {
+    runtimes: HashMap<Entity, GraphRuntime>,
+}
+
+#[derive(Debug)]
+struct GraphRuntime {
+    path: String,
+    evaluator: AnimGraphEvaluator,
+}
+
+impl AnimGraphRuntimes {
+    fn get_or_create(
+        &mut self,
+        entity: Entity,
+        path: &str,
+        graph: Arc<AnimGraphInfo>,
+    ) -> &mut AnimGraphEvaluator {
+        let slot = self.runtimes.entry(entity).or_insert_with(|| GraphRuntime {
+            path: path.to_string(),
+            evaluator: AnimGraphEvaluator::new((*graph).clone()),
+        });
+        if slot.path != path {
+            slot.path = path.to_string();
+            slot.evaluator = AnimGraphEvaluator::new((*graph).clone());
+        }
+        &mut slot.evaluator
+    }
+}
+
 /// 播放头（运行时组件，不进场景）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnimatorPlayhead {
@@ -232,6 +301,9 @@ impl AnimatorPlayhead {
     }
 }
 
+/// 图求值在播放头里的「剪辑路径」占位符。
+pub const ANIM_GRAPH_KEY: &str = "<anim-graph>";
+
 /// 混合空间在播放头里的「剪辑路径」占位符。
 ///
 /// 混合空间不是单个剪辑，但播放头需要**一个键**来判断「播放内容变了吗」。用这个
@@ -251,11 +323,20 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
         .get_resource::<StateMachineLibrary>()
         .map(|library| library.machines.clone())
         .unwrap_or_default();
+    let graphs = world
+        .get_resource::<AnimGraphLibrary>()
+        .map(|library| library.graphs.clone())
+        .unwrap_or_default();
     let library = LibraryView {
         skeletons: library.skeletons.clone(),
         clips: library.clips.clone(),
         machines,
+        graphs,
     };
+    let mut graph_runtimes = world
+        .remove_resource::<AnimGraphRuntimes>()
+        .unwrap_or_default();
+    let mut graph_entities: HashSet<Entity> = HashSet::new();
     // 状态机参数（项目侧写、引擎每帧读）。克隆一份：`take_trigger` 需要 `&mut`，
     // 而遍历实体时不能继续借用 World。
     let mut params = world
@@ -273,6 +354,68 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
         let Some(skeleton) = library.skeleton(&root.skeleton_path) else {
             continue;
         };
+
+        // 动画图（#560 P1）：路径非空且图已加载时优先于状态机 / 混合空间 / 单剪辑。
+        // 求值器按实体持久化（状态机节点需要跨帧状态）；图换路径时重建。
+        if !animator.anim_graph_path.trim().is_empty() {
+            if let Some(graph) = library.graph(animator.anim_graph_path.trim()) {
+                graph_entities.insert(entity);
+                let path = animator.anim_graph_path.trim().to_string();
+                let evaluator = graph_runtimes.get_or_create(entity, &path, graph);
+                // 项目侧写入的 float / bool / trigger 同步进图求值器。
+                let declared = evaluator.graph().parameters.clone();
+                for parameter in declared {
+                    match parameter.kind {
+                        prism_asset::formats_anim_graph::GraphParameterKind::Float => {
+                            if let Some(value) = params.float(&parameter.name) {
+                                evaluator.parameters_mut().set_float(parameter.name, value);
+                            }
+                        }
+                        prism_asset::formats_anim_graph::GraphParameterKind::Bool => {
+                            if let Some(value) = params.bool(&parameter.name) {
+                                evaluator.parameters_mut().set_bool(parameter.name, value);
+                            }
+                        }
+                        prism_asset::formats_anim_graph::GraphParameterKind::Trigger => {
+                            if params.has_trigger(&parameter.name) {
+                                evaluator.parameters_mut().set_trigger(parameter.name);
+                            }
+                        }
+                    }
+                }
+                match evaluator.evaluate(&library, &skeleton, dt) {
+                    Ok(pose) => {
+                        let mut playhead = world
+                            .get::<AnimatorPlayhead>(entity)
+                            .cloned()
+                            .unwrap_or(AnimatorPlayhead {
+                                clip_path: ANIM_GRAPH_KEY.into(),
+                                time: 0.0,
+                                finished: false,
+                                previous_pose: None,
+                                pose: Pose::default(),
+                                blend_elapsed: 0.0,
+                                blend_total: None,
+                            });
+                        playhead.clip_path = ANIM_GRAPH_KEY.into();
+                        playhead.finished = false;
+                        playhead.previous_pose = None;
+                        playhead.pose = pose.clone();
+                        let palette = BonePalette::from_matrices(&skeleton.bone_palette(&pose));
+                        updates.push((entity, palette, playhead));
+                        continue;
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "animator: graph '{}' on entity {:?} failed: {error}",
+                            path,
+                            entity
+                        );
+                    }
+                }
+            }
+        }
+
         let mut single_path = if animator.clip_path.is_empty() {
             root.default_clip_path.clone()
         } else {
@@ -606,6 +749,10 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
             animator.state = state;
         }
     }
+    graph_runtimes
+        .runtimes
+        .retain(|entity, _| graph_entities.contains(entity));
+    world.insert_resource(graph_runtimes);
     world.insert_resource(AnimEvents { events });
     count
 }
@@ -645,6 +792,7 @@ struct LibraryView {
     skeletons: HashMap<String, Arc<Skeleton>>,
     clips: HashMap<String, Arc<Clip>>,
     machines: HashMap<String, Arc<StateMachine>>,
+    graphs: HashMap<String, Arc<AnimGraphInfo>>,
 }
 
 impl LibraryView {
@@ -654,6 +802,20 @@ impl LibraryView {
 
     fn clip(&self, path: &str) -> Option<Arc<Clip>> {
         self.clips.get(path).cloned()
+    }
+
+    fn graph(&self, path: &str) -> Option<Arc<AnimGraphInfo>> {
+        self.graphs.get(path).cloned()
+    }
+}
+
+impl AnimGraphSource for LibraryView {
+    fn clip(&self, path: &str) -> Option<Arc<Clip>> {
+        self.clips.get(path).cloned()
+    }
+
+    fn state_machine(&self, path: &str) -> Option<Arc<StateMachine>> {
+        self.machines.get(path).cloned()
     }
 }
 
