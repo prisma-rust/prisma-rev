@@ -12,7 +12,7 @@
 // Push constants: PostPush - `tonemapMode` (0 = Reinhard, 1 = ACES,
 // 2 = passthrough for 2D scenes so the sprite palette survives untouched),
 // `aaMode` (FXAA), `invTexelSize`, the color-grading knobs, HDR bloom controls,
-// and the Phase 2 chromatic-aberration strength (#502).
+// and the Phase 2 chromatic-aberration / film-grain strengths (#502).
 //
 // Compile:
 //   slangc post.slang -profile spirv_1_5 -target spirv \
@@ -49,6 +49,10 @@ public struct PostPush
     // Lens chromatic aberration (#502 Phase 2). `0` skips the extra taps and is
     // bit-identical to the pre-effect path; `1` is the strongest useful amount.
     public float chromaticAberration;
+    // Film grain (#502 Phase 2). Display-referred monochrome noise over the
+    // final image; `0` skips the hash and is bit-identical to the pre-effect
+    // path, `1` is the strongest useful amount.
+    public float filmGrain;
 };
 [[vk::push_constant]]
 PostPush pc;
@@ -100,6 +104,16 @@ float3 grade(float3 c)
     float luma = dot(c, float3(0.2126, 0.7152, 0.0722));
     c = lerp(float3(luma, luma, luma), c, pc.saturation);
     return saturate(c);
+}
+
+// Deterministic monochrome noise for film grain (#502 Phase 2). The hash is
+// taken from the pixel coordinate, so the pattern is spatially stable; an
+// animated grain needs a time uniform this pass does not have yet.
+float grainNoise(float2 pixel)
+{
+    float2 p = frac(pixel * float2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return frac(p.x * p.y);
 }
 
 // Soft-threshold a HDR sample: pixels brighter than `pc.bloomThreshold` keep
@@ -231,6 +245,14 @@ public void fragmentMain(
         float2 d = uv * 2.0 - 1.0;
         float r = saturate(length(d) * 0.70710678);
         color *= 1.0 - pc.vignette * smoothstep(0.35, 1.0, r);
+    }
+
+    // Film grain (#502 Phase 2): monochrome noise over the final display-referred
+    // image. `0` skips the hash entirely, keeping the default path bit-identical.
+    if (pc.filmGrain > 0.0)
+    {
+        float noise = grainNoise(clipPos.xy) - 0.5;
+        color = saturate(color + noise * pc.filmGrain * 0.25);
     }
 
     outColor = float4(color, 1.0);

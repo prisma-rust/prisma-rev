@@ -157,6 +157,41 @@ fn zero_saturation_flattens_the_channels() {
 }
 
 #[test]
+fn film_grain_is_off_by_default_and_varies_pixels_at_full_strength() {
+    let Some(mut renderer) = try_create_headless() else {
+        return;
+    };
+    let plain = render_graded(&mut renderer, PostGrade::default());
+    let plain_again = render_graded(&mut renderer, PostGrade::default());
+    assert_eq!(
+        plain, plain_again,
+        "the default grade must stay deterministic and grain-free"
+    );
+
+    let grained = render_graded(
+        &mut renderer,
+        PostGrade {
+            film_grain: 1.0,
+            ..PostGrade::default()
+        },
+    );
+
+    let mut min = u8::MAX;
+    let mut max = 0u8;
+    for px in grained.as_chunks::<4>().0 {
+        // Monochrome grain: all three colour channels move together.
+        assert_eq!(px[0], px[1], "grain must be monochrome: {px:?}");
+        assert_eq!(px[1], px[2], "grain must be monochrome: {px:?}");
+        min = min.min(px[0]);
+        max = max.max(px[0]);
+    }
+    assert!(
+        max.saturating_sub(min) >= 16,
+        "film grain should vary a flat frame: min={min}, max={max}"
+    );
+}
+
+#[test]
 fn bloom_brightens_a_uniform_hdr_frame() {
     let Some(mut renderer) = try_create_headless() else {
         return;

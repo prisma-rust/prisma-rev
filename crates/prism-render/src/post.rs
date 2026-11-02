@@ -664,6 +664,7 @@ impl RenderPassNode for PostPass {
             bloomIntensity: ctx.frame.grade.bloom_intensity,
             bloomThreshold: ctx.frame.grade.bloom_threshold,
             chromaticAberration: ctx.frame.grade.chromatic_aberration,
+            filmGrain: ctx.frame.grade.film_grain,
             // #613：FXAA 采样的是**内部渲染目标**，一个 texel 的 UV 尺寸按它的
             // 分辨率算；用交换链尺寸会在内部分辨率缩小时把采样步长算小。
             invTexelSize: [
@@ -883,8 +884,9 @@ mod tests {
         assert_eq!(std::mem::offset_of!(PostPush, bloomIntensity), 28);
         assert_eq!(std::mem::offset_of!(PostPush, bloomThreshold), 32);
         assert_eq!(std::mem::offset_of!(PostPush, chromaticAberration), 36);
-        assert_eq!(std::mem::size_of::<PostPush>(), 40);
-        assert_eq!(PUSH_CONSTANT_SIZE, 40);
+        assert_eq!(std::mem::offset_of!(PostPush, filmGrain), 40);
+        assert_eq!(std::mem::size_of::<PostPush>(), 44);
+        assert_eq!(PUSH_CONSTANT_SIZE, 44);
     }
 
     #[test]
@@ -916,6 +918,39 @@ mod tests {
             }
             .sanitized()
             .chromatic_aberration,
+            0.0
+        );
+    }
+
+    #[test]
+    fn test_film_grain_is_clamped_and_neutral_at_zero() {
+        use crate::render_graph::PostGrade;
+        assert!(PostGrade::default().is_neutral());
+        assert_eq!(
+            PostGrade {
+                film_grain: 2.0,
+                ..PostGrade::default()
+            }
+            .sanitized()
+            .film_grain,
+            1.0
+        );
+        assert_eq!(
+            PostGrade {
+                film_grain: -1.0,
+                ..PostGrade::default()
+            }
+            .sanitized()
+            .film_grain,
+            0.0
+        );
+        assert_eq!(
+            PostGrade {
+                film_grain: f32::NAN,
+                ..PostGrade::default()
+            }
+            .sanitized()
+            .film_grain,
             0.0
         );
     }

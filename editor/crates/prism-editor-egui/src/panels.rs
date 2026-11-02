@@ -6150,6 +6150,13 @@ pub fn render_graph(
                 .changed();
             ui.end_row();
 
+            ui.label("Film Grain");
+            changed |= ui
+                .add(egui::Slider::new(&mut settings.film_grain, 0.0..=1.0))
+                .on_hover_text("Monochrome noise over the final image.")
+                .changed();
+            ui.end_row();
+
             ui.label("Bloom");
             changed |= ui.checkbox(&mut settings.bloom, "Enable").changed();
             ui.end_row();
