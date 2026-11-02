@@ -180,6 +180,51 @@ fn height_scale_scales_the_vertices() {
 }
 
 #[test]
+fn sculpt_raise_and_lower_only_touch_the_brush_radius() {
+    let mut field = Heightfield::flat(9);
+    let affected = field.sculpt(0.5, 0.5, 0.2, 5.0, SculptMode::Raise);
+    assert!(affected > 0);
+    assert!(field.sample_height(0.5, 0.5) > 4.9);
+    assert_eq!(field.sample_height(0.0, 0.0), 0.0, "corner is outside");
+    assert_eq!(field.sample_height(1.0, 1.0), 0.0, "corner is outside");
+
+    field.sculpt(0.5, 0.5, 0.2, 5.0, SculptMode::Lower);
+    assert!(field.sample_height(0.5, 0.5).abs() < 1e-4);
+}
+
+#[test]
+fn sculpt_smooth_reduces_a_spike_and_flatten_uses_the_center_height() {
+    let mut heights = vec![0.0f32; 9 * 9];
+    heights[4 * 9 + 4] = 10.0;
+    let bytes: Vec<u8> = heights
+        .iter()
+        .flat_map(|height| height.to_le_bytes())
+        .collect();
+    let mut field = Heightfield::from_raw(&bytes, 9).expect("9×9 field");
+    field.sculpt(0.5, 0.5, 0.3, 0.5, SculptMode::Smooth);
+    assert!(field.sample_height(0.5, 0.5) < 10.0);
+    assert!(field.sample_height(0.5, 0.5) > 0.0);
+
+    let mut ramp = ramp(5);
+    ramp.sculpt(0.5, 0.5, 1.0, 1.0, SculptMode::Flatten);
+    assert!((ramp.sample_height(0.5, 0.5) - 0.5).abs() < 1e-4);
+}
+
+#[test]
+fn sculpt_ignores_invalid_parameters_and_raw_round_trips() {
+    let mut field = Heightfield::flat(4);
+    let before = field.heights().to_vec();
+    assert_eq!(field.sculpt(f32::NAN, 0.5, 0.2, 1.0, SculptMode::Raise), 0);
+    assert_eq!(field.sculpt(0.5, 0.5, -1.0, 1.0, SculptMode::Raise), 0);
+    assert_eq!(field.sculpt(0.5, 0.5, 0.2, 0.0, SculptMode::Raise), 0);
+    assert_eq!(field.heights(), before);
+
+    field.sculpt(0.5, 0.5, 0.2, 2.0, SculptMode::Raise);
+    let round_trip = Heightfield::from_raw(&field.to_raw_bytes(), 4).expect("round trip");
+    assert_eq!(round_trip, field);
+}
+
+#[test]
 fn the_terrain_key_changes_with_the_parameters() {
     let base = Terrain::default();
     let key = terrain_key(1, &base);
