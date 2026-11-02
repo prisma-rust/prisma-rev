@@ -4,6 +4,9 @@ use prism_anim::{
     AnimState, AnimTransition, ClipNotify, Joint, JointTransform, Pose, StateMachine, Track,
     TransitionCondition, Vec3Key,
 };
+use prism_asset::formats_anim_graph::{
+    AnimGraphInfo, GraphInputInfo, GraphNodeInfo, GraphNodeKind,
+};
 use prism_scene::components::{AnimLayer, SkeletonRoot};
 
 fn two_bone_skeleton() -> Skeleton {
@@ -1163,5 +1166,94 @@ fn a_missing_or_zero_weight_layer_is_ignored() {
     assert!(
         (tip.y - 1.0).abs() < 1e-4,
         "无效图层不该改变基础姿态，得到 {tip:?}"
+    );
+}
+
+/// 单剪辑动画图：ClipPlayer -> Output。
+fn single_clip_graph(path: &str) -> AnimGraphInfo {
+    let clip = GraphNodeInfo {
+        name: "clip".into(),
+        kind: GraphNodeKind::ClipPlayer,
+        looped: false,
+        additive: false,
+        speed: 1.0,
+        weight: 1.0,
+        clips: vec![path.into()],
+        positions: Vec::new(),
+        parameter_x: String::new(),
+        parameter_y: String::new(),
+        state_machine_path: String::new(),
+        inputs: Vec::new(),
+    };
+    let mut output = GraphNodeInfo {
+        name: "out".into(),
+        kind: GraphNodeKind::Output,
+        looped: false,
+        additive: false,
+        speed: 1.0,
+        weight: 1.0,
+        clips: Vec::new(),
+        positions: Vec::new(),
+        parameter_x: String::new(),
+        parameter_y: String::new(),
+        state_machine_path: String::new(),
+        inputs: vec![GraphInputInfo {
+            node: 0,
+            weight: 1.0,
+            bone_mask: Vec::new(),
+        }],
+    };
+    output.name = "out".into();
+    AnimGraphInfo {
+        parameters: Vec::new(),
+        nodes: vec![clip, output],
+        output: 1,
+    }
+}
+
+#[test]
+fn an_animator_uses_its_graph_instead_of_the_clip_path() {
+    let (mut world, entity) = world_with_animator("bend.ranim");
+    world.insert_resource(AnimGraphLibrary::new());
+    world
+        .get_resource_mut::<AnimGraphLibrary>()
+        .unwrap()
+        .insert("hero.rag", single_clip_graph("bend.ranim"));
+    {
+        let animator = world.get_mut::<Animator>(entity).unwrap();
+        animator.anim_graph_path = "hero.rag".into();
+        animator.time = 0.0;
+    }
+
+    animator_system(&mut world, 0.5);
+    let head = world.get::<AnimatorPlayhead>(entity).unwrap();
+    assert_eq!(head.clip_path, ANIM_GRAPH_KEY);
+    let tip = child_tip(&world, entity);
+    assert!(
+        (tip.x - (2.0 - std::f32::consts::FRAC_PI_4.sin())).abs() < 1e-3,
+        "tip {tip:?}"
+    );
+
+    // 求值器按实体持久化，第二个半秒继续推进到 90°。
+    animator_system(&mut world, 0.5);
+    let tip = child_tip(&world, entity);
+    assert!((tip.x - 1.0).abs() < 1e-3, "tip {tip:?}");
+}
+
+#[test]
+fn a_missing_graph_falls_back_to_the_clip_path() {
+    let (mut world, entity) = world_with_animator("bend.ranim");
+    world.insert_resource(AnimGraphLibrary::new());
+    world.get_mut::<Animator>(entity).unwrap().anim_graph_path = "missing.rag".into();
+    animator_system(&mut world, 0.5);
+    let head = world.get::<AnimatorPlayhead>(entity).unwrap();
+    assert_ne!(
+        head.clip_path, ANIM_GRAPH_KEY,
+        "missing graph must fall back"
+    );
+    let tip = child_tip(&world, entity);
+    assert!(
+        (tip.x - (2.0 - std::f32::consts::FRAC_PI_4.sin())).abs() < 1e-3,
+        "tip {tip:?}"
     );
 }

@@ -557,6 +557,7 @@ fn an_animator_survives_cook_and_decode() {
                         "looped": false,
                         "playing": true,
                         "blend_duration": 0.35,
+                        "anim_graph_path": "graphs/hero.rag",
                         "layers": [{
                             "clip_path": "models/hero.skinning/clips/2_aim.ranim",
                             "weight": 0.5,
@@ -590,6 +591,10 @@ fn an_animator_survives_cook_and_decode() {
     assert!(!animator.looped);
     assert!(animator.playing);
     assert_eq!(animator.blend_duration, 0.35, "交叉淡入时长要进 RSCN");
+    assert_eq!(
+        animator.anim_graph_path, "graphs/hero.rag",
+        "动画图路径要进 RSCN"
+    );
     assert_eq!(animator.layers.len(), 1, "动画图层要进 RSCN");
     assert_eq!(
         animator.layers[0].clip_path,
