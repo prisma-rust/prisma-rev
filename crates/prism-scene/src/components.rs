@@ -332,7 +332,7 @@ impl MeshRenderer {
 /// `SpriteRef`（`prism-engine::scene::runtime_components`）持有——和
 /// `MeshRenderer` → `MeshRef` 的关系完全一致。
 ///
-/// 2D 约定（见 `docs/plans/2026-10-27-cozy-fishing-design.md`）：
+/// 2D 约定（见 `projects/fishing/DESIGN.md`）：
 /// 相机在 **+Z 看向 −Z**，`z` 越大越靠近相机；世界尺寸 =
 /// 纹理像素尺寸 / [`SpriteRenderer::pixels_per_unit`]。
 #[derive(Debug, Clone, Serialize, Deserialize, Reflect)]

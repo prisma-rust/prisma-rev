@@ -1,6 +1,8 @@
 # 2D 像素钓鱼游戏（Cozy Fishing）设计
 
-> 状态：设计稿（M0 起点）
+> 状态：M0 已落地（2026-11），代码在 `projects/fishing/`。
+> 本文保留玩法和引擎契约的设计记录；早期草案里的 API 名称 / 编辑器形态
+> 已被后续实现取代，现行约定以 `docs/DESIGN.md`、仓库根 `AGENTS.md` 和代码为准。
 > 目标项目：`projects/fishing/`（独立 workspace，与 `projects/prisma` 同级）
 > 引擎改动遵循 `docs/DESIGN.md` 的架构分层：新 API 先写规格，语义等价优先。
 
@@ -36,7 +38,7 @@
 |---|---|---|---|
 | 引擎运行时 | `crates/prism-*` | 通用组件、通用系统、渲染通道、资源导入、音频/存档/时间等通用服务 | 出现任何鱼类、钓鱼、船、关卡、HUD 布局等具体玩法概念 |
 | 编辑器数据层 | `crates/prism-editor-api` | 把注册表投影成属性面板 schema、文档读写 | 链接 engine/render/Vulkan |
-| 编辑器 UI | `editor/`（Vue） | 面板、拖拽、预览 | 写死某个游戏的业务字段 |
+| 编辑器 UI | `editor/`（egui） | 面板、拖拽、预览 | 写死某个游戏的业务字段 |
 | 用户项目 | `projects/fishing/` | 钓鱼状态机、鱼种数据、船只控制、HUD、关卡内容、音频清单 | 直接使用 `vk::*`、直接改 render graph、绕过 `ComponentRegistry` 挂组件 |
 
 判定方法：**换一个游戏（比如种田游戏）还能原样复用吗？** 能 → 引擎；不能 → 用户项目。
@@ -130,7 +132,7 @@ pub struct SpriteRef {
 #### 2D 帧的 pass 裁剪（后续优化，不阻塞 M0）
 
 `RenderMode` 增加 `Sprites2D`：跳过 shadow / GTAO / GI / PT / forward。M0 先接受「前向 pass 空跑」的成本，
-在 `docs/plans` 里记为 M1 项。
+留作后续 M1 优化项。
 
 ### 3.2 精灵动画
 
