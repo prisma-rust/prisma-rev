@@ -331,6 +331,67 @@ fn the_default_vegetation_mesh_is_a_unit_cross_quad() {
 }
 
 #[test]
+fn texture_splat_writes_weights_and_material_paths() {
+    let layers = vec![
+        "materials/sand.mat.json".to_string(),
+        "materials/grass.mat.json".to_string(),
+        "materials/rock.mat.json".to_string(),
+        "materials/snow.mat.json".to_string(),
+    ];
+    let mut world = prism_ecs::World::new();
+    let entity = world.spawn();
+    world.insert(
+        entity,
+        Terrain {
+            chunks: 1,
+            lod_distances: Vec::new(),
+            splat_materials: layers.clone(),
+            splat_tiling: 8.0,
+            ..Terrain::default()
+        },
+    );
+    world.insert(entity, MeshRenderer::default());
+    terrain_system(&mut world);
+
+    let data = world.get::<TerrainData>(entity).expect("terrain data");
+    let mesh = world
+        .get_resource::<ProceduralMeshes>()
+        .and_then(|meshes| meshes.get(&data.mesh_path))
+        .expect("mesh");
+    assert_eq!(mesh.colors.len(), mesh.positions.len());
+    assert_eq!(mesh.tangents.len(), mesh.positions.len());
+    assert!(mesh.colors.iter().all(|color| {
+        color[0] >= 0.0
+            && color[1] >= 0.0
+            && color[2] >= 0.0
+            && color[0] + color[1] + color[2] <= 1.001
+    }));
+
+    let renderer = world.get::<MeshRenderer>(entity).expect("renderer");
+    assert_eq!(renderer.material_paths, layers);
+    assert_eq!(renderer.material_path, "materials/sand.mat.json");
+    assert_eq!(
+        world.get::<TerrainSplat>(entity).map(|splat| splat.tiling),
+        Some(8.0)
+    );
+    assert!(world.get::<MaterialRef>(entity).is_some());
+}
+
+#[test]
+fn texture_splat_weights_cover_sand_grass_rock_and_snow() {
+    let sand = terrain_splat_weights(0.0, 0.0, 1.0, [0.0, 1.0, 0.0]);
+    let snow = terrain_splat_weights(1.0, 0.0, 1.0, [0.0, 1.0, 0.0]);
+    assert!(sand[0] > 0.9, "low ground is sand: {sand:?}");
+    assert!(
+        snow[0] < 0.05 && snow[2] < 0.05,
+        "high ground is snow: {snow:?}"
+    );
+
+    let steep = terrain_splat_weights(0.5, 0.0, 1.0, [0.0, 0.2, 0.0]);
+    assert!(steep[2] > 0.5, "steep slope leans to rock: {steep:?}");
+}
+
+#[test]
 fn the_terrain_key_changes_with_the_parameters() {
     let base = Terrain::default();
     let key = terrain_key(1, &base);

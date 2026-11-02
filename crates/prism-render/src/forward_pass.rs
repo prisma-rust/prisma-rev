@@ -70,6 +70,7 @@ fn build_static_batches_with(
         // Skinned draws need their own bone offset and transparent draws need
         // their back-to-front order; both stay single-draw batches.
         let groupable = item.bone_offset.is_none()
+            && item.splat_tiling == 0.0
             && item.state.render_queue <= prism_gfx::RenderQueue::GEOMETRY_LAST;
         if !groupable {
             batches.push(StaticBatch {
@@ -1712,7 +1713,7 @@ impl ForwardPass {
             set5_layout,
         ];
 
-        // Push constants: PbrBindlessPush (108 字节 std140, VERTEX|FRAGMENT).
+        // Push constants: PbrBindlessPush (116 字节 std140, VERTEX|FRAGMENT).
         // The reflected size is also what `cmd_push_constants` sends, and the
         // module-level assertion guarantees the Rust mirror matches it.
         let push = [vk::PushConstantRange::default()
@@ -2452,20 +2453,20 @@ impl RenderPassNode for ForwardPass {
                         model: item.model,
                         material_slot: item.material.unwrap_or(0),
                         env_handle: self.brdf_handle,
-                        albedo_idx: u32::MAX,
-                        normal_idx: u32::MAX,
                         debug_flags: ctx.frame.debug_flags,
                         bone_offset: item.bone_offset.unwrap_or(0),
                         skin_mode: u32::from(item.bone_offset.is_some()),
-                        _pad_92: instance_offset,
-                        // .x = instance count, .y = draw-list index for the
-                        // previous-model SSBO, .z = reactive mask for TAA
-                        // (transparent draws must not reuse stale history).
-                        _padding: [
-                            instance_count,
-                            batch.items[0] as u32,
-                            u32::from(item.state.blends()),
-                        ],
+                        instance_offset,
+                        instance_count,
+                        // Draw-list index for the previous-model SSBO and the
+                        // TAA reactive mask (transparent draws drop history).
+                        prev_draw_index: batch.items[0] as u32,
+                        reactive_mask: u32::from(item.state.blends()),
+                        splat_slot0: item.splat_slots[0],
+                        splat_slot1: item.splat_slots[1],
+                        splat_slot2: item.splat_slots[2],
+                        splat_slot3: item.splat_slots[3],
+                        splat_tiling: item.splat_tiling,
                     };
                     ctx.device.cmd_push_constants(
                         ctx.cmd,
@@ -2905,6 +2906,8 @@ mod tests {
             visible_in_main_pass: true,
             cast_shadow_two_sided: false,
             bone_offset: None,
+            splat_slots: [u32::MAX; 4],
+            splat_tiling: 0.0,
             state: DrawState::default(),
             world_bounds: None,
             index_start: 0,

@@ -125,21 +125,28 @@ Texture3D probeVolume;
 ConstantBuffer<ProbeVolumeInfo> probeInfo;
 
 // ---- push constants -------------------------------------------------
-// Byte layout mirrors Rust `PbrBindlessPushConstants` (96 bytes):
-//   model(64) | material_slot(4) | env_handle(4) | albedo_idx(4) | normal_idx(4)
-//   | debug_flags(4) | bone_offset(4) | skin_mode(4) | _pad(4) | _padding(12)
+// Byte layout mirrors Rust `PbrBindlessPushConstants` (120 bytes):
+//   model(64) | material_slot(4) | env_handle(4) | debug_flags(4)
+//   | bone_offset(4) | skin_mode(4) | instance_offset(4) | instance_count(4)
+//   | prev_draw_index(4) | reactive_mask(4)
+//   | splat_slot0..3(16) | splat_tiling(4)
 struct PbrBindlessPush
 {
     float4x4 model;
     uint     material_slot;
     uint     env_handle;
-    uint     albedo_idx;
-    uint     normal_idx;
     uint     debug_flags;   // PBR component toggle bitmask (15 bits)
     uint     bone_offset;   // #560 P0-3: first bone palette matrix for this draw
     uint     skin_mode;     // 0 = static mesh, 1 = skinned (reads set 0 binding 3)
-    uint     _pad_92;
-    uint3    _padding;
+    uint     instance_offset; // #491: first instance model in the bone SSBO
+    uint     instance_count;  // #491: 0 = per-draw model
+    uint     prev_draw_index; // #883 TAA: draw-list index for previous-model SSBO
+    uint     reactive_mask;   // #883 TAA: transparent draws drop stale history
+    uint     splat_slot0;     // #517 texture-layer material slots
+    uint     splat_slot1;
+    uint     splat_slot2;
+    uint     splat_slot3;
+    float    splat_tiling;    // 0 = no texture splat
 };
 [[vk::push_constant]]
 PbrBindlessPush pc;
@@ -509,11 +516,24 @@ struct SceneOutput
 };
 
 [shader("fragment")]
+// #517: texture-layer splat helpers. `slot` is a material SSBO index; a
+// missing layer is u32::MAX and contributes nothing.
+float3 sampleSplatAlbedo(uint slot, float2 uv)
+{
+    GpuMaterial mat = materials[NonUniformResourceIndex(slot)];
+    if (mat.albedo_idx != 0xFFFFFFFFu)
+    {
+        return bindlessSrvs[NonUniformResourceIndex(mat.albedo_idx)]
+            .Sample(globalSamplers[NonUniformResourceIndex(SAMPLER_LINEAR_WRAP)], uv).rgb;
+    }
+    return mat.base_color.rgb;
+}
+
 SceneOutput fragmentMain(MeshVaryings in)
 {
     // Transparent draws write 1 into normal.w. TaaPass uses this as a
     // reactive mask and trusts the current frame instead of history.
-    float reactive = float(pc._padding.z);
+    float reactive = float(pc.reactive_mask);
 
     // ---- Skin-weight heatmap (#560) -------------------------------------
     // The vertex stage already resolved the dominant joint into a colour, so
@@ -533,10 +553,96 @@ SceneOutput fragmentMain(MeshVaryings in)
     // ---- Material -------------------------------------------------------
     GpuMaterial mat = materials[pc.material_slot];
 
-    // Base color: prefer the texture if a valid slot was bound, else use
-    // the scalar. Texture index 0xFFFFFFFF means "no texture".
+    // Base color: texture-layer splat samples 4 materials' albedo (#517);
+    // otherwise prefer the single texture, then the scalar. Texture index
+    // 0xFFFFFFFF means "no texture".
+    bool texture_splat = pc.splat_tiling > 0.0;
+    float2 splat_uv = in.uv * pc.splat_tiling;
+    float splat_weights[4];
+    float3 splat_albedo = float3(0.0);
+    float3 splat_normal_ts = float3(0.0);
+    float splat_roughness = 0.0;
+    float splat_albedo_weight = 0.0;
+    float splat_normal_weight = 0.0;
+    float splat_roughness_weight = 0.0;
+    if (texture_splat)
+    {
+        // Vertex colour R/G/B = first three layer weights, fourth implicit.
+        float w0 = max(in.color.r, 0.0);
+        float w1 = max(in.color.g, 0.0);
+        float w2 = max(in.color.b, 0.0);
+        float w3 = max(1.0 - w0 - w1 - w2, 0.0);
+        float total = max(w0 + w1 + w2 + w3, 1e-5);
+        splat_weights[0] = w0 / total;
+        splat_weights[1] = w1 / total;
+        splat_weights[2] = w2 / total;
+        splat_weights[3] = w3 / total;
+        for (uint layer = 0; layer < 4; ++layer)
+        {
+            uint slot = layer == 0u ? pc.splat_slot0
+                      : layer == 1u ? pc.splat_slot1
+                      : layer == 2u ? pc.splat_slot2
+                      : pc.splat_slot3;
+            float weight = splat_weights[layer];
+            if (slot == 0xFFFFFFFFu || weight <= 0.0)
+            {
+                continue;
+            }
+            GpuMaterial layer_mat = materials[NonUniformResourceIndex(slot)];
+            splat_albedo += sampleSplatAlbedo(slot, splat_uv) * weight;
+            splat_albedo_weight += weight;
+
+            float3 layer_normal = float3(0.0, 0.0, 1.0);
+            if (layer_mat.normal_idx != 0xFFFFFFFFu)
+            {
+                layer_normal = bindlessSrvs[NonUniformResourceIndex(layer_mat.normal_idx)]
+                    .Sample(globalSamplers[NonUniformResourceIndex(SAMPLER_LINEAR_WRAP)], splat_uv).xyz;
+                layer_normal = layer_normal * 2.0 - 1.0;
+                layer_normal.xy *= layer_mat.normal_scale;
+            }
+            splat_normal_ts += layer_normal * weight;
+            splat_normal_weight += weight;
+
+            float layer_roughness = layer_mat.metallic_roughness_emissive.y;
+            if (layer_mat.metallic_roughness_idx != 0xFFFFFFFFu)
+            {
+                float4 mr = bindlessSrvs[NonUniformResourceIndex(layer_mat.metallic_roughness_idx)]
+                    .Sample(globalSamplers[NonUniformResourceIndex(SAMPLER_LINEAR_WRAP)], splat_uv);
+                layer_roughness = mr.g * layer_mat.metallic_roughness_emissive.y;
+            }
+            splat_roughness += layer_roughness * weight;
+            splat_roughness_weight += weight;
+        }
+        if (splat_albedo_weight > 0.0)
+        {
+            splat_albedo /= splat_albedo_weight;
+        }
+        else
+        {
+            // Materials have not resolved yet (first frame): keep the mesh
+            // visible instead of emitting black.
+            splat_albedo = mat.base_color.rgb;
+        }
+        if (splat_normal_weight > 0.0)
+        {
+            splat_normal_ts /= splat_normal_weight;
+        }
+        else
+        {
+            splat_normal_ts = float3(0.0, 0.0, 1.0);
+        }
+        if (splat_roughness_weight > 0.0)
+        {
+            splat_roughness /= splat_roughness_weight;
+        }
+    }
+
     float3 albedo;
-    if (mat.albedo_idx != 0xFFFFFFFFu)
+    if (texture_splat)
+    {
+        albedo = splat_albedo;
+    }
+    else if (mat.albedo_idx != 0xFFFFFFFFu)
     {
         float4 sampled = bindlessSrvs[NonUniformResourceIndex(mat.albedo_idx)]
             .Sample(globalSamplers[NonUniformResourceIndex(SAMPLER_LINEAR_WRAP)], in.uv);
@@ -556,10 +662,13 @@ SceneOutput fragmentMain(MeshVaryings in)
     {
         albedo = mat.base_color.rgb;
     }
-    // Vertex colour tint (#517): terrain uses it for its procedural
-    // height/slope splat; meshes without colours upload white, so this is a
-    // no-op for the existing asset pipeline.
-    albedo *= in.color;
+    if (!texture_splat)
+    {
+        // Vertex colour tint (#517): terrain uses it for its procedural
+        // height/slope splat; meshes without colours upload white, so this is
+        // a no-op for the existing asset pipeline.
+        albedo *= in.color;
+    }
 
     // Metallic / roughness: same pattern, packed (B=metallic, G=roughness
     // per glTF) when a texture is present. Flag-gated: when the component
@@ -605,6 +714,18 @@ SceneOutput fragmentMain(MeshVaryings in)
     else
     {
         n = normalize(in.worldNormal);
+    }
+
+    if (texture_splat)
+    {
+        // Terrain meshes upload a +X tangent; the TBN still lets each layer's
+        // normal map perturb the geometric normal.
+        float3 t = normalize(in.tangent.xyz);
+        float t_sign = in.tangent.w < 0.0 ? -1.0 : 1.0;
+        float3 b = cross(in.worldNormal, t) * t_sign;
+        n = normalize(splat_normal_ts.x * t + splat_normal_ts.y * b
+                    + max(splat_normal_ts.z, 0.01) * in.worldNormal);
+        roughness = clamp(splat_roughness, 0.04, 1.0);
     }
 
     float3 v = normalize(frame.cameraPosition.xyz - in.worldPos);

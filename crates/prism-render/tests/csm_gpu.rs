@@ -75,6 +75,8 @@ fn caster(mesh: prism_render::managers::MeshHandle) -> DrawItem {
         visible_in_main_pass: false,
         cast_shadow_two_sided: false,
         bone_offset: None,
+        splat_slots: [u32::MAX; 4],
+        splat_tiling: 0.0,
         state: DrawState::default(),
         world_bounds: None,
         index_start: 0,

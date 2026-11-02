@@ -16,30 +16,33 @@ ConstantBuffer<FrameUBO> frame;
 StructuredBuffer<float4x4> bones;
 
 // set 0, binding 4 — previous-frame model matrices (#883 Phase 2). One entry
-// per draw-list item; `_padding.y` selects this draw's entry. Separate from the
+// per draw-list item; `prev_draw_index` selects this draw's entry. Separate from the
 // bone palette so object motion and skinning can coexist.
 [[vk::binding(4, 0)]]
 StructuredBuffer<float4x4> prevModels;
 
 // Push constant. MUST stay byte-identical to `PbrBindlessPush` in
 // scene_frag.slang (both stages read the same block): model(64) |
-// material_slot(4) | env_handle(4) | albedo_idx(4) | normal_idx(4) |
-// debug_flags(4) | bone_offset(4) | skin_mode(4) | instanceOffset(4) |
-// instanceCount(4) | _padding(8) = [count, prevModelIndex, reactive].
+// material_slot(4) | env_handle(4) | debug_flags(4) | bone_offset(4) |
+// skin_mode(4) | instance_offset(4) | instance_count(4) |
+// prev_draw_index(4) | reactive_mask(4) | splat_slot0..3(16) | splat_tiling(4).
 struct MeshPush
 {
     float4x4 model;
     uint     material_slot;
     uint     env_handle;
-    uint     albedo_idx;
-    uint     normal_idx;
     uint     debug_flags;
     uint     bone_offset;
     uint     skin_mode;
-    uint     _pad_92;       // #491: first instance model in the bone SSBO
-    // .x = instance count (0 = per-draw model), .y = prev-model SSBO index,
-    // .z = reactive mask (transparent draws).
-    uint3    _padding;
+    uint     instance_offset; // #491: first instance model in the bone SSBO
+    uint     instance_count;  // #491: 0 = per-draw model
+    uint     prev_draw_index; // #883 TAA: previous-model SSBO index
+    uint     reactive_mask;   // #883 TAA: transparent draws drop history
+    uint     splat_slot0;
+    uint     splat_slot1;
+    uint     splat_slot2;
+    uint     splat_slot3;
+    float    splat_tiling;
 };
 [[vk::push_constant]]
 MeshPush push;
@@ -145,19 +148,19 @@ MeshVaryings finishVertex(
 MeshVaryings vertexMain(MeshVertexIn in, uint instanceID : SV_InstanceID)
 {
     // #491: static instances reuse the bone SSBO (binding 3) instead of adding
-    // another descriptor. `_padding.x == 0` keeps the per-draw push model.
+    // another descriptor. `instance_count == 0` keeps the per-draw push model.
     float4x4 model = push.model;
     float4x4 prevModel = model;
-    if (push._padding.x > 0u)
+    if (push.instance_count > 0u)
     {
         // Instances move as a group; previous per-instance matrices are not
         // packed yet, so use the current model (camera-only motion).
-        model = bones[push._pad_92 + instanceID];
+        model = bones[push.instance_offset + instanceID];
         prevModel = model;
     }
     else
     {
-        uint prevIndex = min(push._padding.y, 4095u);
+        uint prevIndex = min(push.prev_draw_index, 4095u);
         prevModel = prevModels[prevIndex];
     }
     return finishVertex(
