@@ -113,6 +113,8 @@ let pose = evaluator.evaluate(&assets, &skeleton, dt)?;
   剪辑 Notify 时触发，循环回绕分两段扫描，第一帧不补发 time 0，共享节点只发一次。
   BlendSpace 默认只让**权重最大的样本**产生事件（`BlendSpaceNotifyPolicy::Dominant`），
   避免多个采样点重复脚步声；切到 `BlendSpaceNotifyPolicy::None` 可完全关闭。
+  状态机默认在转移帧仍扫描离开状态到转移点为止；`StateTransitionNotifyPolicy::SuppressOnTransition`
+  会丢掉这一帧离开状态的事件，避免“刚抬脚就切走”的脚步声。
 - 剪辑 / 状态机缺失、空混合空间、空状态机、成环都返回 `GraphEvalError`，不会 panic。
 
 Montage 播放由 `prism_anim::MontagePlayer` 负责：`play_now` 立即覆盖、`enqueue`
