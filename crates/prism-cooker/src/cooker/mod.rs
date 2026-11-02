@@ -29,6 +29,7 @@ use thiserror::Error;
 pub mod profile;
 pub mod scene;
 pub mod skinned;
+pub mod state_machine;
 
 // ---------------------------------------------------------------------------
 // Errors

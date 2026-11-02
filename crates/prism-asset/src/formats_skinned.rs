@@ -92,17 +92,18 @@ pub const RANI_ADDITIVE: u16 = 1 << 1;
 // ---------------------------------------------------------------------------
 
 /// 只前进的字节读取器：每次读都做边界检查，越界返回 `None`。
-struct Reader<'a> {
+/// 定长/变长记录的读取器（`formats_state_machine` 也用它）。
+pub(crate) struct Reader<'a> {
     data: &'a [u8],
     pos: usize,
 }
 
 impl<'a> Reader<'a> {
-    fn new(data: &'a [u8], pos: usize) -> Self {
+    pub(crate) fn new(data: &'a [u8], pos: usize) -> Self {
         Self { data, pos }
     }
 
-    fn take(&mut self, len: usize) -> Option<&'a [u8]> {
+    pub(crate) fn take(&mut self, len: usize) -> Option<&'a [u8]> {
         let end = self.pos.checked_add(len)?;
         if end > self.data.len() {
             return None;
@@ -112,27 +113,27 @@ impl<'a> Reader<'a> {
         Some(slice)
     }
 
-    fn u8(&mut self) -> Option<u8> {
+    pub(crate) fn u8(&mut self) -> Option<u8> {
         Some(self.take(1)?[0])
     }
 
-    fn u16(&mut self) -> Option<u16> {
+    pub(crate) fn u16(&mut self) -> Option<u16> {
         Some(u16::from_le_bytes(self.take(2)?.try_into().ok()?))
     }
 
-    fn u32(&mut self) -> Option<u32> {
+    pub(crate) fn u32(&mut self) -> Option<u32> {
         Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?))
     }
 
-    fn i32(&mut self) -> Option<i32> {
+    pub(crate) fn i32(&mut self) -> Option<i32> {
         Some(i32::from_le_bytes(self.take(4)?.try_into().ok()?))
     }
 
-    fn f32(&mut self) -> Option<f32> {
+    pub(crate) fn f32(&mut self) -> Option<f32> {
         Some(f32::from_le_bytes(self.take(4)?.try_into().ok()?))
     }
 
-    fn f32s(&mut self, count: usize) -> Option<Vec<f32>> {
+    pub(crate) fn f32s(&mut self, count: usize) -> Option<Vec<f32>> {
         let bytes = count.checked_mul(4)?;
         let slice = self.take(bytes)?;
         Some(
@@ -145,7 +146,7 @@ impl<'a> Reader<'a> {
         )
     }
 
-    fn u16s(&mut self, count: usize) -> Option<Vec<u16>> {
+    pub(crate) fn u16s(&mut self, count: usize) -> Option<Vec<u16>> {
         let bytes = count.checked_mul(2)?;
         let slice = self.take(bytes)?;
         Some(
@@ -171,7 +172,7 @@ impl<'a> Reader<'a> {
         )
     }
 
-    fn remaining(&self) -> usize {
+    pub(crate) fn remaining(&self) -> usize {
         self.data.len().saturating_sub(self.pos)
     }
 }

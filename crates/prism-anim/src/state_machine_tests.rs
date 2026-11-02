@@ -235,3 +235,84 @@ fn parameters_round_trip_and_clear() {
     assert!(!params.has_trigger("a") && !params.has_trigger("b"));
     assert!(!params.is_empty());
 }
+
+#[test]
+fn a_cooked_machine_becomes_evaluable() {
+    use prism_asset::formats_state_machine::{
+        AnimStateInfo, AnimTransitionInfo, StateMachineInfo, TransitionConditionInfo,
+    };
+
+    let info = StateMachineInfo {
+        states: vec![
+            AnimStateInfo {
+                name: "Idle".into(),
+                clip_path: "char/idle.ranim".into(),
+                speed: 1.0,
+                looped: true,
+            },
+            AnimStateInfo {
+                name: "Run".into(),
+                clip_path: "char/run.ranim".into(),
+                speed: 1.2,
+                looped: true,
+            },
+        ],
+        transitions: vec![
+            // 指向不存在的状态：cooker 不会写出这种数据，但坏资产不该让整台机器失效。
+            AnimTransitionInfo {
+                from: None,
+                to: 9,
+                min_state_fraction: 0.0,
+                duration: 0.0,
+                conditions: Vec::new(),
+            },
+            AnimTransitionInfo {
+                from: Some(0),
+                to: 1,
+                min_state_fraction: 0.25,
+                duration: 0.2,
+                conditions: vec![TransitionConditionInfo::FloatGreater {
+                    name: "speed".into(),
+                    threshold: 1.5,
+                }],
+            },
+            AnimTransitionInfo {
+                from: Some(1),
+                to: 0,
+                min_state_fraction: 0.0,
+                duration: 0.0,
+                conditions: vec![TransitionConditionInfo::Trigger {
+                    name: "Stop".into(),
+                }],
+            },
+        ],
+    };
+
+    let machine = StateMachine::from_info(&info);
+    assert_eq!(machine.states.len(), 2);
+    assert_eq!(machine.transitions.len(), 2, "越界的转移被丢掉");
+    assert!((machine.states[1].speed - 1.2).abs() < 1e-6);
+
+    // Idle 只播了 10%：min_state_fraction 挡住。
+    let mut params = AnimParameters::new();
+    params.set_float("speed", 2.0);
+    assert!(machine.next_transition(0, &mut params, 0.1, 1.0).is_none());
+    // 播到 30%：进 Run，过渡 0.2s。
+    let target = machine
+        .next_transition(0, &mut params, 0.3, 1.0)
+        .expect("transitions");
+    assert_eq!(target.state, 1);
+    assert!((target.duration - 0.2).abs() < 1e-6);
+
+    // Run 里按 Stop：trigger 被消耗，方向回到 Idle。
+    params.set_trigger("Stop");
+    let target = machine
+        .next_transition(1, &mut params, 0.5, 1.0)
+        .expect("transitions");
+    assert_eq!(target.state, 0);
+    assert!(!params.has_trigger("Stop"));
+    assert!(
+        machine.next_transition(1, &mut params, 0.5, 1.0).is_none(),
+        "trigger 只响一次"
+    );
+}
