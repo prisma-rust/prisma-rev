@@ -132,10 +132,21 @@
                                 ]
                             },
                             "binding": {"kind": "uniform", "offset": 36, "size": 4, "elementStride": 0}
+                        },
+                        {
+                            "name": "filmGrain",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "float32",
+                                "sizes": [
+                                    {"kind": "uniform", "value": 4, "alignment": 4}
+                                ]
+                            },
+                            "binding": {"kind": "uniform", "offset": 40, "size": 4, "elementStride": 0}
                         }
                     ],
                     "sizes": [
-                        {"kind": "uniform", "value": 40, "alignment": 8}
+                        {"kind": "uniform", "value": 48, "alignment": 8}
                     ]
                 },
                 "containerVarLayout": {
@@ -248,13 +259,24 @@
                                     ]
                                 },
                                 "binding": {"kind": "uniform", "offset": 36, "size": 4, "elementStride": 0}
+                            },
+                            {
+                                "name": "filmGrain",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32",
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 4, "alignment": 4}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 40, "size": 4, "elementStride": 0}
                             }
                         ],
                         "sizes": [
-                            {"kind": "uniform", "value": 40, "alignment": 8}
+                            {"kind": "uniform", "value": 48, "alignment": 8}
                         ]
                     },
-                    "binding": {"kind": "uniform", "offset": 0, "size": 40, "elementStride": 0}
+                    "binding": {"kind": "uniform", "offset": 0, "size": 48, "elementStride": 0}
                 },
                 "sizes": [
                     {"kind": "pushConstantBuffer", "value": 1}
@@ -396,10 +418,21 @@
                                     ]
                                 },
                                 "binding": {"kind": "uniform", "offset": 36, "size": 4, "elementStride": 0}
+                            },
+                            {
+                                "name": "filmGrain",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32",
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 4, "alignment": 4}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 40, "size": 4, "elementStride": 0}
                             }
                         ],
                         "sizes": [
-                            {"kind": "uniform", "value": 40, "alignment": 8}
+                            {"kind": "uniform", "value": 48, "alignment": 8}
                         ]
                     },
                     "containerVarLayout": {
@@ -512,13 +545,24 @@
                                         ]
                                     },
                                     "binding": {"kind": "uniform", "offset": 36, "size": 4, "elementStride": 0}
+                                },
+                                {
+                                    "name": "filmGrain",
+                                    "type": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32",
+                                        "sizes": [
+                                            {"kind": "uniform", "value": 4, "alignment": 4}
+                                        ]
+                                    },
+                                    "binding": {"kind": "uniform", "offset": 40, "size": 4, "elementStride": 0}
                                 }
                             ],
                             "sizes": [
-                                {"kind": "uniform", "value": 40, "alignment": 8}
+                                {"kind": "uniform", "value": 48, "alignment": 8}
                             ]
                         },
-                        "binding": {"kind": "uniform", "offset": 0, "size": 40, "elementStride": 0}
+                        "binding": {"kind": "uniform", "offset": 0, "size": 48, "elementStride": 0}
                     },
                     "sizes": [
                         {"kind": "pushConstantBuffer", "value": 1}

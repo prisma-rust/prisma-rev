@@ -107,6 +107,11 @@ pub struct RenderSettings {
     /// 在 HDR 采样阶段按到画面中心的距离把红/蓝通道向相反方向偏移，
     /// 绿色保持不动；默认 0 与旧画面逐位一致。
     pub chromatic_aberration: f32,
+    /// 胶片颗粒强度（#502 Phase 2）：`0.0` = 关闭，`1.0` = 最强。
+    ///
+    /// 在色调映射、调色与暗角之后叠加显示空间单色噪声；默认 0 与旧画面
+    /// 逐位一致。
+    pub film_grain: f32,
     /// 内部渲染分辨率 `[宽, 高]`（#613）；`[0, 0]` = 关闭。
     ///
     /// 开启后场景按这个尺寸渲染，`PostPass` 再放大到窗口；相机的宽高比也跟着
@@ -141,6 +146,7 @@ impl RenderSettings {
             },
             bloom_threshold: self.bloom_threshold,
             chromatic_aberration: self.chromatic_aberration,
+            film_grain: self.film_grain,
         }
     }
 
@@ -182,6 +188,7 @@ impl Default for RenderSettings {
             bloom_intensity: 0.15,
             bloom_threshold: 1.0,
             chromatic_aberration: 0.0,
+            film_grain: 0.0,
             shadow_distance: DEFAULT_SHADOW_DISTANCE,
             shadow_map_size: prism_render::SHADOW_MAP_SIZE,
             shadow_cascade_count: 1,
@@ -238,6 +245,9 @@ mod tests {
 
         settings.chromatic_aberration = 0.35;
         assert_eq!(settings.post_grade().chromatic_aberration, 0.35);
+
+        settings.film_grain = 0.5;
+        assert_eq!(settings.post_grade().film_grain, 0.5);
     }
 
     #[test]

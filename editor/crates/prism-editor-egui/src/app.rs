@@ -5947,6 +5947,7 @@ fn render_settings_json(
         "bloomIntensity": settings.bloom_intensity,
         "bloomThreshold": settings.bloom_threshold,
         "chromaticAberration": settings.chromatic_aberration,
+        "filmGrain": settings.film_grain,
         "shadowDistance": settings.shadow_distance,
         "shadowCascadeCount": settings.shadow_cascade_count,
         "debugRt": settings.debug_rt,
@@ -5999,6 +6000,7 @@ fn render_settings_from_json(
         bloom_intensity: f32_field("bloomIntensity", base.bloom_intensity),
         bloom_threshold: f32_field("bloomThreshold", base.bloom_threshold),
         chromatic_aberration: f32_field("chromaticAberration", base.chromatic_aberration),
+        film_grain: f32_field("filmGrain", base.film_grain),
         shadow_distance: f32_field("shadowDistance", base.shadow_distance),
         // #526：贴图边长只在构造渲染器时生效；编辑器 UI 还没暴露滑杆时保持默认。
         shadow_map_size: u32_field("shadowMapSize", base.shadow_map_size),
@@ -6354,6 +6356,7 @@ mod tests {
         settings.bloom_intensity = 0.4;
         settings.bloom_threshold = 2.5;
         settings.chromatic_aberration = 0.25;
+        settings.film_grain = 0.45;
         settings.shadow_distance = 90.0;
         settings.shadow_cascade_count = 2;
         settings.shaded_wireframe = true;
@@ -6369,6 +6372,7 @@ mod tests {
         assert_eq!(loaded.bloom_intensity, 0.4);
         assert_eq!(loaded.bloom_threshold, 2.5);
         assert_eq!(loaded.chromatic_aberration, 0.25);
+        assert_eq!(loaded.film_grain, 0.45);
         assert_eq!(loaded.shadow_distance, 90.0);
         assert_eq!(loaded.shadow_cascade_count, 2);
         assert!(loaded.shaded_wireframe);
