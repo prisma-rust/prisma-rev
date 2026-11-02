@@ -6,6 +6,7 @@ use glam::{Mat4, Vec3};
 use super::{AnimGraphEvaluator, AnimGraphSource, GraphEvalError};
 use crate::clip::{Clip, ClipNotify, Track, Vec3Key};
 use crate::graph_eval::GraphNodeKind;
+use crate::montage::Montage;
 use prism_asset::formats_anim_graph::{
     AnimGraphInfo, GraphInputInfo, GraphNodeInfo, GraphParameterInfo, GraphParameterKind,
 };
@@ -533,4 +534,86 @@ fn a_slot_montage_emits_its_own_notifies() {
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(events[0].name, "MontageHit");
     assert_eq!(events[0].node, "slot");
+}
+
+fn slot_graph() -> AnimGraphInfo {
+    let mut base = node("base", GraphNodeKind::ClipPlayer);
+    base.clips.push("base.ranim".into());
+    let mut slot = node("slot", GraphNodeKind::Slot);
+    slot.inputs.push(GraphInputInfo {
+        node: 0,
+        weight: 1.0,
+        bone_mask: Vec::new(),
+    });
+    graph(vec![base, slot, output(1)], 2)
+}
+
+#[test]
+fn an_evaluator_montage_overrides_the_slot_input() {
+    let mut evaluator = AnimGraphEvaluator::new(slot_graph());
+    let skeleton = skeleton();
+    let source = Source::new(&[("base.ranim", translation_clip("base", 0.0))]);
+    evaluator.play_montage(
+        "slot",
+        Montage::new(Arc::new(translation_clip("montage", 10.0)))
+            .with_weight(0.5)
+            .with_looping(false),
+    );
+    let pose = evaluator
+        .evaluate(&source, &skeleton, 0.0)
+        .expect("evaluates");
+    assert!((x(&pose) - 5.0).abs() < 1e-5, "x={}", x(&pose));
+}
+
+#[test]
+fn queued_evaluator_montages_advance_after_the_current_one() {
+    let mut evaluator = AnimGraphEvaluator::new(slot_graph());
+    let skeleton = skeleton();
+    let source = Source::new(&[("base.ranim", translation_clip("base", 0.0))]);
+    evaluator.play_montage(
+        "slot",
+        Montage::new(Arc::new(translation_clip("a", 1.0))).with_looping(false),
+    );
+    evaluator.enqueue_montage(
+        "slot",
+        Montage::new(Arc::new(translation_clip("b", 2.0))).with_looping(false),
+    );
+    let pose = evaluator.evaluate(&source, &skeleton, 0.4).expect("first");
+    assert!((x(&pose) - 1.0).abs() < 1e-5, "x={}", x(&pose));
+    let pose = evaluator.evaluate(&source, &skeleton, 0.7).expect("next");
+    assert!((x(&pose) - 2.0).abs() < 1e-5, "x={}", x(&pose));
+}
+
+#[test]
+fn stopping_a_slot_montage_returns_to_the_slot_input() {
+    let mut evaluator = AnimGraphEvaluator::new(slot_graph());
+    let skeleton = skeleton();
+    let source = Source::new(&[("base.ranim", translation_clip("base", 0.0))]);
+    evaluator.play_montage(
+        "slot",
+        Montage::new(Arc::new(translation_clip("montage", 10.0))),
+    );
+    evaluator.stop_montage("slot");
+    let pose = evaluator
+        .evaluate(&source, &skeleton, 0.0)
+        .expect("evaluates");
+    assert!(x(&pose).abs() < 1e-5, "x={}", x(&pose));
+}
+
+#[test]
+fn slot_montage_notifies_reach_graph_events() {
+    let mut evaluator = AnimGraphEvaluator::new(slot_graph());
+    let skeleton = skeleton();
+    let source = Source::new(&[("base.ranim", translation_clip("base", 0.0))]);
+    evaluator.play_montage(
+        "slot",
+        Montage::new(Arc::new(clip_with_notify("montage", 0.5, "MontageStep"))).with_looping(false),
+    );
+    let (_, events) = evaluator
+        .evaluate_with_events(&source, &skeleton, 0.6)
+        .expect("evaluates");
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].name, "MontageStep");
+    assert_eq!(events[0].node, "slot");
+    assert_eq!(events[0].clip_path, "montage");
 }
