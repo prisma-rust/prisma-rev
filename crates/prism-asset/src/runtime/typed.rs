@@ -307,6 +307,36 @@ pub struct AnimClipAsset {
     raw: Vec<u8>,
 }
 
+/// 解码后的 `.rasm`：状态 / 转移 / 条件（#560 P1）。
+#[derive(Debug, Clone)]
+pub struct StateMachineAsset {
+    pub info: crate::formats_state_machine::StateMachineInfo,
+    raw: Vec<u8>,
+}
+
+impl Asset for StateMachineAsset {
+    fn asset_type() -> AssetType {
+        AssetType::StateMachine
+    }
+
+    fn from_bytes(data: &[u8]) -> Result<Self, RuntimeError> {
+        let info = crate::formats_state_machine::decode_rasm(data).ok_or_else(|| {
+            RuntimeError::DeserializeFailed {
+                asset_type: AssetType::StateMachine,
+                reason: "invalid RASM data (bad magic / truncated)".into(),
+            }
+        })?;
+        Ok(Self {
+            info,
+            raw: data.to_vec(),
+        })
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        self.raw
+    }
+}
+
 impl Asset for AnimClipAsset {
     fn asset_type() -> AssetType {
         AssetType::AnimClip

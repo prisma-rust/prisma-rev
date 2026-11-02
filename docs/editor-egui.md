@@ -464,7 +464,7 @@ for event in world.get_resource::<AnimEvents>().map(|e| e.drain()).unwrap_or_def
   解析失败会让 build 失败**，名字对不上任何动画会 warn —— 打错的事件表不该静默消失。
 - 编辑器还没有 Notify 的编辑界面（改文件后靠松散资产热重载重新 cook）；时间轴打点留给后续。
 
-### 状态机（作者格式，运行时接线在下一刀）
+### 状态机
 
 状态机写成 `assets/<something>.statemachine.json`，cook 成 `.rasm`（RASM v1：状态表 +
 转移表 + 条件；`from` 用 `u32::MAX` 表示「任意状态」）：
@@ -488,10 +488,22 @@ for event in world.get_resource::<AnimEvents>().map(|e| e.drain()).unwrap_or_def
   重复状态名、空的 `clip` / `name`、未知条件种类同样报错并指出是哪一条；
 - 求值是**按作者顺序第一条命中**（条件全真 + 当前状态已播到 `min_state_fraction`），
   一帧只走一条转移；`min_state_fraction` 在剪辑时长未知时视为已播完，否则单次剪辑会卡在最后一帧；
-- 现在只到「数据可求值」：`prism-anim::StateMachine` 已有 `next_transition` 与单元测试，
-  `Animator` 还没有 `state_machine_path` / 当前状态字段，`animator_system` 也还没调用它。
+还不支持：状态图的编辑器面板（现在手写 JSON）、视口里直接拖关节做 IK（P2 的 IK 另立）、
+Notify 的编写界面。
 
-还不支持：视口里直接拖关节做 IK（P2 的 IK 另立）、Notify 的编写界面、状态机的编辑器面板与运行时接线。
+运行时（#560 P1）：`Animator.state_machine_path` 指向 `.rasm`、`state` 是当前状态名（引擎每帧
+写回，可在检查器里预置起始状态）。状态机生效时：
+
+- **状态决定播什么**：`state.clip_path`、`speed`、`looped` 覆盖组件上的同名字段（状态剪辑为空
+  时才回落到 `clip_path`）；
+- 转移由 **`prism_anim::AnimParameters`** 资源驱动（项目侧每帧写 `speed` / `grounded` / trigger
+  等），引擎在 `animator_system` 里求值；一帧最多走一条转移，换状态时播放时间归零；
+- `min_state_fraction` 用**上一帧**的播放时间判定（那一帧确实播到了那里），所以跨过阈值的那
+  一帧还拦着、下一帧放行；
+- 转移自己的 `duration` 覆盖组件的 `blend_duration`（那条转移说了算），淡出源仍是上一帧姿态；
+- 机器路径写错 / 还没加载时安静退回 `clip_path`，不会让实体消失。
+- 检查器的 `Animator` 卡片里显示当前状态与机器文件名（只读）。
+
 
 ## 4.4 内置截图与控制通道
 

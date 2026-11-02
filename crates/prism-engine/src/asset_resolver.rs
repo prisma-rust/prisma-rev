@@ -1314,6 +1314,10 @@ impl GpuAssetResolver {
                 if !clip.trim().is_empty() {
                     requested.push(clip);
                 }
+                // 状态机（#560 P1）：机器自己的状态剪辑在它加载完之后再补请求。
+                if !animator.state_machine_path.trim().is_empty() {
+                    requested.push(animator.state_machine_path.clone());
+                }
             }
         }
         if requested.is_empty() {
@@ -1325,12 +1329,26 @@ impl GpuAssetResolver {
         if world.get_resource::<SkeletonLibrary>().is_none() {
             world.insert_resource(SkeletonLibrary::new());
         }
+        if world
+            .get_resource::<crate::scene::systems::animator::StateMachineLibrary>()
+            .is_none()
+        {
+            world.insert_resource(crate::scene::systems::animator::StateMachineLibrary::new());
+        }
+        // 参数表（项目侧每帧写 `speed` / `grounded` / trigger）。引擎不猜值，只保证
+        // 资源在：没有它 `animator_system` 会当成空表（所有参数条件恒 false）。
+        if world.get_resource::<prism_anim::AnimParameters>().is_none() {
+            world.insert_resource(prism_anim::AnimParameters::default());
+        }
 
         let mut loaded = 0usize;
         for path in requested {
             let already = world
                 .get_resource::<SkeletonLibrary>()
-                .is_some_and(|library| library.has_skeleton(&path) || library.has_clip(&path));
+                .is_some_and(|library| library.has_skeleton(&path) || library.has_clip(&path))
+                || world
+                    .get_resource::<crate::scene::systems::animator::StateMachineLibrary>()
+                    .is_some_and(|library| library.has_state_machine(&path));
             if already {
                 continue;
             }
@@ -1374,6 +1392,67 @@ impl GpuAssetResolver {
                     library.insert_clip(path, clip);
                     loaded += 1;
                 }
+            } else if path.ends_with(".rasm") {
+                let Ok(handle) = self
+                    .resource_manager
+                    .load_with_deps::<prism_asset::runtime::StateMachineAsset>(id)
+                    .map_err(|error| log::warn!("load_animation_assets: '{path}' failed: {error}"))
+                else {
+                    continue;
+                };
+                let Ok(asset) = self.resource_manager.get(handle) else {
+                    continue;
+                };
+                let machine = prism_anim::StateMachine::from_info(&asset.info);
+                if world
+                    .get_resource_mut::<crate::scene::systems::animator::StateMachineLibrary>()
+                    .is_some_and(|library| library.insert(path, machine))
+                {
+                    loaded += 1;
+                }
+            }
+        }
+
+        // 第二轮：状态机引用的剪辑。机器刚加载完才知道它们是谁，所以只能在这之后补。
+        let mut state_clips: Vec<String> = Vec::new();
+        if let Some(library) =
+            world.get_resource::<crate::scene::systems::animator::StateMachineLibrary>()
+        {
+            for machine in library.all() {
+                for state in &machine.states {
+                    if !state.clip_path.trim().is_empty() {
+                        state_clips.push(state.clip_path.clone());
+                    }
+                }
+            }
+        }
+        state_clips.sort();
+        state_clips.dedup();
+        for path in state_clips {
+            let already = world
+                .get_resource::<SkeletonLibrary>()
+                .is_some_and(|library| library.has_clip(&path));
+            if already {
+                continue;
+            }
+            let Some(id) = self.resource_manager.id_by_path(&path) else {
+                report_missing_reference(&path, "animation");
+                continue;
+            };
+            let Ok(handle) = self
+                .resource_manager
+                .load_with_deps::<prism_asset::runtime::AnimClipAsset>(id)
+                .map_err(|error| log::warn!("load_animation_assets: '{path}' failed: {error}"))
+            else {
+                continue;
+            };
+            let Ok(asset) = self.resource_manager.get(handle) else {
+                continue;
+            };
+            let clip = prism_anim::Clip::from_info(&asset.info);
+            if let Some(library) = world.get_resource_mut::<SkeletonLibrary>() {
+                library.insert_clip(path, clip);
+                loaded += 1;
             }
         }
         loaded

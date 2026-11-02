@@ -33,6 +33,8 @@ pub enum AssetType {
     SkinnedMesh = 10,
     /// 骨骼动画剪辑（`.ranim`，#560）。
     AnimClip = 11,
+    /// 动画状态机（`.rasm`，#560 P1）。
+    StateMachine = 12,
     /// 回退 for unrecognised formats.
     Unknown = 0xFF,
 }
@@ -58,6 +60,7 @@ impl AssetType {
             AssetType::Skeleton => "skeleton",
             AssetType::SkinnedMesh => "skinned-mesh",
             AssetType::AnimClip => "anim-clip",
+            AssetType::StateMachine => "state-machine",
             AssetType::Unknown => "unknown",
         }
     }
@@ -77,6 +80,7 @@ impl AssetType {
             9 => AssetType::Skeleton,
             10 => AssetType::SkinnedMesh,
             11 => AssetType::AnimClip,
+            12 => AssetType::StateMachine,
             _ => AssetType::Unknown,
         }
     }
@@ -99,6 +103,7 @@ impl AssetType {
             "rskel" => AssetType::Skeleton,
             "rskin" => AssetType::SkinnedMesh,
             "ranim" => AssetType::AnimClip,
+            "rasm" => AssetType::StateMachine,
             // Textures / images
             "png" | "jpg" | "jpeg" | "tga" | "bmp" | "hdr" | "exr" | "ktx" | "ktx2" | "dds" => {
                 AssetType::Texture

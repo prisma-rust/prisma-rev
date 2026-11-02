@@ -1,6 +1,9 @@
 use super::*;
 use glam::{Mat4, Quat, Vec3};
-use prism_anim::{ClipNotify, Joint, JointTransform, Pose, Track, Vec3Key};
+use prism_anim::{
+    AnimState, AnimTransition, ClipNotify, Joint, JointTransform, Pose, StateMachine, Track,
+    TransitionCondition, Vec3Key,
+};
 use prism_scene::components::SkeletonRoot;
 
 fn two_bone_skeleton() -> Skeleton {
@@ -353,6 +356,7 @@ fn blend_weights_are_clamped_and_need_both_a_source_and_a_duration() {
         previous_pose: Some(Pose::default()),
         pose: Pose::default(),
         blend_elapsed: 0.0,
+        blend_total: None,
     };
     assert_eq!(head.blend_weight(1.0), Some(0.0));
     head.blend_elapsed = 0.5;
@@ -815,4 +819,143 @@ fn the_library_reports_clip_notifies_for_the_timeline() {
         ]
     );
     assert!(library.clip_notifies("char/missing.ranim").is_empty());
+}
+
+/// 一个「idle → run」的两状态机：`speed > 0.5` 时转移。
+fn speed_machine(duration: f32, min_state_fraction: f32) -> StateMachine {
+    StateMachine {
+        states: vec![
+            AnimState {
+                name: "idle".into(),
+                clip_path: "bend.ranim".into(),
+                speed: 1.0,
+                looped: false,
+            },
+            AnimState {
+                name: "run".into(),
+                clip_path: "bent90.ranim".into(),
+                speed: 1.0,
+                looped: false,
+            },
+        ],
+        transitions: vec![AnimTransition {
+            from: 0,
+            to: 1,
+            min_state_fraction,
+            duration,
+            conditions: vec![TransitionCondition::FloatGreater {
+                name: "speed".into(),
+                threshold: 0.5,
+            }],
+        }],
+    }
+}
+
+fn install_machine(world: &mut World, machine: StateMachine) {
+    let mut library = StateMachineLibrary::new();
+    library.insert("hero.rasm", machine);
+    world.insert_resource(library);
+}
+
+#[test]
+fn a_state_machine_drives_the_clip_and_writes_the_state_back() {
+    let (mut world, entity) = world_with_animator("");
+    install_bent90(&mut world);
+    install_machine(&mut world, speed_machine(0.0, 0.0));
+    {
+        let animator = world.get_mut::<Animator>(entity).unwrap();
+        animator.state_machine_path = "hero.rasm".into();
+        animator.playing = false;
+    }
+
+    // 参数为 0：停在 idle（bend.ranim 的 0°）。
+    animator_system(&mut world, 0.0);
+    assert_eq!(world.get::<Animator>(entity).unwrap().state, "idle");
+    let tip = child_tip(&world, entity);
+    assert!((tip.y - 1.0).abs() < 1e-4, "idle 该是 0°，得到 {tip:?}");
+
+    // 参数过阈值：下一帧转到 run（bent90.ranim 的 90°）。
+    let mut params = prism_anim::AnimParameters::default();
+    params.set_float("speed", 1.0);
+    world.insert_resource(params);
+    animator_system(&mut world, 0.0);
+    assert_eq!(world.get::<Animator>(entity).unwrap().state, "run");
+    let tip = child_tip(&world, entity);
+    assert!((tip.x - 1.0).abs() < 1e-3, "run 该是 90°，得到 {tip:?}");
+    // 换了状态就从 0 重新播，而不是接着 idle 的时间。
+    assert!(
+        world.get::<AnimatorPlayhead>(entity).unwrap().time.abs() < 1e-6,
+        "换状态后时间该归零"
+    );
+}
+
+#[test]
+fn a_transition_duration_overrides_the_component_blend_duration() {
+    let (mut world, entity) = world_with_animator("");
+    install_bent90(&mut world);
+    // 转移自己带 2 秒时长；组件设成 0（硬切），必须以转移为准。
+    install_machine(&mut world, speed_machine(2.0, 0.0));
+    {
+        let animator = world.get_mut::<Animator>(entity).unwrap();
+        animator.state_machine_path = "hero.rasm".into();
+        animator.blend_duration = 0.0;
+        animator.playing = false;
+    }
+    animator_system(&mut world, 0.0);
+    let mut params = prism_anim::AnimParameters::default();
+    params.set_float("speed", 1.0);
+    world.insert_resource(params);
+
+    // 转移的第一帧：权重 0 → 还是 idle 的 0° 姿态。
+    animator_system(&mut world, 0.0);
+    let tip = child_tip(&world, entity);
+    assert!(
+        (tip.y - 1.0).abs() < 1e-4,
+        "过渡开头仍是旧姿态，得到 {tip:?}"
+    );
+
+    // 走完 2 秒：90°。
+    world.get_mut::<Animator>(entity).unwrap().playing = true;
+    animator_system(&mut world, 2.0);
+    let tip = child_tip(&world, entity);
+    assert!((tip.x - 1.0).abs() < 1e-3, "过渡完该是 90°，得到 {tip:?}");
+}
+
+#[test]
+fn min_state_fraction_holds_the_transition_until_the_state_has_played() {
+    let (mut world, entity) = world_with_animator("");
+    install_bent90(&mut world);
+    install_machine(&mut world, speed_machine(0.0, 0.5));
+    {
+        let animator = world.get_mut::<Animator>(entity).unwrap();
+        animator.state_machine_path = "hero.rasm".into();
+        animator.playing = true;
+    }
+    let mut params = prism_anim::AnimParameters::default();
+    params.set_float("speed", 1.0);
+    world.insert_resource(params);
+
+    // 才播了 0.2s（< 50%）：条件成立也不转移。
+    animator_system(&mut world, 0.2);
+    assert_eq!(world.get::<Animator>(entity).unwrap().state, "idle");
+
+    // 判据用的是**上一帧**的播放时间（那一帧确实播到了那里），所以跨过 50% 的
+    // 那一帧还拦着，下一帧才放行。
+    animator_system(&mut world, 0.5);
+    assert_eq!(world.get::<Animator>(entity).unwrap().state, "idle");
+
+    animator_system(&mut world, 0.0);
+    assert_eq!(world.get::<Animator>(entity).unwrap().state, "run");
+}
+
+#[test]
+fn a_missing_state_machine_falls_back_to_the_component_clip() {
+    let (mut world, entity) = world_with_animator("bend.ranim");
+    world
+        .get_mut::<Animator>(entity)
+        .unwrap()
+        .state_machine_path = "missing.rasm".into();
+    assert_eq!(animator_system(&mut world, 0.0), 1, "坏路径不该让实体消失");
+    let tip = child_tip(&world, entity);
+    assert!((tip.y - 1.0).abs() < 1e-4, "回落到 clip_path，得到 {tip:?}");
 }
