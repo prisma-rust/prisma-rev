@@ -223,6 +223,14 @@ impl BlendSpace1D {
         Some((first, last))
     }
 
+    /// 当前参数下权重最大的样本下标（Notify 的 Dominant 策略用）。
+    ///
+    /// 正好在左右样本中点时取右侧；只有一个样本时返回它。
+    pub fn dominant_sample(&self, at: f32) -> Option<usize> {
+        let (left, right, t) = blend_space_weights(&self.positions, at)?;
+        Some(if t < 0.5 { left } else { right })
+    }
+
     /// 在 `at` 处求值到 `out`。返回是否真的写入了姿态（空空间 / 采样失败 → `false`）。
     ///
     /// 失败时**不动** `out`：调用方可以继续用上一帧的姿态，而不是拿到一个空骨架。

@@ -5,7 +5,7 @@ use glam::{Mat4, Vec3};
 
 use super::{AnimGraphEvaluator, AnimGraphSource, GraphEvalError};
 use crate::clip::{Clip, ClipNotify, Track, Vec3Key};
-use crate::graph_eval::GraphNodeKind;
+use crate::graph_eval::{BlendSpaceNotifyPolicy, GraphNodeKind};
 use crate::montage::Montage;
 use prism_asset::formats_anim_graph::{
     AnimGraphInfo, GraphInputInfo, GraphNodeInfo, GraphParameterInfo, GraphParameterKind,
@@ -194,6 +194,90 @@ fn blend_space_2d_uses_both_named_parameters() {
         .evaluate(&source, &skeleton, 0.0)
         .expect("evaluates");
     assert!((x(&pose) - 10.0).abs() < 1e-4, "x={}", x(&pose));
+}
+
+#[test]
+fn a_blend_space_emits_notifies_from_its_dominant_sample() {
+    let mut space = node("locomotion", GraphNodeKind::BlendSpace1D);
+    space.clips = vec!["idle.ranim".into(), "run.ranim".into()];
+    space.positions = vec![[0.0, 0.0], [10.0, 0.0]];
+    space.parameter_x = "speed".into();
+    let mut graph = graph(vec![space, output(0)], 1);
+    graph.parameters.push(GraphParameterInfo {
+        name: "speed".into(),
+        kind: GraphParameterKind::Float,
+        default: 10.0,
+    });
+    let mut evaluator = AnimGraphEvaluator::new(graph);
+    let skeleton = skeleton();
+    let source = Source::new(&[
+        ("idle.ranim", translation_clip("idle", 0.0)),
+        ("run.ranim", clip_with_notify("run", 0.5, "Footstep.R")),
+    ]);
+    let (_, events) = evaluator
+        .evaluate_with_events(&source, &skeleton, 0.6)
+        .expect("evaluates");
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].name, "Footstep.R");
+    assert_eq!(events[0].clip_path, "run.ranim");
+    assert_eq!(
+        evaluator.blend_space_notify_policy(),
+        BlendSpaceNotifyPolicy::Dominant
+    );
+}
+
+#[test]
+fn the_none_blend_space_policy_suppresses_sample_notifies() {
+    let mut space = node("locomotion", GraphNodeKind::BlendSpace1D);
+    space.clips = vec!["idle.ranim".into(), "run.ranim".into()];
+    space.positions = vec![[0.0, 0.0], [10.0, 0.0]];
+    space.parameter_x = "speed".into();
+    let mut graph = graph(vec![space, output(0)], 1);
+    graph.parameters.push(GraphParameterInfo {
+        name: "speed".into(),
+        kind: GraphParameterKind::Float,
+        default: 10.0,
+    });
+    let mut evaluator = AnimGraphEvaluator::new(graph);
+    evaluator.set_blend_space_notify_policy(BlendSpaceNotifyPolicy::None);
+    let source = Source::new(&[
+        ("idle.ranim", translation_clip("idle", 0.0)),
+        ("run.ranim", clip_with_notify("run", 0.5, "Footstep.R")),
+    ]);
+    let (_, events) = evaluator
+        .evaluate_with_events(&source, &skeleton(), 0.6)
+        .expect("evaluates");
+    assert!(events.is_empty(), "{events:?}");
+}
+
+#[test]
+fn a_two_d_blend_space_emits_from_the_dominant_vertex() {
+    let mut space = node("locomotion", GraphNodeKind::BlendSpace2D);
+    space.clips = vec!["a.ranim".into(), "b.ranim".into(), "c.ranim".into()];
+    space.positions = vec![[0.0, 0.0], [10.0, 0.0], [0.0, 10.0]];
+    space.parameter_x = "speed".into();
+    space.parameter_y = "direction".into();
+    let mut graph = graph(vec![space, output(0)], 1);
+    for name in ["speed", "direction"] {
+        graph.parameters.push(GraphParameterInfo {
+            name: name.into(),
+            kind: GraphParameterKind::Float,
+            default: 0.0,
+        });
+    }
+    let mut evaluator = AnimGraphEvaluator::new(graph);
+    evaluator.parameters_mut().set_float("speed", 10.0);
+    let source = Source::new(&[
+        ("a.ranim", translation_clip("a", 0.0)),
+        ("b.ranim", clip_with_notify("b", 0.5, "Footstep.B")),
+        ("c.ranim", translation_clip("c", 20.0)),
+    ]);
+    let (_, events) = evaluator
+        .evaluate_with_events(&source, &skeleton(), 0.6)
+        .expect("evaluates");
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].name, "Footstep.B");
+    assert_eq!(events[0].clip_path, "b.ranim");
 }
 
 #[test]
