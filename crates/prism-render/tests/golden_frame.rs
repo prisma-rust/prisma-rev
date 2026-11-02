@@ -7,7 +7,7 @@
 mod golden_support;
 
 use golden_support::{
-    assert_golden, compare, write_mismatch_artifacts, FrameHarness, FrameOptions,
+    assert_golden, compare, format_version, write_mismatch_artifacts, FrameHarness, FrameOptions,
 };
 use prism_render::render_graph::PostGrade;
 
@@ -23,7 +23,7 @@ fn baseline_frame_matches_golden() {
         return;
     };
     let pixels = harness.render(FrameOptions::default());
-    assert_golden("baseline", &pixels, SIZE);
+    assert_golden("baseline", &pixels, SIZE, &harness.adapter_info());
 }
 
 #[test]
@@ -39,7 +39,7 @@ fn shaded_wireframe_frame_matches_golden() {
         shaded_wireframe: true,
         ..FrameOptions::default()
     });
-    assert_golden("shaded_wireframe", &pixels, SIZE);
+    assert_golden("shaded_wireframe", &pixels, SIZE, &harness.adapter_info());
 }
 
 #[test]
@@ -55,7 +55,26 @@ fn bloom_frame_matches_golden() {
         },
         ..FrameOptions::default()
     });
-    assert_golden("bloom", &pixels, SIZE);
+    assert_golden("bloom", &pixels, SIZE, &harness.adapter_info());
+}
+
+#[test]
+fn version_numbers_decode_as_vk_make_version() {
+    // VK_MAKE_VERSION(1, 3, 280) = 1 << 22 | 3 << 12 | 280.
+    assert_eq!(
+        format_version((1 << 22) | (3 << 12) | 280),
+        "1.3.280 (0x00403118)"
+    );
+}
+
+#[test]
+fn adapter_info_names_the_device_and_driver() {
+    let Some(harness) = harness() else {
+        return;
+    };
+    let info = harness.adapter_info();
+    assert!(info.contains(" | Vulkan API "), "{info}");
+    assert!(info.contains(" | driver "), "{info}");
 }
 
 /// The failure path must leave actionable artifacts for CI triage.
