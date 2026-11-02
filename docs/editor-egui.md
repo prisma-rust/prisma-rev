@@ -501,8 +501,10 @@ for event in world.get_resource::<AnimEvents>().map(|e| e.drain()).unwrap_or_def
   重复状态名、空的 `clip` / `name`、未知条件种类同样报错并指出是哪一条；
 - 求值是**按作者顺序第一条命中**（条件全真 + 当前状态已播到 `min_state_fraction`），
   一帧只走一条转移；`min_state_fraction` 在剪辑时长未知时视为已播完，否则单次剪辑会卡在最后一帧；
-还不支持：状态图的编辑器面板（现在手写 JSON）、视口里直接拖关节做 IK（P2 的 IK 另立）、
-Notify 的编写界面。
+编辑器提供 **Animation Graph** 只读面板（Window → General）：选中 `.animgraph.json` 或
+`.statemachine.json` 后显示参数、节点 / 连线、输出，以及状态、转移和可读条件；
+编辑节点位置 / 连线仍是后续。视口里直接拖关节做 IK（P2 的 IK 另立）、Notify 的编写界面
+也还没做。
 
 运行时（#560 P1）：`Animator.state_machine_path` 指向 `.rasm`、`state` 是当前状态名（引擎每帧
 写回，可在检查器里预置起始状态）。状态机生效时：
