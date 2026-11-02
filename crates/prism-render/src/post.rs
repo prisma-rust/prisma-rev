@@ -654,6 +654,8 @@ impl RenderPassNode for PostPass {
             contrast: ctx.frame.grade.contrast,
             saturation: ctx.frame.grade.saturation,
             vignette: ctx.frame.grade.vignette,
+            bloomIntensity: ctx.frame.grade.bloom_intensity,
+            bloomThreshold: ctx.frame.grade.bloom_threshold,
             // #613：FXAA 采样的是**内部渲染目标**，一个 texel 的 UV 尺寸按它的
             // 分辨率算；用交换链尺寸会在内部分辨率缩小时把采样步长算小。
             invTexelSize: [
@@ -870,8 +872,10 @@ mod tests {
         assert_eq!(std::mem::offset_of!(PostPush, contrast), 16);
         assert_eq!(std::mem::offset_of!(PostPush, saturation), 20);
         assert_eq!(std::mem::offset_of!(PostPush, vignette), 24);
-        assert_eq!(std::mem::size_of::<PostPush>(), 28);
-        assert_eq!(PUSH_CONSTANT_SIZE, 28);
+        assert_eq!(std::mem::offset_of!(PostPush, bloomIntensity), 28);
+        assert_eq!(std::mem::offset_of!(PostPush, bloomThreshold), 32);
+        assert_eq!(std::mem::size_of::<PostPush>(), 36);
+        assert_eq!(PUSH_CONSTANT_SIZE, 36);
     }
 
     #[test]

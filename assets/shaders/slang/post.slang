@@ -11,7 +11,8 @@
 //
 // Push constants: PostPush - `tonemapMode` (0 = Reinhard, 1 = ACES,
 // 2 = passthrough for 2D scenes so the sprite palette survives untouched),
-// `aaMode` (FXAA), `invTexelSize`, and the color-grading knobs (#502).
+// `aaMode` (FXAA), `invTexelSize`, the color-grading knobs, and the HDR bloom
+// controls (#502).
 //
 // Compile:
 //   slangc post.slang -profile spirv_1_5 -target spirv \
@@ -42,6 +43,9 @@ public struct PostPush
     public float contrast;
     public float saturation;
     public float vignette;
+    // HDR bloom (#502). `bloomIntensity == 0` skips the extra taps entirely.
+    public float bloomIntensity;
+    public float bloomThreshold;
 };
 [[vk::push_constant]]
 PostPush pc;
@@ -95,13 +99,47 @@ float3 grade(float3 c)
     return saturate(c);
 }
 
-// Sample + tonemap + grade. FXAA runs entirely in this display-referred space
-// so the edge-luma it compares is perceptually uniform (the hardware sRGB
-// encode to the swapchain happens after this shader, so the values written
-// back are still linear).
+// Soft-threshold a HDR sample: pixels brighter than `pc.bloomThreshold` keep
+// the excess, dimmer pixels contribute nothing. `maxComponent` is cheaper than
+// a luminance dot and catches coloured emitters (fire, neon) as well as white.
+float3 brightPass(float3 hdr)
+{
+    float peak = max(hdr.r, max(hdr.g, hdr.b));
+    float excess = max(peak - pc.bloomThreshold, 0.0);
+    return hdr * (excess / max(peak, 1e-4));
+}
+
+// Single-pass bloom approximation: an 8-tap ring around the current pixel at
+// two radii, weighted toward the centre. A true multi-level downsample chain
+// is the next step (kept separate so this pass stays one fullscreen draw).
+float3 bloom(float2 uv)
+{
+    float2 px = pc.invTexelSize;
+    float3 sum = 0.0;
+    // inner ring (4 taps, radius 2 px)
+    sum += brightPass(hdrTex.Sample(uv + float2( 2.0,  0.0) * px).rgb) * 0.16;
+    sum += brightPass(hdrTex.Sample(uv + float2(-2.0,  0.0) * px).rgb) * 0.16;
+    sum += brightPass(hdrTex.Sample(uv + float2( 0.0,  2.0) * px).rgb) * 0.16;
+    sum += brightPass(hdrTex.Sample(uv + float2( 0.0, -2.0) * px).rgb) * 0.16;
+    // outer ring (4 diagonal taps, radius 5 px) catches wider halos
+    sum += brightPass(hdrTex.Sample(uv + float2( 5.0,  5.0) * px).rgb) * 0.09;
+    sum += brightPass(hdrTex.Sample(uv + float2(-5.0,  5.0) * px).rgb) * 0.09;
+    sum += brightPass(hdrTex.Sample(uv + float2( 5.0, -5.0) * px).rgb) * 0.09;
+    sum += brightPass(hdrTex.Sample(uv + float2(-5.0, -5.0) * px).rgb) * 0.09;
+    return sum;
+}
+
+// Sample + bloom + tonemap + grade. Bloom is applied in linear HDR before the
+// tonemap so highlights can spill without being clipped first. FXAA runs
+// entirely in this display-referred space so the edge-luma it compares is
+// perceptually uniform (the hardware sRGB encode to the swapchain happens
+// after this shader, so the values written back are still linear).
 float3 shade(float2 uv)
 {
-    return grade(saturate(tonemap(hdrTex.Sample(uv).rgb)));
+    float3 hdr = hdrTex.Sample(uv).rgb;
+    if (pc.bloomIntensity > 0.0)
+        hdr += bloom(uv) * pc.bloomIntensity;
+    return grade(saturate(tonemap(hdr)));
 }
 
 // Perceptual luma for edge detection. Gamma 2.0 (sqrt) is used instead of the

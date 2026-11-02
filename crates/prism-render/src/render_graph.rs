@@ -717,20 +717,27 @@ pub fn post_destination(
     }
 }
 
-/// Display-referred color grading applied by `PostPass` **after** tonemapping
-/// (#502).
+/// Post-processing knobs consumed by `PostPass` (#502).
 ///
-/// All three knobs are no-ops at their defaults, so an untouched
-/// `PostGrade::default()` produces exactly the pre-#502 image:
+/// `contrast` / `saturation` / `vignette` are display-referred and run **after**
+/// tonemapping. `bloom_intensity` / `bloom_threshold` run in HDR **before**
+/// tonemapping, so bright pixels bloom without clipping the highlight first.
+///
+/// All knobs are no-ops at their defaults: `PostGrade::default()` produces
+/// exactly the pre-#502 image.
 ///
 /// - `contrast`: scale around mid-grey `0.5` (`1.0` = unchanged);
 /// - `saturation`: Rec.709 luma interpolation (`1.0` = unchanged, `0.0` = grey);
-/// - `vignette`: corner falloff strength (`0.0` = off, `1.0` = corners black).
+/// - `vignette`: corner falloff strength (`0.0` = off, `1.0` = corners black);
+/// - `bloom_intensity`: additive bloom strength (`0.0` = off);
+/// - `bloom_threshold`: HDR luminance above which pixels start blooming.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PostGrade {
     pub contrast: f32,
     pub saturation: f32,
     pub vignette: f32,
+    pub bloom_intensity: f32,
+    pub bloom_threshold: f32,
 }
 
 impl Default for PostGrade {
@@ -739,6 +746,8 @@ impl Default for PostGrade {
             contrast: 1.0,
             saturation: 1.0,
             vignette: 0.0,
+            bloom_intensity: 0.0,
+            bloom_threshold: 1.0,
         }
     }
 }
@@ -750,7 +759,7 @@ impl PostGrade {
     }
 
     /// Clamp to the ranges the shader expects (`contrast`/`saturation` never
-    /// negative, `vignette` in `0..=1`).
+    /// negative, `vignette`/`bloom_intensity` in `0..=1`, threshold non-negative).
     pub fn sanitized(self) -> Self {
         Self {
             contrast: if self.contrast.is_finite() {
@@ -767,6 +776,16 @@ impl PostGrade {
                 self.vignette.clamp(0.0, 1.0)
             } else {
                 0.0
+            },
+            bloom_intensity: if self.bloom_intensity.is_finite() {
+                self.bloom_intensity.clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
+            bloom_threshold: if self.bloom_threshold.is_finite() {
+                self.bloom_threshold.max(0.0)
+            } else {
+                1.0
             },
         }
     }
