@@ -548,6 +548,10 @@ SceneOutput fragmentMain(MeshVaryings in)
     {
         albedo = mat.base_color.rgb;
     }
+    // Vertex colour tint (#517): terrain uses it for its procedural
+    // height/slope splat; meshes without colours upload white, so this is a
+    // no-op for the existing asset pipeline.
+    albedo *= in.color;
 
     // Metallic / roughness: same pattern, packed (B=metallic, G=roughness
     // per glTF) when a texture is present. Flag-gated: when the component

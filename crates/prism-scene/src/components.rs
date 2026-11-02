@@ -2397,8 +2397,8 @@ impl Animator {
 /// 只是一个数据组件：运行时按 `heightmap`（f32 little-endian 高度数组）+ 网格参数生成
 /// 地形网格。`chunks == 1` 时挂到同一实体的 [`MeshRenderer`] 上；`chunks > 1` 时
 /// 每块生成一个运行时子实体，便于逐块视锥剔除。`lod_distances` 再按距离生成
-/// 1–3 级整地形 LOD；`vegetation_*` 按高度 / 坡度散布共享网格的植被实例。
-/// 材质仍然由 MeshRenderer 决定。
+/// 1–3 级整地形 LOD；`vegetation_*` 按高度 / 坡度散布共享网格的植被实例；
+/// `splat` 把高度 / 坡度色带写进顶点色。材质仍然由 MeshRenderer 决定。
 ///
 /// 高度数组是行优先的 `resolution × resolution` 个 f32（`resolution = 0` 按 32 处理），
 /// 世界尺寸是 `size` 米（x / z），`height_scale` 把 `[0, 1]` 的高度放大成米。
@@ -2438,6 +2438,9 @@ pub struct Terrain {
     pub vegetation_material: String,
     /// 单株高度（米）：实例在 Y 轴按这个值缩放。
     pub vegetation_size: f32,
+    /// 程序化色带 splat（#517）：按高度 / 坡度把沙 / 草 / 岩石 / 雪写进顶点色，
+    /// 前向 PBR 用顶点色调制 albedo。默认关闭，现有场景不受影响。
+    pub splat: bool,
 }
 
 impl Default for Terrain {
@@ -2453,6 +2456,7 @@ impl Default for Terrain {
             vegetation_mesh: String::new(),
             vegetation_material: String::new(),
             vegetation_size: 1.0,
+            splat: false,
         }
     }
 }
