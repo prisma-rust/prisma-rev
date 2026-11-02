@@ -2361,7 +2361,8 @@ impl Animator {
 /// 只是一个数据组件：运行时按 `heightmap`（f32 little-endian 高度数组）+ 网格参数生成
 /// 地形网格。`chunks == 1` 时挂到同一实体的 [`MeshRenderer`] 上；`chunks > 1` 时
 /// 每块生成一个运行时子实体，便于逐块视锥剔除。`lod_distances` 再按距离生成
-/// 1–3 级整地形 LOD。材质仍然由 MeshRenderer 决定。
+/// 1–3 级整地形 LOD；`vegetation_*` 按高度 / 坡度散布共享网格的植被实例。
+/// 材质仍然由 MeshRenderer 决定。
 ///
 /// 高度数组是行优先的 `resolution × resolution` 个 f32（`resolution = 0` 按 32 处理），
 /// 世界尺寸是 `size` 米（x / z），`height_scale` 把 `[0, 1]` 的高度放大成米。
@@ -2393,6 +2394,14 @@ pub struct Terrain {
     /// 距离取最近启用相机到地形原点的距离，**整张地形统一切级**，避免相邻
     /// chunk 用不同 LOD 时出现接缝裂缝。
     pub lod_distances: Vec<f32>,
+    /// 植被密度：每 100 m² 的实例数（0 = 不生成）。运行时钳到最多 4096 个。
+    pub vegetation_density: f32,
+    /// 植被网格路径；空 = 使用内置的双面 cross-quad（高 1 m）。
+    pub vegetation_mesh: String,
+    /// 植被材质路径；空 = 默认材质（作者可填草地 / 树叶材质）。
+    pub vegetation_material: String,
+    /// 单株高度（米）：实例在 Y 轴按这个值缩放。
+    pub vegetation_size: f32,
 }
 
 impl Default for Terrain {
@@ -2404,6 +2413,10 @@ impl Default for Terrain {
             resolution: 0,
             chunks: 4,
             lod_distances: vec![80.0, 200.0],
+            vegetation_density: 0.0,
+            vegetation_mesh: String::new(),
+            vegetation_material: String::new(),
+            vegetation_size: 1.0,
         }
     }
 }

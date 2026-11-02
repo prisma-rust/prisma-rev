@@ -9,12 +9,13 @@
 //! [`terrain_height`] / [`terrain_sample`] 在世界上按 `TerrainData` 找覆盖点，
 //! [`terrain_raycast`] 用同样的采样做解析射线查询（玩法落地 / 拾取用）。
 //!
-//! 多 chunk + LOD 已实现（#517 Phase 2）：`Terrain.chunks > 1` 时每个块是
+//! 多 chunk + LOD + 植被已实现（#517 Phase 2）：`Terrain.chunks > 1` 时每个块是
 //! 独立子实体 / 独立网格，渲染与阴影可以逐块剔除；`Terrain.lod_distances`
 //! 控制 1–3 级 LOD，整张地形按最近相机统一切级（避免跨块裂缝）。
-//! 分层 splat、植被、编辑器视口笔刷仍待后续；[`Heightfield::sculpt`] 与
-//! `prism-build-pipeline sculpt-heightmap` 已提供 raise/lower/smooth/flatten
-//! 的基础雕刻层。rapier 地形碰撞体由 `prism-app` 的物理线程维护（见
+//! `Terrain.vegetation_*` 按高度 / 坡度确定性散布共享网格的实例，交给渲染器
+//! 静态实例化合批。[`Heightfield::sculpt`]、`prism-build-pipeline sculpt-heightmap`
+//! 与编辑器 Scene 视口 Sculpt 模式提供 raise/lower/smooth/flatten 笔刷；
+//! 分层 splat 仍待后续。rapier 地形碰撞体由 `prism-app` 的物理线程维护（见
 //! `physics_runner`）。
 
 use std::collections::{HashMap, HashSet};
@@ -27,6 +28,7 @@ use crate::scene::helpers::HierarchyHelper;
 use prism_render::managers::mesh_manager::MeshHandle;
 use prism_render::managers::mesh_manager::MeshUploadInput;
 use prism_scene::components::SceneAssetId;
+use prism_scene::{CullMode, ShadowCastingMode};
 
 /// 进程内生成网格的路径前缀；不为它们 cook、不进 `.pak`。
 pub const PROCEDURAL_PREFIX: &str = "__proc/";
@@ -406,6 +408,13 @@ pub struct TerrainLodSet {
     pub level: usize,
 }
 
+/// 运行时散布的一株地形植被实例（#517 Phase 2）。
+#[derive(Debug, Clone)]
+pub struct TerrainVegetation {
+    pub owner: prism_ecs::Entity,
+    pub mesh_path: String,
+}
+
 /// 世界坐标 `(x, z)` 上的地形高度（米）。没被任何地形覆盖时返回 `None`。
 ///
 /// 只支持平移过的地形（旋转按轴向处理，不参与插值）；多个地形重叠时取最高的那个。
@@ -554,14 +563,18 @@ fn none_entity() -> prism_ecs::Entity {
 /// `Terrain` 的网格参数指纹：变了就要重建网格。
 pub fn terrain_key(entity_id: u32, terrain: &Terrain) -> String {
     format!(
-        "{entity_id}|{}|{}x{}|{}|{}|{}|{:?}",
+        "{entity_id}|{}|{}x{}|{}|{}|{}|{:?}|{}|{}|{}|{}",
         terrain.heightmap,
         terrain.size[0],
         terrain.size[1],
         terrain.height_scale,
         terrain.cells(),
         terrain.chunks,
-        terrain.lod_distances
+        terrain.lod_distances,
+        terrain.vegetation_density,
+        terrain.vegetation_mesh,
+        terrain.vegetation_material,
+        terrain.vegetation_size
     )
 }
 
@@ -682,7 +695,39 @@ fn despawn_chunks(world: &mut prism_ecs::World, owner: prism_ecs::Entity) {
     }
 }
 
-/// 地形实体被删除后，清掉它遗留的分块（没有 owner 的块不会自己消失）。
+/// 回收某个地形 owner 名下的所有植被实例。
+fn despawn_vegetation(world: &mut prism_ecs::World, owner: prism_ecs::Entity) {
+    let stale: Vec<(prism_ecs::Entity, String)> = world
+        .query::<TerrainVegetation>()
+        .filter(|(_, plant)| plant.owner == owner)
+        .map(|(entity, plant)| (entity, plant.mesh_path.clone()))
+        .collect();
+    if stale.is_empty() {
+        return;
+    }
+    let stale_ids: HashSet<prism_ecs::Entity> = stale.iter().map(|(entity, _)| *entity).collect();
+    if let Some(meshes) = world.get_resource_mut::<ProceduralMeshes>() {
+        for (_, path) in &stale {
+            meshes.remove(path);
+        }
+    }
+    if world.is_alive(owner) {
+        if let Some(children) = world.get_mut::<Child>(owner) {
+            children.0.retain(|entity| !stale_ids.contains(entity));
+        }
+        if world
+            .get::<Child>(owner)
+            .is_some_and(|children| children.0.is_empty())
+        {
+            world.remove::<Child>(owner);
+        }
+    }
+    for (entity, _) in stale {
+        world.despawn(entity);
+    }
+}
+
+/// 地形实体被删除后，清掉它遗留的分块 / 植被（没有 owner 的实例不会自己消失）。
 fn cleanup_orphan_chunks(world: &mut prism_ecs::World) {
     let live: HashSet<prism_ecs::Entity> =
         world.query::<Terrain>().map(|(entity, _)| entity).collect();
@@ -690,10 +735,16 @@ fn cleanup_orphan_chunks(world: &mut prism_ecs::World) {
         .query::<TerrainChunk>()
         .map(|(_, chunk)| chunk.owner)
         .chain(world.query::<TerrainLodSet>().map(|(_, set)| set.owner))
+        .chain(
+            world
+                .query::<TerrainVegetation>()
+                .map(|(_, plant)| plant.owner),
+        )
         .filter(|owner| !live.contains(owner))
         .collect();
     for owner in stale {
         despawn_chunks(world, owner);
+        despawn_vegetation(world, owner);
     }
 }
 
@@ -794,6 +845,149 @@ fn ensure_mesh_ref(world: &mut prism_ecs::World, entity: prism_ecs::Entity) {
     }
 }
 
+/// 双面 cross-quad：高 1 m、宽 1 m，底面在 y = 0，供没有自定义网格的植被使用。
+fn vegetation_cross_mesh() -> MeshUploadInput {
+    let positions = vec![
+        [-0.5, 0.0, 0.0],
+        [0.5, 0.0, 0.0],
+        [0.5, 1.0, 0.0],
+        [-0.5, 1.0, 0.0],
+        [0.0, 0.0, -0.5],
+        [0.0, 0.0, 0.5],
+        [0.0, 1.0, 0.5],
+        [0.0, 1.0, -0.5],
+    ];
+    let mut normals = vec![[0.0, 0.0, 1.0]; 4];
+    normals.extend_from_slice(&[[1.0, 0.0, 0.0]; 4]);
+    let uvs = vec![
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [1.0, 1.0],
+        [0.0, 1.0],
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [1.0, 1.0],
+        [0.0, 1.0],
+    ];
+    MeshUploadInput {
+        positions,
+        normals,
+        colors: Vec::new(),
+        uvs,
+        tangents: Vec::new(),
+        indices: vec![0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7],
+    }
+}
+
+/// 稳定 64 位散列（植被散布 / 变体种子）。
+fn splitmix64(mut value: u64) -> u64 {
+    value = value.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    value ^ (value >> 31)
+}
+
+/// 按高度场确定性散布植被实例（#517 Phase 2）。
+///
+/// 所有实例共用同一个网格路径，交给渲染器的静态实例化合批；陡坡（法线 Y < 0.55）
+/// 跳过。没有自定义网格时生成双面 cross-quad。
+#[allow(clippy::too_many_arguments)]
+fn spawn_vegetation(
+    world: &mut prism_ecs::World,
+    owner: prism_ecs::Entity,
+    key: &str,
+    hash: u64,
+    field: &Heightfield,
+    terrain: &Terrain,
+    renderer_template: &MeshRenderer,
+) {
+    let density = terrain.vegetation_density;
+    if !density.is_finite() || density <= 0.0 {
+        return;
+    }
+    let size_x = terrain.size[0].max(0.001);
+    let size_z = terrain.size[1].max(0.001);
+    let area = size_x * size_z;
+    let count = (density * area / 100.0).round() as usize;
+    let count = count.min(4096);
+    if count == 0 {
+        return;
+    }
+
+    let custom = terrain.vegetation_mesh.trim();
+    let mesh_path = if custom.is_empty() {
+        let path = format!(
+            "{PROCEDURAL_PREFIX}terrain/{}-{hash:x}/vegetation",
+            owner.id()
+        );
+        if let Some(meshes) = world.get_resource_mut::<ProceduralMeshes>() {
+            meshes.insert(path.clone(), vegetation_cross_mesh());
+        }
+        path
+    } else {
+        custom.to_string()
+    };
+    let plant_size = if terrain.vegetation_size.is_finite() && terrain.vegetation_size > 0.0 {
+        terrain.vegetation_size
+    } else {
+        1.0
+    };
+    let material = terrain.vegetation_material.trim();
+    let half = [size_x * 0.5, size_z * 0.5];
+    let seed = fnv1a64(key);
+
+    for index in 0..count {
+        let first = splitmix64(seed ^ index as u64);
+        let second = splitmix64(first);
+        let u = (first & 0xFF_FFFF) as f32 / 0xFF_FFFF as f32;
+        let v = (second & 0xFF_FFFF) as f32 / 0xFF_FFFF as f32;
+        let normal = field.sample_normal(u, v, terrain.height_scale);
+        if normal[1] < 0.55 {
+            continue;
+        }
+        let height = field.sample_height(u, v) * terrain.height_scale;
+        let yaw = ((second >> 24) & 0xFFFF) as f32 / 0xFFFF as f32 * std::f32::consts::TAU;
+        let scale = plant_size * (0.75 + ((first >> 48) & 0xFF) as f32 / 255.0 * 0.5);
+
+        let entity = world.spawn();
+        world.insert(
+            entity,
+            LocalTransform {
+                position: glam::Vec3::new(
+                    (u - 0.5) * 2.0 * half[0],
+                    height,
+                    (v - 0.5) * 2.0 * half[1],
+                ),
+                rotation: glam::Quat::from_rotation_y(yaw),
+                scale: glam::Vec3::splat(scale),
+            },
+        );
+        let mut renderer = renderer_template.clone();
+        renderer.mesh_path = mesh_path.clone();
+        renderer.material_path = material.to_string();
+        renderer.material_paths.clear();
+        renderer.cull_mode = CullMode::Off;
+        renderer.shadow_casting_mode = ShadowCastingMode::Off;
+        world.insert(entity, renderer);
+        world.insert(
+            entity,
+            MeshRef {
+                asset_id: SceneAssetId::generate(),
+                render_handle: MeshHandle::default(),
+                generation: 0,
+            },
+        );
+        world.insert(
+            entity,
+            TerrainVegetation {
+                owner,
+                mesh_path: mesh_path.clone(),
+            },
+        );
+        HierarchyHelper::reparent(world, entity, Some(owner));
+    }
+}
+
 /// 重建一个地形的网格：一个整块，或 `chunks × chunks` 个独立子实体。
 fn rebuild_terrain(
     world: &mut prism_ecs::World,
@@ -805,6 +999,7 @@ fn rebuild_terrain(
         return;
     };
     despawn_chunks(world, entity);
+    despawn_vegetation(world, entity);
 
     // 旧的那份网格没有实体引用了，顺手回收。
     if let Some(previous) = world.get::<TerrainData>(entity) {
@@ -847,6 +1042,19 @@ fn rebuild_terrain(
             }
         }
         ensure_mesh_ref(world, entity);
+        let renderer_template = world
+            .get::<MeshRenderer>(entity)
+            .cloned()
+            .unwrap_or_default();
+        spawn_vegetation(
+            world,
+            entity,
+            &key,
+            hash,
+            &field,
+            &terrain,
+            &renderer_template,
+        );
         world.insert(
             entity,
             TerrainData {
@@ -939,6 +1147,16 @@ fn rebuild_terrain(
             }
         }
     }
+
+    spawn_vegetation(
+        world,
+        entity,
+        &key,
+        hash,
+        &field,
+        &terrain,
+        &renderer_template,
+    );
 
     // owner 不再有 MeshRef，因此不会被主通道重复绘制。
     world.remove::<MeshRef>(entity);
