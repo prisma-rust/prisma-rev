@@ -1766,6 +1766,12 @@ pub struct PostProcessVolume {
     pub temperature: f32,
     /// 白平衡：品红 / 绿（`-1..=1`，`0` = 中性）。
     pub tint: f32,
+    /// 景深对焦距离（米，#502 Phase 2）。
+    pub dof_focus_distance: f32,
+    /// 景深强度（`0.0` = 关闭，`1.0` = 最强）。
+    pub dof_aperture: f32,
+    /// 景深最大模糊半径（像素，0–32）。
+    pub dof_max_blur: f32,
 }
 
 impl Default for PostProcessVolume {
@@ -1786,6 +1792,9 @@ impl Default for PostProcessVolume {
             film_grain: 0.0,
             temperature: 0.0,
             tint: 0.0,
+            dof_focus_distance: 1.0,
+            dof_aperture: 0.0,
+            dof_max_blur: 8.0,
         }
     }
 }

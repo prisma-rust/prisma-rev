@@ -745,7 +745,10 @@ pub fn post_destination(
 /// - `chromatic_aberration`: radial red/blue split strength (`0.0` = off);
 /// - `film_grain`: display-referred monochrome noise (`0.0` = off);
 /// - `temperature`: white-balance warm/cool shift in `-1..=1` (`0.0` = neutral);
-/// - `tint`: white-balance magenta/green shift in `-1..=1` (`0.0` = neutral).
+/// - `tint`: white-balance magenta/green shift in `-1..=1` (`0.0` = neutral);
+/// - `dof_focus_distance`: depth-of-field focus plane in metres;
+/// - `dof_aperture`: depth-of-field strength in `0..=1` (`0.0` = off);
+/// - `dof_max_blur`: largest depth-of-field blur radius in pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PostGrade {
     pub contrast: f32,
@@ -757,6 +760,9 @@ pub struct PostGrade {
     pub film_grain: f32,
     pub temperature: f32,
     pub tint: f32,
+    pub dof_focus_distance: f32,
+    pub dof_aperture: f32,
+    pub dof_max_blur: f32,
 }
 
 impl Default for PostGrade {
@@ -771,6 +777,9 @@ impl Default for PostGrade {
             film_grain: 0.0,
             temperature: 0.0,
             tint: 0.0,
+            dof_focus_distance: 1.0,
+            dof_aperture: 0.0,
+            dof_max_blur: 8.0,
         }
     }
 }
@@ -829,6 +838,21 @@ impl PostGrade {
                 self.tint.clamp(-1.0, 1.0)
             } else {
                 0.0
+            },
+            dof_focus_distance: if self.dof_focus_distance.is_finite() {
+                self.dof_focus_distance.max(0.001)
+            } else {
+                1.0
+            },
+            dof_aperture: if self.dof_aperture.is_finite() {
+                self.dof_aperture.clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
+            dof_max_blur: if self.dof_max_blur.is_finite() {
+                self.dof_max_blur.clamp(0.0, 32.0)
+            } else {
+                8.0
             },
         }
     }

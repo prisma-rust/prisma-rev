@@ -75,11 +75,15 @@ pub struct PostPass {
     sampler: vk::Sampler,
     /// 最近邻采样器（`InternalScaleMode::Integer`，#613）：像素画放大不糊。
     sampler_nearest: vk::Sampler,
+    /// 深度采样器（`ShaderMode::Depth` / 景深）：最近邻，避免在深度边上插值。
+    sampler_depth: vk::Sampler,
     /// The 高动态范围 视图 currently bound to each frame-in-flight's 描述符 集合
     /// Tracked so we skip 冗余 描述符 rewrites.
     bound_hdrs: Vec<vk::ImageView>,
     /// 每个 in-flight 帧当前绑定的是否是最近邻采样器（与 `bound_hdrs` 一起判缓存）。
     bound_nearest: Vec<bool>,
+    /// 每个 in-flight 帧当前绑定的深度视图（#502 DOF）。
+    bound_depths: Vec<vk::ImageView>,
     device: Option<ash::Device>,
 }
 
@@ -133,11 +137,37 @@ impl PostPass {
         }
         .context("PostPass: create nearest sampler")?;
 
-        let bindings = [vk::DescriptorSetLayoutBinding::default()
-            .binding(shader_bindings::post::HDR_TEX_BINDING)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
+        let sampler_depth = unsafe {
+            device.create_sampler(
+                &vk::SamplerCreateInfo::default()
+                    .mag_filter(vk::Filter::NEAREST)
+                    .min_filter(vk::Filter::NEAREST)
+                    .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
+                    .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                    .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                    .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+                    .min_lod(0.0)
+                    .max_lod(vk::LOD_CLAMP_NONE),
+                None,
+            )
+        }
+        .context("PostPass: create depth sampler")?;
+
+        // binding 0 = HDR colour, binding 1 = scene depth for depth of field
+        // (#502 Phase 2). The depth binding is always present so the pipeline
+        // layout never changes between frames.
+        let bindings = [
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(shader_bindings::post::HDR_TEX_BINDING)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(shader_bindings::post::DEPTH_TEX_BINDING)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+        ];
         let ds_layout = unsafe {
             device.create_descriptor_set_layout(
                 &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
@@ -153,7 +183,8 @@ impl PostPass {
                     .max_sets(fif)
                     .pool_sizes(&[vk::DescriptorPoolSize {
                         ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                        descriptor_count: fif,
+                        // One colour + one depth view per frame-in-flight.
+                        descriptor_count: fif * 2,
                     }]),
                 None,
             )
@@ -189,8 +220,10 @@ impl PostPass {
             ds_pool,
             sampler,
             sampler_nearest,
+            sampler_depth,
             bound_hdrs: vec![vk::ImageView::null(); fif as usize],
             bound_nearest: vec![false; fif as usize],
+            bound_depths: vec![vk::ImageView::null(); fif as usize],
             device: Some(device.clone()),
         })
     }
@@ -322,6 +355,29 @@ impl PostPass {
         let write = vk::WriteDescriptorSet::default()
             .dst_set(self.descriptor_sets[i])
             .dst_binding(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .image_info(std::slice::from_ref(&image_info));
+        unsafe { device.update_descriptor_sets(&[write], &[]) };
+    }
+
+    /// Bind the scene depth view used by depth of field (#502 Phase 2).
+    ///
+    /// Called every frame from `execute` when the graph published
+    /// `FORWARD_DEPTH_H`; the view is always in
+    /// `DEPTH_STENCIL_READ_ONLY_OPTIMAL` (declared in `setup`).
+    pub fn set_depth_input(&mut self, device: &ash::Device, frame_index: u32, view: vk::ImageView) {
+        let i = (frame_index as usize) % self.descriptor_sets.len();
+        if view == self.bound_depths[i] {
+            return;
+        }
+        self.bound_depths[i] = view;
+        let image_info = vk::DescriptorImageInfo::default()
+            .image_view(view)
+            .sampler(self.sampler_depth)
+            .image_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+        let write = vk::WriteDescriptorSet::default()
+            .dst_set(self.descriptor_sets[i])
+            .dst_binding(shader_bindings::post::DEPTH_TEX_BINDING)
             .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .image_info(std::slice::from_ref(&image_info));
         unsafe { device.update_descriptor_sets(&[write], &[]) };
@@ -516,6 +572,7 @@ impl PostPass {
         unsafe { device.destroy_descriptor_pool(self.ds_pool, None) };
         unsafe { device.destroy_sampler(self.sampler, None) };
         unsafe { device.destroy_sampler(self.sampler_nearest, None) };
+        unsafe { device.destroy_sampler(self.sampler_depth, None) };
         self.device = None;
     }
 }
@@ -636,6 +693,13 @@ impl RenderPassNode for PostPass {
             nearest,
         );
 
+        // Depth of field (#502 Phase 2) needs the scene depth in a read-only
+        // layout. `setup` already declares the edge; reuse the published view.
+        let depth_view = resources.published_view(FORWARD_DEPTH_H);
+        if let Some(depth_view) = depth_view {
+            self.set_depth_input(ctx.device, ctx.frame_index, depth_view);
+        }
+
         // The generated PostPush carries tonemapMode (Reinhard / ACES /
         // passthrough), aaMode (0 = off, 1 = FXAA) and invTexelSize (one texel in
         // UV units, used by the FXAA taps). debug_rt, proj22/proj32, near/far
@@ -643,17 +707,25 @@ impl RenderPassNode for PostPass {
         // 深度 linearization) and are NOT part of the GPU 推送 常量
         // proj22/proj32/near/far 深度 linearization values are still computed
         // here as a 引用 for future 着色器 extensions.
-        let _proj22 = ctx.frame.proj22;
-        let _proj32 = ctx.frame.proj32;
-        let _near = if (_proj22 - 1.0).abs() > 1e-6 {
-            _proj32 / (_proj22 + 1.0)
+        let proj22 = ctx.frame.proj22;
+        let proj32 = ctx.frame.proj32;
+        let near = if (proj22 - 1.0).abs() > 1e-6 {
+            proj32 / (proj22 + 1.0)
         } else {
             0.1
         };
-        let _far = if (_proj22 - 1.0).abs() > 1e-6 {
-            _proj32 / (_proj22 - 1.0)
+        let far = if (proj22 - 1.0).abs() > 1e-6 {
+            proj32 / (proj22 - 1.0)
         } else {
             100.0
+        };
+        // Debug RT views show depth / normals, not the lit scene; blurring
+        // them would make the visualization useless. A missing depth view also
+        // disables the effect instead of sampling an unbound texture.
+        let dof_aperture = if ctx.frame.debug_rt == 0 && depth_view.is_some() {
+            ctx.frame.grade.dof_aperture
+        } else {
+            0.0
         };
         let push = shader_bindings::post::PostPush {
             tonemapMode: ctx.frame.tonemap_mode,
@@ -667,6 +739,11 @@ impl RenderPassNode for PostPass {
             filmGrain: ctx.frame.grade.film_grain,
             temperature: ctx.frame.grade.temperature,
             tint: ctx.frame.grade.tint,
+            nearPlane: near,
+            farPlane: far,
+            dofFocusDistance: ctx.frame.grade.dof_focus_distance,
+            dofAperture: dof_aperture,
+            dofMaxBlur: ctx.frame.grade.dof_max_blur,
             // #613：FXAA 采样的是**内部渲染目标**，一个 texel 的 UV 尺寸按它的
             // 分辨率算；用交换链尺寸会在内部分辨率缩小时把采样步长算小。
             invTexelSize: [
@@ -890,8 +967,43 @@ mod tests {
         // #502 white balance rides after the Phase 2 effects.
         assert_eq!(std::mem::offset_of!(PostPush, temperature), 44);
         assert_eq!(std::mem::offset_of!(PostPush, tint), 48);
-        assert_eq!(std::mem::size_of::<PostPush>(), 52);
-        assert_eq!(PUSH_CONSTANT_SIZE, 52);
+        // #502 depth of field: near/far planes plus focus / aperture / radius.
+        assert_eq!(std::mem::offset_of!(PostPush, nearPlane), 52);
+        assert_eq!(std::mem::offset_of!(PostPush, farPlane), 56);
+        assert_eq!(std::mem::offset_of!(PostPush, dofFocusDistance), 60);
+        assert_eq!(std::mem::offset_of!(PostPush, dofAperture), 64);
+        assert_eq!(std::mem::offset_of!(PostPush, dofMaxBlur), 68);
+        assert_eq!(std::mem::size_of::<PostPush>(), 72);
+        assert_eq!(PUSH_CONSTANT_SIZE, 72);
+    }
+
+    #[test]
+    fn test_depth_of_field_is_clamped_and_off_by_default() {
+        use crate::render_graph::PostGrade;
+        assert!(PostGrade::default().is_neutral());
+        assert_eq!(PostGrade::default().dof_aperture, 0.0);
+
+        let clamped = PostGrade {
+            dof_focus_distance: -4.0,
+            dof_aperture: 2.0,
+            dof_max_blur: 100.0,
+            ..PostGrade::default()
+        }
+        .sanitized();
+        assert_eq!(clamped.dof_focus_distance, 0.001);
+        assert_eq!(clamped.dof_aperture, 1.0);
+        assert_eq!(clamped.dof_max_blur, 32.0);
+
+        let broken = PostGrade {
+            dof_focus_distance: f32::NAN,
+            dof_aperture: f32::NAN,
+            dof_max_blur: f32::INFINITY,
+            ..PostGrade::default()
+        }
+        .sanitized();
+        assert_eq!(broken.dof_focus_distance, 1.0);
+        assert_eq!(broken.dof_aperture, 0.0);
+        assert_eq!(broken.dof_max_blur, 8.0);
     }
 
     #[test]

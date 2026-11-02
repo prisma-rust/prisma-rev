@@ -68,6 +68,12 @@ pub struct RenderConfig {
     pub temperature: Option<f32>,
     /// 白平衡色调（`-1.0` = 偏绿，`0.0` = 中性，`1.0` = 偏品红，#502）。
     pub tint: Option<f32>,
+    /// 景深对焦距离（米，#502 Phase 2）。
+    pub dof_focus_distance: Option<f32>,
+    /// 景深强度（`0.0` = 关，`1.0` = 最强，#502 Phase 2）。
+    pub dof_aperture: Option<f32>,
+    /// 景深最大模糊半径（像素，#502 Phase 2）。
+    pub dof_max_blur: Option<f32>,
     /// 0 = HDR tonemap, 1 = depth, 2 = view-space normal。
     pub debug_rt: Option<u32>,
     /// 前向管线线框模式（#431）。
@@ -171,6 +177,15 @@ impl RenderConfig {
         if let Some(value) = self.tint {
             settings.tint = value.clamp(-1.0, 1.0);
         }
+        if let Some(value) = self.dof_focus_distance {
+            settings.dof_focus_distance = value.max(0.001);
+        }
+        if let Some(value) = self.dof_aperture {
+            settings.dof_aperture = value.clamp(0.0, 1.0);
+        }
+        if let Some(value) = self.dof_max_blur {
+            settings.dof_max_blur = value.clamp(0.0, 32.0);
+        }
         if let Some(rt) = self.debug_rt {
             settings.debug_rt = rt;
         }
@@ -221,6 +236,9 @@ impl RenderConfig {
             film_grain: ini.get_f32("render", "film_grain"),
             temperature: ini.get_f32("render", "temperature"),
             tint: ini.get_f32("render", "tint"),
+            dof_focus_distance: ini.get_f32("render", "dof_focus_distance"),
+            dof_aperture: ini.get_f32("render", "dof_aperture"),
+            dof_max_blur: ini.get_f32("render", "dof_max_blur"),
             debug_rt: ini.get_u32("render", "debug_rt"),
             wireframe: ini.get_bool("render", "wireframe"),
             shaded_wireframe: ini.get_bool("render", "shaded_wireframe"),
@@ -453,6 +471,9 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "film_grain",
             "temperature",
             "tint",
+            "dof_focus_distance",
+            "dof_aperture",
+            "dof_max_blur",
             "debug_rt",
             "wireframe",
             "shaded_wireframe",
@@ -574,7 +595,7 @@ mod tests {
         use crate::render_settings::{RenderMode, RenderSettings};
 
         let cfg = AppConfig::from_ini(
-            "[render]\nrender_mode = \"path_trace\"\ntonemap_mode = 1\naa_mode = 1\ncontrast = 1.4\nsaturation = 0.6\nvignette = 0.3\nbloom = true\nbloom_intensity = 0.4\nbloom_threshold = 2.5\nchromatic_aberration = 0.25\nfilm_grain = 0.35\ntemperature = -0.4\ntint = 0.2\nshadow_distance = 120.0\nshadow_map_size = 1024\nshadow_cascade_count = 2\nwireframe = true\nshaded_wireframe = true\npt_max_bounces = 7\n",
+            "[render]\nrender_mode = \"path_trace\"\ntonemap_mode = 1\naa_mode = 1\ncontrast = 1.4\nsaturation = 0.6\nvignette = 0.3\nbloom = true\nbloom_intensity = 0.4\nbloom_threshold = 2.5\nchromatic_aberration = 0.25\nfilm_grain = 0.35\ntemperature = -0.4\ntint = 0.2\ndof_focus_distance = 4.5\ndof_aperture = 0.6\ndof_max_blur = 12\nshadow_distance = 120.0\nshadow_map_size = 1024\nshadow_cascade_count = 2\nwireframe = true\nshaded_wireframe = true\npt_max_bounces = 7\n",
         );
         let mut settings = RenderSettings::default();
         cfg.render.apply(&mut settings);
@@ -592,6 +613,9 @@ mod tests {
         assert_eq!(settings.film_grain, 0.35);
         assert_eq!(settings.temperature, -0.4);
         assert_eq!(settings.tint, 0.2);
+        assert_eq!(settings.dof_focus_distance, 4.5);
+        assert_eq!(settings.dof_aperture, 0.6);
+        assert_eq!(settings.dof_max_blur, 12.0);
         assert_eq!(settings.pt_max_bounces, 7);
         // #526：阴影覆盖距离与贴图边长都是可配置的质量旋钮。
         assert_eq!(settings.shadow_distance, 120.0);
@@ -608,9 +632,15 @@ mod tests {
         let mut extreme = cfg.render.clone();
         extreme.temperature = Some(5.0);
         extreme.tint = Some(-5.0);
+        extreme.dof_focus_distance = Some(-1.0);
+        extreme.dof_aperture = Some(3.0);
+        extreme.dof_max_blur = Some(100.0);
         extreme.apply(&mut clamped);
         assert_eq!(clamped.temperature, 1.0);
         assert_eq!(clamped.tint, -1.0);
+        assert_eq!(clamped.dof_focus_distance, 0.001);
+        assert_eq!(clamped.dof_aperture, 1.0);
+        assert_eq!(clamped.dof_max_blur, 32.0);
     }
 
     #[test]

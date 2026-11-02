@@ -119,6 +119,16 @@ pub struct RenderSettings {
     pub temperature: f32,
     /// 白平衡色调（#502 Phase 1）：`-1.0` = 偏绿，`0.0` = 中性，`1.0` = 偏品红。
     pub tint: f32,
+    /// 景深对焦距离（米，#502 Phase 2）。
+    ///
+    /// `dof_aperture > 0` 时，深度与这个距离差得越远越模糊；默认 1 米。
+    pub dof_focus_distance: f32,
+    /// 景深强度（`0.0` = 关闭，`1.0` = 最强，#502 Phase 2）。
+    ///
+    /// 关闭时后处理完全跳过深度采样，默认路径逐位不变。
+    pub dof_aperture: f32,
+    /// 景深最大模糊半径（像素，0–32）。
+    pub dof_max_blur: f32,
     /// 内部渲染分辨率 `[宽, 高]`（#613）；`[0, 0]` = 关闭。
     ///
     /// 开启后场景按这个尺寸渲染，`PostPass` 再放大到窗口；相机的宽高比也跟着
@@ -156,6 +166,9 @@ impl RenderSettings {
             film_grain: self.film_grain,
             temperature: self.temperature,
             tint: self.tint,
+            dof_focus_distance: self.dof_focus_distance,
+            dof_aperture: self.dof_aperture,
+            dof_max_blur: self.dof_max_blur,
         }
     }
 
@@ -200,6 +213,9 @@ impl Default for RenderSettings {
             film_grain: 0.0,
             temperature: 0.0,
             tint: 0.0,
+            dof_focus_distance: 1.0,
+            dof_aperture: 0.0,
+            dof_max_blur: 8.0,
             shadow_distance: DEFAULT_SHADOW_DISTANCE,
             shadow_map_size: prism_render::SHADOW_MAP_SIZE,
             shadow_cascade_count: 1,
@@ -262,9 +278,15 @@ mod tests {
 
         settings.temperature = -0.4;
         settings.tint = 0.25;
+        settings.dof_focus_distance = 3.5;
+        settings.dof_aperture = 0.6;
+        settings.dof_max_blur = 12.0;
         let grade = settings.post_grade();
         assert_eq!(grade.temperature, -0.4);
         assert_eq!(grade.tint, 0.25);
+        assert_eq!(grade.dof_focus_distance, 3.5);
+        assert_eq!(grade.dof_aperture, 0.6);
+        assert_eq!(grade.dof_max_blur, 12.0);
     }
 
     #[test]
