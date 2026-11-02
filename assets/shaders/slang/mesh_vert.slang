@@ -18,7 +18,8 @@ StructuredBuffer<float4x4> bones;
 // Push constant. MUST stay byte-identical to `PbrBindlessPush` in
 // scene_frag.slang (both stages read the same block): model(64) |
 // material_slot(4) | env_handle(4) | albedo_idx(4) | normal_idx(4) |
-// debug_flags(4) | bone_offset(4) | skin_mode(4) | _pad(4) | _padding(12).
+// debug_flags(4) | bone_offset(4) | skin_mode(4) | instanceOffset(4) |
+// instanceCount(4) | _padding(8).
 struct MeshPush
 {
     float4x4 model;
@@ -29,8 +30,8 @@ struct MeshPush
     uint     debug_flags;
     uint     bone_offset;
     uint     skin_mode;
-    uint     _pad_92;
-    uint3    _padding;
+    uint     _pad_92;       // #491: first instance model in the bone SSBO
+    uint3    _padding;      // #491: .x = instance count (0 = per-draw model)
 };
 [[vk::push_constant]]
 MeshPush push;
@@ -105,14 +106,14 @@ float3 weightHeat(uint4 joints, float4 weights)
 }
 
 MeshVaryings finishVertex(
-    float4 localPos, float3 localNormal,
+    float4x4 model, float4 localPos, float3 localNormal,
     float3 color, float2 uv, float4 tangent, float3 skinHeat)
 {
     MeshVaryings out;
-    float4 worldPos = mul(push.model, localPos);
+    float4 worldPos = mul(model, localPos);
     out.worldPos    = worldPos.xyz;
     // Normal transform via mat3(model) — assumes uniform scale.
-    float3x3 normalMat = float3x3(push.model);
+    float3x3 normalMat = float3x3(model);
     out.worldNormal = normalize(mul(normalMat, localNormal));
     out.color       = color;
     out.uv          = uv;
@@ -123,10 +124,15 @@ MeshVaryings finishVertex(
 }
 
 [shader("vertex")]
-MeshVaryings vertexMain(MeshVertexIn in)
+MeshVaryings vertexMain(MeshVertexIn in, uint instanceID : SV_InstanceID)
 {
+    // #491: static instances reuse the bone SSBO (binding 3) instead of adding
+    // another descriptor. `_padding.x == 0` keeps the per-draw push model.
+    float4x4 model = push.model;
+    if (push._padding.x > 0u)
+        model = bones[push._pad_92 + instanceID];
     return finishVertex(
-        float4(in.position, 1.0), in.normal, in.color, in.uv, in.tangent,
+        model, float4(in.position, 1.0), in.normal, in.color, in.uv, in.tangent,
         float3(0.0, 0.0, 0.0));
 }
 
@@ -137,7 +143,7 @@ MeshVaryings vertexSkinnedMain(SkinnedVertexIn in)
     float4 localPos = mul(skinMat, float4(in.position, 1.0));
     float3 localNormal = mul(float3x3(skinMat), in.normal);
     float3 heat = weightHeatmapOn() ? weightHeat(in.joints, in.weights) : float3(0.0, 0.0, 0.0);
-    return finishVertex(localPos, localNormal, in.color, in.uv, in.tangent, heat);
+    return finishVertex(push.model, localPos, localNormal, in.color, in.uv, in.tangent, heat);
 }
 
 static const float SHININESS = 32.0;
