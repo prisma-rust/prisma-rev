@@ -350,6 +350,22 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
             }
         }
 
+        // 叠加层（#560 P1）：增量相对 reference（bind）姿态，按权重打到最终姿态上。
+        // 放在交叉淡入之后 —— 叠加层不该参与「两个基础剪辑之间」的过渡。
+        let additive_weight = if animator.additive_weight.is_finite() {
+            animator.additive_weight.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        if additive_weight > 0.0 && !animator.additive_clip_path.trim().is_empty() {
+            if let Some(layer) = library.clip(animator.additive_clip_path.as_str()) {
+                let mut additive = skeleton.rest_pose();
+                layer.sample_into(layer.wrap_time(local), &mut additive);
+                let reference = skeleton.rest_pose();
+                prism_anim::apply_additive(&mut pose, &additive, &reference, additive_weight);
+            }
+        }
+
         // 这份姿态就是下一次过渡的淡出源（不需要 clone：上面已经用完 `pose`）。
         playhead.pose = pose;
         let palette = BonePalette::from_matrices(&skeleton.bone_palette(&playhead.pose));

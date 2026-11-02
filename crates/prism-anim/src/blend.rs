@@ -16,6 +16,8 @@
 
 use std::sync::Arc;
 
+use glam::{Quat, Vec3};
+
 use crate::clip::Clip;
 use crate::pose::Pose;
 use crate::skeleton::JointTransform;
@@ -55,6 +57,80 @@ pub fn blend_into(out: &mut Pose, a: &Pose, b: &Pose, t: f32) -> usize {
         }
     });
     shared
+}
+
+/// 把叠加层（additive）姿态按权重打到底层姿态上，返回实际处理的关节数。
+///
+/// 语义与 UE 的「local space additive」一致：叠加剪辑的局部变换相对**参考姿态**
+/// 的差值才是增量 ——
+///
+/// - 平移：`base + (additive - reference) * t`
+/// - 旋转：`base * slerp(identity, reference⁻¹ * additive, t)`
+/// - 缩放：`base * lerp(1, additive / reference, t)`（参考缩放为 0 时当 1）
+///
+/// `t = 0` 时结果与 `base` 完全一致，`t = 1` 时是完整的叠加结果。就地改写 `base`，
+/// 没有中间缓冲：叠加层只改一部分关节时，剩下的关节保持不动。
+///
+/// 这是「Layer + Additive」的基础：呼吸、受击抖动、瞄准偏移这类只该改一部分骨骼的
+/// 剪辑，不需要再做一整套基础剪辑（#560 P1）。
+pub fn apply_additive(base: &mut Pose, additive: &Pose, reference: &Pose, weight: f32) -> usize {
+    let t = clamp_weight(weight);
+    if t <= 0.0 {
+        return 0;
+    }
+    let shared = base.len().min(additive.len()).min(reference.len());
+    for index in 0..shared {
+        let (Some(current), Some(layer), Some(rest)) = (
+            base.local(index),
+            additive.local(index),
+            reference.local(index),
+        ) else {
+            continue;
+        };
+        base.set_local(index, additive_joint(&current, &layer, &rest, t));
+    }
+    shared
+}
+
+/// 单个关节的叠加结果（见 [`apply_additive`]）。
+pub fn additive_joint(
+    base: &JointTransform,
+    additive: &JointTransform,
+    reference: &JointTransform,
+    weight: f32,
+) -> JointTransform {
+    let t = clamp_weight(weight);
+    if t <= 0.0 {
+        return *base;
+    }
+    // 参考姿态的逆：旋转取共轭，缩放取倒数。
+    let rest_rotation = reference.rotation.normalize();
+    let delta_rotation = rest_rotation.inverse() * additive.rotation.normalize();
+    let rotation =
+        (base.rotation.normalize() * Quat::IDENTITY.slerp(delta_rotation, t)).normalize();
+
+    let delta_translation = additive.translation - reference.translation;
+    let translation = base.translation + delta_translation * t;
+
+    let scale_ratio = |additive: f32, reference: f32| -> f32 {
+        if reference.abs() <= 1e-6 {
+            1.0
+        } else {
+            additive / reference
+        }
+    };
+    let scale = Vec3::new(
+        scale_ratio(additive.scale.x, reference.scale.x),
+        scale_ratio(additive.scale.y, reference.scale.y),
+        scale_ratio(additive.scale.z, reference.scale.z),
+    );
+    let scale = base.scale * scale.lerp(Vec3::ONE, 1.0 - t);
+
+    JointTransform {
+        translation,
+        rotation,
+        scale,
+    }
 }
 
 /// [`blend_into`] 的分配版本，方便工具与测试。

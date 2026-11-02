@@ -723,3 +723,71 @@ fn leaving_a_blend_space_crossfades_from_the_frozen_pose() {
     let tip = child_tip(&world, entity);
     assert!((tip.x - 1.0).abs() < 1e-3, "过渡完该是 90°，得到 {tip:?}");
 }
+
+/// 叠加层测试用：基础剪辑停在 0°，叠加剪辑在 0° 上再转 90°。
+fn additive_setup() -> (World, Entity) {
+    let (mut world, entity) = world_with_animator("");
+    world
+        .get_resource_mut::<SkeletonLibrary>()
+        .unwrap()
+        .insert_clip("bent90.ranim", bent_90_clip("bent90"));
+    {
+        let animator = world.get_mut::<Animator>(entity).unwrap();
+        animator.playing = false;
+        animator.time = 0.0;
+        animator.additive_clip_path = "bent90.ranim".into();
+        animator.additive_weight = 1.0;
+    }
+    (world, entity)
+}
+
+#[test]
+fn an_additive_layer_rotates_on_top_of_the_base_clip() {
+    let (mut world, entity) = additive_setup();
+    animator_system(&mut world, 0.0);
+    let tip = child_tip(&world, entity);
+    // 基础剪辑 0° + 叠加增量 90° = 90°。
+    assert!(
+        (tip.x - 1.0).abs() < 1e-3 && tip.y.abs() < 1e-3,
+        "叠加层该把子骨转到 90°，得到 {tip:?}"
+    );
+}
+
+#[test]
+fn the_additive_weight_scales_the_delta() {
+    let (mut world, entity) = additive_setup();
+    world.get_mut::<Animator>(entity).unwrap().additive_weight = 0.5;
+    animator_system(&mut world, 0.0);
+    let tip = child_tip(&world, entity);
+    assert!(
+        (tip.x - (2.0 - std::f32::consts::FRAC_PI_4.sin())).abs() < 1e-3,
+        "半个增量 = 45°，得到 {tip:?}"
+    );
+}
+
+#[test]
+fn a_missing_or_disabled_additive_layer_leaves_the_base_pose_alone() {
+    // 路径写错（剪辑不在库里）。
+    let (mut world, entity) = additive_setup();
+    world
+        .get_mut::<Animator>(entity)
+        .unwrap()
+        .additive_clip_path = "missing.ranim".into();
+    animator_system(&mut world, 0.0);
+    let tip = child_tip(&world, entity);
+    assert!(
+        (tip.y - 1.0).abs() < 1e-4,
+        "没有叠加层时保持 0°，得到 {tip:?}"
+    );
+
+    // 权重 0 / NaN。
+    let (mut world, entity) = additive_setup();
+    world.get_mut::<Animator>(entity).unwrap().additive_weight = 0.0;
+    animator_system(&mut world, 0.0);
+    assert!((child_tip(&world, entity).y - 1.0).abs() < 1e-4);
+
+    let (mut world, entity) = additive_setup();
+    world.get_mut::<Animator>(entity).unwrap().additive_weight = f32::NAN;
+    animator_system(&mut world, 0.0);
+    assert!((child_tip(&world, entity).y - 1.0).abs() < 1e-4);
+}
