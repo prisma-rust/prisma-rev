@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use prism_anim::{palette_to_arrays, Clip, Skeleton};
+use prism_anim::{palette_to_arrays, BlendSample, BlendSpace1D, Clip, Skeleton};
 use prism_ecs::{Entity, World};
 use prism_scene::components::{Animator, SkeletonRoot};
 
@@ -102,7 +102,7 @@ impl BonePalette {
 /// 播放头（运行时组件，不进场景）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnimatorPlayhead {
-    /// 当前剪辑路径，换了剪辑就从头播。
+    /// 当前播放内容的键：剪辑路径，或 [`BLEND_SPACE_KEY`]。换了就从头播。
     pub clip_path: String,
     pub time: f32,
     /// 单次播放且已经播完。
@@ -128,6 +128,12 @@ impl AnimatorPlayhead {
     }
 }
 
+/// 混合空间在播放头里的「剪辑路径」占位符。
+///
+/// 混合空间不是单个剪辑，但播放头需要**一个键**来判断「播放内容变了吗」。用这个
+/// 不可能与真实资产路径冲突的标记，进出混合空间就自然地触发一次交叉淡入。
+pub const BLEND_SPACE_KEY: &str = "<blend-space>";
+
 /// 推进所有 `Animator` 并重算骨骼矩阵，返回更新过的实体数。
 pub fn animator_system(world: &mut World, dt: f32) -> usize {
     let Some(library) = world.get_resource::<SkeletonLibrary>() else {
@@ -146,21 +152,49 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
         let Some(skeleton) = library.skeleton(&root.skeleton_path) else {
             continue;
         };
-        let clip_path = if animator.clip_path.is_empty() {
+        let single_path = if animator.clip_path.is_empty() {
             root.default_clip_path.clone()
         } else {
             animator.clip_path.clone()
         };
-        let Some(clip) = library.clip(&clip_path) else {
-            continue;
+
+        // 一维混合空间优先（#560 P1）：作者列出的剪辑里至少要有两个真的加载了，
+        // 否则退回单剪辑 —— 少一个样本就少一个自由度，总比整个实体不动好。
+        let mut samples: Vec<BlendSample> = Vec::new();
+        if animator.uses_blend_space() {
+            samples = animator
+                .blend_clip_paths
+                .iter()
+                .zip(animator.blend_positions.iter())
+                .filter_map(|(path, position)| {
+                    library.clip(path).map(|clip| BlendSample {
+                        position: *position,
+                        clip,
+                    })
+                })
+                .collect();
+        }
+        let blend_space = samples.len() >= 2;
+        let clip = if blend_space {
+            None
+        } else {
+            match library.clip(&single_path) {
+                Some(clip) => Some(clip),
+                None => continue,
+            }
+        };
+        let playback_key = if blend_space {
+            BLEND_SPACE_KEY.to_string()
+        } else {
+            single_path.clone()
         };
 
         // 播放头：换剪辑从作者给的起始时间重来，否则接着上一帧。
         let mut playhead = match world.get::<AnimatorPlayhead>(entity) {
-            Some(head) if head.clip_path == clip_path => head.clone(),
+            Some(head) if head.clip_path == playback_key => head.clone(),
             Some(head) => AnimatorPlayhead {
                 // 换剪辑：从旧剪辑停住的那一刻淡出（#560 P1）。
-                clip_path: clip_path.clone(),
+                clip_path: playback_key.clone(),
                 time: sanitize_time(animator.time),
                 finished: false,
                 previous_clip_path: head.clip_path.clone(),
@@ -168,7 +202,7 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
                 blend_elapsed: 0.0,
             },
             None => AnimatorPlayhead {
-                clip_path: clip_path.clone(),
+                clip_path: playback_key.clone(),
                 time: sanitize_time(animator.time),
                 finished: false,
                 previous_clip_path: String::new(),
@@ -176,7 +210,15 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
                 blend_elapsed: 0.0,
             },
         };
-        let duration = clip.duration.max(0.0);
+        // 混合空间没有自己的时长：取最长的那条剪辑，短的自然会循环追上。
+        let duration = match &clip {
+            Some(clip) => clip.duration.max(0.0),
+            None => samples
+                .iter()
+                .map(|sample| sample.clip.duration)
+                .fold(0.0f32, f32::max)
+                .max(0.0),
+        };
         if animator.playing && dt.is_finite() {
             let speed = if animator.speed.is_finite() {
                 animator.speed
@@ -201,7 +243,20 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
             0.0
         };
         let mut pose = skeleton.rest_pose();
-        clip.sample_into(local, &mut pose);
+        match &clip {
+            Some(clip) => {
+                clip.sample_into(local, &mut pose);
+            }
+            None => {
+                let phase = if duration > 0.0 {
+                    local / duration
+                } else {
+                    0.0
+                };
+                let mut space = BlendSpace1D::new(samples.clone(), skeleton.rest_pose());
+                space.evaluate_into(animator.blend_parameter, phase, &mut pose);
+            }
+        }
 
         // 交叉淡入：旧剪辑冻结在过渡开始的那一刻，按权重混进新姿态。
         //

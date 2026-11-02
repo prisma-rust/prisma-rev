@@ -359,6 +359,133 @@ fn bad_blend_durations_are_treated_as_zero() {
     assert_eq!(sanitize_blend_duration(0.2), 0.2);
 }
 
+fn install_bent90(world: &mut World) {
+    world
+        .get_resource_mut::<SkeletonLibrary>()
+        .unwrap()
+        .insert_clip("bent90.ranim", bent_90_clip("bent90"));
+}
+
+/// 把实体切成「bend ↔ bent90」的一维混合空间，`parameter` 是轴上的位置。
+fn use_blend_space(world: &mut World, entity: Entity, parameter: f32) {
+    let animator = world.get_mut::<Animator>(entity).unwrap();
+    animator.blend_clip_paths = vec!["bend.ranim".into(), "bent90.ranim".into()];
+    animator.blend_positions = vec![0.0, 1.0];
+    animator.blend_parameter = parameter;
+    animator.time = 0.0;
+    animator.playing = false;
+}
+
+#[test]
+fn a_one_dimensional_blend_space_is_sampled_from_the_parameter() {
+    let (mut world, entity) = world_with_animator("");
+    install_bent90(&mut world);
+
+    // 参数 0 → 纯 bend.ranim（0s 处是 0°）。
+    use_blend_space(&mut world, entity, 0.0);
+    animator_system(&mut world, 0.0);
+    let tip = child_tip(&world, entity);
+    assert!((tip.y - 1.0).abs() < 1e-4, "参数 0 该是 0°，得到 {tip:?}");
+    assert_eq!(
+        world.get::<AnimatorPlayhead>(entity).unwrap().clip_path,
+        BLEND_SPACE_KEY,
+        "混合空间用自己的播放键"
+    );
+
+    // 参数 1 → 纯 bent90（90°）。
+    use_blend_space(&mut world, entity, 1.0);
+    animator_system(&mut world, 0.0);
+    let tip = child_tip(&world, entity);
+    assert!((tip.x - 1.0).abs() < 1e-3, "参数 1 该是 90°，得到 {tip:?}");
+
+    // 参数 0.5 → 45°。
+    use_blend_space(&mut world, entity, 0.5);
+    animator_system(&mut world, 0.0);
+    let tip = child_tip(&world, entity);
+    let angle = std::f32::consts::FRAC_PI_4;
+    assert!(
+        (tip.x - (2.0 - angle.sin())).abs() < 1e-3,
+        "参数 0.5 该在 45°，得到 {tip:?}"
+    );
+}
+
+#[test]
+fn a_blend_space_needs_two_loaded_clips_and_falls_back_to_the_single_one() {
+    let (mut world, entity) = world_with_animator("");
+    install_bent90(&mut world);
+
+    // 两个路径，但其中一条不在库里 → 只剩一个样本，退回单剪辑。
+    {
+        let animator = world.get_mut::<Animator>(entity).unwrap();
+        animator.blend_clip_paths = vec!["bend.ranim".into(), "missing.ranim".into()];
+        animator.blend_positions = vec![0.0, 1.0];
+        animator.playing = false;
+    }
+    animator_system(&mut world, 0.0);
+    let head = world.get::<AnimatorPlayhead>(entity).unwrap();
+    assert_eq!(head.clip_path, "bend.ranim", "缺一个样本时退回单剪辑");
+
+    // 只有一条路径 + 一条位置：不算混合空间。
+    {
+        let animator = world.get_mut::<Animator>(entity).unwrap();
+        animator.blend_clip_paths = vec!["bend.ranim".into()];
+        animator.blend_positions = vec![0.0, 1.0];
+    }
+    animator_system(&mut world, 0.0);
+    assert_eq!(
+        world.get::<AnimatorPlayhead>(entity).unwrap().clip_path,
+        "bend.ranim"
+    );
+}
+
+#[test]
+fn a_blend_space_clamps_out_of_range_parameters() {
+    let (mut world, entity) = world_with_animator("");
+    install_bent90(&mut world);
+    for (parameter, expect_90) in [(-5.0, false), (50.0, true)] {
+        use_blend_space(&mut world, entity, parameter);
+        animator_system(&mut world, 0.0);
+        let tip = child_tip(&world, entity);
+        if expect_90 {
+            assert!((tip.x - 1.0).abs() < 1e-3, "参数 50 夹到 1，得到 {tip:?}");
+        } else {
+            assert!((tip.y - 1.0).abs() < 1e-4, "参数 -5 夹到 0，得到 {tip:?}");
+        }
+    }
+}
+
+#[test]
+fn entering_a_blend_space_crossfades_from_the_single_clip() {
+    let (mut world, entity) = world_with_animator("");
+    install_bent90(&mut world);
+    // 先按单剪辑跑一帧，把播放头建立在 bend.ranim 上。
+    animator_system(&mut world, 0.0);
+
+    use_blend_space(&mut world, entity, 1.0);
+    world.get_mut::<Animator>(entity).unwrap().playing = true;
+    world.get_mut::<Animator>(entity).unwrap().blend_duration = 1.0;
+    // 过渡开始：权重 0 → 还是 bend 的姿态。
+    animator_system(&mut world, 0.0);
+    let tip = child_tip(&world, entity);
+    assert!(
+        (tip.y - 1.0).abs() < 1e-4,
+        "进来第一帧还是旧姿态，得到 {tip:?}"
+    );
+    let head = world.get::<AnimatorPlayhead>(entity).unwrap();
+    assert_eq!(head.previous_clip_path, "bend.ranim");
+    assert_eq!(head.clip_path, BLEND_SPACE_KEY);
+
+    // 走完过渡：纯混合空间姿态（90°），来源清空。
+    animator_system(&mut world, 1.0);
+    let tip = child_tip(&world, entity);
+    assert!((tip.x - 1.0).abs() < 1e-3, "过渡完该是 90°，得到 {tip:?}");
+    assert!(world
+        .get::<AnimatorPlayhead>(entity)
+        .unwrap()
+        .previous_clip_path
+        .is_empty());
+}
+
 #[test]
 fn the_sanitizer_rejects_bad_times() {
     assert_eq!(sanitize_time(f32::NAN), 0.0);
