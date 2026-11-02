@@ -107,7 +107,7 @@ let pose = evaluator.evaluate(&assets, &skeleton, dt)?;
 
 - 每个节点每帧只求值一次；ClipPlayer / BlendSpace / StateMachine 各自推进时间。
 - `BlendStack` / `LayeredBlend` 的第一个输入是 base，其余输入按 weight 与骨骼遮罩叠加。
-- `Slot` / `CachedPose` / `Output` 当前是透明传递；Slot 的 Montage 队列是后续切片。
+- `Slot` 在基础输入上按 `weight` 覆盖一段可选 montage 剪辑（`clips[0]`，独立时间/循环/Notify）；没有剪辑时透明传递。`CachedPose` / `Output` 是透明传递。显式 Montage start/stop 队列仍是后续切片。
 - StateMachine 节点内部维护当前状态、状态时间和转移交叉淡入；Trigger 按状态机语义消耗。
 - `evaluate_with_events` 额外返回 `GraphNotifyEvent`：ClipPlayer / StateMachine 跨过
   剪辑 Notify 时触发，循环回绕分两段扫描，第一帧不补发 time 0，共享节点只发一次。

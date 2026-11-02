@@ -8,7 +8,8 @@
 //!
 //! - ClipPlayer / BlendSpace / StateMachine 各自维护时间；
 //! - BlendStack / LayeredBlend 把第一个输入当 base，其余输入按顺序叠加；
-//! - Slot / CachedPose / Output 是透明传递节点；
+//! - Slot 在基础输入上可选覆盖一段 montage 剪辑（无剪辑时透明传递）；
+//! - CachedPose / Output 是透明传递节点；
 //! - 同一帧内一个节点只求值一次（fan-out 不会重复推进时间）；
 //! - 成环的图（例如手工构造的 `AnimGraphInfo`）返回错误而不是栈溢出。
 //!
@@ -16,8 +17,9 @@
 //! 用 [`StateMachine::next_transition`] 求值，Trigger 会被消耗；转移时长 > 0 时
 //! 从转移前的姿态淡入。这和引擎 `animator` 的播放头语义一致，但这一层不碰 ECS。
 //!
-//! 已知边界：Slot 目前只做透明传递（Montage / Notify 队列是后续切片）；
-//! CachedPose 复用每帧缓存，不跨帧冻结姿态。
+//! 已知边界：Slot 的 montage 只支持循环 / 单次播放与权重覆盖，还没有
+//! 显式的 start/stop 队列和 Montage Notify 区间；CachedPose 复用每帧缓存，
+//! 不跨帧冻结姿态。
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -258,7 +260,17 @@ impl AnimGraphEvaluator {
             GraphNodeKind::BlendStack | GraphNodeKind::LayeredBlend => {
                 self.evaluate_stack(&node, source, skeleton, reference, dt, visiting, stack)?
             }
-            GraphNodeKind::Slot | GraphNodeKind::CachedPose | GraphNodeKind::Output => {
+            GraphNodeKind::Slot => self.evaluate_slot(
+                index_usize,
+                &node,
+                source,
+                skeleton,
+                reference,
+                dt,
+                visiting,
+                stack,
+            )?,
+            GraphNodeKind::CachedPose | GraphNodeKind::Output => {
                 let Some(input) = node.inputs.first() else {
                     return Err(GraphEvalError::MissingInput {
                         node: node.name.clone(),
@@ -392,6 +404,60 @@ impl AnimGraphEvaluator {
             }
         }
         Ok(pose)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_slot(
+        &mut self,
+        index: usize,
+        node: &GraphNodeInfo,
+        source: &impl AnimGraphSource,
+        skeleton: &Skeleton,
+        reference: &Pose,
+        dt: f32,
+        visiting: &mut [bool],
+        stack: &mut HashSet<u32>,
+    ) -> Result<Pose, GraphEvalError> {
+        let Some(input) = node.inputs.first() else {
+            return Err(GraphEvalError::MissingInput {
+                node: node.name.clone(),
+            });
+        };
+        let base =
+            self.evaluate_node(input.node, source, skeleton, reference, dt, visiting, stack)?;
+        let Some(path) = node.clips.first().filter(|path| !path.trim().is_empty()) else {
+            return Ok(base);
+        };
+        let weight = if node.weight.is_finite() {
+            node.weight.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        if weight <= 0.0 {
+            return Ok(base);
+        }
+        let clip = source
+            .clip(path)
+            .ok_or_else(|| GraphEvalError::MissingClip {
+                node: node.name.clone(),
+                path: path.clone(),
+            })?;
+        let previous_time = self.runtime[index].time;
+        let time = advance_time(previous_time, dt, node.speed);
+        self.runtime[index].time = time;
+        let previous_local = local_time(clip.duration, node.looped, previous_time);
+        let local = local_time(clip.duration, node.looped, time);
+        if dt > 0.0 && node.speed >= 0.0 {
+            self.record_notifies(&node.name, path, &clip, previous_local, local);
+        }
+        let mut overlay = reference.clone();
+        clip.sample_into(local, &mut overlay);
+        if weight >= 1.0 {
+            return Ok(overlay);
+        }
+        let mut blended = Pose::default();
+        blend_into(&mut blended, &base, &overlay, weight);
+        Ok(blended)
     }
 
     #[allow(clippy::too_many_arguments)]
