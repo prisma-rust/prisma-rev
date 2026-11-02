@@ -188,6 +188,88 @@ pub struct StateMachine {
 }
 
 impl StateMachine {
+    /// 把 cooked 的 `.rasm`（`prism_asset::formats_state_machine`）转成可求值的状态机。
+    ///
+    /// cooker 已经把状态名字解析成下标，这里只做三件运行时才关心的事：
+    /// - 丢掉指向不存在状态的转移（坏资产不该让整台机器失效，只丢那一条）；
+    /// - `speed` 非有限 → 1.0，`min_state_fraction` 夹到 `0..=1`；
+    /// - `from` 的哨兵值 `u32::MAX` → [`ANY_STATE`]。
+    pub fn from_info(info: &prism_asset::formats_state_machine::StateMachineInfo) -> Self {
+        use prism_asset::formats_state_machine::TransitionConditionInfo as Info;
+
+        let states: Vec<AnimState> = info
+            .states
+            .iter()
+            .map(|state| AnimState {
+                name: state.name.clone(),
+                clip_path: state.clip_path.clone(),
+                speed: if state.speed.is_finite() {
+                    state.speed
+                } else {
+                    1.0
+                },
+                looped: state.looped,
+            })
+            .collect();
+        let state_count = states.len();
+
+        let transitions = info
+            .transitions
+            .iter()
+            .filter(|transition| (transition.to as usize) < state_count)
+            .filter(|transition| {
+                transition
+                    .from
+                    .is_none_or(|from| (from as usize) < state_count)
+            })
+            .map(|transition| AnimTransition {
+                from: transition
+                    .from
+                    .map(|from| from as usize)
+                    .unwrap_or(ANY_STATE),
+                to: transition.to as usize,
+                min_state_fraction: if transition.min_state_fraction.is_finite() {
+                    transition.min_state_fraction.clamp(0.0, 1.0)
+                } else {
+                    0.0
+                },
+                duration: if transition.duration.is_finite() && transition.duration > 0.0 {
+                    transition.duration
+                } else {
+                    0.0
+                },
+                conditions: transition
+                    .conditions
+                    .iter()
+                    .map(|condition| match condition {
+                        Info::FloatGreater { name, threshold } => {
+                            TransitionCondition::FloatGreater {
+                                name: name.clone(),
+                                threshold: *threshold,
+                            }
+                        }
+                        Info::FloatLess { name, threshold } => TransitionCondition::FloatLess {
+                            name: name.clone(),
+                            threshold: *threshold,
+                        },
+                        Info::BoolIs { name, expected } => TransitionCondition::BoolIs {
+                            name: name.clone(),
+                            expected: *expected,
+                        },
+                        Info::Trigger { name } => {
+                            TransitionCondition::Trigger { name: name.clone() }
+                        }
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        Self {
+            states,
+            transitions,
+        }
+    }
+
     pub fn new(states: Vec<AnimState>, transitions: Vec<AnimTransition>) -> Self {
         Self {
             states,

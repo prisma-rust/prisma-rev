@@ -3,6 +3,7 @@ pub mod core;
 #[cfg(feature = "core")]
 pub mod formats;
 pub mod formats_skinned;
+pub mod formats_state_machine;
 #[cfg(feature = "package")]
 pub mod package;
 #[cfg(feature = "runtime")]

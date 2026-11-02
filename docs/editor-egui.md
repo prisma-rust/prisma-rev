@@ -464,7 +464,34 @@ for event in world.get_resource::<AnimEvents>().map(|e| e.drain()).unwrap_or_def
   解析失败会让 build 失败**，名字对不上任何动画会 warn —— 打错的事件表不该静默消失。
 - 编辑器还没有 Notify 的编辑界面（改文件后靠松散资产热重载重新 cook）；时间轴打点留给后续。
 
-还不支持：视口里直接拖关节做 IK（P2 的 IK 另立）、Notify 的编写界面。
+### 状态机（作者格式，运行时接线在下一刀）
+
+状态机写成 `assets/<something>.statemachine.json`，cook 成 `.rasm`（RASM v1：状态表 +
+转移表 + 条件；`from` 用 `u32::MAX` 表示「任意状态」）：
+
+```json
+{
+  "states": [
+    { "name": "Idle", "clip": "char/idle.ranim" },
+    { "name": "Run",  "clip": "char/run.ranim", "speed": 1.2, "looped": true }
+  ],
+  "transitions": [
+    { "from": "Idle", "to": "Run", "duration": 0.2, "min_state_fraction": 0.0,
+      "conditions": [{ "type": "float_greater", "name": "speed", "threshold": 1.5 }] }
+  ]
+}
+```
+
+- 条件种类：`float_greater` / `float_less`（`threshold`）、`bool_is`（`value`）、`trigger`；
+- 缺省：`speed = 1`、`looped = true`、`from = "*"`（任意状态）、`duration = 0`（硬切）、
+  `min_state_fraction = 0`；`to` / `from` 写错状态名是**硬错误**（整份资产失败），
+  重复状态名、空的 `clip` / `name`、未知条件种类同样报错并指出是哪一条；
+- 求值是**按作者顺序第一条命中**（条件全真 + 当前状态已播到 `min_state_fraction`），
+  一帧只走一条转移；`min_state_fraction` 在剪辑时长未知时视为已播完，否则单次剪辑会卡在最后一帧；
+- 现在只到「数据可求值」：`prism-anim::StateMachine` 已有 `next_transition` 与单元测试，
+  `Animator` 还没有 `state_machine_path` / 当前状态字段，`animator_system` 也还没调用它。
+
+还不支持：视口里直接拖关节做 IK（P2 的 IK 另立）、Notify 的编写界面、状态机的编辑器面板与运行时接线。
 
 ## 4.4 内置截图与控制通道
 
