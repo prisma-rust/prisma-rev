@@ -1684,6 +1684,25 @@ impl GraphRenderer {
         Ok(())
     }
 
+    /// Apply this frame's TAA subpixel jitter to `frame_data` and remember the
+    /// NDC offset for `TaaPass`. Call once per frame before `prepare` (#883).
+    pub fn apply_taa_jitter(&mut self, frame_data: &mut FrameUBOData) {
+        let jitter = if self.settings.taa {
+            let j = taa_jitter(self.taa_frame);
+            self.taa_frame = self.taa_frame.wrapping_add(1);
+            j
+        } else {
+            self.taa_frame = 0;
+            [0.0, 0.0]
+        };
+        let width = frame_data.viewport_size[0].max(1.0);
+        let height = frame_data.viewport_size[1].max(1.0);
+        let jitter_ndc = [jitter[0] * 4.0 / width, jitter[1] * 4.0 / height];
+        frame_data.view_proj[3][0] += jitter_ndc[0];
+        frame_data.view_proj[3][1] += jitter_ndc[1];
+        self.taa_jitter_ndc = jitter_ndc;
+    }
+
     /// Enable/disable TAA and set its history weight (#883).
     pub fn set_taa(&mut self, enabled: bool, strength: f32) {
         if !enabled && self.settings.taa {
@@ -2835,20 +2854,7 @@ impl GraphRenderer {
             .clamp(1, self.settings.shadow_cascade_count.clamp(1, 2));
         // #883: subpixel jitter for TAA. The graph frame carries the applied
         // NDC offset so `TaaPass` can recover the unjittered camera matrix.
-        let jitter = if self.settings.taa {
-            let j = taa_jitter(self.taa_frame);
-            self.taa_frame = self.taa_frame.wrapping_add(1);
-            j
-        } else {
-            self.taa_frame = 0;
-            [0.0, 0.0]
-        };
-        let width = frame_data.viewport_size[0].max(1.0);
-        let height = frame_data.viewport_size[1].max(1.0);
-        let jitter_ndc = [jitter[0] * 4.0 / width, jitter[1] * 4.0 / height];
-        frame_data.view_proj[3][0] += jitter_ndc[0];
-        frame_data.view_proj[3][1] += jitter_ndc[1];
-        self.taa_jitter_ndc = jitter_ndc;
+        self.apply_taa_jitter(&mut frame_data);
         let input = FrameInput {
             draw_items,
             gizmos: &[],

@@ -425,7 +425,8 @@ fn render_one_frame(
     }
 
     let extent = renderer.extent();
-    let frame_data = FrameUBOData {
+    renderer.set_taa(settings.taa, settings.taa_strength);
+    let mut frame_data = FrameUBOData {
         view_proj: scene.view_proj.to_cols_array_2d(),
         camera_position: [
             scene.eye[0],
@@ -447,6 +448,7 @@ fn render_one_frame(
         _pad2: [0.0; 3],
         _pad3: [0.0; 2],
     };
+    renderer.apply_taa_jitter(&mut frame_data);
 
     // #502：全局 LUT 强度 + assets/ 下的 .cube 路径（体积调色不覆盖 LUT）。
     let mut resolved_grade = packet.grade.unwrap_or_else(|| settings.post_grade());
@@ -500,7 +502,6 @@ fn render_one_frame(
     // #613：内部分辨率必须在 `begin_frame` 之前生效——begin_frame 用它决定
     // HDR 中间目标尺寸，execute 再用它做 PostPass 的目标矩形。
     renderer.set_internal_resolution(settings.internal_resolution, settings.internal_scale_mode);
-    renderer.set_taa(settings.taa, settings.taa_strength);
 
     let ctx = match renderer.begin_frame()? {
         Some(c) => c,
