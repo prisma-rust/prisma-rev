@@ -8,7 +8,10 @@
 //!
 //! Set `PRISM_UPDATE_GOLDENS=1` to rewrite the committed goldens after an
 //! intentional rendering change. On a mismatch the harness writes
-//! `target/golden-frames/<name>.actual.png` and `<name>.diff.png` for triage.
+//! `target/golden-frames/<name>.actual.png`, `<name>.diff.png` and
+//! `<name>.device.txt` for triage. The device file records the adapter /
+//! driver identity, so a golden generated on another machine can be told apart
+//! from a real rendering regression (#832).
 //!
 //! `FrameHarness::new` returns `None` when no Vulkan driver is available, so the
 //! tests skip gracefully on hosts without one (same convention as
@@ -83,6 +86,25 @@ impl FrameHarness {
 
     pub fn supports_wireframe(&self) -> bool {
         self.renderer.context().wireframe_supported
+    }
+
+    /// Adapter and driver identity of the device rendering this frame.
+    ///
+    /// Committed goldens are generated on one driver; another conformant
+    /// driver may produce a different (still correct) image. Recording this in
+    /// the mismatch report keeps "this machine renders differently" separate
+    /// from "the code changed the image" (#832).
+    pub fn adapter_info(&self) -> String {
+        let properties = &self.renderer.context().physical_device_properties;
+        let name = properties
+            .device_name_as_c_str()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "<invalid device name>".to_string());
+        format!(
+            "{name} | Vulkan API {} | driver {}",
+            format_version(properties.api_version),
+            format_version(properties.driver_version)
+        )
     }
 
     /// Render the fixed scene once and return tightly packed RGBA8 pixels.
@@ -232,9 +254,22 @@ fn update_mode() -> bool {
         .unwrap_or(false)
 }
 
+/// Decode a Vulkan `VK_MAKE_VERSION`-encoded version number.
+pub fn format_version(version: u32) -> String {
+    format!(
+        "{}.{}.{} ({version:#010x})",
+        (version >> 22) & 0x3ff,
+        (version >> 12) & 0x3ff,
+        version & 0xfff
+    )
+}
+
 /// Compare `actual` with the committed golden and panic with a readable report
 /// on failure. In update mode the golden is rewritten instead.
-pub fn assert_golden(name: &str, actual: &[u8], size: usize) {
+///
+/// `adapter` should come from [`FrameHarness::adapter_info`]; it is written to
+/// the artifact directory and included in the panic message.
+pub fn assert_golden(name: &str, actual: &[u8], size: usize, adapter: &str) {
     assert_eq!(actual.len(), size * size * 4, "unexpected frame size");
     let path = golden_dir().join(format!("{name}.png"));
 
@@ -268,9 +303,19 @@ pub fn assert_golden(name: &str, actual: &[u8], size: usize) {
 
     let dir =
         write_mismatch_artifacts(name, actual, &expected, size).expect("write mismatch artifacts");
+    let device_path = dir.join(format!("{name}.device.txt"));
+    if let Err(error) = std::fs::write(&device_path, adapter) {
+        eprintln!(
+            "[golden] could not write {}: {error}",
+            device_path.display()
+        );
+    }
     panic!(
-        "frame {name:?} differs from {}: {} of {} pixels exceed ±{} (max diff {}, mean {:.2}); \
-         actual/diff written to {}. Re-run with PRISM_UPDATE_GOLDENS=1 for an intentional change.",
+        "frame {name:?} differs from {}: {} of {} pixels exceed ±{} (max diff {}, mean {:.2})\n  \
+         adapter: {adapter}\n  \
+         actual/diff/device info written to {}.\n  \
+         Re-run with PRISM_UPDATE_GOLDENS=1 for an intentional change; if only the adapter \
+         differs, compare against a frame rendered on the golden's machine (#832).",
         path.display(),
         report.changed_pixels,
         size * size,
