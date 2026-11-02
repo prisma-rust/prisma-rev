@@ -59,6 +59,9 @@ pub struct SceneSettings {
     /// 选中物体的投影线框（#487）；旧存档没有这个键时默认开。
     #[serde(default = "default_selection_outline")]
     pub show_selection_outline: bool,
+    /// 选中蒙皮实体的骨架叠加（#560）；旧存档没有这个键时默认开。
+    #[serde(default = "default_selection_outline")]
+    pub show_skeleton: bool,
     /// `World` / `Local`（ASCII，避免本地化文案进存档）。
     pub gizmo_space: String,
     /// `Translate` / `Rotate` / `Scale`。
@@ -73,6 +76,7 @@ impl Default for SceneSettings {
             show_grid: true,
             show_skybox: true,
             show_selection_outline: default_selection_outline(),
+            show_skeleton: default_selection_outline(),
             gizmo_space: "World".to_string(),
             gizmo_tool: "Translate".to_string(),
             render: None,
@@ -139,6 +143,7 @@ impl EditorState {
                 show_grid: workspace.show_grid,
                 show_skybox: workspace.show_skybox,
                 show_selection_outline: workspace.show_selection_outline,
+                show_skeleton: workspace.show_skeleton,
                 gizmo_space: match workspace.gizmo_space {
                     crate::viewport_math::GizmoSpace::Local => "Local".to_string(),
                     crate::viewport_math::GizmoSpace::World => "World".to_string(),
@@ -209,6 +214,7 @@ impl EditorState {
         workspace.show_grid = self.scene.show_grid;
         workspace.show_skybox = self.scene.show_skybox;
         workspace.show_selection_outline = self.scene.show_selection_outline;
+        workspace.show_skeleton = self.scene.show_skeleton;
         workspace.gizmo_space = match self.scene.gizmo_space.as_str() {
             "Local" | "local" => crate::viewport_math::GizmoSpace::Local,
             _ => crate::viewport_math::GizmoSpace::World,
@@ -363,6 +369,7 @@ mod tests {
         source.show_grid = false;
         source.show_skybox = false;
         source.show_selection_outline = false;
+        source.show_skeleton = false;
         source.gizmo_space = crate::viewport_math::GizmoSpace::Local;
         let mut state = EditorState::capture(&source, &Preferences::default());
         state.scene.gizmo_tool = "Scale".to_string();
@@ -372,6 +379,7 @@ mod tests {
         assert!(!restored.scene.show_grid);
         assert!(!restored.scene.show_skybox);
         assert!(!restored.scene.show_selection_outline);
+        assert!(!restored.scene.show_skeleton, "骨架开关也要进存档");
         assert_eq!(restored.scene.gizmo_space, "Local");
         assert_eq!(restored.scene.gizmo_tool, "Scale");
         assert!(restored.scene.render.is_some());
@@ -382,6 +390,7 @@ mod tests {
         assert!(!target.show_grid);
         assert!(!target.show_skybox);
         assert!(!target.show_selection_outline);
+        assert!(!target.show_skeleton);
         assert_eq!(target.gizmo_space, crate::viewport_math::GizmoSpace::Local);
 
         // 旧存档没有 `scene` 段：走默认值（描边默认开），不能读失败。
@@ -389,6 +398,7 @@ mod tests {
         let old_state = EditorState::from_json(&old);
         assert!(old_state.scene.show_grid);
         assert!(old_state.scene.show_selection_outline);
+        assert!(old_state.scene.show_skeleton, "旧存档默认开骨架");
         assert_eq!(old_state.scene.gizmo_tool, "Translate");
 
         // 有 `scene` 段但缺 `showSelectionOutline`（旧版本写出的状态）：默认开。

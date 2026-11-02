@@ -3723,6 +3723,14 @@ impl EditorApp {
                 self.workspace.show_selection_outline = !outline_on;
                 self.mark_scene_dirty();
             }
+            let bones_on = self.workspace.show_skeleton;
+            if ui
+                .selectable_label(bones_on, "Bones")
+                .on_hover_text("Draw the skeleton of the selected skinned mesh")
+                .clicked()
+            {
+                self.workspace.show_skeleton = !bones_on;
+            }
             let view_2d = self.workspace.camera.orthographic;
             if ui
                 .selectable_label(view_2d, "2D")

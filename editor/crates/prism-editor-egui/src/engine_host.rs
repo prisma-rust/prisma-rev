@@ -276,6 +276,47 @@ impl EngineHost {
         Some((bounds.min, bounds.max))
     }
 
+    /// 选中实体的骨架在世界空间里的关节位置与父子连线（#560 骨骼叠加）。
+    ///
+    /// 需要三样东西同时在场：实体的 `BonePalette`（动画系统每帧写）、
+    /// `SkeletonRoot` 上的骨架路径，以及 `SkeletonLibrary` 里已经加载的骨架。
+    /// 缺一样就返回空——蒙皮网格还没上传完时不该画出一堆原点。
+    pub fn skeleton_overlay(&self, index: usize) -> crate::skeleton_overlay::SkeletonOverlay {
+        let empty = || crate::skeleton_overlay::SkeletonOverlay {
+            joints: Vec::new(),
+            segments: Vec::new(),
+        };
+        let Some(entity) = self.entities.get(index).copied() else {
+            return empty();
+        };
+        let world = self.engine.world();
+        let Some(palette) =
+            world.get::<prism_engine::scene::systems::animator::BonePalette>(entity)
+        else {
+            return empty();
+        };
+        let Some(root) = world.get::<prism_engine::scene::components::SkeletonRoot>(entity) else {
+            return empty();
+        };
+        let Some(library) =
+            world.get_resource::<prism_engine::scene::systems::animator::SkeletonLibrary>()
+        else {
+            return empty();
+        };
+        let Some(skeleton) = library.skeleton(&root.skeleton_path) else {
+            return empty();
+        };
+
+        let parents: Vec<Option<usize>> =
+            skeleton.joints().iter().map(|joint| joint.parent).collect();
+        let inverse_binds: Vec<[[f32; 4]; 4]> = skeleton
+            .joints()
+            .iter()
+            .map(|joint| joint.inverse_bind.to_cols_array_2d())
+            .collect();
+        crate::skeleton_overlay::bone_overlay(&palette.matrices, &parents, &inverse_binds)
+    }
+
     /// 精灵实际纹理尺寸（好让 Scene 拾取在 `frame_size = [0,0]` 时也能知道
     /// 可见范围，而不是退回单位立方体，#600）。
     pub fn sprite_texture_size(&self, index: usize) -> Option<[f32; 2]> {

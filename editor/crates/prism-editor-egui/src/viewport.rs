@@ -1190,6 +1190,10 @@ impl ViewportState {
             // sprite 的真实矩形（#643）：AABB 描边对 2D 物体太大，这里按
             // `frame_size / pixels_per_unit` 与轴心画出真正会被绘制的那块。
             self.draw_sprite_rects(&painter, rect, workspace, &frame);
+            // 骨架叠加（#560）：蒙皮网格变形后看不出骨骼在哪，选中时把关节画出来。
+            if workspace.show_skeleton {
+                self.draw_skeleton(&painter, rect, workspace, &frame);
+            }
             // UI 元素没有世界包围盒：画它在屏幕上的真实矩形与锚点手柄（#429）。
             self.draw_ui_rects(&painter, rect, workspace, self.extent);
             // 引擎的 SceneView Gizmos：相机画视锥、光源画图标（点选图标 = 选中对象）。
@@ -1627,8 +1631,7 @@ impl ViewportState {
                 let selected = active_drag.is_some_and(|drag| drag.handle == handle);
                 let color = if selected { active } else { accent };
                 let size = HANDLE_RADIUS * 2.0;
-                let handle_rect =
-                    egui::Rect::from_center_size(position, egui::vec2(size, size));
+                let handle_rect = egui::Rect::from_center_size(position, egui::vec2(size, size));
                 painter.rect_filled(handle_rect, egui::CornerRadius::ZERO, color);
                 painter.rect_stroke(
                     handle_rect,
@@ -1650,6 +1653,56 @@ impl ViewportState {
     ///
     /// 任何一个角落在相机背后就整块跳过（`vm::projected_box_edges` 返回 `None`），
     /// 避免画出穿透屏幕的线。
+    /// 选中实体的骨架叠加（#560）：父 → 子连线 + 关节圆点。
+    ///
+    /// 只画选中项：整套骨架在密集场景里会变成一团线。数据来自引擎的
+    /// `BonePalette`（动画后的世界变换），所以拖动时间轴时它跟着动。
+    fn draw_skeleton(
+        &self,
+        painter: &egui::Painter,
+        rect: Rect,
+        workspace: &Workspace,
+        frame: &vm::CameraFrame,
+    ) {
+        use egui::Color32;
+
+        if workspace.selection.is_empty() {
+            return;
+        }
+        let bone = Color32::from_rgb(255, 206, 84);
+        let joint = Color32::from_rgb(255, 236, 168);
+        let (width, height) = (rect.width(), rect.height());
+
+        for index in &workspace.selection {
+            let overlay = self.host.skeleton_overlay(*index);
+            if overlay.is_empty() {
+                continue;
+            }
+            let screen: Vec<Option<egui::Pos2>> = overlay
+                .joints
+                .iter()
+                .map(|position| {
+                    vm::project(*position, frame, width, height)
+                        .map(|(x, y, _)| rect.min + egui::vec2(x, y))
+                })
+                .collect();
+            for (parent, child) in &overlay.segments {
+                let (Some(from), Some(to)) = (screen[*parent], screen[*child]) else {
+                    continue;
+                };
+                painter.line_segment([from, to], egui::Stroke::new(1.6, bone));
+            }
+            for (index, point) in screen.iter().enumerate() {
+                let Some(point) = point else {
+                    continue;
+                };
+                // 根骨骼画大一点：一眼能认出骨架的起点。
+                let radius = if index == 0 { 3.5 } else { 2.5 };
+                painter.circle_filled(*point, radius, joint);
+            }
+        }
+    }
+
     fn draw_selection_outline(
         &self,
         painter: &egui::Painter,
@@ -2252,10 +2305,7 @@ fn sprite_bounds(
 ///
 /// 编辑器拾取之前只看网格/精灵包围盒；有 `Collider` 时优先用它，
 /// 这样点选范围和物理形状一致（盒 / 球 / 胶囊都折算成局部 AABB）。
-fn collider_bounds(
-    doc: &prism_editor_core::SceneDoc,
-    index: usize,
-) -> Option<vm::PickBounds> {
+fn collider_bounds(doc: &prism_editor_core::SceneDoc, index: usize) -> Option<vm::PickBounds> {
     const COLLIDER: &str = "prism_engine::scene::Collider";
     let collider = doc.entities.get(index)?.component(COLLIDER)?;
     let number = |value: Option<&serde_json::Value>, default: f32| {
@@ -2266,9 +2316,7 @@ fn collider_bounds(
     };
     let center = [0usize, 1, 2].map(|axis| {
         number(
-            collider
-                .get("center")
-                .and_then(|center| center.get(axis)),
+            collider.get("center").and_then(|center| center.get(axis)),
             0.0,
         )
     });
@@ -2296,16 +2344,8 @@ fn collider_bounds(
         }
     };
     Some(vm::PickBounds {
-        min: [
-            center[0] - half_x,
-            center[1] - half_y,
-            center[2] - half_z,
-        ],
-        max: [
-            center[0] + half_x,
-            center[1] + half_y,
-            center[2] + half_z,
-        ],
+        min: [center[0] - half_x, center[1] - half_y, center[2] - half_z],
+        max: [center[0] + half_x, center[1] + half_y, center[2] + half_z],
     })
 }
 
@@ -2462,8 +2502,8 @@ mod tests {
             "radius": 0.5,
             "half_height": 2.0
         });
-        workspace.document_mut().doc.entities[0].components
-            ["prism_engine::scene::Collider"] = collider;
+        workspace.document_mut().doc.entities[0].components["prism_engine::scene::Collider"] =
+            collider;
         let capsule = collider_bounds(&workspace.document().doc, 0).expect("capsule bounds");
         assert_eq!(capsule.min, [-0.5, -2.5, -0.5]);
         assert_eq!(capsule.max, [0.5, 2.5, 0.5]);
@@ -2472,8 +2512,8 @@ mod tests {
             "shape": "Box",
             "half_extents": [1.0, 2.0, 3.0]
         });
-        workspace.document_mut().doc.entities[0].components
-            ["prism_engine::scene::Collider"] = collider;
+        workspace.document_mut().doc.entities[0].components["prism_engine::scene::Collider"] =
+            collider;
         let cuboid = collider_bounds(&workspace.document().doc, 0).expect("box bounds");
         assert_eq!(cuboid.min, [-1.0, -2.0, -3.0]);
         assert_eq!(cuboid.max, [1.0, 2.0, 3.0]);
