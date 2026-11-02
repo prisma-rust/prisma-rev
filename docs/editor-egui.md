@@ -405,13 +405,17 @@ cook 阶段把 glTF 的 `skins` / `JOINTS_0` / `WEIGHTS_0` / `animations` 烘成
   结果而不是作者数据。`show_skeleton` 与 `show_selection_outline` 一样存进 `state.json`
   的 `scene` 段，旧存档默认开。
 
-**体重热图**：渲染模式下拉框（工具栏 `Shaded` 旁边）选 `Skin Weights`，等价于
+**权重热图**：渲染模式下拉框（工具栏 `Shaded` 旁边）选 `Skin Weights`，等价于
 `debug_flags = 1 << 15`（游戏里是 `Shift+6`）。顶点阶段按**主导骨骼**算色相（金色角，
 相邻骨骼不会撞色）、按该骨骼权重算明度，片元阶段原样输出不做光照，所以一眼能看出
 「这块网格到底挂在哪根骨骼上」以及权重是不是均匀过渡；权重全 0 的顶点（坏导入、静态
 网格）是中灰，不会被误读成某根骨骼的颜色。这一位不是 PBR 分量，不参与 15 位 isolate 逻辑。
 
-还不支持：关键帧刻度点击跳转、视口里直接拖关节做 IK（P2 的 IK 另立）。
+时间轴刻度**可以点**：点中某根刻度（命中半径 4px，取最近的一根）就把 `time` 跳到那个
+关键帧，鼠标悬停时刻度加粗并显示 `Jump to this keyframe`；点空白处不跳，避免拖时间轴时
+被吸到某个关键帧。
+
+还不支持：视口里直接拖关节做 IK（P2 的 IK 另立）。
 
 ## 4.4 内置截图与控制通道
 
@@ -476,8 +480,7 @@ egui 壳通过路径依赖直接使用它；将来可以改名为 `prism-editor-
   `cargo check`（本机 + `x86_64-pc-windows-gnu`）。首帧呈现、resize、字体、
   docking 手感都需要桌面复核。
 - **尚未实现**：材质 / 贴图拖到场景里自动挂 `MeshRenderer`；层级多选整组插入排序
-  （整组只支持改父级）；多窗口（egui viewport）的独立 DPI；骨骼动画的关键帧刻度
-  点击跳转（见 4.3.1）。
+  （整组只支持改父级）；多窗口（egui viewport）的独立 DPI。
 - **内置图元（已打通）**：`crates/prism-render/src/primitives.rs` 生成 box / sphere /
   cylinder / capsule / quad 的顶点与索引；`mesh_path = "__builtin/<name>"` 由
   `prism-engine` 的资产解析器短路，不读 `.pak`、不需要 cook。对应的实体预设

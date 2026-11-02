@@ -2909,25 +2909,92 @@ pub fn key_tick_offsets(times: &[f32], duration: f32, width: f32) -> Vec<f32> {
         .collect()
 }
 
-/// 在滑杆下方画一条 6px 的刻度带：每个关键帧一根竖线。
-fn draw_key_ticks(ui: &mut egui::Ui, slider_rect: egui::Rect, times: &[f32], duration: f32) {
+/// 点击位置（相对轨道左边的像素）落在哪一根刻度上，返回该刻度的时间。
+///
+/// 纯函数，便于单测：`tolerance` 是命中半径（像素），超出范围、非有限值、
+/// 零长度轨道一律返回 `None`。取**最近**的一根，所以相邻关键帧挤在一起时点哪
+/// 边就跳哪边。
+pub fn key_tick_hit(
+    times: &[f32],
+    duration: f32,
+    width: f32,
+    x: f32,
+    tolerance: f32,
+) -> Option<f32> {
+    if !x.is_finite() || !tolerance.is_finite() || tolerance < 0.0 {
+        return None;
+    }
+    let mut best: Option<(f32, f32)> = None; // (距离, 时间)
+    for time in times {
+        // 与 `key_tick_offsets` 同一套过滤，避免两条路径对「有效刻度」理解不同。
+        if !time.is_finite() || *time < 0.0 || *time > duration {
+            continue;
+        }
+        let distance = (*time / duration * width - x).abs();
+        if distance > tolerance {
+            continue;
+        }
+        match best {
+            Some((current, _)) if current <= distance => {}
+            _ => best = Some((distance, *time)),
+        }
+    }
+    best.map(|(_, time)| time)
+}
+
+/// 命中半径（像素）：刻度带只有 6px 高，太窄会点不中，太宽会抢走空白处的点击。
+const KEY_TICK_HIT_TOLERANCE: f32 = 4.0;
+
+/// 在滑杆下方画一条 6px 的刻度带：每个关键帧一根竖线；点中刻度返回该时间。
+fn draw_key_ticks(
+    ui: &mut egui::Ui,
+    slider_rect: egui::Rect,
+    times: &[f32],
+    duration: f32,
+) -> Option<f32> {
     let offsets = key_tick_offsets(times, duration, slider_rect.width());
     if offsets.is_empty() {
-        return;
+        return None;
     }
-    let (rect, _) =
-        ui.allocate_exact_size(egui::vec2(slider_rect.width(), 6.0), egui::Sense::hover());
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(slider_rect.width(), 6.0), egui::Sense::click());
     let painter = ui.painter();
-    for offset in offsets {
+    let hovered = response.hover_pos().map(|pos| pos.x - rect.left());
+    let mut hovered_tick = None;
+    for offset in &offsets {
         let x = rect.left() + offset;
+        let near =
+            hovered.is_some_and(|x_hover| (x_hover - offset).abs() <= KEY_TICK_HIT_TOLERANCE);
+        if near {
+            hovered_tick = Some(*offset);
+        }
         painter.line_segment(
             [
                 egui::pos2(x, rect.top() + 1.0),
                 egui::pos2(x, rect.bottom() - 1.0),
             ],
-            egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 206, 84)),
+            egui::Stroke::new(
+                if near { 2.0 } else { 1.0 },
+                egui::Color32::from_rgb(255, 206, 84),
+            ),
         );
     }
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let response = response.on_hover_text("Jump to this keyframe");
+
+    let click = response.interact_pointer_pos()?;
+    if !response.clicked() {
+        return None;
+    }
+    key_tick_hit(
+        times,
+        duration,
+        rect.width(),
+        click.x - rect.left(),
+        KEY_TICK_HIT_TOLERANCE,
+    )
 }
 
 fn animator_editor(
@@ -2981,7 +3048,10 @@ fn animator_editor(
             edited = true;
         }
         if let Some(keys) = state.clip_keys.get(&clip_path) {
-            draw_key_ticks(ui, response.rect, keys, duration);
+            if let Some(key_time) = draw_key_ticks(ui, response.rect, keys, duration) {
+                time = key_time;
+                edited = true;
+            }
         }
         ui.label(
             RichText::new(format!("duration {duration:.2}s"))
@@ -3245,6 +3315,44 @@ mod keyframe_editor_tests {
     fn key_ticks_map_time_to_the_track_width() {
         let offsets = key_tick_offsets(&[0.0, 0.5, 2.0], 2.0, 200.0);
         assert_eq!(offsets, vec![0.0, 50.0, 200.0]);
+    }
+
+    #[test]
+    fn clicking_a_tick_snaps_to_that_keyframes_time() {
+        // 2 秒宽 200px：0s / 0.5s / 2s → 0 / 50 / 200。
+        let times = [0.0, 0.5, 2.0];
+        assert_eq!(key_tick_hit(&times, 2.0, 200.0, 50.0, 4.0), Some(0.5));
+        assert_eq!(key_tick_hit(&times, 2.0, 200.0, 0.0, 4.0), Some(0.0));
+        assert_eq!(key_tick_hit(&times, 2.0, 200.0, 199.0, 4.0), Some(2.0));
+        // 空白处不跳：避免拖时间轴时被"吸"到某个关键帧。
+        assert_eq!(key_tick_hit(&times, 2.0, 200.0, 120.0, 4.0), None);
+    }
+
+    #[test]
+    fn the_nearest_tick_wins_when_two_are_close() {
+        // 1.00s / 1.02s 在 200px 上是 100 / 102：点在 101.5 时后者更近。
+        assert_eq!(
+            key_tick_hit(&[1.0, 1.02], 2.0, 200.0, 101.5, 4.0),
+            Some(1.02)
+        );
+        assert_eq!(
+            key_tick_hit(&[1.0, 1.02], 2.0, 200.0, 100.4, 4.0),
+            Some(1.0)
+        );
+    }
+
+    #[test]
+    fn the_hit_tolerance_is_inclusive_and_broken_inputs_are_ignored() {
+        // 刚好等于半径算命中，超出 0.5px 就不算。
+        assert_eq!(key_tick_hit(&[0.5], 2.0, 200.0, 54.0, 4.0), Some(0.5));
+        assert_eq!(key_tick_hit(&[0.5], 2.0, 200.0, 54.5, 4.0), None);
+        // 未知时长 / 零宽 / 非有限点击 / 负半径都不跳。
+        assert_eq!(key_tick_hit(&[0.5], 0.0, 200.0, 50.0, 4.0), None);
+        assert_eq!(key_tick_hit(&[0.5], 2.0, 0.0, 50.0, 4.0), None);
+        assert_eq!(key_tick_hit(&[0.5], 2.0, 200.0, f32::NAN, 4.0), None);
+        assert_eq!(key_tick_hit(&[0.5], 2.0, 200.0, 50.0, -1.0), None);
+        // 越界 / NaN 关键帧本来就不画，也不会被点中。
+        assert_eq!(key_tick_hit(&[3.0, f32::NAN], 2.0, 200.0, 200.0, 4.0), None);
     }
 
     #[test]
