@@ -31,6 +31,8 @@ use crate::shader;
 use crate::shader_bindings::sprites as bindings;
 use prism_gfx::{BlendMode, BlendOp};
 
+const _: () = assert!(size_of::<bindings::SpritePush>() as u32 == bindings::PUSH_CONSTANT_SIZE);
+
 const SPRITE_VERT_SPV: &[u8] = include_bytes!("../../../assets/shaders/sprites.vert.spv");
 const SPRITE_FRAG_SPV: &[u8] = include_bytes!("../../../assets/shaders/sprites.frag.spv");
 
@@ -250,7 +252,7 @@ impl SpritePass {
                     0,
                     std::slice::from_raw_parts(
                         &push as *const bindings::SpritePush as *const u8,
-                        size_of::<bindings::SpritePush>(),
+                        bindings::PUSH_CONSTANT_SIZE as usize,
                     ),
                 );
                 device.cmd_bind_vertex_buffers(cmd, 0, &[self.instance_buffer], &[0]);
@@ -302,7 +304,7 @@ impl SpritePass {
         let push = [vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
             .offset(0)
-            .size(size_of::<bindings::SpritePush>() as u32)];
+            .size(bindings::PUSH_CONSTANT_SIZE)];
 
         // ForwardPass' render pass has two color attachments (HDR color +
         // view-space normal). Sprites blend into SV_Target0 and leave the
@@ -475,7 +477,7 @@ impl SpritePass {
         self.device = Some(device.clone());
 
         let binding = vk::DescriptorSetLayoutBinding::default()
-            .binding(0)
+            .binding(bindings::SPRITE_LIGHTS_BINDING)
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
             .descriptor_count(1)
             .stage_flags(vk::ShaderStageFlags::FRAGMENT);
@@ -514,7 +516,7 @@ impl SpritePass {
             .range(vk::WHOLE_SIZE);
         let write = vk::WriteDescriptorSet::default()
             .dst_set(set)
-            .dst_binding(0)
+            .dst_binding(bindings::SPRITE_LIGHTS_BINDING)
             .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
             .buffer_info(std::slice::from_ref(&buffer_info));
         unsafe { device.update_descriptor_sets(std::slice::from_ref(&write), &[]) };

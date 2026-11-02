@@ -11,8 +11,14 @@ use crate::pipeline::{GraphicsPipeline, PipelineDesc};
 #[cfg(feature = "skybox")]
 use crate::shader;
 #[cfg(feature = "skybox")]
+use crate::shader_bindings::skybox as bindings;
+#[cfg(feature = "skybox")]
 use anyhow::Context as _;
 use anyhow::Result;
+
+#[cfg(feature = "skybox")]
+const _: () =
+    assert!(std::mem::size_of::<bindings::SkyboxPush>() as u32 == bindings::PUSH_CONSTANT_SIZE);
 
 /// Per-frame skybox parameters extracted from the ECS `Skybox` component.
 ///
@@ -126,8 +132,8 @@ impl SkyboxPass {
             let frag_module =
                 shader::load_shader_module(device, FRAG_SPV).context("SkyboxPass: load frag")?;
 
-            let vert_entry = std::ffi::CString::new("vertexMain").unwrap();
-            let frag_entry = std::ffi::CString::new("fragmentMain").unwrap();
+            let vert_entry = std::ffi::CString::new(bindings::ENTRY_VERTEX_MAIN).unwrap();
+            let frag_entry = std::ffi::CString::new(bindings::ENTRY_FRAGMENT_MAIN).unwrap();
             let vert_stage = shader::shader_stage(
                 vk::ShaderStageFlags::VERTEX,
                 vert_module,
@@ -144,12 +150,11 @@ impl SkyboxPass {
             let binding_descs: [vk::VertexInputBindingDescription; 0] = [];
             let attr_descs: [vk::VertexInputAttributeDescription; 0] = [];
 
-            // 推送 constants: SkyboxPush 结构体 (108 字节 in the compiled
-            // 着色器 舍入 上 to 128 for 对齐 margin).
+            // 推送 constants: SkyboxPush 结构体，大小直接来自 Slang 反射。
             let push = [vk::PushConstantRange::default()
                 .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
                 .offset(0)
-                .size(128)];
+                .size(bindings::PUSH_CONSTANT_SIZE)];
 
             // MRT 混合 状态 ForwardPass's 渲染 pass now has 2 颜色
             // attachments 颜色 + view-normal). Every 管线 bound inside
@@ -209,14 +214,14 @@ impl SkyboxPass {
                 cmd,
                 vk::PipelineBindPoint::GRAPHICS,
                 pipeline.layout,
-                0,
+                bindings::ENV_CUBE_SET,
                 std::slice::from_ref(&self.ibl_descriptor_set),
                 &[],
             );
 
-            // 推送 `invViewRot` (inverse 视图 旋转 as the SkyboxPush
-            // (128-byte range; only the 第一个 mat4 is used by the 着色器
-            let mut push_data = [0u8; 128];
+            // 推送 `invViewRot` (inverse 视图 旋转 as the SkyboxPush。
+            // 缓冲区大小与管线布局都来自 Slang 反射。
+            let mut push_data = [0u8; bindings::PUSH_CONSTANT_SIZE as usize];
             push_data[..64].copy_from_slice(std::slice::from_raw_parts(
                 inv_view_rot as *const _ as *const u8,
                 64,

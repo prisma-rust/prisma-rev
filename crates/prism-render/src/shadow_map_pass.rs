@@ -19,7 +19,10 @@ use crate::render_graph::{
     RenderSettings, ResourceHandle, ResourceType, ResourceUsage, ShadowMode, SHADOW_MAP_H,
 };
 use crate::shader;
-use crate::shader_bindings;
+use crate::shader_bindings::shadow_depth as bindings;
+
+const _: () =
+    assert!(std::mem::size_of::<bindings::ShadowPush>() as u32 == bindings::PUSH_CONSTANT_SIZE);
 
 /// 光栅化阴影映射——混合自适应阴影系统的纯深度后备方案（`docs/DESIGN.md` §2.3）。
 ///
@@ -193,8 +196,8 @@ impl ShadowMapPass {
         let frag_module =
             shader::load_shader_module(device, FRAG_SPV).context("load shadow frag module")?;
 
-        let vert_entry = std::ffi::CString::new("vertexMain").unwrap();
-        let frag_entry = std::ffi::CString::new("fragmentMain").unwrap();
+        let vert_entry = std::ffi::CString::new(bindings::ENTRY_VERTEX_MAIN).unwrap();
+        let frag_entry = std::ffi::CString::new(bindings::ENTRY_FRAGMENT_MAIN).unwrap();
         let vert_stage = shader::shader_stage(
             vk::ShaderStageFlags::VERTEX,
             vert_module,
@@ -217,7 +220,7 @@ impl ShadowMapPass {
         let push = [vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::VERTEX)
             .offset(0)
-            .size(std::mem::size_of::<shader_bindings::shadow_depth::ShadowPush>() as u32)];
+            .size(bindings::PUSH_CONSTANT_SIZE)];
 
         // Depth-only 管线 + 深度 bias；剔除模式由调用方决定。
         let pipeline = GraphicsPipeline::new(&PipelineDesc {
@@ -477,7 +480,7 @@ impl RenderPassNode for ShadowMapPass {
                 ctx.device
                     .cmd_bind_vertex_buffers(ctx.cmd, 0, &vertex_buffers, &offsets);
 
-                let pc = shader_bindings::shadow_depth::ShadowPush {
+                let pc = bindings::ShadowPush {
                     model: item.model,
                     lightViewProj: ctx.frame.light_view_proj,
                 };
@@ -489,7 +492,7 @@ impl RenderPassNode for ShadowMapPass {
                     0,
                     std::slice::from_raw_parts(
                         &pc as *const _ as *const u8,
-                        std::mem::size_of::<shader_bindings::shadow_depth::ShadowPush>(),
+                        bindings::PUSH_CONSTANT_SIZE as usize,
                     ),
                 );
 

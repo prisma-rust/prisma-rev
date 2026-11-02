@@ -25,6 +25,8 @@ use crate::render_graph::ParticleDrawItem;
 use crate::shader;
 use crate::shader_bindings::particles as bindings;
 
+const _: () = assert!(size_of::<bindings::ParticlePush>() as u32 == bindings::PUSH_CONSTANT_SIZE);
+
 const PARTICLE_VERT_SPV: &[u8] = include_bytes!("../../../assets/shaders/particles.vert.spv");
 const PARTICLE_FRAG_SPV: &[u8] = include_bytes!("../../../assets/shaders/particles.frag.spv");
 
@@ -139,7 +141,7 @@ impl ParticlePass {
                 0,
                 std::slice::from_raw_parts(
                     &push as *const bindings::ParticlePush as *const u8,
-                    size_of::<bindings::ParticlePush>(),
+                    bindings::PUSH_CONSTANT_SIZE as usize,
                 ),
             );
             device.cmd_bind_vertex_buffers(cmd, 0, &[self.instance_buffer], &[0]);
@@ -181,7 +183,7 @@ impl ParticlePass {
         let push = [vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::VERTEX)
             .offset(0)
-            .size(size_of::<bindings::ParticlePush>() as u32)];
+            .size(bindings::PUSH_CONSTANT_SIZE)];
 
         // ForwardPass' render pass 有两个颜色附件（HDR 颜色 + 视图空间法线）。
         // 粒子只混到 SV_Target0，法线目标写掩码留空。
