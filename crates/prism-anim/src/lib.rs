@@ -11,15 +11,20 @@
 //! - [`Pose`] —— 每个骨骼的作者空间局部 TRS；
 //! - [`Skeleton::bone_palette`] —— `world(pose) * inverse_bind`，GPU 蒙皮与
 //!   CPU 参考实现共用；
+//! - [`blend`] —— 姿态混合与一维混合空间（动画图 / BlendStack 的地基）；
 //! - [`skinning`] —— CPU 参考蒙皮（GPU 路径的 golden 基准）。
 //!
 //! 约定：矩阵列主序（与 `prism-render` / 引擎一致），四元数 `xyzw`，右手 +Y up。
 
+pub mod blend;
 pub mod clip;
 pub mod pose;
 pub mod skeleton;
 pub mod skinning;
 
+pub use blend::{
+    blend_into, blend_joint, blend_poses, blend_space_weights, BlendSample, BlendSpace1D,
+};
 pub use clip::{sample_quat, sample_vec3, Clip, QuatKey, Track, Vec3Key};
 pub use pose::Pose;
 pub use skeleton::{Joint, JointTransform, Skeleton};
