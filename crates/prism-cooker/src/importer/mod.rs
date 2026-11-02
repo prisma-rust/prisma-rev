@@ -25,6 +25,7 @@ mod skinned;
 
 use crate::db::{AssetDatabase, AssetRecord, ImportCache};
 use prism_asset::core::{AssetId, AssetType};
+use prism_asset::formats_skinned::AnimNotifyInfo;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -806,6 +807,59 @@ impl GltfImporter {
         Ok(gltf_material_plan(&mesh, mesh_pak_path).submesh_material_paths)
     }
 
+    /// 读作者侧的剪辑事件文件（#560 P1 Notify）。
+    ///
+    /// 位置固定在**源文件旁边**：`assets/models/hero.glb` 对应
+    /// `assets/models/hero.glb.skinning/notifies.json`，内容是
+    ///
+    /// ```json
+    /// { "clips": { "walk": [{ "time": 0.4, "name": "Footstep.L" }] } }
+    /// ```
+    ///
+    /// 键是 glTF 里动画的**原名**（不是 sanitize 之后的文件名），因为作者看到的就是这个名字。
+    /// 文件不存在 = 没有事件（正常情况）；**存在但解析失败 = build 失败**：
+    /// 悄悄忽略一个打错的事件表，只会让人以为 notify 功能坏了。
+    pub fn authored_notifies(
+        source: &Path,
+    ) -> Result<std::collections::HashMap<String, Vec<AnimNotifyInfo>>, ImportError> {
+        let mut side = source.to_path_buf().into_os_string();
+        side.push(".skinning/notifies.json");
+        let path = std::path::PathBuf::from(side);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return Ok(std::collections::HashMap::new());
+        };
+
+        #[derive(serde::Deserialize)]
+        struct Entry {
+            time: f32,
+            name: String,
+        }
+        #[derive(serde::Deserialize)]
+        struct File {
+            #[serde(default)]
+            clips: std::collections::HashMap<String, Vec<Entry>>,
+        }
+
+        let parsed: File = serde_json::from_str(&text).map_err(|error| {
+            ImportError::ImportFailed(format!("{}: invalid notify file: {error}", path.display()))
+        })?;
+        let mut out = std::collections::HashMap::new();
+        for (clip, entries) in parsed.clips {
+            let notifies: Vec<AnimNotifyInfo> = entries
+                .into_iter()
+                .filter(|entry| {
+                    entry.time.is_finite() && entry.time >= 0.0 && !entry.name.trim().is_empty()
+                })
+                .map(|entry| AnimNotifyInfo {
+                    time: entry.time,
+                    name: entry.name,
+                })
+                .collect();
+            out.insert(clip, notifies);
+        }
+        Ok(out)
+    }
+
     /// 只读 glTF、**不 cook** 的蒙皮/动画路径规划（#560 P0-4）。
     ///
     /// 路径规则与 [`Self::side_assets`] 完全一致（同一个源文件 → 同样的路径），
@@ -989,7 +1043,17 @@ impl GltfImporter {
                 );
             }
 
+            // 作者写的事件表（#560 P1 Notify）：按剪辑原名合并，键是 glTF 的动画名。
+            let authored = Self::authored_notifies(path)?;
+            let mut used_notifies: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
             for (index, clip) in mesh.clips.iter().enumerate() {
+                let mut clip = clip.clone();
+                if let Some(notifies) = authored.get(&clip.name) {
+                    used_notifies.insert(clip.name.clone());
+                    clip.notifies = notifies.clone();
+                }
+                let clip = &clip;
                 let name = sanitize_asset_name(Some(&clip.name), "clip");
                 let clip_path = format!("{mesh_pak_path}.skinning/clips/{index}_{name}.ranim");
                 match crate::cooker::skinned::encode_ranim(clip) {
@@ -1003,6 +1067,14 @@ impl GltfImporter {
                     None => {
                         tracing::warn!("glTF clip '{}' could not be encoded; skipped", clip.name)
                     }
+                }
+            }
+            // 打错名字的事件表不该静默丢失：作者以为是那个剪辑，实际一个都没合并上。
+            for name in authored.keys() {
+                if !used_notifies.contains(name) {
+                    tracing::warn!(
+                        "'{mesh_pak_path}': notify file names clip '{name}', but the glTF has                          no animation with that name"
+                    );
                 }
             }
         }

@@ -1498,3 +1498,95 @@ fn an_unskinned_gltf_emits_no_skinning_assets() {
     assert!(side.skinned_mesh_path.is_none());
     assert!(side.clip_paths.is_empty());
 }
+
+#[test]
+fn an_authored_notify_file_is_merged_into_the_matching_clip() {
+    use prism_asset::formats_skinned::decode_ranim;
+
+    let glb = skinned_glb();
+    let dir = std::env::temp_dir().join("prisma_notify_author");
+    std::fs::create_dir_all(dir.join("hero.glb.skinning")).unwrap();
+    let path = dir.join("hero.glb");
+    std::fs::write(&path, &glb).unwrap();
+    // 文件名里的剪辑名与 glTF 的动画名一致（`walk`）。
+    std::fs::write(
+        dir.join("hero.glb.skinning/notifies.json"),
+        br#"{"clips": {"walk": [
+            {"time": 0.75, "name": "Footstep.R"},
+            {"time": 0.25, "name": "Footstep.L"},
+            {"time": -1.0, "name": "Dropped"}
+        ]}}"#,
+    )
+    .unwrap();
+
+    let side = GltfImporter::side_assets(&path, "models/hero.glb").expect("side assets");
+    std::fs::remove_dir_all(&dir).ok();
+
+    let clip_path = side.clip_paths.first().expect("one clip").clone();
+    let bytes = side
+        .assets
+        .iter()
+        .find(|asset| asset.path == clip_path)
+        .expect("cooked clip")
+        .cooked_data
+        .clone();
+    let clip = decode_ranim(&bytes).expect("decode");
+    let names: Vec<&str> = clip
+        .notifies
+        .iter()
+        .map(|notify| notify.name.as_str())
+        .collect();
+    // 负时间被丢掉，剩下的按时间排序。
+    assert_eq!(names, vec!["Footstep.L", "Footstep.R"]);
+    assert!((clip.notifies[0].time - 0.25).abs() < 1e-6);
+}
+
+#[test]
+fn a_broken_notify_file_fails_instead_of_silently_dropping_events() {
+    let glb = skinned_glb();
+    let dir = std::env::temp_dir().join("prisma_notify_broken");
+    std::fs::create_dir_all(dir.join("hero.glb.skinning")).unwrap();
+    let path = dir.join("hero.glb");
+    std::fs::write(&path, &glb).unwrap();
+    std::fs::write(dir.join("hero.glb.skinning/notifies.json"), b"{ not json").unwrap();
+
+    let error = GltfImporter::side_assets(&path, "models/hero.glb").unwrap_err();
+    std::fs::remove_dir_all(&dir).ok();
+    let message = format!("{error}");
+    assert!(
+        message.contains("invalid notify file"),
+        "错误要点名事件表: {message}"
+    );
+}
+
+#[test]
+fn a_notify_file_that_names_no_clip_changes_nothing() {
+    use prism_asset::formats_skinned::decode_ranim;
+
+    let glb = skinned_glb();
+    let dir = std::env::temp_dir().join("prisma_notify_unknown");
+    std::fs::create_dir_all(dir.join("hero.glb.skinning")).unwrap();
+    let path = dir.join("hero.glb");
+    std::fs::write(&path, &glb).unwrap();
+    std::fs::write(
+        dir.join("hero.glb.skinning/notifies.json"),
+        br#"{"clips": {"sprint": [{"time": 0.1, "name": "Footstep.L"}]}}"#,
+    )
+    .unwrap();
+
+    let side = GltfImporter::side_assets(&path, "models/hero.glb").expect("side assets");
+    std::fs::remove_dir_all(&dir).ok();
+
+    let clip_path = side.clip_paths.first().expect("one clip").clone();
+    let bytes = side
+        .assets
+        .iter()
+        .find(|asset| asset.path == clip_path)
+        .expect("cooked clip")
+        .cooked_data
+        .clone();
+    assert!(
+        decode_ranim(&bytes).expect("decode").notifies.is_empty(),
+        "对不上的剪辑名不该把事件塞进别的剪辑"
+    );
+}
