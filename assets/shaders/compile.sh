@@ -183,6 +183,14 @@ echo "  harness_copy :: main -> harness_copy.comp.spv"
   -profile "$PROFILE" -target spirv -entry main -stage compute \
   -fvk-use-entrypoint-name -o "$OUT/harness_copy.comp.spv"
 
+# harness_bench: grid-stride compute kernel for the best-of-N benchmark test
+# (`crates/prism-render/tests/kernel_benchmark_gpu.rs`). Different group counts
+# are all correct because the kernel strides by the dispatched thread count.
+echo "  harness_bench :: main -> harness_bench.comp.spv"
+"$SLANGC" "$SRC/harness_bench.slang" \
+  -profile "$PROFILE" -target spirv -entry main -stage compute \
+  -fvk-use-entrypoint-name -o "$OUT/harness_bench.comp.spv"
+
 # ui_overlay: vertex + fragment (coloured quads on top of the scene output).
 # Self-contained pipeline (no bindless/IBL).
 compile_stage ui_overlay vertexMain vertex

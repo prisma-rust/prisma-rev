@@ -25,6 +25,7 @@
 //! validation layer a hard failure before this point.
 
 use std::ffi::CStr;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
 use ash::vk;
@@ -56,6 +57,17 @@ impl<'a> BufferSpec<'a> {
             readback_bytes: size,
         }
     }
+}
+
+/// Outputs plus wall-clock time spent submitting and waiting for a batch of
+/// dispatches.
+#[derive(Debug)]
+#[allow(dead_code)] // `elapsed` is only read by benchmark tests.
+pub struct TimedDispatch {
+    /// One entry per buffer, matching [`GpuHarness::dispatch`].
+    pub outputs: Vec<Vec<u8>>,
+    /// Time from `queue_submit` through `wait_for_fences`.
+    pub elapsed: Duration,
 }
 
 struct AllocatedBuffer {
@@ -109,6 +121,7 @@ impl GpuHarness {
     /// `VK_DESCRIPTOR_TYPE_STORAGE_BUFFER`. `push_constants` may be empty.
     /// The result has one entry per buffer; only buffers with
     /// `readback_bytes > 0` contain data.
+    #[allow(dead_code)] // Not every test binary that includes this module benchmarks.
     pub fn dispatch(
         &self,
         spirv: &[u8],
@@ -117,7 +130,30 @@ impl GpuHarness {
         push_constants: &[u8],
         groups: [u32; 3],
     ) -> Result<Vec<Vec<u8>>> {
+        Ok(self
+            .dispatch_repeated(spirv, entry_point, buffers, push_constants, groups, 1)?
+            .outputs)
+    }
+
+    /// Dispatch the same kernel `repeats` times in one submission and measure
+    /// the submit-to-fence wall time.
+    ///
+    /// This is the primitive used by kernel benchmarks: the caller can run
+    /// several candidate group counts, validate the readback of each, and pick
+    /// the fastest. Kernels must be idempotent for `repeats > 1` (for example,
+    /// read from one buffer and write another) because later dispatches see the
+    /// outputs of earlier ones.
+    pub fn dispatch_repeated(
+        &self,
+        spirv: &[u8],
+        entry_point: &CStr,
+        buffers: &[BufferSpec<'_>],
+        push_constants: &[u8],
+        groups: [u32; 3],
+        repeats: u32,
+    ) -> Result<TimedDispatch> {
         assert!(!buffers.is_empty(), "dispatch needs at least one buffer");
+        assert!(repeats > 0, "dispatch_repeated needs repeats > 0");
         assert!(
             spirv.len().is_multiple_of(4),
             "SPIR-V length must be a multiple of 4"
@@ -281,7 +317,9 @@ impl GpuHarness {
                     push_constants,
                 );
             }
-            device.cmd_dispatch(command_buffer, groups[0], groups[1], groups[2]);
+            for _ in 0..repeats {
+                device.cmd_dispatch(command_buffer, groups[0], groups[1], groups[2]);
+            }
             let barrier = vk::MemoryBarrier::default()
                 .src_access_mask(vk::AccessFlags::SHADER_WRITE)
                 .dst_access_mask(vk::AccessFlags::HOST_READ);
@@ -300,9 +338,11 @@ impl GpuHarness {
 
         let command_buffers = [command_buffer];
         let submit_info = vk::SubmitInfo::default().command_buffers(&command_buffers);
+        let start = Instant::now();
         unsafe { device.queue_submit(self.context.graphics_queue, &[submit_info], fence) }
             .context("submit dispatch")?;
         unsafe { device.wait_for_fences(&[fence], true, u64::MAX) }.context("wait for dispatch")?;
+        let elapsed = start.elapsed();
 
         let mut results = Vec::with_capacity(buffers.len());
         for (spec, buffer) in buffers.iter().zip(&allocated) {
@@ -340,7 +380,10 @@ impl GpuHarness {
             }
         }
 
-        Ok(results)
+        Ok(TimedDispatch {
+            outputs: results,
+            elapsed,
+        })
     }
 }
 
