@@ -261,18 +261,9 @@ jobs:
       - name: Test (desktop crates)
         env:
           PRISM_REQUIRE_VALIDATION: "1"
-          PRISM_UPDATE_GOLDENS: "1"
         run: >
           cargo test --locked
           -p prism-ecs -p prism-gfx -p prism-render -p prism-engine -p prism-platform
-
-      - name: Upload updated goldens
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: updated-goldens
-          path: crates/prism-render/tests/goldens/
-          if-no-files-found: ignore
 
       - name: Upload golden-frame mismatch artifacts
         if: failure()
