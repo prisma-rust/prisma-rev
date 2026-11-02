@@ -498,6 +498,10 @@
                     "binding": {"kind": "uniform", "offset": 0, "size": 112}
                 }
             }
+        },
+        {
+            "name": "prevModels",
+            "binding": {"kind": "descriptorTableSlot", "index": 4}
         }
     ],
     "entryPoints": [

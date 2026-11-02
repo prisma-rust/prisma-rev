@@ -25,7 +25,7 @@ use crate::render_graph::SHADOW_MAP_H;
 use crate::render_graph::{
     DrawState, GraphResources, PassInfo, PassKind, RenderContext, RenderGraphBuilder,
     RenderPassNode, RenderSettings, ResourceHandle, ResourceType, ResourceUsage, FORWARD_COLOR_H,
-    FORWARD_DEPTH_H, FORWARD_NORMAL_H,
+    FORWARD_DEPTH_H, FORWARD_NORMAL_H, FORWARD_VELOCITY_H,
 };
 use crate::shader;
 use crate::shader_bindings::{mesh_vert, scene_frag};
@@ -164,6 +164,9 @@ pub struct ForwardPass {
     /// 格式 of the view-space 法线 MRT 附件 (SV_Target1). Written by
     /// the scene 片元 着色器 and 读取 by the GTAO pass
     normal_format: vk::Format,
+    /// #883 Phase 2: RG16F screen-space motion vectors (SV_Target2). Sampled
+    /// by TaaPass so moving objects reproject correctly.
+    velocity_format: vk::Format,
     /// Bindless handle for the BRDF LUT (registered in the bindless 纹理 表
     brdf_handle: u32,
     /// Byte stride between camera slots in the per-frame UBO (#461).
@@ -187,6 +190,8 @@ pub struct ForwardPass {
     /// per-slot 生命周期 as `depth_images`: rebuilt only when its 交换链
     /// 视图 changes.
     normal_images: Vec<Option<crate::render_pass::NormalImage>>,
+    /// One screen-space motion-vector image per swapchain image (#883 Phase 2).
+    velocity_images: Vec<Option<crate::render_pass::NormalImage>>,
     /// Cached image_index validity markers (one per 槽 `set_target` uses
     /// `framebuffers[idx].is_some()` as the 当前 check; this field is
     /// kept for parity with the old swapchain-view tracking 模式
@@ -206,6 +211,7 @@ pub struct ForwardPass {
     out_color_h: ResourceHandle,
     out_depth_h: ResourceHandle,
     out_normal_h: ResourceHandle,
+    out_velocity_h: ResourceHandle,
     extent: vk::Extent2D,
     render_pass: Option<vk::RenderPass>,
     /// 主通道管线缓存：按 [`DrawState`]（剔除 / 深度写 / 混合）各一份。
@@ -250,6 +256,11 @@ pub struct ForwardPass {
     /// flight, `BONE_CAPACITY` mat4 entries each.
     bone_buffers: Vec<vk::Buffer>,
     bone_memories: Vec<vk::DeviceMemory>,
+    /// Previous-frame model matrices (#883 Phase 2), indexed by draw-list
+    /// position. Separate from the bone SSBO so uploads cannot clobber skinned
+    /// palettes; read by the vertex stage as set 0 binding 4.
+    prev_model_buffers: Vec<vk::Buffer>,
+    prev_model_memories: Vec<vk::DeviceMemory>,
     /// 集合 4 - previous-frame GTAO R8 可见性 纹理 (combined 图像
     /// 采样器 One 描述符 集合 per frame-in-flight so updating the 环境光遮蔽
     /// 视图 for 帧 N doesn't disturb 帧 N-1's still-in-flight 集合
@@ -300,17 +311,20 @@ impl ForwardPass {
             // can be 负 in any axis) 存储 without bias/packing. 4th
             // 通道 unused 着色器 writes 0).
             normal_format: vk::Format::R16G16B16A16_SFLOAT,
+            velocity_format: vk::Format::R16G16_SFLOAT,
             brdf_handle: u32::MAX,
             camera_stride: 0,
             framebuffers: Vec::new(),
             color_images: Vec::new(),
             depth_images: Vec::new(),
             normal_images: Vec::new(),
+            velocity_images: Vec::new(),
             target_views: Vec::new(),
             image_count: 0,
             out_color_h: ResourceHandle::INVALID,
             out_depth_h: ResourceHandle::INVALID,
             out_normal_h: ResourceHandle::INVALID,
+            out_velocity_h: ResourceHandle::INVALID,
             extent: vk::Extent2D {
                 width: 0,
                 height: 0,
@@ -333,6 +347,8 @@ impl ForwardPass {
             light_memories: Vec::new(),
             bone_buffers: Vec::new(),
             bone_memories: Vec::new(),
+            prev_model_buffers: Vec::new(),
+            prev_model_memories: Vec::new(),
             ao_ds_layout: None,
             ao_descriptor_sets: Vec::new(),
             ao_ds_pool: None,
@@ -428,6 +444,7 @@ impl ForwardPass {
             self.color_images = (0..image_count).map(|_| None).collect();
             self.depth_images = (0..image_count).map(|_| None).collect();
             self.normal_images = (0..image_count).map(|_| None).collect();
+            self.velocity_images = (0..image_count).map(|_| None).collect();
         }
 
         // 构建 this image's 帧缓冲 + 颜色 + 深度 + 法线 if not
@@ -464,6 +481,15 @@ impl ForwardPass {
             }
             self.normal_images[idx] = Some(normal_image);
 
+            // #883 Phase 2: per-pixel motion vectors for TAA.
+            let velocity_image =
+                crate::render_pass::NormalImage::new(context, extent, self.velocity_format)
+                    .context("ForwardPass: create velocity image")?;
+            if let Some(mut old) = self.velocity_images[idx].take() {
+                unsafe { old.destroy(device) };
+            }
+            self.velocity_images[idx] = Some(velocity_image);
+
             // 销毁 the old 帧缓冲 for this 槽 BEFORE creating the
             // new one (order doesn't matter for 验证 here since both
             // 引用 the same 槽 but destroy-old-first is tidy).
@@ -474,8 +500,9 @@ impl ForwardPass {
             let color = self.color_images[idx].as_ref().unwrap();
             let depth = self.depth_images[idx].as_ref().unwrap();
             let normal = self.normal_images[idx].as_ref().unwrap();
-            // 渲染 pass 附件 order: 颜色 深度 法线
-            let attachments = [color.view, depth.view, normal.view];
+            let velocity = self.velocity_images[idx].as_ref().unwrap();
+            // 渲染 pass 附件 order: 颜色 深度 法线 速度
+            let attachments = [color.view, depth.view, normal.view, velocity.view];
             let fb = unsafe {
                 device.create_framebuffer(
                     &vk::FramebufferCreateInfo::default()
@@ -525,6 +552,11 @@ impl ForwardPass {
         for normal in self.normal_images.drain(..).flatten() {
             let mut n = normal;
             unsafe { n.destroy(device) };
+        }
+        // Then motion-vector images (#883 Phase 2).
+        for velocity in self.velocity_images.drain(..).flatten() {
+            let mut v = velocity;
+            unsafe { v.destroy(device) };
         }
         self.target_views.clear();
         self.extent = vk::Extent2D {
@@ -586,6 +618,16 @@ impl ForwardPass {
             }
         }
         for mem in self.bone_memories.drain(..) {
+            if mem != vk::DeviceMemory::null() {
+                unsafe { device.free_memory(mem, None) };
+            }
+        }
+        for buf in self.prev_model_buffers.drain(..) {
+            if buf != vk::Buffer::null() {
+                unsafe { device.destroy_buffer(buf, None) };
+            }
+        }
+        for mem in self.prev_model_memories.drain(..) {
             if mem != vk::DeviceMemory::null() {
                 unsafe { device.free_memory(mem, None) };
             }
@@ -685,6 +727,14 @@ impl ForwardPass {
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::VERTEX),
+            // binding 4: previous-frame model matrices (#883 Phase 2), one
+            // entry per draw-list item. Read by the vertex stage to build
+            // object motion vectors.
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(4)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::VERTEX),
         ];
         let frame_layout = unsafe {
             device.create_descriptor_set_layout(
@@ -717,7 +767,7 @@ impl ForwardPass {
                         },
                         vk::DescriptorPoolSize {
                             ty: vk::DescriptorType::STORAGE_BUFFER,
-                            descriptor_count: (fif_count * 3) as u32,
+                            descriptor_count: (fif_count * 4) as u32,
                         },
                     ]),
                 None,
@@ -795,6 +845,33 @@ impl ForwardPass {
             new_bone_memories.push(mem);
         }
 
+        // ---- Previous-frame model SSBO (binding 4, #883 Phase 2) ----
+        // One mat4 per draw-list item, uploaded by `GraphRenderer::execute`
+        // before the graph runs. Separate from bones so a frame with both
+        // skinned and moving static draws cannot overwrite either palette.
+        let prev_model_ssbo_size = (Self::PREV_MODEL_CAPACITY as vk::DeviceSize)
+            * (std::mem::size_of::<[[f32; 4]; 4]>() as u64);
+        let mut new_prev_model_buffers = Vec::with_capacity(fif_count);
+        let mut new_prev_model_memories = Vec::with_capacity(fif_count);
+        for _ in 0..fif_count {
+            let (buf, mem) = crate::buffer::create_buffer(
+                context,
+                prev_model_ssbo_size,
+                crate::buffer::BufferUsage::STORAGE_BUFFER,
+                crate::buffer::MemoryProperties::HOST_VISIBLE
+                    | crate::buffer::MemoryProperties::HOST_COHERENT,
+            )
+            .context("ForwardPass: create prev-model SSBO buffer")?;
+            let ptr = unsafe {
+                device.map_memory(mem, 0, prev_model_ssbo_size, vk::MemoryMapFlags::empty())
+            }
+            .context("ForwardPass: map prev-model SSBO memory")?;
+            unsafe { std::ptr::write_bytes(ptr as *mut u8, 0, prev_model_ssbo_size as usize) };
+            unsafe { device.unmap_memory(mem) };
+            new_prev_model_buffers.push(buf);
+            new_prev_model_memories.push(mem);
+        }
+
         // 销毁 old 光源 缓冲区 if any.
         for buf in self.light_buffers.drain(..) {
             if buf != vk::Buffer::null() {
@@ -816,10 +893,22 @@ impl ForwardPass {
                 unsafe { device.free_memory(mem, None) };
             }
         }
+        for buf in self.prev_model_buffers.drain(..) {
+            if buf != vk::Buffer::null() {
+                unsafe { device.destroy_buffer(buf, None) };
+            }
+        }
+        for mem in self.prev_model_memories.drain(..) {
+            if mem != vk::DeviceMemory::null() {
+                unsafe { device.free_memory(mem, None) };
+            }
+        }
         self.light_buffers = new_light_buffers;
         self.light_memories = new_light_memories;
         self.bone_buffers = new_bone_buffers;
         self.bone_memories = new_bone_memories;
+        self.prev_model_buffers = new_prev_model_buffers;
+        self.prev_model_memories = new_prev_model_memories;
 
         // 写入 each 集合 绑定 0 = this frame's UBO, 绑定 1 = materials SSBO,
         // 绑定 2 = this frame's 光源 SSBO.
@@ -860,7 +949,17 @@ impl ForwardPass {
                     .range(vk::WHOLE_SIZE)
             })
             .collect();
-        let mut writes = Vec::with_capacity(fif_count * 4);
+        let prev_model_infos: Vec<vk::DescriptorBufferInfo> = self
+            .prev_model_buffers
+            .iter()
+            .map(|buf| {
+                vk::DescriptorBufferInfo::default()
+                    .buffer(*buf)
+                    .offset(0)
+                    .range(vk::WHOLE_SIZE)
+            })
+            .collect();
+        let mut writes = Vec::with_capacity(fif_count * 5);
         for (i, set) in sets.iter().enumerate() {
             writes.push(
                 vk::WriteDescriptorSet::default()
@@ -889,6 +988,13 @@ impl ForwardPass {
                     .dst_binding(3)
                     .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                     .buffer_info(std::slice::from_ref(&bone_infos[i])),
+            );
+            writes.push(
+                vk::WriteDescriptorSet::default()
+                    .dst_set(*set)
+                    .dst_binding(4)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .buffer_info(std::slice::from_ref(&prev_model_infos[i])),
             );
         }
         unsafe { device.update_descriptor_sets(&writes, &[]) };
@@ -1171,6 +1277,22 @@ impl ForwardPass {
             .map(|n| n.image)
     }
 
+    /// Borrow the motion-vector image view for `image_index` (#883 Phase 2).
+    pub fn velocity_view(&self, image_index: u32) -> Option<vk::ImageView> {
+        self.velocity_images
+            .get(image_index as usize)
+            .and_then(|v| v.as_ref())
+            .map(|v| v.view)
+    }
+
+    /// Borrow the motion-vector image handle for `image_index` (#883 Phase 2).
+    pub fn velocity_image(&self, image_index: u32) -> Option<vk::Image> {
+        self.velocity_images
+            .get(image_index as usize)
+            .and_then(|v| v.as_ref())
+            .map(|v| v.image)
+    }
+
     /// The full-resolution extent the scene was rendered at. The GTAO pass
     /// uses this (halved) to 大小 its own 视口 + 环境光遮蔽 textures.
     pub fn extent(&self) -> vk::Extent2D {
@@ -1228,6 +1350,9 @@ impl ForwardPass {
     /// every skinned draw into this window and refuses to draw beyond it.
     pub const BONE_CAPACITY: usize = 4096;
 
+    /// How many previous-model matrices one frame can address (#883 Phase 2).
+    pub const PREV_MODEL_CAPACITY: usize = 4096;
+
     /// Upload this frame's bone palette (skinning matrices, column-major).
     ///
     /// `matrices` longer than [`Self::BONE_CAPACITY`] is truncated: the draw
@@ -1263,6 +1388,48 @@ impl ForwardPass {
             if count > 0 {
                 std::ptr::copy_nonoverlapping(
                     matrices.as_ptr() as *const u8,
+                    dst,
+                    count * matrix_size,
+                );
+            }
+            device.unmap_memory(mem);
+        }
+        Ok(())
+    }
+
+    /// Upload the previous-frame model matrix for each draw-list item
+    /// (#883 Phase 2). The shader indexes this by the draw-list position
+    /// pushed in `_padding.y`; a missing entry falls back to the current
+    /// model on the CPU side (camera-only motion).
+    pub fn update_prev_models(
+        &mut self,
+        device: &ash::Device,
+        frame_index: u32,
+        models: &[[[f32; 4]; 4]],
+    ) -> Result<()> {
+        if self.prev_model_memories.is_empty() {
+            return Ok(());
+        }
+        let index = (frame_index as usize) % self.prev_model_memories.len();
+        let mem = self.prev_model_memories[index];
+        if mem == vk::DeviceMemory::null() {
+            return Ok(());
+        }
+        let count = models.len().min(Self::PREV_MODEL_CAPACITY);
+        let matrix_size = std::mem::size_of::<[[f32; 4]; 4]>();
+        let total_bytes = (Self::PREV_MODEL_CAPACITY * matrix_size) as vk::DeviceSize;
+        let ptr = unsafe { device.map_memory(mem, 0, total_bytes, vk::MemoryMapFlags::empty()) }
+            .context("ForwardPass::update_prev_models: map")?;
+        unsafe {
+            let dst = ptr as *mut u8;
+            std::ptr::write_bytes(
+                dst.add(count * matrix_size),
+                0,
+                (Self::PREV_MODEL_CAPACITY - count) * matrix_size,
+            );
+            if count > 0 {
+                std::ptr::copy_nonoverlapping(
+                    models.as_ptr() as *const u8,
                     dst,
                     count * matrix_size,
                 );
@@ -1380,7 +1547,24 @@ impl ForwardPass {
             .attachment(2)
             .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
 
-        let color_refs = [color_ref, normal_ref];
+        // 附件 3: screen-space motion vectors (#883 Phase 2), RG16F. Cleared
+        // to zero; every mesh draw overwrites its footprint. Stored so TaaPass
+        // can sample it after the pass.
+        let velocity_attachment = vk::AttachmentDescription::default()
+            .format(self.velocity_format)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+
+        let velocity_ref = vk::AttachmentReference::default()
+            .attachment(3)
+            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+
+        let color_refs = [color_ref, normal_ref, velocity_ref];
         let subpass = vk::SubpassDescription::default()
             .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
             .color_attachments(&color_refs)
@@ -1403,7 +1587,12 @@ impl ForwardPass {
                     | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
             );
 
-        let attachments = [color_attachment, depth_attachment, normal_attachment];
+        let attachments = [
+            color_attachment,
+            depth_attachment,
+            normal_attachment,
+            velocity_attachment,
+        ];
         let rp_create_info = vk::RenderPassCreateInfo::default()
             .attachments(&attachments)
             .subpasses(std::slice::from_ref(&subpass))
@@ -1668,6 +1857,9 @@ impl ForwardPass {
             vk::PipelineColorBlendAttachmentState::default()
                 .color_write_mask(vk::ColorComponentFlags::empty())
                 .blend_enable(false),
+            vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::empty())
+                .blend_enable(false),
         ];
 
         let pipeline = GraphicsPipeline::new(&PipelineDesc {
@@ -1748,6 +1940,9 @@ impl ForwardPass {
             vk::PipelineColorBlendAttachmentState::default()
                 .color_write_mask(vk::ColorComponentFlags::empty())
                 .blend_enable(false),
+            vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::empty())
+                .blend_enable(false),
         ];
         let pipeline = GraphicsPipeline::new(&PipelineDesc {
             device,
@@ -1821,9 +2016,21 @@ impl RenderPassNode for ForwardPass {
                 sample_count: vk::SampleCountFlags::TYPE_1,
             },
         );
+        graph.create_resource_at(
+            FORWARD_VELOCITY_H,
+            ResourceType::ColorAttachment {
+                format: self.velocity_format,
+                extent: vk::Extent2D {
+                    width: 1,
+                    height: 1,
+                },
+                sample_count: vk::SampleCountFlags::TYPE_1,
+            },
+        );
         self.out_depth_h = FORWARD_DEPTH_H;
         self.out_normal_h = FORWARD_NORMAL_H;
         self.out_color_h = FORWARD_COLOR_H;
+        self.out_velocity_h = FORWARD_VELOCITY_H;
 
         // Declare read edge for directional shadow map sampled in fragment shader (set 3).
         // `shadows` 关闭时图里没有 ShadowMapPass，这个 handle 无人写入，
@@ -1858,6 +2065,12 @@ impl RenderPassNode for ForwardPass {
         });
         graph.write_usage(ResourceUsage {
             handle: FORWARD_COLOR_H,
+            access: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+            stage: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        });
+        graph.write_usage(ResourceUsage {
+            handle: FORWARD_VELOCITY_H,
             access: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
             stage: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
             layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
@@ -1949,6 +2162,12 @@ impl RenderPassNode for ForwardPass {
                     stencil: 0,
                 },
             },
+            vk::ClearValue {
+                color: vk::ClearColorValue {
+                    float32: [0.0, 0.0, 0.0, 0.0],
+                },
+            },
+            // Attachment 3: motion vectors. Zero means "no motion".
             vk::ClearValue {
                 color: vk::ClearColorValue {
                     float32: [0.0, 0.0, 0.0, 0.0],
@@ -2239,7 +2458,14 @@ impl RenderPassNode for ForwardPass {
                         bone_offset: item.bone_offset.unwrap_or(0),
                         skin_mode: u32::from(item.bone_offset.is_some()),
                         _pad_92: instance_offset,
-                        _padding: [instance_count, 0, 0],
+                        // .x = instance count, .y = draw-list index for the
+                        // previous-model SSBO, .z = reactive mask for TAA
+                        // (transparent draws must not reuse stale history).
+                        _padding: [
+                            instance_count,
+                            batch.items[0] as u32,
+                            u32::from(item.state.blends()),
+                        ],
                     };
                     ctx.device.cmd_push_constants(
                         ctx.cmd,
@@ -2506,6 +2732,10 @@ impl RenderPassNode for ForwardPass {
             resources.set_image_view(self.out_normal_h, v);
             resources.set_image(self.out_normal_h, i);
         }
+        if let (Some(v), Some(i)) = (self.velocity_view(idx), self.velocity_image(idx)) {
+            resources.set_image_view(self.out_velocity_h, v);
+            resources.set_image(self.out_velocity_h, i);
+        }
 
         log::trace!(
             "ForwardPass: rendered {} draws into {}x{} ({} in list)",
@@ -2529,7 +2759,12 @@ impl RenderPassNode for ForwardPass {
             inputs: vec![SHADOW_MAP_H],
             #[cfg(not(feature = "shadows"))]
             inputs: Vec::new(),
-            outputs: vec![self.out_depth_h, self.out_normal_h, self.out_color_h],
+            outputs: vec![
+                self.out_depth_h,
+                self.out_normal_h,
+                self.out_color_h,
+                self.out_velocity_h,
+            ],
         }
     }
 
@@ -2600,7 +2835,7 @@ impl Drop for ForwardPass {
 /// 附件 0 按 材质状态（`_SrcBlend` / `_DstBlend` / `_BlendOp`）配置；
 /// 默认值 `One`/`Zero`/`Add` 表示不透明，此时直接关掉混合。附件 1 永远不混合
 /// （视图空间法线需要原样写入）。
-fn color_blend_attachments(state: DrawState) -> [vk::PipelineColorBlendAttachmentState; 2] {
+fn color_blend_attachments(state: DrawState) -> [vk::PipelineColorBlendAttachmentState; 3] {
     let mut color = vk::PipelineColorBlendAttachmentState::default()
         .color_write_mask(vk::ColorComponentFlags::RGBA);
     if state.blends() {
@@ -2615,8 +2850,13 @@ fn color_blend_attachments(state: DrawState) -> [vk::PipelineColorBlendAttachmen
     }
     [
         color,
+        // View-space normal + reactive mask (alpha) are never blended.
         vk::PipelineColorBlendAttachmentState::default()
             .color_write_mask(vk::ColorComponentFlags::RGBA)
+            .blend_enable(false),
+        // Motion vectors are per-fragment and overwrite the previous value.
+        vk::PipelineColorBlendAttachmentState::default()
+            .color_write_mask(vk::ColorComponentFlags::R | vk::ColorComponentFlags::G)
             .blend_enable(false),
     ]
 }

@@ -31,6 +31,10 @@ public struct FrameUBO
     public float    shadowSplit;     // offset 336 (camera-forward distance of the split)
     public uint     shadowCascadeCount; // offset 340 (1 = single map, 2 = atlas)
     public float2   _pad3;           // offset 344..351 (std140 tail pad to 352)
+    // #883 Phase 2: previous frame's unjittered view-projection. The vertex
+    // stage reprojects the previous model position with this to produce the
+    // per-object motion vector written to SV_Target2.
+    public float4x4 prevViewProj;    // offset 352..415
 };
 
 // Vertex stream matching mesh.vert input locations 0..4.
@@ -58,4 +62,6 @@ public struct MeshVaryings
     // set; the vertex stage computes it from the dominant joint so the fragment
     // stage can emit it unlit. Zero for static geometry.
     public float3 skinHeat     : COLOR1;     // location 5
+    // Screen-space motion vector (#883 Phase 2): currentUV - previousUV.
+    public float2 velocity     : TEXCOORD2;  // location 6
 };

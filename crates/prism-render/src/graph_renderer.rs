@@ -276,6 +276,12 @@ pub struct GraphRenderer {
     taa_frame: u64,
     /// NDC jitter applied to this frame's camera projection.
     taa_jitter_ndc: [f32; 2],
+    /// Previous frame's unjittered camera view-projection (#883 Phase 2).
+    prev_camera_view_proj: Option<[[f32; 4]; 4]>,
+    /// Previous frame's model matrix per ECS entity (#883 Phase 2). Used to
+    /// build per-object motion vectors without forcing the engine to track
+    /// previous transforms.
+    prev_models: std::collections::HashMap<u32, [[f32; 4]; 4]>,
     /// Path of the `.cube` LUT currently bound to `PostPass` (#502). `None`
     /// means the pass still holds its startup identity LUT.
     applied_lut: Option<PathBuf>,
@@ -669,6 +675,8 @@ impl GraphRenderer {
             settings,
             taa_frame: 0,
             taa_jitter_ndc: [0.0; 2],
+            prev_camera_view_proj: None,
+            prev_models: std::collections::HashMap::new(),
             applied_lut: None,
             outline_entities: Vec::new(),
             shadow_sampler,
@@ -1092,6 +1100,8 @@ impl GraphRenderer {
             settings,
             taa_frame: 0,
             taa_jitter_ndc: [0.0; 2],
+            prev_camera_view_proj: None,
+            prev_models: std::collections::HashMap::new(),
             applied_lut: None,
             outline_entities: Vec::new(),
             shadow_sampler,
@@ -1841,6 +1851,11 @@ impl GraphRenderer {
         if let Some(forward_pass) = self.graph.pass_mut::<ForwardPass>() {
             forward_pass.drop_target(&self.runtime.context.device);
         }
+        // #883 Phase 2: the previous camera/model history refers to the old
+        // extent; clear it so the first frame after a resize does not emit
+        // bogus motion vectors.
+        self.prev_camera_view_proj = None;
+        self.prev_models.clear();
         // PostPass wraps 交换链 views too (its framebuffers 目标 the
         // 交换链 directly). 放置 them on the same lifecycle.
         if let Some(post) = self.graph.pass_mut::<crate::post::PostPass>() {
@@ -1938,6 +1953,11 @@ impl GraphRenderer {
         if let Some(forward_pass) = self.graph.pass_mut::<ForwardPass>() {
             forward_pass.drop_target(&self.runtime.context.device);
         }
+        // #883 Phase 2: the previous camera/model history refers to the old
+        // extent; clear it so the first frame after a resize does not emit
+        // bogus motion vectors.
+        self.prev_camera_view_proj = None;
+        self.prev_models.clear();
         if let Some(post) = self.graph.pass_mut::<crate::post::PostPass>() {
             post.drop_target(&self.runtime.context.device);
         }
@@ -2343,6 +2363,20 @@ impl GraphRenderer {
         } = input;
         #[cfg(not(feature = "ui"))]
         let _ = ui_overlay;
+        // #883 Phase 2: frame_data is copied so we can inject the previous
+        // unjittered view-projection without mutating the caller's value.
+        let mut frame_data = **frame_data;
+        let prev_vp = if let Some(camera) = cameras.first() {
+            // Explicit camera slots are not TAA-jittered (TAA currently
+            // resolves the implicit single-camera path).
+            camera.view_proj
+        } else {
+            let mut vp = frame_data.view_proj;
+            vp[3][0] -= self.taa_jitter_ndc[0];
+            vp[3][1] -= self.taa_jitter_ndc[1];
+            vp
+        };
+        frame_data.prev_view_proj = self.prev_camera_view_proj.unwrap_or(prev_vp);
         let light_view_proj = *light_view_proj;
         let light_view_proj1 = *light_view_proj1;
         let shadow_split = *shadow_split;
@@ -2366,7 +2400,7 @@ impl GraphRenderer {
             let ubo = &self.runtime.frame_ubos[frame];
             if cameras.is_empty() {
                 record = ubo
-                    .update(device, frame_data, 0)
+                    .update(device, &frame_data, 0)
                     .context("update frame UBO");
             } else {
                 for (slot, camera) in cameras
@@ -2374,7 +2408,7 @@ impl GraphRenderer {
                     .take(crate::descriptor::MAX_CAMERAS)
                     .enumerate()
                 {
-                    let mut data = **frame_data;
+                    let mut data = frame_data;
                     let light_count = data.camera_position[3];
                     data.view_proj = camera.view_proj;
                     data.view = camera.view;
@@ -2401,6 +2435,19 @@ impl GraphRenderer {
             // Skinned draws (#560 P0-3): push this frame's palette into the
             // per-frame bone SSBO before the graph runs.
             if let Some(forward) = self.graph.pass_mut::<ForwardPass>() {
+                // #883 Phase 2: match this frame's draws to last frame's
+                // models by entity id. First-seen entities fall back to their
+                // current model (camera-only motion).
+                let prev_models: Vec<[[f32; 4]; 4]> = draw_items
+                    .iter()
+                    .map(|item| {
+                        self.prev_models
+                            .get(&item.entity_id)
+                            .copied()
+                            .unwrap_or(item.model)
+                    })
+                    .collect();
+                forward.update_prev_models(device, ctx.frame_index, &prev_models)?;
                 forward.update_bones(device, ctx.frame_index, bone_matrices)?;
             }
             let graph_frame = GraphFrame {
@@ -2466,6 +2513,12 @@ impl GraphRenderer {
                 clear_color: *clear_color,
                 show_grid: *show_grid,
             };
+            self.prev_camera_view_proj = Some(prev_vp);
+            self.prev_models = draw_items
+                .iter()
+                .filter(|item| item.entity_id != u32::MAX)
+                .map(|item| (item.entity_id, item.model))
+                .collect();
             let render_ctx = crate::render_graph::RenderContext {
                 device,
                 context: &self.runtime.context,

@@ -1,9 +1,11 @@
-//! Temporal anti-aliasing resolve (#883 Phase 1).
+//! Temporal anti-aliasing resolve (#883 Phase 1 + 2).
 //!
 //! Sits between `ForwardPass` and `PostPass` when `RenderSettings::taa` is on.
-//! It samples the current HDR color + depth, reprojects with the previous
-//! unjittered view-projection, clamps the history to the current 3×3
-//! neighborhood, and blends with `taa_strength`.
+//! It samples the current HDR color + depth, prefers the rasterized per-object
+//! velocity buffer, falls back to previous-view-projection reprojection,
+//! clamps the history to the current 3×3 neighborhood, and blends with
+//! `taa_strength`. Transparent draws mark `normal.w = 1`; the resolve drops
+//! their history so blended surfaces never smear across frames.
 //!
 //! Two HDR images are ping-ponged by frame-in-flight slot: frame N writes
 //! `images[N % 2]` and reads `images[(N + 1) % 2]`, exactly like GTAO. No copy
@@ -21,7 +23,8 @@ use crate::context::VulkanContext;
 use crate::pipeline::{GraphicsPipeline, PipelineDesc};
 use crate::render_graph::{
     GraphResources, PassInfo, PassKind, RenderContext, RenderGraphBuilder, RenderPassNode,
-    RenderSettings, ResourceType, ResourceUsage, FORWARD_COLOR_H, FORWARD_DEPTH_H, TAA_COLOR_H,
+    RenderSettings, ResourceType, ResourceUsage, FORWARD_COLOR_H, FORWARD_DEPTH_H,
+    FORWARD_NORMAL_H, FORWARD_VELOCITY_H, TAA_COLOR_H,
 };
 use crate::render_pass::find_memory_type;
 use crate::shader;
@@ -115,6 +118,16 @@ impl TaaPass {
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(bindings::VELOCITY_TEX_BINDING)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(bindings::NORMAL_TEX_BINDING)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         ];
         let ds_layout = unsafe {
             device.create_descriptor_set_layout(
@@ -132,7 +145,7 @@ impl TaaPass {
                     .pool_sizes(&[
                         vk::DescriptorPoolSize {
                             ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                            descriptor_count: frames * 3,
+                            descriptor_count: frames * 5,
                         },
                         vk::DescriptorPoolSize {
                             ty: vk::DescriptorType::UNIFORM_BUFFER,
@@ -332,6 +345,18 @@ impl RenderPassNode for TaaPass {
             stage: vk::PipelineStageFlags::FRAGMENT_SHADER,
             layout: vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL,
         });
+        graph.read_usage(ResourceUsage {
+            handle: FORWARD_VELOCITY_H,
+            access: vk::AccessFlags::SHADER_READ,
+            stage: vk::PipelineStageFlags::FRAGMENT_SHADER,
+            layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        });
+        graph.read_usage(ResourceUsage {
+            handle: FORWARD_NORMAL_H,
+            access: vk::AccessFlags::SHADER_READ,
+            stage: vk::PipelineStageFlags::FRAGMENT_SHADER,
+            layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        });
         graph.write_usage(ResourceUsage {
             handle: TAA_COLOR_H,
             access: vk::AccessFlags::SHADER_READ,
@@ -353,6 +378,12 @@ impl RenderPassNode for TaaPass {
             return Ok(());
         };
         let Some(depth_view) = resources.published_view(FORWARD_DEPTH_H) else {
+            return Ok(());
+        };
+        let Some(velocity_view) = resources.published_view(FORWARD_VELOCITY_H) else {
+            return Ok(());
+        };
+        let Some(normal_view) = resources.published_view(FORWARD_NORMAL_H) else {
             return Ok(());
         };
 
@@ -392,6 +423,14 @@ impl RenderPassNode for TaaPass {
             .image_view(self.views[prev])
             .sampler(self.sampler)
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        let velocity_info = vk::DescriptorImageInfo::default()
+            .image_view(velocity_view)
+            .sampler(self.sampler)
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        let normal_info = vk::DescriptorImageInfo::default()
+            .image_view(normal_view)
+            .sampler(self.sampler)
+            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
         let ubo_info = vk::DescriptorBufferInfo::default()
             .buffer(self.ubos[frame])
             .offset(0)
@@ -417,6 +456,16 @@ impl RenderPassNode for TaaPass {
                 .dst_binding(bindings::PARAMS_BINDING)
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .buffer_info(std::slice::from_ref(&ubo_info)),
+            vk::WriteDescriptorSet::default()
+                .dst_set(self.sets[frame])
+                .dst_binding(bindings::VELOCITY_TEX_BINDING)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(std::slice::from_ref(&velocity_info)),
+            vk::WriteDescriptorSet::default()
+                .dst_set(self.sets[frame])
+                .dst_binding(bindings::NORMAL_TEX_BINDING)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(std::slice::from_ref(&normal_info)),
         ];
         unsafe { ctx.device.update_descriptor_sets(&writes, &[]) };
 
@@ -535,7 +584,12 @@ impl RenderPassNode for TaaPass {
             index: usize::MAX,
             name: self.name().to_string(),
             kind: PassKind::Post,
-            inputs: vec![FORWARD_COLOR_H, FORWARD_DEPTH_H],
+            inputs: vec![
+                FORWARD_COLOR_H,
+                FORWARD_DEPTH_H,
+                FORWARD_VELOCITY_H,
+                FORWARD_NORMAL_H,
+            ],
             outputs: vec![TAA_COLOR_H],
         }
     }

@@ -15,11 +15,17 @@ ConstantBuffer<FrameUBO> frame;
 [[vk::binding(3, 0)]]
 StructuredBuffer<float4x4> bones;
 
+// set 0, binding 4 — previous-frame model matrices (#883 Phase 2). One entry
+// per draw-list item; `_padding.y` selects this draw's entry. Separate from the
+// bone palette so object motion and skinning can coexist.
+[[vk::binding(4, 0)]]
+StructuredBuffer<float4x4> prevModels;
+
 // Push constant. MUST stay byte-identical to `PbrBindlessPush` in
 // scene_frag.slang (both stages read the same block): model(64) |
 // material_slot(4) | env_handle(4) | albedo_idx(4) | normal_idx(4) |
 // debug_flags(4) | bone_offset(4) | skin_mode(4) | instanceOffset(4) |
-// instanceCount(4) | _padding(8).
+// instanceCount(4) | _padding(8) = [count, prevModelIndex, reactive].
 struct MeshPush
 {
     float4x4 model;
@@ -31,7 +37,9 @@ struct MeshPush
     uint     bone_offset;
     uint     skin_mode;
     uint     _pad_92;       // #491: first instance model in the bone SSBO
-    uint3    _padding;      // #491: .x = instance count (0 = per-draw model)
+    // .x = instance count (0 = per-draw model), .y = prev-model SSBO index,
+    // .z = reactive mask (transparent draws).
+    uint3    _padding;
 };
 [[vk::push_constant]]
 MeshPush push;
@@ -106,7 +114,7 @@ float3 weightHeat(uint4 joints, float4 weights)
 }
 
 MeshVaryings finishVertex(
-    float4x4 model, float4 localPos, float3 localNormal,
+    float4x4 model, float4x4 prevModel, float4 localPos, float3 localNormal,
     float3 color, float2 uv, float4 tangent, float3 skinHeat)
 {
     MeshVaryings out;
@@ -120,6 +128,16 @@ MeshVaryings finishVertex(
     out.tangent     = tangent;
     out.skinHeat    = skinHeat;
     out.clipPos     = mul(frame.viewProj, worldPos);
+
+    // #883 Phase 2: object + camera motion. Current and previous positions are
+    // projected independently, so camera movement and rigid-object movement
+    // both produce a correct screen-space delta. Skinned/instanced draws pass
+    // the current model as `prevModel` (camera-only motion for those).
+    float4 prevWorld = mul(prevModel, localPos);
+    float4 prevClip  = mul(frame.prevViewProj, prevWorld);
+    float2 curUv  = out.clipPos.xy / max(out.clipPos.w, 1e-5) * 0.5 + 0.5;
+    float2 prevUv = prevClip.xy / max(prevClip.w, 1e-5) * 0.5 + 0.5;
+    out.velocity = (prevClip.w > 1e-5) ? (curUv - prevUv) : float2(0.0, 0.0);
     return out;
 }
 
@@ -129,11 +147,22 @@ MeshVaryings vertexMain(MeshVertexIn in, uint instanceID : SV_InstanceID)
     // #491: static instances reuse the bone SSBO (binding 3) instead of adding
     // another descriptor. `_padding.x == 0` keeps the per-draw push model.
     float4x4 model = push.model;
+    float4x4 prevModel = model;
     if (push._padding.x > 0u)
+    {
+        // Instances move as a group; previous per-instance matrices are not
+        // packed yet, so use the current model (camera-only motion).
         model = bones[push._pad_92 + instanceID];
+        prevModel = model;
+    }
+    else
+    {
+        uint prevIndex = min(push._padding.y, 4095u);
+        prevModel = prevModels[prevIndex];
+    }
     return finishVertex(
-        model, float4(in.position, 1.0), in.normal, in.color, in.uv, in.tangent,
-        float3(0.0, 0.0, 0.0));
+        model, prevModel, float4(in.position, 1.0), in.normal, in.color, in.uv,
+        in.tangent, float3(0.0, 0.0, 0.0));
 }
 
 [shader("vertex")]
@@ -143,7 +172,9 @@ MeshVaryings vertexSkinnedMain(SkinnedVertexIn in)
     float4 localPos = mul(skinMat, float4(in.position, 1.0));
     float3 localNormal = mul(float3x3(skinMat), in.normal);
     float3 heat = weightHeatmapOn() ? weightHeat(in.joints, in.weights) : float3(0.0, 0.0, 0.0);
-    return finishVertex(push.model, localPos, localNormal, in.color, in.uv, in.tangent, heat);
+    return finishVertex(
+        push.model, push.model, localPos, localNormal, in.color, in.uv,
+        in.tangent, heat);
 }
 
 static const float SHININESS = 32.0;

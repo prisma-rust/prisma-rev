@@ -228,6 +228,12 @@ fn frame_data(
         shadow_split: 0.0,
         shadow_cascade_count: 1,
         _pad3: [0.0; 2],
+        prev_view_proj: [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
     }
 }
 

@@ -902,6 +902,12 @@ impl EngineHost {
             shadow_strength: scene.shadow_strength,
             _pad2: [0.0; 3],
             _pad3: [0.0; 2],
+            prev_view_proj: [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
         };
         self.renderer.apply_taa_jitter(&mut frame_data);
 

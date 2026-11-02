@@ -15,7 +15,7 @@ use crate::context::VulkanContext;
 /// The per-frame UBO buffer holds one aligned block per camera slot, and the
 /// forward pass binds slot `i` with a dynamic offset. Four is enough for the
 /// Unity-style patterns this issue targets (game camera + UI overlay camera +
-/// minimap + debug), and the memory cost is `4 * 352` bytes per frame.
+/// minimap + debug), and the memory cost is `4 * 416` bytes per frame.
 pub const MAX_CAMERAS: usize = 4;
 
 fn align_up(value: u64, alignment: u64) -> u64 {
@@ -316,8 +316,11 @@ pub struct FrameUBOData {
     pub shadow_split: f32, // offset 336
     /// 1 = single shadow map (legacy), 2 = two-cascade atlas.
     pub shadow_cascade_count: u32, // offset 340
-    /// 补到 352 字节（std140 要求 16 字节对齐）。
+    /// std140 tail pad before `prev_view_proj`.
     pub _pad3: [f32; 2], // offset 344..351
+    /// Previous frame's unjittered view-projection (#883 Phase 2). Used by the
+    /// vertex stage to write per-object motion vectors into `FORWARD_VELOCITY_H`.
+    pub prev_view_proj: [[f32; 4]; 4], // offset 352..415
 }
 
 /// Per-frame UBO 缓冲区 and its 描述符 集合
@@ -341,7 +344,7 @@ pub struct FrameUBO {
 impl FrameUBO {
     /// 创建 a UBO 缓冲区 and 更新 the 描述符 集合 to point to it.
     pub fn new(context: &VulkanContext, descriptor_set: vk::DescriptorSet) -> anyhow::Result<Self> {
-        let size = std::mem::size_of::<FrameUBOData>() as vk::DeviceSize; // 352
+        let size = std::mem::size_of::<FrameUBOData>() as vk::DeviceSize; // 416
         let alignment = context
             .physical_device_properties
             .limits
