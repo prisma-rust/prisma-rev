@@ -528,6 +528,24 @@ pub struct ImportedSideAsset {
     pub cooked_data: Vec<u8>,
 }
 
+/// 一个 glTF 的蒙皮/动画产物路径（不编码，只规划路径）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GltfRigPaths {
+    /// `.rskel` 路径：源文件带骨架时才有。
+    pub skeleton: Option<String>,
+    /// `.rskin` 路径：源文件带完整 JOINTS_0/WEIGHTS_0 时才有。
+    pub skinned_mesh: Option<String>,
+    /// 每个 glTF 动画一条 `.ranim`，顺序与源文件一致。
+    pub clips: Vec<String>,
+}
+
+impl GltfRigPaths {
+    /// 没有任何蒙皮信息（普通静态网格）。
+    pub fn is_empty(&self) -> bool {
+        self.skeleton.is_none() && self.skinned_mesh.is_none() && self.clips.is_empty()
+    }
+}
+
 /// glTF/GLB 附带的材质与贴图资产（#520）。
 #[derive(Debug, Clone, Default)]
 pub struct GltfSideAssets {
@@ -786,6 +804,30 @@ impl GltfImporter {
     ) -> Result<Vec<String>, ImportError> {
         let mesh = Self::read_gltf(path)?;
         Ok(gltf_material_plan(&mesh, mesh_pak_path).submesh_material_paths)
+    }
+
+    /// 只读 glTF、**不 cook** 的蒙皮/动画路径规划（#560 P0-4）。
+    ///
+    /// 路径规则与 [`Self::side_assets`] 完全一致（同一个源文件 → 同样的路径），
+    /// 让打包器能在 cook 场景之前把 `SkinnedMeshRenderer` / `SkeletonRoot` /
+    /// `Animator` 自动填进实体，而不必真的编码一遍 RSCL/RANI。
+    pub fn rig_paths(path: &Path, mesh_pak_path: &str) -> Result<GltfRigPaths, ImportError> {
+        let mesh = Self::read_gltf(path)?;
+        let mut rig = GltfRigPaths::default();
+        if mesh.skinning.is_empty() {
+            return Ok(rig);
+        }
+        rig.skeleton = Some(format!("{mesh_pak_path}.skinning/skeleton.rskel"));
+        if mesh.joints.len() == mesh.positions.len() && !mesh.joints.is_empty() {
+            rig.skinned_mesh = Some(format!("{mesh_pak_path}.skinning/mesh.rskin"));
+        }
+        for (index, clip) in mesh.clips.iter().enumerate() {
+            let name = sanitize_asset_name(Some(&clip.name), "clip");
+            rig.clips.push(format!(
+                "{mesh_pak_path}.skinning/clips/{index}_{name}.ranim"
+            ));
+        }
+        Ok(rig)
     }
 
     /// Cook all materials and textures referenced by a glTF/GLB file (#520).

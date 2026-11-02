@@ -270,8 +270,22 @@ impl HierarchySearchMode {
 
 /// egui 侧的临时 UI 状态（不进文档、不进撤销栈）。
 #[derive(Default)]
+/// 检查器里显示骨骼用的一行（名字 + 父级下标）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkeletonJointRow {
+    pub name: String,
+    pub parent: Option<usize>,
+}
+
+#[derive(Default)]
 pub struct UiState {
     pub inspector_search: String,
+    /// 已加载剪辑的时长（`Animator.clip_path` → 秒），由 app 每帧从引擎的
+    /// `SkeletonLibrary` 填进来，检查器据此给时间轴划范围（#560 P0-4）。
+    pub clip_durations: std::collections::HashMap<String, f32>,
+    /// 已加载骨架的关节列表（`SkeletonRoot.skeleton_path` → 关节）。检查器
+    /// 用它画骨骼树；没有数据的路径不显示（拒绝画一个猜出来的层次）。
+    pub skeleton_joints: std::collections::HashMap<String, Vec<SkeletonJointRow>>,
     /// 检查器锁定：按**实体 id** 钉住内容（Unity 的 Inspector Lock，#418）。
     ///
     /// 存 id 而不是下标：删除 / 重排实体后仍然指向同一个对象；对象全被删掉时
@@ -2564,6 +2578,10 @@ fn inspector_single(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState,
             line_renderer_editor(ui, workspace, entity_id, &schema.name, &value);
         } else if name == "prism_engine::scene::SpriteAnimation" {
             sprite_animation_editor(ui, workspace, index, entity_id, &value);
+        } else if name == "prism_engine::scene::Animator" {
+            animator_editor(ui, workspace, state, entity_id, &schema.name, &value);
+        } else if name == "prism_engine::scene::SkeletonRoot" {
+            skeleton_root_editor(ui, state, &schema.name, &value);
         } else if name == "prism_engine::scene::KeyframeAnimation" {
             keyframe_animation_editor(ui, workspace, entity_id, &schema.name, &value);
         }
@@ -2814,6 +2832,166 @@ const CLIP_TRACKS: [(&str, &str, [f32; 3]); 3] = [
 /// 通用 reflect 卡片只能把轨道当只读 JSON 显示，这里给出真正能改的表格：
 /// 每行「时间 + 三分量」，加 / 删关键帧，写入时按时间排序（采样假设升序）。
 /// 播放本身在引擎侧（Play 时才跑），所以这里不画曲线预览。
+/// `Animator` 的检查器：播放开关 + 速度 + **时间轴 scrub**（#560 P0-4）。
+///
+/// 拖动时间轴只改组件的 `time` 字段（一次撤销步），引擎下一帧重新求值姿态；
+/// 时长来自已加载的剪辑，取不到时退化成无上限的拖动 + 「未知时长」提示。
+fn animator_editor(
+    ui: &mut Ui,
+    workspace: &mut Workspace,
+    state: &UiState,
+    entity_id: u32,
+    component: &str,
+    value: &Value,
+) {
+    let clip_path = value
+        .get("clip_path")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let duration = state
+        .clip_durations
+        .get(&clip_path)
+        .copied()
+        .unwrap_or_default();
+    let mut time = value.get("time").and_then(Value::as_f64).unwrap_or(0.0) as f32;
+    let mut speed = value.get("speed").and_then(Value::as_f64).unwrap_or(1.0) as f32;
+    let mut playing = value
+        .get("playing")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let mut looped = value.get("looped").and_then(Value::as_bool).unwrap_or(true);
+    let mut edited = false;
+
+    ui.horizontal(|ui| {
+        let label = if playing { "⏸ Pause" } else { "▶ Play" };
+        if ui.button(label).clicked() {
+            playing = !playing;
+            edited = true;
+        }
+        if ui.button("⏮").on_hover_text("restart").clicked() {
+            time = 0.0;
+            edited = true;
+        }
+        ui.label(RichText::new(clip_label(&clip_path)).size(11.0));
+    });
+
+    if duration > 0.0 {
+        let response = ui.add(
+            egui::Slider::new(&mut time, 0.0..=duration)
+                .text("time")
+                .suffix("s")
+                .max_decimals(2),
+        );
+        if response.changed() {
+            edited = true;
+        }
+        ui.label(
+            RichText::new(format!("duration {duration:.2}s"))
+                .size(10.0)
+                .weak(),
+        );
+    } else {
+        let response = ui.add(
+            egui::DragValue::new(&mut time)
+                .speed(0.01)
+                .range(0.0..=3600.0)
+                .suffix("s"),
+        );
+        if response.changed() {
+            edited = true;
+        }
+        ui.label(
+            RichText::new("duration unknown — the clip is not loaded yet")
+                .size(10.0)
+                .weak(),
+        );
+    }
+
+    ui.horizontal(|ui| {
+        if ui.checkbox(&mut looped, "Loop").changed() {
+            edited = true;
+        }
+        if ui
+            .add(
+                egui::DragValue::new(&mut speed)
+                    .speed(0.01)
+                    .range(0.0..=8.0),
+            )
+            .changed()
+        {
+            edited = true;
+        }
+        ui.label(RichText::new("speed").size(10.0).weak());
+    });
+
+    if edited {
+        workspace.set_field(entity_id, component, "time", Value::from(time as f64));
+        workspace.set_field(entity_id, component, "speed", Value::from(speed as f64));
+        workspace.set_field(entity_id, component, "playing", Value::Bool(playing));
+        workspace.set_field(entity_id, component, "looped", Value::Bool(looped));
+    }
+}
+
+/// `SkeletonRoot` 的检查器：骨架路径 + 只读的骨骼树（#560 P0-4）。
+fn skeleton_root_editor(ui: &mut Ui, state: &UiState, component: &str, value: &Value) {
+    let skeleton_path = value
+        .get("skeleton_path")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    ui.label(RichText::new(clip_label(skeleton_path)).size(11.0));
+    let joints = state.skeleton_joints.get(skeleton_path);
+    match joints {
+        Some(joints) if !joints.is_empty() => {
+            egui::CollapsingHeader::new(format!("{} bones", joints.len()))
+                .id_salt((component, skeleton_path))
+                .show(ui, |ui| {
+                    for (index, joint) in joints.iter().enumerate() {
+                        let depth = joint_depth(joints, index);
+                        ui.label(
+                            RichText::new(format!(
+                                "{:indent$}{}",
+                                "",
+                                joint.name,
+                                indent = depth * 2
+                            ))
+                            .size(10.0)
+                            .monospace(),
+                        );
+                    }
+                });
+        }
+        _ => {
+            ui.label(RichText::new("skeleton not loaded yet").size(10.0).weak());
+        }
+    }
+}
+
+/// 关节在层次里的深度（父级缺失或成环时停在 0，避免无限上溯）。
+fn joint_depth(joints: &[SkeletonJointRow], index: usize) -> usize {
+    let mut depth = 0usize;
+    let mut current = joints.get(index).and_then(|joint| joint.parent);
+    let mut guard = 0usize;
+    while let Some(parent) = current {
+        guard += 1;
+        if guard > joints.len() {
+            break;
+        }
+        depth += 1;
+        current = joints.get(parent).and_then(|joint| joint.parent);
+    }
+    depth
+}
+
+/// 资产路径只显示最后一段，长的 `assets/...` 前缀在检查器里没信息量。
+fn clip_label(path: &str) -> String {
+    if path.is_empty() {
+        "(none)".to_string()
+    } else {
+        path.rsplit('/').next().unwrap_or(path).to_string()
+    }
+}
+
 fn keyframe_animation_editor(
     ui: &mut Ui,
     workspace: &mut Workspace,
@@ -2965,6 +3143,84 @@ fn time_of(key: &Value) -> f64 {
 #[cfg(test)]
 mod keyframe_editor_tests {
     use super::*;
+
+    #[test]
+    fn the_animator_editor_renders_without_writing_when_nothing_is_touched() {
+        let ctx = egui::Context::default();
+        let mut workspace = Workspace::sample();
+        let mut state = UiState::new();
+        state
+            .clip_durations
+            .insert("char/walk.ranim".to_string(), 1.5);
+        let value = json!({
+            "clip_path": "char/walk.ranim",
+            "time": 0.25,
+            "speed": 1.0,
+            "looped": true,
+            "playing": true,
+        });
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                animator_editor(
+                    ui,
+                    &mut workspace,
+                    &state,
+                    1,
+                    "prism_engine::scene::Animator",
+                    &value,
+                );
+            });
+        });
+        // 没有鼠标输入 = 没有编辑：组件字段保持原样。
+        let animator = workspace.document().doc.entities[1]
+            .components
+            .get("prism_engine::scene::Animator");
+        assert!(animator.is_none(), "只是画控件不该凭空写出一个组件");
+    }
+
+    #[test]
+    fn a_scaffolded_bone_tree_indents_children() {
+        let joints = vec![
+            SkeletonJointRow {
+                name: "hip".into(),
+                parent: None,
+            },
+            SkeletonJointRow {
+                name: "knee".into(),
+                parent: Some(0),
+            },
+            SkeletonJointRow {
+                name: "foot".into(),
+                parent: Some(1),
+            },
+        ];
+        assert_eq!(joint_depth(&joints, 0), 0);
+        assert_eq!(joint_depth(&joints, 2), 2);
+    }
+
+    #[test]
+    fn a_cyclic_bone_chain_does_not_hang_the_depth_calculation() {
+        // 坏数据（父级成环）不能把检查器卡死。
+        let joints = vec![
+            SkeletonJointRow {
+                name: "a".into(),
+                parent: Some(1),
+            },
+            SkeletonJointRow {
+                name: "b".into(),
+                parent: Some(0),
+            },
+        ];
+        let depth = joint_depth(&joints, 0);
+        assert!(depth <= joints.len(), "depth {depth} must stay bounded");
+    }
+
+    #[test]
+    fn clip_labels_show_the_file_name_only() {
+        assert_eq!(clip_label(""), "(none)");
+        assert_eq!(clip_label("assets/char/walk.ranim"), "walk.ranim");
+        assert_eq!(clip_label("walk.ranim"), "walk.ranim");
+    }
 
     #[test]
     fn appending_a_key_lands_one_second_after_the_last_one() {
