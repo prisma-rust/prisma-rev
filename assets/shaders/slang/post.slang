@@ -53,6 +53,11 @@ public struct PostPush
     // final image; `0` skips the hash and is bit-identical to the pre-effect
     // path, `1` is the strongest useful amount.
     public float filmGrain;
+    // White balance (#502 Phase 1). `temperature` moves the white point warm
+    // (> 0) or cool (< 0); `tint` moves it magenta (> 0) or green (< 0).
+    // Both are in [-1, 1], and 0 / 0 is the identity gain.
+    public float temperature;
+    public float tint;
 };
 [[vk::push_constant]]
 PostPush pc;
@@ -95,11 +100,25 @@ float3 tonemap(float3 hdr)
     return aces(hdr);                              // ACES Narkowicz
 }
 
-// Display-referred color grading (contrast around mid-grey + Rec.709 luma
-// saturation). Applied *after* tonemapping so the knobs behave like a photo
-// editor: contrast 1 / saturation 1 is an exact no-op.
+// White-balance gain (#502): warm/cool (temperature) and magenta/green (tint)
+// around a neutral 1.0 white point. 0 / 0 returns exactly (1, 1, 1), so the
+// default path is bit-identical to the pre-effect shader.
+float3 whiteBalanceGain()
+{
+    float t = pc.temperature;
+    float m = pc.tint;
+    return max(float3(
+        1.0 + 0.30 * t + 0.20 * m,
+        1.0 - 0.10 * t - 0.20 * m,
+        1.0 - 0.30 * t + 0.20 * m), 0.0);
+}
+
+// Display-referred color grading (white balance + contrast around mid-grey +
+// Rec.709 luma saturation). Applied *after* tonemapping so the knobs behave
+// like a photo editor: the neutral settings are an exact no-op.
 float3 grade(float3 c)
 {
+    c *= whiteBalanceGain();
     c = (c - 0.5) * pc.contrast + 0.5;
     float luma = dot(c, float3(0.2126, 0.7152, 0.0722));
     c = lerp(float3(luma, luma, luma), c, pc.saturation);

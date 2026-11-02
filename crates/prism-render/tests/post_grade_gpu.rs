@@ -191,6 +191,56 @@ fn film_grain_is_off_by_default_and_varies_pixels_at_full_strength() {
     );
 }
 
+/// #502：白平衡在默认值上是逐位 no-op；正值偏暖、负值偏冷、tint 控制品红/绿。
+#[test]
+fn white_balance_tints_a_neutral_frame_and_zero_is_a_no_op() {
+    let Some(mut renderer) = try_create_headless() else {
+        return;
+    };
+    let plain = render_graded(&mut renderer, PostGrade::default());
+    let plain_again = render_graded(&mut renderer, PostGrade::default());
+    assert_eq!(plain, plain_again, "neutral white balance must be stable");
+
+    let warm = render_graded(
+        &mut renderer,
+        PostGrade {
+            temperature: 1.0,
+            ..PostGrade::default()
+        },
+    );
+    let warm_center = pixel(&warm, SIZE / 2, SIZE / 2);
+    assert!(
+        warm_center[0] > warm_center[2] + 10,
+        "warm balance should raise red above blue: {warm_center:?}"
+    );
+
+    let cool = render_graded(
+        &mut renderer,
+        PostGrade {
+            temperature: -1.0,
+            ..PostGrade::default()
+        },
+    );
+    let cool_center = pixel(&cool, SIZE / 2, SIZE / 2);
+    assert!(
+        cool_center[2] > cool_center[0] + 10,
+        "cool balance should raise blue above red: {cool_center:?}"
+    );
+
+    let magenta = render_graded(
+        &mut renderer,
+        PostGrade {
+            tint: 1.0,
+            ..PostGrade::default()
+        },
+    );
+    let magenta_center = pixel(&magenta, SIZE / 2, SIZE / 2);
+    assert!(
+        magenta_center[0] > magenta_center[1] && magenta_center[2] > magenta_center[1],
+        "magenta tint should raise red/blue above green: {magenta_center:?}"
+    );
+}
+
 #[test]
 fn bloom_brightens_a_uniform_hdr_frame() {
     let Some(mut renderer) = try_create_headless() else {

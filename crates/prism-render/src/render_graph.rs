@@ -743,7 +743,9 @@ pub fn post_destination(
 /// - `bloom_intensity`: additive bloom strength (`0.0` = off);
 /// - `bloom_threshold`: HDR luminance above which pixels start blooming;
 /// - `chromatic_aberration`: radial red/blue split strength (`0.0` = off);
-/// - `film_grain`: display-referred monochrome noise (`0.0` = off).
+/// - `film_grain`: display-referred monochrome noise (`0.0` = off);
+/// - `temperature`: white-balance warm/cool shift in `-1..=1` (`0.0` = neutral);
+/// - `tint`: white-balance magenta/green shift in `-1..=1` (`0.0` = neutral).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PostGrade {
     pub contrast: f32,
@@ -753,6 +755,8 @@ pub struct PostGrade {
     pub bloom_threshold: f32,
     pub chromatic_aberration: f32,
     pub film_grain: f32,
+    pub temperature: f32,
+    pub tint: f32,
 }
 
 impl Default for PostGrade {
@@ -765,6 +769,8 @@ impl Default for PostGrade {
             bloom_threshold: 1.0,
             chromatic_aberration: 0.0,
             film_grain: 0.0,
+            temperature: 0.0,
+            tint: 0.0,
         }
     }
 }
@@ -811,6 +817,16 @@ impl PostGrade {
             },
             film_grain: if self.film_grain.is_finite() {
                 self.film_grain.clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
+            temperature: if self.temperature.is_finite() {
+                self.temperature.clamp(-1.0, 1.0)
+            } else {
+                0.0
+            },
+            tint: if self.tint.is_finite() {
+                self.tint.clamp(-1.0, 1.0)
             } else {
                 0.0
             },
