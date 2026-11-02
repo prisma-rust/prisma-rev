@@ -48,4 +48,8 @@ public struct MeshVaryings
     public float3 worldPos     : TEXCOORD1;  // location 2
     public float2 uv           : TEXCOORD0;  // location 3
     public float4 tangent      : TANGENT;    // location 4 (xyz = dir, w = handedness)
+    // Skin-weight heatmap colour (#560). Only meaningful when the debug flag is
+    // set; the vertex stage computes it from the dominant joint so the fragment
+    // stage can emit it unlit. Zero for static geometry.
+    public float3 skinHeat     : COLOR1;     // location 5
 };

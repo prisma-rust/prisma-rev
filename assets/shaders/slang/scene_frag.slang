@@ -162,6 +162,10 @@ static const uint PBR_FLAG_TRANSLUCENCY = 11u; // Shift+2
 static const uint PBR_FLAG_ANISOTROPY   = 12u; // Shift+3
 static const uint PBR_FLAG_CLEARCOAT    = 13u; // Shift+4
 static const uint PBR_FLAG_GI           = 14u; // Shift+5: probe-volume indirect diffuse
+// Bit 15 sits past the PBR component range: it selects the skin-weight heatmap
+// (#560), which the vertex stage turns into `MeshVaryings::skinHeat`. It is not
+// a component isolate, so it is handled before the isolate branch below.
+static const uint PBR_FLAG_SKIN_WEIGHTS = 15u;
 
 
 bool flag(uint b) { return (pc.debug_flags & (1u << b)) != 0u; }
@@ -479,6 +483,20 @@ struct SceneOutput
 [shader("fragment")]
 SceneOutput fragmentMain(MeshVaryings in)
 {
+    // ---- Skin-weight heatmap (#560) -------------------------------------
+    // The vertex stage already resolved the dominant joint into a colour, so
+    // this is a straight unlit pass-through. Handled before the material is
+    // sampled: a debug view must show every vertex, including alpha-tested
+    // foliage that would otherwise be discarded.
+    if (flag(PBR_FLAG_SKIN_WEIGHTS))
+    {
+        SceneOutput heat;
+        heat.color = float4(in.skinHeat, 1.0);
+        heat.viewNormal = float4(
+            normalize(mul((float3x3)frame.view, normalize(in.worldNormal))), 0.0);
+        return heat;
+    }
+
     // ---- Material -------------------------------------------------------
     GpuMaterial mat = materials[pc.material_slot];
 

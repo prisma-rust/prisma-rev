@@ -5581,10 +5581,11 @@ pub enum SceneRenderMode {
     Emissive,
     Depth,
     ViewNormals,
+    SkinWeights,
 }
 
 impl SceneRenderMode {
-    pub const ALL: [SceneRenderMode; 11] = [
+    pub const ALL: [SceneRenderMode; 12] = [
         SceneRenderMode::Shaded,
         SceneRenderMode::Wireframe,
         SceneRenderMode::ShadedWireframe,
@@ -5596,6 +5597,7 @@ impl SceneRenderMode {
         SceneRenderMode::Emissive,
         SceneRenderMode::Depth,
         SceneRenderMode::ViewNormals,
+        SceneRenderMode::SkinWeights,
     ];
 
     pub fn label(self) -> &'static str {
@@ -5611,6 +5613,7 @@ impl SceneRenderMode {
             SceneRenderMode::Emissive => "Emissive",
             SceneRenderMode::Depth => "Depth",
             SceneRenderMode::ViewNormals => "View Normals",
+            SceneRenderMode::SkinWeights => "Skin Weights",
         }
     }
 
@@ -5623,6 +5626,8 @@ impl SceneRenderMode {
             SceneRenderMode::Roughness => 1 << 4,
             SceneRenderMode::AmbientOcclusion => 1 << 8,
             SceneRenderMode::Emissive => 1 << 9,
+            // 第 16 位不是 PBR 分量，而是蒙皮权重热图（#560）。
+            SceneRenderMode::SkinWeights => 1 << 15,
             _ => 0,
         }
     }
