@@ -72,6 +72,7 @@ fn is_derived_asset(path: &str) -> bool {
             | "rskin"
             | "ranim"
             | "rasm"
+            | "rag"
             | "rbsp"
     )
 }

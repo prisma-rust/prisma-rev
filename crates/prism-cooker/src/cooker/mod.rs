@@ -26,6 +26,7 @@ use prism_asset::package::PackageBuilder;
 use std::collections::HashMap;
 use thiserror::Error;
 
+pub mod anim_graph;
 pub mod profile;
 pub mod scene;
 pub mod skinned;

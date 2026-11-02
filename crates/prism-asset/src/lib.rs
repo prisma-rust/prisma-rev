@@ -2,6 +2,7 @@
 pub mod core;
 #[cfg(feature = "core")]
 pub mod formats;
+pub mod formats_anim_graph;
 pub mod formats_skinned;
 pub mod formats_state_machine;
 #[cfg(feature = "package")]

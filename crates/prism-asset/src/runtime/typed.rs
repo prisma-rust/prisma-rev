@@ -12,6 +12,7 @@ use crate::core::{AssetId, AssetType};
 use crate::formats::{
     decode_rmat, decode_rmes, decode_rtex, RmatInfo, RmesInfo, RtexInfo, MATERIAL_SCALAR_COUNT,
 };
+use crate::formats_anim_graph::AnimGraphInfo;
 use crate::formats_skinned::{
     decode_ranim, decode_rskel, decode_rskin, AnimClipInfo, SkeletonInfo, SkinnedMeshInfo,
 };
@@ -324,6 +325,36 @@ impl Asset for StateMachineAsset {
             RuntimeError::DeserializeFailed {
                 asset_type: AssetType::StateMachine,
                 reason: "invalid RASM data (bad magic / truncated)".into(),
+            }
+        })?;
+        Ok(Self {
+            info,
+            raw: data.to_vec(),
+        })
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        self.raw
+    }
+}
+
+/// 解码后的 `.rag`：动画图参数 / 节点 / 连线（#560 P1）。
+#[derive(Debug, Clone)]
+pub struct AnimGraphAsset {
+    pub info: AnimGraphInfo,
+    raw: Vec<u8>,
+}
+
+impl Asset for AnimGraphAsset {
+    fn asset_type() -> AssetType {
+        AssetType::AnimGraph
+    }
+
+    fn from_bytes(data: &[u8]) -> Result<Self, RuntimeError> {
+        let info = crate::formats_anim_graph::decode_rag(data).ok_or_else(|| {
+            RuntimeError::DeserializeFailed {
+                asset_type: AssetType::AnimGraph,
+                reason: "invalid RAGP data (bad magic / truncated)".into(),
             }
         })?;
         Ok(Self {
