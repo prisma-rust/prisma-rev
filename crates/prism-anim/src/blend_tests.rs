@@ -473,11 +473,17 @@ fn blend_space_sync_markers_remap_each_samples_phase() {
         ],
         reference.clone(),
     );
+    // 0.25 处 A 是领跑剪辑：B 的相位从 A 映射成 0.5；A 自己保持 0.25。
+    // A = 2.5, B = 10, 混合权重 0.75 / 0.25。
     let mut out = Pose::default();
-    // 只采样 follower：领跑剪辑的 0.25 映射到 follower 的 0.5，所以 x = 20 * 0.5。
+    assert!(space.evaluate_into(0.25, 0.25, &mut out));
+    let x = out.local(0).unwrap().translation.x;
+    assert!((x - 4.375).abs() < 1e-4, "x={x}");
+
+    // 参数移到 B 端后 leader 变成 B，B 的相位不再被映射（0.25），x = 5。
     assert!(space.evaluate_into(1.0, 0.25, &mut out));
     let x = out.local(0).unwrap().translation.x;
-    assert!((x - 10.0).abs() < 1e-4, "x={x}");
+    assert!((x - 5.0).abs() < 1e-4, "x={x}");
 }
 
 #[test]
