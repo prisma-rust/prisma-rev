@@ -339,6 +339,13 @@ dispatch 层，覆盖文档列表 / 读取、组件增删、反射字段写入�
 浮点字段并给出 `entities.Cube.position[0]` 这样的路径；不要用 sleep 或墙钟推进时间。
 示例见 `crates/prism-engine/tests/sim_harness.rs`。
 
+动画采样 / 播放测试优先复用 `crates/prism-engine/tests/animation_support`：
+`sample_clip` + `PoseSnapshot` / `assert_pose_close` 对 `prism-anim` 的多轨剪辑按
+显式时间采样，并做逐分量容差比较（四元数自动处理 `q` / `-q`）；
+`AnimationHarness` 以固定 `step` 驱动真实 `keyframe_animation_system`，逐 tick 记录
+播放头、`LocalTransform` 与 `AnimationEventQueue`，覆盖正向 / 反向 / 暂停 / 循环 /
+单次播放的事件序列。示例见 `crates/prism-engine/tests/animation_harness.rs`。
+
 物理场景测试（需要 `--features physics`）优先复用
 `crates/prism-app/tests/support` 的 `PhysicsHarness`：用 `BodySpec` / `Scenario`
 声明地面、盒 / 球 / 胶囊、静态 / 动态 / 运动学、sensor、CCD 和父子关系，再按固定
