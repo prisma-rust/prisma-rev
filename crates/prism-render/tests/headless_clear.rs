@@ -245,6 +245,23 @@ fn rt_scheduler_is_registered_in_graph() {
 }
 
 #[test]
+fn headless_context_has_validation_when_required() {
+    let required = std::env::var("PRISM_REQUIRE_VALIDATION")
+        .map(|value| !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false"))
+        .unwrap_or(false);
+    if !required {
+        return;
+    }
+
+    let renderer = GraphRenderer::headless_new(None)
+        .expect("PRISM_REQUIRE_VALIDATION is set but headless context creation failed");
+    assert!(
+        renderer.context().validation_enabled(),
+        "PRISM_REQUIRE_VALIDATION is set but VK_LAYER_KHRONOS_validation was not enabled"
+    );
+}
+
+#[test]
 fn headless_path_trace_pass_registered_if_supported() {
     let renderer = match try_create_headless() {
         Some(r) => r,
