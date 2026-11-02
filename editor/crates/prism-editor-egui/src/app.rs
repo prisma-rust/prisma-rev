@@ -2629,6 +2629,14 @@ impl EditorApp {
 
     /// Edit → Selection Back / Forward。还原文档、选择集与活动对象，并把命中项
     /// 的祖先展开，避免回到一个折叠在父级下面的选择。
+    /// Edit → Find in Hierarchy：展开祖先并滚动到当前选择（#417）。
+    fn find_in_hierarchy(&mut self) {
+        let Some(index) = self.workspace.primary_selection() else {
+            return;
+        };
+        panels::reveal_in_hierarchy(&mut self.workspace, &mut self.state, index);
+    }
+
     fn navigate_selection_history(&mut self, delta: isize) {
         let Some(entry) = self.selection_history.navigate(delta) else {
             return;
@@ -3143,6 +3151,7 @@ impl EditorApp {
                 self.menu_do(ui, "Selection Forward", |app| {
                     app.navigate_selection_history(1)
                 });
+                self.menu_do(ui, "Find in Hierarchy", |app| app.find_in_hierarchy());
                 ui.separator();
                 ui.menu_button("Copy Transform", |ui| {
                     for field in ["position", "rotation", "scale"] {
