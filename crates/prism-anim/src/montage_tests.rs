@@ -41,6 +41,7 @@ fn clip(name: &str, x: f32, notify: Option<(&str, f32)>) -> Arc<Clip> {
                 }]
             })
             .unwrap_or_default(),
+        sync_markers: Vec::new(),
     })
 }
 

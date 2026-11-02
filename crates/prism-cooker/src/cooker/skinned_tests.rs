@@ -1,7 +1,7 @@
 use super::*;
 use prism_asset::formats_skinned::{
     decode_ranim, decode_rskel, decode_rskin, AnimTrackInfo, JointInfo, JointTransform,
-    QuatKeyInfo, SubmeshInfo, Vec3KeyInfo,
+    QuatKeyInfo, SubmeshInfo, Vec3KeyInfo, RANI_NOTIFY_VERSION,
 };
 
 fn identity_matrix() -> [f32; 16] {
@@ -70,6 +70,7 @@ fn walk_clip() -> AnimClipInfo {
         looped: true,
         additive: false,
         notifies: Vec::new(),
+        sync_markers: Vec::new(),
         tracks: vec![AnimTrackInfo {
             joint: 1,
             // 故意乱序：编码器要按时间排好。
@@ -237,7 +238,7 @@ fn trailing_bytes_are_rejected() {
 }
 
 #[test]
-fn ranim_v2_round_trips_notifies_and_reads_v1_clips() {
+fn ranim_v3_round_trips_notifies_and_markers_and_reads_older_clips() {
     use prism_asset::formats_skinned::{decode_ranim, AnimNotifyInfo};
 
     // v2：事件表按时间排序写出。
@@ -253,8 +254,8 @@ fn ranim_v2_round_trips_notifies_and_reads_v1_clips() {
         },
     ];
     let bytes = encode_ranim(&clip).expect("encode");
-    assert_eq!(bytes[4], RANI_VERSION, "版本号要写成 v2");
-    let decoded = decode_ranim(&bytes).expect("decode v2");
+    assert_eq!(bytes[4], RANI_VERSION, "版本号要写成 v3");
+    let decoded = decode_ranim(&bytes).expect("decode v3");
     let names: Vec<&str> = decoded
         .notifies
         .iter()
@@ -263,12 +264,34 @@ fn ranim_v2_round_trips_notifies_and_reads_v1_clips() {
     assert_eq!(names, vec!["Footstep.L", "Footstep.R"], "编码时按时间排序");
     assert!((decoded.notifies[0].time - 0.2).abs() < 1e-6);
 
-    // v1 兼容：同样的数据去掉末尾事件表、版本号写回 1，仍然能解出剪辑。
+    // v2 兼容：去掉末尾的 sync marker 表、版本号写回 2，事件表仍然能解出。
     let mut legacy = encode_ranim(&walk_clip()).expect("encode");
     let len = legacy.len();
-    legacy.truncate(len - 4); // 去掉 notify_count
+    legacy.truncate(len - 4); // 去掉 marker_count
+    legacy[4] = RANI_NOTIFY_VERSION;
+    let decoded = decode_ranim(&legacy).expect("decode v2");
+    assert!(decoded.sync_markers.is_empty(), "v2 剪辑没有同步标记");
+    assert_eq!(decoded.name, "walk");
+
+    // v1 兼容：再从 v2 去掉事件表（notify_count = 0 的 4 字节），仍然能解出剪辑。
+    let mut legacy = encode_ranim(&walk_clip()).expect("encode");
+    legacy.truncate(legacy.len() - 4); // marker_count
+    legacy.truncate(legacy.len() - 4); // notify_count (empty)
     legacy[4] = SKINNED_FORMAT_VERSION;
     let decoded = decode_ranim(&legacy).expect("decode v1");
     assert!(decoded.notifies.is_empty(), "v1 剪辑没有事件");
+    assert!(decoded.sync_markers.is_empty(), "v1 剪辑没有同步标记");
     assert_eq!(decoded.name, "walk");
+}
+
+#[test]
+fn ranim_v3_round_trips_normalized_sync_markers() {
+    use prism_asset::formats_skinned::decode_ranim;
+
+    let mut clip = walk_clip();
+    clip.sync_markers = vec![0.5, 0.0, 0.5, 1.5, f32::NAN, -0.25];
+    let bytes = encode_ranim(&clip).expect("encode");
+    let decoded = decode_ranim(&bytes).expect("decode");
+    // 归一化、排序、去重、丢掉非有限值。
+    assert_eq!(decoded.sync_markers, vec![0.0, 0.5, 0.75]);
 }

@@ -860,6 +860,52 @@ impl GltfImporter {
         Ok(out)
     }
 
+    /// 读作者侧的同步标记文件（#560 Sync marker 资产化）。
+    ///
+    /// 位置：`assets/models/hero.glb.skinning/sync_markers.json`
+    ///
+    /// ```json
+    /// { "clips": { "walk": [0.0, 0.5], "run": [0.0, 0.5] } }
+    /// ```
+    ///
+    /// 相位归一化到 `[0, 1)`，有限值排序去重。文件不存在 = 没有标记；
+    /// 存在但解析失败 = build 失败，避免打错的标记被静默忽略。
+    pub fn authored_sync_markers(
+        source: &Path,
+    ) -> Result<std::collections::HashMap<String, Vec<f32>>, ImportError> {
+        let mut side = source.to_path_buf().into_os_string();
+        side.push(".skinning/sync_markers.json");
+        let path = std::path::PathBuf::from(side);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return Ok(std::collections::HashMap::new());
+        };
+
+        #[derive(serde::Deserialize)]
+        struct File {
+            #[serde(default)]
+            clips: std::collections::HashMap<String, Vec<f32>>,
+        }
+
+        let parsed: File = serde_json::from_str(&text).map_err(|error| {
+            ImportError::ImportFailed(format!(
+                "{}: invalid sync marker file: {error}",
+                path.display()
+            ))
+        })?;
+        let mut out = std::collections::HashMap::new();
+        for (clip, phases) in parsed.clips {
+            let mut phases: Vec<f32> = phases
+                .into_iter()
+                .filter(|phase| phase.is_finite())
+                .map(|phase| phase.rem_euclid(1.0))
+                .collect();
+            phases.sort_by(f32::total_cmp);
+            phases.dedup_by(|a, b| (*a - *b).abs() <= 1e-6);
+            out.insert(clip, phases);
+        }
+        Ok(out)
+    }
+
     /// 只读 glTF、**不 cook** 的蒙皮/动画路径规划（#560 P0-4）。
     ///
     /// 路径规则与 [`Self::side_assets`] 完全一致（同一个源文件 → 同样的路径），
@@ -1043,15 +1089,22 @@ impl GltfImporter {
                 );
             }
 
-            // 作者写的事件表（#560 P1 Notify）：按剪辑原名合并，键是 glTF 的动画名。
+            // 作者写的事件表 / 同步标记（#560）：按剪辑原名合并，键是 glTF 的动画名。
             let authored = Self::authored_notifies(path)?;
             let mut used_notifies: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            let authored_markers = Self::authored_sync_markers(path)?;
+            let mut used_markers: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
             for (index, clip) in mesh.clips.iter().enumerate() {
                 let mut clip = clip.clone();
                 if let Some(notifies) = authored.get(&clip.name) {
                     used_notifies.insert(clip.name.clone());
                     clip.notifies = notifies.clone();
+                }
+                if let Some(markers) = authored_markers.get(&clip.name) {
+                    used_markers.insert(clip.name.clone());
+                    clip.sync_markers = markers.clone();
                 }
                 let clip = &clip;
                 let name = sanitize_asset_name(Some(&clip.name), "clip");
@@ -1074,6 +1127,13 @@ impl GltfImporter {
                 if !used_notifies.contains(name) {
                     tracing::warn!(
                         "'{mesh_pak_path}': notify file names clip '{name}', but the glTF has                          no animation with that name"
+                    );
+                }
+            }
+            for name in authored_markers.keys() {
+                if !used_markers.contains(name) {
+                    tracing::warn!(
+                        "'{mesh_pak_path}': sync marker file names clip '{name}', but the glTF has no animation with that name"
                     );
                 }
             }

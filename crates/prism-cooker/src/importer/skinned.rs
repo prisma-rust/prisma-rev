@@ -304,6 +304,7 @@ fn read_animations(
             // glTF 动画没有事件通道（#560 P1 Notify）：Notify 由作者在引擎侧补，
             // 导出的剪辑事件表为空。
             notifies: Vec::new(),
+            sync_markers: Vec::new(),
         });
     }
     clips
