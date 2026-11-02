@@ -5645,6 +5645,189 @@ pub fn delete_asset_now(workspace: &mut Workspace, state: &mut UiState, path: &s
 }
 
 // ---------------------------------------------------------------------------
+// 动画图 / 状态机只读面板（#560）
+// ---------------------------------------------------------------------------
+
+/// 选中 `.animgraph.json` / `.statemachine.json` 时显示结构化视图。
+///
+/// 只读：节点位置、连线走向等编辑能力留给后续；这里先让作者不用在 JSON 和
+/// 运行结果之间来回猜。
+pub fn anim_graph(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
+    let Some(path) = state.asset_primary().cloned() else {
+        ui.label(
+            RichText::new("select an .animgraph.json or .statemachine.json asset")
+                .weak()
+                .size(11.0),
+        );
+        return;
+    };
+    let graph_asset = path.ends_with(".animgraph.json");
+    let machine_asset = path.ends_with(".statemachine.json");
+    if !graph_asset && !machine_asset {
+        ui.label(
+            RichText::new("select an .animgraph.json or .statemachine.json asset")
+                .weak()
+                .size(11.0),
+        );
+        return;
+    }
+
+    ui.label(
+        RichText::new(path.rsplit('/').next().unwrap_or(&path))
+            .strong()
+            .size(13.0),
+    );
+    ui.label(RichText::new(&path).weak().size(10.0));
+    ui.separator();
+
+    let value = match workspace.read_asset_json(&path) {
+        Ok(value) => value,
+        Err(error) => {
+            ui.label(
+                RichText::new(format!("read {path} failed: {error}"))
+                    .color(Color32::from_rgb(232, 96, 96)),
+            );
+            return;
+        }
+    };
+
+    if graph_asset {
+        match prism_editor_core::parse_anim_graph_view(&value) {
+            Ok(graph) => draw_anim_graph_view(ui, &graph),
+            Err(error) => {
+                ui.label(RichText::new(error).color(Color32::from_rgb(232, 96, 96)));
+            }
+        }
+    } else {
+        match prism_editor_core::parse_state_machine_view(&value) {
+            Ok(machine) => draw_state_machine_view(ui, &machine),
+            Err(error) => {
+                ui.label(RichText::new(error).color(Color32::from_rgb(232, 96, 96)));
+            }
+        }
+    }
+}
+
+fn draw_anim_graph_view(ui: &mut Ui, graph: &prism_editor_core::AnimGraphView) {
+    if !graph.parameters.is_empty() {
+        ui.label(RichText::new("Parameters").strong().size(11.0));
+        for parameter in &graph.parameters {
+            ui.label(
+                RichText::new(format!(
+                    "{} · {} = {}",
+                    parameter.name, parameter.kind, parameter.default
+                ))
+                .monospace()
+                .size(10.0),
+            );
+        }
+        ui.separator();
+    }
+
+    ui.label(
+        RichText::new(format!("Nodes ({})", graph.nodes.len()))
+            .strong()
+            .size(11.0),
+    );
+    for node in &graph.nodes {
+        let title = if node.is_output() {
+            format!("{} · {} (output)", node.name, node.kind)
+        } else {
+            format!("{} · {}", node.name, node.kind)
+        };
+        egui::CollapsingHeader::new(RichText::new(title).monospace().size(10.0))
+            .id_salt(("anim-graph-node", &node.name))
+            .show(ui, |ui| {
+                if !node.clips.is_empty() {
+                    ui.label(
+                        RichText::new(format!("clips: {}", node.clips.join(", ")))
+                            .weak()
+                            .size(10.0),
+                    );
+                }
+                if !node.state_machine.is_empty() {
+                    ui.label(
+                        RichText::new(format!("state machine: {}", node.state_machine))
+                            .weak()
+                            .size(10.0),
+                    );
+                }
+                if !node.parameter.is_empty() {
+                    ui.label(
+                        RichText::new(format!("parameter: {}", node.parameter))
+                            .weak()
+                            .size(10.0),
+                    );
+                }
+                for input in &node.inputs {
+                    ui.label(
+                        RichText::new(format!("← {}  × {}", input.node, input.weight))
+                            .monospace()
+                            .size(10.0),
+                    );
+                }
+            });
+    }
+    if let Some(output) = &graph.output {
+        ui.separator();
+        ui.label(
+            RichText::new(format!("Output: {output}"))
+                .strong()
+                .size(11.0),
+        );
+    }
+}
+
+fn draw_state_machine_view(ui: &mut Ui, machine: &prism_editor_core::AnimStateMachineView) {
+    ui.label(
+        RichText::new(format!("States ({})", machine.states.len()))
+            .strong()
+            .size(11.0),
+    );
+    for state in &machine.states {
+        ui.label(
+            RichText::new(format!(
+                "{} → {}  speed {}  {}",
+                state.name,
+                state.clip,
+                state.speed,
+                if state.looped { "loop" } else { "once" }
+            ))
+            .monospace()
+            .size(10.0),
+        );
+    }
+
+    ui.separator();
+    ui.label(
+        RichText::new(format!("Transitions ({})", machine.transitions.len()))
+            .strong()
+            .size(11.0),
+    );
+    for transition in &machine.transitions {
+        let from = transition.from.as_deref().unwrap_or("*");
+        let title = format!(
+            "{} → {}  ({}s, min {:.2})",
+            from, transition.to, transition.duration, transition.min_state_fraction
+        );
+        egui::CollapsingHeader::new(RichText::new(title).monospace().size(10.0))
+            .id_salt(("anim-sm-transition", from, &transition.to))
+            .show(ui, |ui| {
+                if transition.conditions.is_empty() {
+                    ui.label(RichText::new("no conditions").weak().size(10.0));
+                }
+                for condition in &transition.conditions {
+                    ui.label(
+                        RichText::new(format!("if {}", condition.summary))
+                            .monospace()
+                            .size(10.0),
+                    );
+                }
+            });
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 材质 / JSON 资产
 // ---------------------------------------------------------------------------
 
@@ -8801,6 +8984,7 @@ mod window_smoke_tests {
     #[test]
     fn every_editor_panel_builds_a_frame() {
         run_frame(|ui, workspace, state| hierarchy(ui, workspace, state));
+        run_frame(|ui, workspace, state| anim_graph(ui, workspace, state));
         run_frame(|ui, workspace, state| inspector(ui, workspace, state));
         run_frame(|ui, workspace, state| assets(ui, workspace, state));
         run_frame(|ui, workspace, state| docs(ui, workspace, state));

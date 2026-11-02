@@ -120,6 +120,9 @@ FIFO 排队、单次播完自动接下一段，`stop` / `stop_after_current` 清
 `enqueue_montage` / `stop_montage` 按节点名操作，活动段按权重覆盖 Slot 输入；
 没有活动段时回退到作者写的 `clips[0]`。
 
+编辑器面板：`Window → General → Animation Graph` 选中 `.animgraph.json` / `.statemachine.json`
+后显示结构化只读视图（参数、节点、连线、状态、转移条件）。
+
 引擎侧项目代码通过 `AnimMontageRequests` 资源发请求（`MontageRequest::play` /
 `enqueue` / `stop` / `stop_after_current`，可带循环 / 速度 / 权重 / 开始时间）；
 `animator_system` 每帧消费一次，把剪辑路径解析成 `Montage` 注入对应实体的 Slot。

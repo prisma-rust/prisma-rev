@@ -472,6 +472,7 @@ pub fn panel_title(tab: &str) -> &'static str {
         "problems" => "Problems",
         "prefabOverrides" => "Prefab Overrides",
         "material" => "Material",
+        "animGraph" => "Animation Graph",
         "tools" => "Offline Tools",
         "settings" => "Project Settings",
         "preferences" => "Preferences",
