@@ -283,6 +283,12 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
   多个词之间是 AND，多个 `t:` 之间是 OR。选中资产后检查器显示资产详情（类型 / 体积 /
   GUID / 引用数 / 预览），底部的 **Ping In Scene** 和右键菜单的 `Ping In Scene` 会
   选中第一个引用该资产的实体并在 Scene 视图里框住它 —— 资产 ↔ 场景双向定位。
+- **资产身份（#466 第一步）**：打开或刷新项目时，编辑器给 `assets/` 下每个还缺
+  sidecar 的资产生成 `<path>.rmeta`（`{ "guid": "<32 hex>", "importer": "..." }`）；
+  已有且有效的 GUID 永不重写，损坏的按缺失处理。扫描会跳过 `.rmeta`（它不是可导入
+  资产），资产详情里的 GUID 优先显示 sidecar 的值，没有才回落到旧的路径哈希；
+  重命名 / 移动文件时 sidecar 跟着走，删除时一起删。`.scene.json` 里的 `*_guid`
+  字段是下一步，当前文档仍然按路径引用。
 - **纹理导入设置（#514）**：资产检查器选中纹理时多出 `Import Settings`
   （`Max Size` 0 = 不限、`Mips` 开关）。`Apply` 写旁挂文件
   `<asset>.import.json`（如 `assets/sprites/boat.png.import.json`），`Revert` 重新读盘，

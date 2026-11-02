@@ -1629,6 +1629,7 @@ mod asset_inspector_tests {
             size_bytes: 2048,
             kind: prism_editor_core::AssetKind::Texture,
             importer: "ImageImporter".to_string(),
+            guid: None,
         });
         workspace
     }

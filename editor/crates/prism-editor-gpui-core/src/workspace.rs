@@ -873,6 +873,14 @@ impl Workspace {
         self.project_root = Some(root);
         self.project_files = files;
         if let Some(root) = self.project_root.clone() {
+            let generated = project::ensure_asset_metas(&root);
+            if generated > 0 {
+                self.log(
+                    LogSource::Editor,
+                    LogLevel::Info,
+                    format!("已为 {generated} 个资产生成 .rmeta"),
+                );
+            }
             self.assets = project::scan_assets(&root);
             self.tree = AssetTree::build(&self.assets);
             for folder in project::scan_asset_dirs(&root) {
@@ -1309,6 +1317,15 @@ impl Workspace {
         let Some(root) = self.project_root.clone() else {
             return;
         };
+        // #466：刷新时补生成缺失的 sidecar（已有 GUID 不动）。
+        let generated = project::ensure_asset_metas(&root);
+        if generated > 0 {
+            self.log(
+                LogSource::Editor,
+                LogLevel::Info,
+                format!("已为 {generated} 个资产生成 .rmeta"),
+            );
+        }
         self.assets = project::scan_assets(&root);
         let tree = {
             let mut tree = AssetTree::build(&self.assets);
@@ -1571,8 +1588,11 @@ impl Workspace {
         references.dedup();
 
         Some(AssetDetails {
+            guid: asset
+                .guid
+                .clone()
+                .unwrap_or_else(|| crate::assets::asset_guid(path)),
             asset,
-            guid: crate::assets::asset_guid(path),
             preview,
             references,
         })
@@ -8356,12 +8376,14 @@ mod tests {
                 size_bytes: 1,
                 kind: AssetKind::Model,
                 importer: String::new(),
+                guid: None,
             },
             AssetInfo {
                 path: "assets/textures/wood.png".to_string(),
                 size_bytes: 1,
                 kind: AssetKind::Texture,
                 importer: String::new(),
+                guid: None,
             },
         ];
         workspace.document_mut().doc.entities[0].components.insert(
@@ -8951,12 +8973,14 @@ mod tests {
                 size_bytes: 1,
                 kind: AssetKind::Model,
                 importer: "ModelImporter".into(),
+                guid: None,
             },
             AssetInfo {
                 path: "assets/textures/grid.png".into(),
                 size_bytes: 1,
                 kind: AssetKind::Texture,
                 importer: "TextureImporter".into(),
+                guid: None,
             },
         ];
         let meshes = workspace.asset_picker_candidates("mesh_path");
