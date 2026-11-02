@@ -20,8 +20,9 @@ use std::path::PathBuf;
 
 use prism_asset::core::AssetId;
 use prism_asset::formats::{
+    RTEX_FORMAT_ASTC_12X12, RTEX_FORMAT_ASTC_4X4, RTEX_FORMAT_ASTC_6X6, RTEX_FORMAT_ASTC_8X8,
     RTEX_FORMAT_BC1, RTEX_FORMAT_BC3, RTEX_FORMAT_BC5, RTEX_FORMAT_BC6H, RTEX_FORMAT_BC7,
-    RTEX_FORMAT_RGBA8,
+    RTEX_FORMAT_ETC2_RGBA8, RTEX_FORMAT_RGBA8,
 };
 use prism_asset::runtime::{
     MaterialAsset, MeshAsset, ResourceManager, SkinnedMeshAsset, TextureAsset,
@@ -59,6 +60,17 @@ fn texture_format_for(rtex_format: u8, srgb: bool) -> Option<TextureFormat> {
         RTEX_FORMAT_BC7 => Some(TextureFormat::Bc7Unorm),
         RTEX_FORMAT_BC5 => Some(TextureFormat::Bc5Unorm),
         RTEX_FORMAT_BC6H => Some(TextureFormat::Bc6HUfloat),
+        // ASTC / ETC2 同样由槽位决定颜色空间（#519）。
+        RTEX_FORMAT_ASTC_4X4 if srgb => Some(TextureFormat::Astc4x4Srgb),
+        RTEX_FORMAT_ASTC_4X4 => Some(TextureFormat::Astc4x4Unorm),
+        RTEX_FORMAT_ASTC_6X6 if srgb => Some(TextureFormat::Astc6x6Srgb),
+        RTEX_FORMAT_ASTC_6X6 => Some(TextureFormat::Astc6x6Unorm),
+        RTEX_FORMAT_ASTC_8X8 if srgb => Some(TextureFormat::Astc8x8Srgb),
+        RTEX_FORMAT_ASTC_8X8 => Some(TextureFormat::Astc8x8Unorm),
+        RTEX_FORMAT_ASTC_12X12 if srgb => Some(TextureFormat::Astc12x12Srgb),
+        RTEX_FORMAT_ASTC_12X12 => Some(TextureFormat::Astc12x12Unorm),
+        RTEX_FORMAT_ETC2_RGBA8 if srgb => Some(TextureFormat::Etc2R8G8B8A8Srgb),
+        RTEX_FORMAT_ETC2_RGBA8 => Some(TextureFormat::Etc2R8G8B8A8Unorm),
         _ => None,
     }
 }
@@ -2462,6 +2474,42 @@ mod tests {
         assert_eq!(
             texture_format_for(RTEX_FORMAT_BC7, false),
             Some(TextureFormat::Bc7Unorm)
+        );
+    }
+
+    #[test]
+    fn astc_and_etc2_follow_the_slot_colour_space() {
+        assert_eq!(
+            texture_format_for(RTEX_FORMAT_ASTC_4X4, true),
+            Some(TextureFormat::Astc4x4Srgb)
+        );
+        assert_eq!(
+            texture_format_for(RTEX_FORMAT_ASTC_4X4, false),
+            Some(TextureFormat::Astc4x4Unorm)
+        );
+        assert_eq!(
+            texture_format_for(RTEX_FORMAT_ASTC_6X6, true),
+            Some(TextureFormat::Astc6x6Srgb)
+        );
+        assert_eq!(
+            texture_format_for(RTEX_FORMAT_ASTC_8X8, false),
+            Some(TextureFormat::Astc8x8Unorm)
+        );
+        assert_eq!(
+            texture_format_for(RTEX_FORMAT_ASTC_12X12, true),
+            Some(TextureFormat::Astc12x12Srgb)
+        );
+        assert_eq!(
+            texture_format_for(RTEX_FORMAT_ASTC_12X12, false),
+            Some(TextureFormat::Astc12x12Unorm)
+        );
+        assert_eq!(
+            texture_format_for(RTEX_FORMAT_ETC2_RGBA8, true),
+            Some(TextureFormat::Etc2R8G8B8A8Srgb)
+        );
+        assert_eq!(
+            texture_format_for(RTEX_FORMAT_ETC2_RGBA8, false),
+            Some(TextureFormat::Etc2R8G8B8A8Unorm)
         );
     }
 

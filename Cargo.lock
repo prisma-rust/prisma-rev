@@ -900,6 +900,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
+name = "ctt-astcenc"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc6dc5595dd5b65dd4cf644bf0d9159f0bd3de2e37c539a1a8df12fb1ecfdd77"
+dependencies = [
+ "bitflags 2.13.1",
+ "cc",
+ "paste",
+]
+
+[[package]]
+name = "ctt-etcpak"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9d56f34893228fab7feeb599eeff99a4202b5cbfccd8a280c630365a7f49bce0"
+dependencies = [
+ "cc",
+ "paste",
+]
+
+[[package]]
 name = "cursor-icon"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2712,6 +2733,8 @@ dependencies = [
  "anyhow",
  "bincode",
  "clap",
+ "ctt-astcenc",
+ "ctt-etcpak",
  "gltf",
  "image",
  "prism-asset",

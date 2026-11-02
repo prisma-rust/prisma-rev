@@ -25,6 +25,8 @@ anyhow = { workspace = true }
 image = { workspace = true, features = ["png", "jpeg", "tga", "bmp", "hdr", "exr"] }
 gltf = { version = "1.4", optional = false }
 texture-compressor = { version = "0.2", default-features = false, features = ["std"] }
+ctt-astcenc = "0.6"
+ctt-etcpak = "0.6"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 tokio = { workspace = true }
 tracing = "0.1"

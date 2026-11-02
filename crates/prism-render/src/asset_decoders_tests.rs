@@ -122,6 +122,24 @@ fn decode_rtex_maps_block_formats() {
 }
 
 #[test]
+fn decode_rtex_maps_astc_and_etc2_formats() {
+    for (code, format) in [
+        (7u8, TextureFormat::Astc4x4Srgb),
+        (8u8, TextureFormat::Astc6x6Srgb),
+        (9u8, TextureFormat::Astc8x8Srgb),
+        (10u8, TextureFormat::Astc12x12Srgb),
+        (11u8, TextureFormat::Etc2R8G8B8A8Srgb),
+    ] {
+        let blob = rtex_blob(4, 4, code, &[vec![0u8; 16]]);
+        assert_eq!(
+            decode_rtex(&blob).unwrap().format,
+            format,
+            "RTEX format {code}"
+        );
+    }
+}
+
+#[test]
 fn decode_rtex_accepts_bc1_and_bc3_block_data() {
     // 块压缩贴图能直接上传（#519）：BC1 是 8 字节 / 块，BC3 是 16 字节 / 块。
     let bc1 = rtex_blob(4, 4, RTEX_FORMAT_BC1, &[vec![0u8; 8]]);

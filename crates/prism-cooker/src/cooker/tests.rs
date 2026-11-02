@@ -368,8 +368,9 @@ fn bc1_mip_chain_keeps_one_block_per_level() {
 }
 
 #[test]
-fn astc_still_falls_back_to_rgba8_with_an_honest_warning() {
-    // 移动编码器是独立后续；现在必须回退到运行时能读的 RGBA8，而不是写坏数据。
+fn mobile_profiles_are_encoded_instead_of_falling_back_to_rgba8() {
+    // ASTC 的 4×4 / 6×6 / 8×8 / 12×12 与 ETC2 RGBA 都走真实编码器；
+    // 4×4 输入对任何块尺寸都至少产生一个 16 字节块（#519）。
     let pixels = std::iter::repeat_n([200u8, 40, 90, 255], 4 * 4)
         .flatten()
         .collect::<Vec<_>>();
@@ -377,16 +378,87 @@ fn astc_still_falls_back_to_rgba8_with_an_honest_warning() {
     let id = AssetId::from_raw((1u64 << 32) | 102);
     let record =
         crate::db::AssetRecord::new(id, "tex.png".into(), AssetType::Texture, "texture-importer");
-    let mut settings = profile::CookSettings::default();
-    settings.texture.compression = profile::TextureCompression::Astc8x8;
-    let ctx = CookContext {
-        record: &record,
-        imported_data: &intermediate,
-        settings: &settings,
-    };
-    let result = TextureCooker.cook(&ctx).unwrap();
-    assert_eq!(result.cooked_data[17], 0, "RGBA8 format byte");
-    assert!(result.compress, "RGBA8 payload still goes through zstd");
+
+    for (compression, rtex_format) in [
+        (profile::TextureCompression::Astc4x4, 7u8),
+        (profile::TextureCompression::Astc6x6, 8u8),
+        (profile::TextureCompression::Astc8x8, 9u8),
+        (profile::TextureCompression::Astc12x12, 10u8),
+        (profile::TextureCompression::Etc2Rgba, 11u8),
+    ] {
+        let mut settings = profile::CookSettings::default();
+        settings.texture.compression = compression;
+        let ctx = CookContext {
+            record: &record,
+            imported_data: &intermediate,
+            settings: &settings,
+        };
+        let result = TextureCooker.cook(&ctx).unwrap();
+        assert_eq!(
+            result.cooked_data[17], rtex_format,
+            "{compression:?} should write its RTEX format byte"
+        );
+        assert!(
+            !result.compress,
+            "{compression:?} is already block-compressed"
+        );
+        let decoded = prism_asset::formats::decode_rtex(&result.cooked_data)
+            .unwrap_or_else(|| panic!("{compression:?} must produce a valid RTEX blob"));
+        assert_eq!(decoded.format, rtex_format);
+        assert_eq!(
+            decoded.mip_data[0].len(),
+            16,
+            "{compression:?} 4x4 block size"
+        );
+    }
+}
+
+#[test]
+fn astc_and_etc2_mip_chains_pad_partial_edge_blocks() {
+    // 8×8 → 4×4 → 2×2 → 1×1；6×6 / 4×4 块在边缘补齐，
+    // 每级都是 ceil(w/block) * ceil(h/block) * 16。
+    let pixels = std::iter::repeat_n([10u8, 20, 30, 255], 8 * 8)
+        .flatten()
+        .collect::<Vec<_>>();
+    let intermediate = make_texture_intermediate(8, 8, &pixels);
+    let id = AssetId::from_raw((1u64 << 32) | 104);
+    let record =
+        crate::db::AssetRecord::new(id, "tex.png".into(), AssetType::Texture, "texture-importer");
+
+    for (compression, expected) in [
+        (
+            profile::TextureCompression::Astc6x6,
+            vec![64usize, 16, 16, 16],
+        ),
+        (
+            profile::TextureCompression::Astc8x8,
+            vec![16usize, 16, 16, 16],
+        ),
+        (
+            profile::TextureCompression::Astc12x12,
+            vec![16usize, 16, 16, 16],
+        ),
+        (
+            profile::TextureCompression::Etc2Rgba,
+            vec![64usize, 16, 16, 16],
+        ),
+    ] {
+        let mut settings = profile::CookSettings::default();
+        settings.texture.compression = compression;
+        let ctx = CookContext {
+            record: &record,
+            imported_data: &intermediate,
+            settings: &settings,
+        };
+        let result = TextureCooker.cook(&ctx).unwrap();
+        let decoded = prism_asset::formats::decode_rtex(&result.cooked_data).unwrap();
+        assert_eq!(decoded.mip_levels, 4, "{compression:?}");
+        assert_eq!(
+            decoded.mip_data.iter().map(Vec::len).collect::<Vec<_>>(),
+            expected,
+            "{compression:?} mip sizes"
+        );
+    }
 }
 
 fn rtex_header(data: &[u8]) -> (u32, u32, u32) {
