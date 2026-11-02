@@ -468,6 +468,8 @@ pub fn register_builtin_components(registry: &mut ComponentRegistry) {
         registry.register_reflect_serde::<Skybox>("prism_engine::scene::Skybox");
         registry.register_reflect_serde::<Gizmo>("prism_engine::scene::Gizmo");
         registry.register_reflect_serde::<MeshRenderer>("prism_engine::scene::MeshRenderer");
+        // #491：距离 LOD（子实体即 LOD 级）。
+        registry.register_reflect_serde::<LodGroup>("prism_engine::scene::LodGroup");
     }
 
     // ── 2D 精灵（作者态；GPU 句柄由运行时 `SpriteRef` 持有）──

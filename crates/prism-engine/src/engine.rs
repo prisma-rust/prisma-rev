@@ -472,6 +472,9 @@ impl Engine {
         crate::scene::systems::hierarchy::hierarchy_system(&mut self.world);
         // `Active` 沿父子传播（`activeInHierarchy`），渲染 / 光照读派生值。
         crate::scene::systems::hierarchy::active_hierarchy_system(&mut self.world);
+        // 距离 LOD（#491）：用本帧的世界矩阵选级，写运行时 `LodHidden`。
+        // 必须在 `hierarchy_system` 之后，提取阶段才能看到当前帧的距离。
+        crate::scene::systems::lod::lod_system(&mut self.world);
 
         // Tick the main‑thread timer 分发 expired callbacks).
         self.timer.tick();

@@ -173,6 +173,14 @@ pub fn is_active_in_hierarchy(world: &World, entity: Entity) -> bool {
     if world.get::<Hidden>(entity).is_some_and(|hidden| hidden.0) {
         return false;
     }
+    // 距离 LOD（#491）：运行时系统选级后把其它级标成隐藏。它和编辑器自己
+    // 的 `Hidden` 分开，避免 LOD 覆盖作者 / 编辑器的可见性选择。
+    if world
+        .get::<LodHidden>(entity)
+        .is_some_and(|hidden| hidden.0)
+    {
+        return false;
+    }
     if let Some(derived) = world.get::<ActiveInHierarchy>(entity) {
         return derived.0;
     }

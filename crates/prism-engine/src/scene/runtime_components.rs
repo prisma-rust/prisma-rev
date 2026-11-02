@@ -113,6 +113,15 @@ pub struct UiImageRef {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SceneEntityId(pub u32);
 
+/// 距离 LOD 的运行时隐藏标记（#491）。
+///
+/// 写出它的是 `lod_system`：父实体挂 [`LodGroup`](prism_scene::components::LodGroup)
+/// 时，只有当前距离级对应的子实体 `LodHidden(false)`，其余为 `true`。
+/// `is_active_in_hierarchy` 会跳过 `true` 的实体，但**不会**改写作者的
+/// `Active`，也不影响编辑器的 [`Hidden`]。它不参与序列化。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LodHidden(pub bool);
+
 /// 编辑会话级隐藏标记（Unity `SceneVisibilityManager`）。
 ///
 /// `Active` 是作者数据（会进 `.scene.json`，停用后不再模拟）；这个标记只在

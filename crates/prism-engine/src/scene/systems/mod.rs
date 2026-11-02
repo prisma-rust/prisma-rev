@@ -15,6 +15,7 @@ pub mod animator;
 pub mod camera;
 pub mod hierarchy;
 pub mod lights;
+pub mod lod;
 pub mod particles;
 pub mod particles2d;
 pub mod render;
