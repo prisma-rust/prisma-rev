@@ -397,7 +397,9 @@ cook 阶段把 glTF 的 `skins` / `JOINTS_0` / `WEIGHTS_0` / `animations` 烘成
 - **`Animator`**：检查器里是「▶/⏸、⏮ 重播、时间轴滑杆、Loop、speed」；滑杆下方一条 6px
   刻度带标出所有轨道的关键帧时刻（`Clip::key_times` 合并去重），拖的时候能看出哪里会变。
   改时间 / 勾 Loop 直接写回组件字段（一次撤销步），引擎的 `animator::pose` 系统下一帧按
-  新时间重算骨骼调色板。
+  新时间重算骨骼调色板。**`blend_duration`**（秒，默认 0.2）是运行时换剪辑的交叉淡入时长：
+  旧剪辑冻结在切走那一刻的姿态，按时长淡出到新剪辑；`0` 表示硬切。它只在运行时改
+  `clip_path` 时生效，拖时间轴 / 换 `clip_path` 后的下一帧都会按它过渡。
 - **`SkeletonRoot`**：检查器里画骨骼树（`CollapsingHeader` 按父链缩进，成环有护栏）。
 - **视口叠加**：工具栏 `Bones`（`Outline` 右边）控制，默认开。选中蒙皮实体时按
   `BonePalette` 还原关节世界位置（`world = palette × inverse_bind⁻¹`），画父 → 子 1.6px
