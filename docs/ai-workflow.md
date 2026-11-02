@@ -321,6 +321,12 @@ GPU / shader 测试：CI 设置 `PRISM_REQUIRE_VALIDATION=1`，要求 debug 构�
 可选 push constants → dispatch → readback），不要把 Vulkan 初始化样板再抄一遍。示例见
 `crates/prism-render/tests/shader_harness_gpu.rs`。
 
+编辑器数据层测试优先复用
+`editor/crates/prism-editor-gpui-core/tests/support` 的 `EditorHarness`：它创建临时项目
+（scene + prefab + 最小 schema），测试通过 `Workspace` 的公开 API 执行选择、编辑、撤销、
+保存和重载，并同时断言内存与磁盘状态。示例见
+`editor/crates/prism-editor-gpui-core/tests/workspace_harness.rs`。
+
 需要比较多个 kernel 配置时，用 `GpuHarness::dispatch_repeated` 在**一次提交**里重复
 dispatch 并返回 `TimedDispatch { outputs, elapsed }`；每个候选先校验 readback，再按
 `elapsed / repeats` 选最快。kernel 必须是幂等的（例如读 A 写 B），因为后一次 dispatch
