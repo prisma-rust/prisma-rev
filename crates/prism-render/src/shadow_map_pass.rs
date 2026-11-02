@@ -10,6 +10,7 @@
 use anyhow::Context as _;
 use anyhow::Result;
 use ash::vk;
+use std::collections::HashMap;
 
 use crate::context::VulkanContext;
 use crate::culling::{Aabb, Frustum};
@@ -24,6 +25,97 @@ use crate::shader_bindings::shadow_depth as bindings;
 
 const _: () =
     assert!(std::mem::size_of::<bindings::ShadowPush>() as u32 == bindings::PUSH_CONSTANT_SIZE);
+
+/// Grouping key for static shadow casters that can share one draw call (#491).
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct ShadowBatchKey {
+    mesh: crate::managers::MeshHandle,
+    two_sided: bool,
+    index_start: u32,
+    index_count: Option<u32>,
+}
+
+struct ShadowBatch {
+    items: Vec<usize>,
+    /// First packed bone/instance matrix; `None` = single draw.
+    instance_offset: Option<u32>,
+}
+
+/// Group static casters by mesh, culling mode and submesh range.
+///
+/// Frustum culling happens per cascade at draw time. A group is submitted when
+/// at least one member survives; individual out-of-frustum instances are
+/// clipped by the rasterizer, which keeps one draw call per mesh instead of one
+/// per caster. Skinned casters stay single draws (their bone offset is per item).
+fn build_shadow_batches_with(
+    draw_list: &[crate::render_graph::DrawItem],
+    mesh_exists: impl Fn(crate::managers::MeshHandle) -> bool,
+) -> Vec<ShadowBatch> {
+    let mut batches: Vec<ShadowBatch> = Vec::new();
+    let mut slots: HashMap<ShadowBatchKey, usize> = HashMap::new();
+    for (index, item) in draw_list.iter().enumerate() {
+        if !item.cast_shadow || item.index_count == Some(0) || !mesh_exists(item.mesh) {
+            continue;
+        }
+        let groupable = item.bone_offset.is_none();
+        if !groupable {
+            batches.push(ShadowBatch {
+                items: vec![index],
+                instance_offset: None,
+            });
+            continue;
+        }
+        let key = ShadowBatchKey {
+            mesh: item.mesh,
+            two_sided: item.cast_shadow_two_sided,
+            index_start: item.index_start,
+            index_count: item.index_count,
+        };
+        let slot = *slots.entry(key).or_insert_with(|| {
+            batches.push(ShadowBatch {
+                items: Vec::new(),
+                instance_offset: None,
+            });
+            batches.len() - 1
+        });
+        batches[slot].items.push(index);
+    }
+    batches
+}
+
+/// Assign instance offsets, splitting groups that do not fit `capacity`.
+fn prepare_shadow_batches(
+    draw_list: &[crate::render_graph::DrawItem],
+    mesh_manager: &crate::managers::RenderMeshManager,
+    capacity: usize,
+) -> (Vec<ShadowBatch>, Vec<[[f32; 4]; 4]>) {
+    prepare_shadow_batches_with(draw_list, |mesh| mesh_manager.get(mesh).is_some(), capacity)
+}
+
+fn prepare_shadow_batches_with(
+    draw_list: &[crate::render_graph::DrawItem],
+    mesh_exists: impl Fn(crate::managers::MeshHandle) -> bool,
+    capacity: usize,
+) -> (Vec<ShadowBatch>, Vec<[[f32; 4]; 4]>) {
+    let mut out = Vec::new();
+    let mut matrices: Vec<[[f32; 4]; 4]> = Vec::new();
+    for batch in build_shadow_batches_with(draw_list, mesh_exists) {
+        if batch.items.len() > 1 && matrices.len() + batch.items.len() <= capacity {
+            let mut batch = batch;
+            batch.instance_offset = Some(matrices.len() as u32);
+            matrices.extend(batch.items.iter().map(|&i| draw_list[i].model));
+            out.push(batch);
+        } else if batch.items.len() == 1 {
+            out.push(batch);
+        } else {
+            out.extend(batch.items.into_iter().map(|i| ShadowBatch {
+                items: vec![i],
+                instance_offset: None,
+            }));
+        }
+    }
+    (out, matrices)
+}
 
 /// 光栅化阴影映射——混合自适应阴影系统的纯深度后备方案（`docs/DESIGN.md` §2.3）。
 ///
@@ -77,6 +169,8 @@ pub struct ShadowMapPass {
     bone_buffers: Vec<vk::Buffer>,
     bone_memories: Vec<vk::DeviceMemory>,
     bone_sets: Vec<vk::DescriptorSet>,
+    /// 上一帧实际发出的阴影 draw call 数（#491 实例化后可能小于 caster 数）。
+    last_shadow_draw_calls: u32,
 }
 
 /// 阴影贴图边长（texel）。与 [`crate::SHADOW_MAP_SIZE`] 是同一个值，这里 re-export
@@ -106,6 +200,7 @@ impl ShadowMapPass {
             bone_buffers: Vec::new(),
             bone_memories: Vec::new(),
             bone_sets: Vec::new(),
+            last_shadow_draw_calls: 0,
         }
     }
 
@@ -131,6 +226,14 @@ impl ShadowMapPass {
     /// 投射者。与 [`Self::last_casters`] 一样，只统计第一级联。
     pub fn last_culled_casters(&self) -> u32 {
         self.last_culled_casters
+    }
+
+    /// 上一帧实际发出的阴影 draw call 数（#491）。
+    ///
+    /// 相同 mesh / 剔除模式 / submesh 的静态 caster 会合并成一次实例化 draw，
+    /// 所以这个值可能小于 [`Self::last_casters`] 的逻辑 caster 数。
+    pub fn last_shadow_draw_calls(&self) -> u32 {
+        self.last_shadow_draw_calls
     }
 
     pub fn shadow_extent(&self) -> vk::Extent2D {
@@ -236,6 +339,7 @@ impl ShadowMapPass {
         device: &ash::Device,
         render_pass: vk::RenderPass,
         cull_mode: vk::CullModeFlags,
+        bone_layout: Option<vk::DescriptorSetLayout>,
     ) -> anyhow::Result<GraphicsPipeline> {
         const VERT_SPV: &[u8] = include_bytes!("../../../assets/shaders/shadow_depth.vert.spv");
         const FRAG_SPV: &[u8] = include_bytes!("../../../assets/shaders/shadow_depth.frag.spv");
@@ -271,12 +375,13 @@ impl ShadowMapPass {
             .size(bindings::PUSH_CONSTANT_SIZE)];
 
         // Depth-only 管线 + 深度 bias；剔除模式由调用方决定。
+        let set_layouts: Vec<vk::DescriptorSetLayout> = bone_layout.into_iter().collect();
         let pipeline = GraphicsPipeline::new(&PipelineDesc {
             device,
             shader_stages: &shader_stages,
             vertex_binding_desc: std::slice::from_ref(&binding_desc),
             vertex_attr_descs: std::slice::from_ref(&position_attr),
-            descriptor_set_layouts: &[],
+            descriptor_set_layouts: &set_layouts,
             push_constant_ranges: &push,
             render_pass,
             subpass: 0,
@@ -426,6 +531,30 @@ impl ShadowMapPass {
                     layout,
                 )
                 .context("create two-sided skinned shadow pipeline")?,
+            );
+        }
+        // #491: the static entry point now reads the bone/instance SSBO when an
+        // instance count is present, so every static pipeline carries set 0.
+        if self.pipeline.is_none() {
+            self.pipeline = Some(
+                Self::create_pipeline(
+                    device,
+                    render_pass,
+                    Self::shadow_cull_mode(false),
+                    Some(layout),
+                )
+                .context("create shadow pipeline")?,
+            );
+        }
+        if self.pipeline_two_sided.is_none() {
+            self.pipeline_two_sided = Some(
+                Self::create_pipeline(
+                    device,
+                    render_pass,
+                    Self::shadow_cull_mode(true),
+                    Some(layout),
+                )
+                .context("create two-sided shadow pipeline")?,
             );
         }
 
@@ -658,21 +787,6 @@ impl RenderPassNode for ShadowMapPass {
             }
             .context("create shadow framebuffer")?;
             self.framebuffer = Some(framebuffer);
-
-            // 管线 — may already exist when warmup ran ahead of 时间
-            // 两套管线：背面剔除（默认）与双面/不剔除（`ShadowCastingMode::TwoSided`）。
-            if self.pipeline.is_none() {
-                self.pipeline = Some(
-                    Self::create_pipeline(device, rp, Self::shadow_cull_mode(false))
-                        .context("create shadow depth-only pipeline")?,
-                );
-            }
-            if self.pipeline_two_sided.is_none() {
-                self.pipeline_two_sided = Some(
-                    Self::create_pipeline(device, rp, Self::shadow_cull_mode(true))
-                        .context("create two-sided shadow depth-only pipeline")?,
-                );
-            }
         } // if self.framebuffer.is_none()
 
         // 蒙皮 casters 的管线 + 用户缓冲（#560 P0-3c）。
@@ -682,6 +796,18 @@ impl RenderPassNode for ShadowMapPass {
             self.update_bones(ctx.device, ctx.frame_index, ctx.frame.bone_matrices)?;
         }
 
+        // #491: static casters are batched by mesh / culling mode / submesh.
+        // Instance matrices ride after the live bone palette in the same SSBO.
+        let bone_count = ctx.frame.bone_matrices.len().min(SHADOW_BONE_CAPACITY);
+        let capacity = SHADOW_BONE_CAPACITY.saturating_sub(bone_count);
+        let (batches, instance_matrices) =
+            prepare_shadow_batches(ctx.frame.draw_list, ctx.frame.mesh_manager, capacity);
+        if !instance_matrices.is_empty() {
+            let mut packed = Vec::with_capacity(bone_count + instance_matrices.len());
+            packed.extend_from_slice(&ctx.frame.bone_matrices[..bone_count]);
+            packed.extend_from_slice(&instance_matrices);
+            self.update_bones(ctx.device, ctx.frame_index, &packed)?;
+        }
         let pipeline_culled = self.pipeline.as_ref().unwrap();
         let pipeline_two_sided = self.pipeline_two_sided.as_ref().unwrap();
         let skinned_culled = self
@@ -734,6 +860,8 @@ impl RenderPassNode for ShadowMapPass {
         let mut skinned_casters = 0u32;
         // 被光源视锥剔除的 caster 只统计第一级联（#491）。
         self.last_culled_casters = 0;
+        self.last_shadow_draw_calls = 0;
+
         unsafe {
             for cascade in 0..cascade_count {
                 // 每个级联固定占据 atlas 的一个正方形 tile；单级联只用左半边，
@@ -778,35 +906,38 @@ impl RenderPassNode for ShadowMapPass {
 
                 // 按 (是否蒙皮, 是否双面) 选管线，只在切换时重绑。
                 let mut bound_pipeline: Option<(bool, bool)> = None;
-                for item in ctx.frame.draw_list {
-                    // `ShadowCastingMode::Off` -> 不写阴影贴图。
-                    if !item.cast_shadow {
-                        continue;
-                    }
-                    // 不在这一级联阴影覆盖范围内的 caster 不提交（#491）。
-                    // `world_bounds` 缺失（程序化网格 / 句柄未解析）时保持旧行为。
-                    if !caster_survives_light_frustum(
-                        item.world_bounds.as_ref(),
-                        light_frustum.as_ref(),
-                    ) {
-                        if cascade == 0 {
+                for batch in &batches {
+                    // Culling stays per logical caster so the diagnostics stay
+                    // exact. If at least one member survives, the whole batch is
+                    // submitted; clipped instances cost vertex work only.
+                    let mut survives = 0u32;
+                    for &index in &batch.items {
+                        let item = &ctx.frame.draw_list[index];
+                        if caster_survives_light_frustum(
+                            item.world_bounds.as_ref(),
+                            light_frustum.as_ref(),
+                        ) {
+                            survives += 1;
+                        } else if cascade == 0 {
                             self.last_culled_casters += 1;
                         }
+                    }
+                    if survives == 0 {
                         continue;
                     }
+
+                    let item = &ctx.frame.draw_list[batch.items[0]];
                     let uploaded = match ctx.frame.mesh_manager.get(item.mesh) {
                         Some(m) => &m.mesh,
                         None => continue,
                     };
 
-                    // 蒙皮 caster 走蒙皮管线（读第二个顶点缓冲 + 骨骼调色板）；
-                    // 静态 caster 走原来的纯位置管线（#560 P0-3c）。
+                    // Skinned casters are always singleton batches; static
+                    // casters can carry a shared instance range.
                     let skinned = item.bone_offset.is_some();
                     let skin_buffer = if skinned {
                         match ctx.frame.mesh_manager.get(item.mesh) {
                             Some(m) => match m.skin.as_ref() {
-                                // 声明了蒙皮但缓冲没上传：画出来会是 bind pose 以外的垃圾，
-                                // 宁可这个 caster 不投影。
                                 Some(skin) => Some(skin.buffer),
                                 None => continue,
                             },
@@ -832,12 +963,14 @@ impl RenderPassNode for ShadowMapPass {
                         bound_pipeline = Some((skinned, two_sided));
                     }
 
+                    self.last_shadow_draw_calls += 1;
                     if cascade == 0 {
-                        casters += 1;
+                        casters += survives as usize;
                         if skinned {
                             skinned_casters += 1;
                         }
                     }
+
                     let vertex_buffers = match skin_buffer {
                         Some(skin_buffer) => [uploaded.vertex_buffer, skin_buffer],
                         None => [uploaded.vertex_buffer, vk::Buffer::null()],
@@ -851,32 +984,42 @@ impl RenderPassNode for ShadowMapPass {
                         &offsets[..buffer_count],
                     );
 
-                    if skin_buffer.is_some() {
-                        let bone_set = match self
-                            .bone_sets
-                            .get(ctx.frame_index as usize % self.bone_sets.len().max(1))
-                        {
-                            Some(set) => *set,
-                            None => continue,
-                        };
-                        let sets = [bone_set];
-                        ctx.device.cmd_bind_descriptor_sets(
-                            ctx.cmd,
-                            vk::PipelineBindPoint::GRAPHICS,
-                            pipeline.layout,
-                            0,
-                            &sets,
-                            &[],
-                        );
-                    }
+                    let instance_count = if skinned {
+                        0
+                    } else {
+                        batch
+                            .instance_offset
+                            .map(|_| batch.items.len() as u32)
+                            .unwrap_or(0)
+                    };
+                    let bone_set = match self
+                        .bone_sets
+                        .get(ctx.frame_index as usize % self.bone_sets.len().max(1))
+                    {
+                        Some(set) => *set,
+                        None => continue,
+                    };
+                    let sets = [bone_set];
+                    ctx.device.cmd_bind_descriptor_sets(
+                        ctx.cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        pipeline.layout,
+                        0,
+                        &sets,
+                        &[],
+                    );
 
+                    let instance_offset = batch
+                        .instance_offset
+                        .map(|offset| bone_count as u32 + offset)
+                        .unwrap_or(0);
                     let pc = bindings::ShadowPush {
                         model: item.model,
                         lightViewProj: light_view_proj,
                         bone_offset: item.bone_offset.unwrap_or(0),
-                        ..Default::default()
+                        _pad_132: [0; 12],
+                        _pad: [instance_offset, instance_count, 0],
                     };
-                    // 推送常量必须使用当前绑定管线的布局（两套管线各有独立 layout）。
                     ctx.device.cmd_push_constants(
                         ctx.cmd,
                         pipeline.layout,
@@ -888,6 +1031,7 @@ impl RenderPassNode for ShadowMapPass {
                         ),
                     );
 
+                    let draw_instances = instance_count.max(1);
                     if let Some(ib) = uploaded.index_buffer {
                         let index_count = item.index_count.unwrap_or(uploaded.index_count);
                         if index_count == 0 {
@@ -898,13 +1042,14 @@ impl RenderPassNode for ShadowMapPass {
                         ctx.device.cmd_draw_indexed(
                             ctx.cmd,
                             index_count,
-                            1,
+                            draw_instances,
                             item.index_start,
                             0,
                             0,
                         );
                     } else {
-                        ctx.device.cmd_draw(ctx.cmd, uploaded.vertex_count, 1, 0, 0);
+                        ctx.device
+                            .cmd_draw(ctx.cmd, uploaded.vertex_count, draw_instances, 0, 0);
                     }
                 }
             }
@@ -937,16 +1082,8 @@ impl RenderPassNode for ShadowMapPass {
         let render_pass = Self::create_render_pass(device, vk::Format::D32_SFLOAT)?;
         self.render_pass = Some(render_pass);
 
-        // 管线 — 加载 着色器 modules, 创建两套 depth-only 管线
-        // （背面剔除 / 双面），使渲染线程在首帧前就编译好两条几乎相同的管线。
-        self.pipeline = Some(
-            Self::create_pipeline(device, render_pass, Self::shadow_cull_mode(false))
-                .context("warmup: shadow depth-only pipeline")?,
-        );
-        self.pipeline_two_sided = Some(
-            Self::create_pipeline(device, render_pass, Self::shadow_cull_mode(true))
-                .context("warmup: two-sided shadow depth-only pipeline")?,
-        );
+        // Static pipelines are created by `ensure_skinned` once the bone /
+        // instance descriptor layout exists (#491).
         Ok(())
     }
 
@@ -1177,6 +1314,74 @@ mod tests {
             Some(&bounds),
             Frustum::from_view_proj(&degenerate).as_ref()
         ));
+    }
+
+    fn caster_item(
+        mesh: crate::managers::MeshHandle,
+        two_sided: bool,
+    ) -> crate::render_graph::DrawItem {
+        crate::render_graph::DrawItem {
+            mesh,
+            entity_id: 1,
+            model: [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            material: None,
+            cast_shadow: true,
+            visible_in_main_pass: true,
+            cast_shadow_two_sided: two_sided,
+            bone_offset: None,
+            state: crate::render_graph::DrawState::default(),
+            world_bounds: None,
+            index_start: 0,
+            index_count: None,
+        }
+    }
+
+    #[test]
+    fn shadow_batches_group_identical_static_casters() {
+        let mesh = crate::managers::MeshHandle::default();
+        let draws = [
+            caster_item(mesh, false),
+            caster_item(mesh, false),
+            caster_item(mesh, true),
+        ];
+        let batches = build_shadow_batches_with(&draws, |_| true);
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0].items, vec![0, 1]);
+        assert_eq!(batches[1].items, vec![2]);
+    }
+
+    #[test]
+    fn shadow_batches_keep_skinned_and_skip_non_casters() {
+        let mesh = crate::managers::MeshHandle::default();
+        let mut skinned = caster_item(mesh, false);
+        skinned.bone_offset = Some(0);
+        let mut off = caster_item(mesh, false);
+        off.cast_shadow = false;
+        let mut empty = caster_item(mesh, false);
+        empty.index_count = Some(0);
+        let draws = [skinned, off, empty];
+        let batches = build_shadow_batches_with(&draws, |_| true);
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].items, vec![0]);
+        assert_eq!(batches[0].instance_offset, None);
+
+        let draws = [caster_item(mesh, false), caster_item(mesh, false)];
+        assert!(build_shadow_batches_with(&draws, |_| false).is_empty());
+    }
+
+    #[test]
+    fn shadow_batches_fall_back_when_capacity_is_exhausted() {
+        let mesh = crate::managers::MeshHandle::default();
+        let draws: Vec<_> = (0..=3).map(|_| caster_item(mesh, false)).collect();
+        let (batches, matrices) = prepare_shadow_batches_with(&draws, |_| true, 2);
+        assert!(matrices.is_empty());
+        assert_eq!(batches.len(), draws.len());
+        assert!(batches.iter().all(|b| b.instance_offset.is_none()));
     }
 
     #[test]
