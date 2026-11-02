@@ -35,6 +35,8 @@ pub enum AssetType {
     AnimClip = 11,
     /// 动画状态机（`.rasm`，#560 P1）。
     StateMachine = 12,
+    /// 动画图（`.rag`，#560 P1）。
+    AnimGraph = 13,
     /// 回退 for unrecognised formats.
     Unknown = 0xFF,
 }
@@ -61,6 +63,7 @@ impl AssetType {
             AssetType::SkinnedMesh => "skinned-mesh",
             AssetType::AnimClip => "anim-clip",
             AssetType::StateMachine => "state-machine",
+            AssetType::AnimGraph => "anim-graph",
             AssetType::Unknown => "unknown",
         }
     }
@@ -81,6 +84,7 @@ impl AssetType {
             10 => AssetType::SkinnedMesh,
             11 => AssetType::AnimClip,
             12 => AssetType::StateMachine,
+            13 => AssetType::AnimGraph,
             _ => AssetType::Unknown,
         }
     }
@@ -104,6 +108,7 @@ impl AssetType {
             "rskin" => AssetType::SkinnedMesh,
             "ranim" => AssetType::AnimClip,
             "rasm" => AssetType::StateMachine,
+            "rag" => AssetType::AnimGraph,
             // Textures / images
             "png" | "jpg" | "jpeg" | "tga" | "bmp" | "hdr" | "exr" | "ktx" | "ktx2" | "dds" => {
                 AssetType::Texture

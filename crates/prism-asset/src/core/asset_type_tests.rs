@@ -83,3 +83,13 @@ fn known_type_is_known() {
 fn unknown_type_is_not_known() {
     assert!(!AssetType::Unknown.is_known());
 }
+
+#[test]
+fn animation_graph_extension_and_label() {
+    assert_eq!(AssetType::from_extension("rag"), AssetType::AnimGraph);
+    assert_eq!(AssetType::AnimGraph.label(), "anim-graph");
+    assert_eq!(
+        AssetType::from_u32(AssetType::AnimGraph.to_u32()),
+        AssetType::AnimGraph
+    );
+}
