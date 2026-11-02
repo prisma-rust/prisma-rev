@@ -397,7 +397,9 @@ cook 阶段把 glTF 的 `skins` / `JOINTS_0` / `WEIGHTS_0` / `animations` 烘成
 - **`Animator`**：检查器里是「▶/⏸、⏮ 重播、时间轴滑杆、Loop、speed」；滑杆下方一条 6px
   刻度带标出所有轨道的关键帧时刻（`Clip::key_times` 合并去重），拖的时候能看出哪里会变。
   改时间 / 勾 Loop 直接写回组件字段（一次撤销步），引擎的 `animator::pose` 系统下一帧按
-  新时间重算骨骼调色板。**`blend_duration`**（秒，默认 0.2）是运行时换剪辑的交叉淡入时长：
+  新时间重算骨骼调色板。滑杆下方还有一条 Notify 色带（青色小三角）：剪辑里的关键帧事件
+  （`{mesh}.skinning/notifies.json` 里的 `Footstep.L` 这类）按时间画在轴上，悬停显示名字，
+  一眼能看出这段动画在哪几秒会触发事件。**`blend_duration`**（秒，默认 0.2）是运行时换剪辑的交叉淡入时长：
   **淡出源是上一帧实际显示姿态的快照**（不是「旧剪辑 + 时间」），所以换剪辑、出入混合空间、
   甚至旧剪辑被删 / 热重载，都能正常淡出而不是硬跳；`0` 表示硬切。权重到 1 就丢掉快照。
 - **叠加层（additive）**：`Animator.additive_clip_path` + `additive_weight`（默认 1）。叠加

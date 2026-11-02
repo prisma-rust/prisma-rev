@@ -5585,10 +5585,15 @@ impl EditorApp {
             .collect();
         // 时间轴刻度：一次性把关键帧时间点也取过来（剪辑数量很少）。
         let keys: std::collections::HashMap<String, Vec<f32>> = wanted_clips
+            .iter()
+            .map(|path| (path.clone(), library.clip_key_times(path)))
+            .collect();
+        // Notify 标记（#560 P1）：时间轴上用另一条色带标出来。
+        let notifies: std::collections::HashMap<String, Vec<(f32, String)>> = wanted_clips
             .into_iter()
             .map(|path| {
-                let times = library.clip_key_times(&path);
-                (path, times)
+                let list = library.clip_notifies(&path);
+                (path, list)
             })
             .collect();
         let skeletons: std::collections::HashMap<String, Vec<SkeletonJointRow>> = wanted_skeletons
@@ -5608,6 +5613,7 @@ impl EditorApp {
             .collect();
         self.state.clip_durations = durations;
         self.state.clip_keys = keys;
+        self.state.clip_notifies = notifies;
         self.state.skeleton_joints = skeletons;
     }
 }

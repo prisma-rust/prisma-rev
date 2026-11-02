@@ -47,6 +47,19 @@ impl SkeletonLibrary {
         self.clips.get(path).cloned()
     }
 
+    /// 剪辑里的 Notify（时间 + 名字，按时间升序）；没加载过的路径返回空。
+    pub fn clip_notifies(&self, path: &str) -> Vec<(f32, String)> {
+        self.clips
+            .get(path)
+            .map(|clip| {
+                clip.notifies
+                    .iter()
+                    .map(|notify| (notify.time, notify.name.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// 剪辑里出现的关键帧时间点（升序去重）；没加载过的路径返回空。
     pub fn clip_key_times(&self, path: &str) -> Vec<f32> {
         self.clips
