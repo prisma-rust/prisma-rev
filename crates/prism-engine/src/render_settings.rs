@@ -129,6 +129,13 @@ pub struct RenderSettings {
     pub dof_aperture: f32,
     /// 景深最大模糊半径（像素，0–32）。
     pub dof_max_blur: f32,
+    /// 3D 调色 LUT 的资产相对路径（`assets/` 下的 `.cube`，#502）。
+    ///
+    /// 空字符串 = 不使用 LUT。文件由渲染器在路径变化时惰性加载；加载失败
+    /// 只记录警告并保留上一张 LUT，不会中断渲染。
+    pub lut: String,
+    /// LUT 混合强度（`0.0` = 关闭，`1.0` = 完全使用 LUT）。
+    pub lut_strength: f32,
     /// 内部渲染分辨率 `[宽, 高]`（#613）；`[0, 0]` = 关闭。
     ///
     /// 开启后场景按这个尺寸渲染，`PostPass` 再放大到窗口；相机的宽高比也跟着
@@ -169,6 +176,7 @@ impl RenderSettings {
             dof_focus_distance: self.dof_focus_distance,
             dof_aperture: self.dof_aperture,
             dof_max_blur: self.dof_max_blur,
+            lut_strength: self.lut_strength,
         }
     }
 
@@ -216,6 +224,8 @@ impl Default for RenderSettings {
             dof_focus_distance: 1.0,
             dof_aperture: 0.0,
             dof_max_blur: 8.0,
+            lut: String::new(),
+            lut_strength: 0.0,
             shadow_distance: DEFAULT_SHADOW_DISTANCE,
             shadow_map_size: prism_render::SHADOW_MAP_SIZE,
             shadow_cascade_count: 1,

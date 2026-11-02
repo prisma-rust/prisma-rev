@@ -448,6 +448,14 @@ fn render_one_frame(
         _pad3: [0.0; 2],
     };
 
+    // #502：全局 LUT 强度 + assets/ 下的 .cube 路径（体积调色不覆盖 LUT）。
+    let mut resolved_grade = packet.grade.unwrap_or_else(|| settings.post_grade());
+    resolved_grade.lut_strength = settings.lut_strength;
+    let lut_path = if settings.lut.trim().is_empty() {
+        None
+    } else {
+        prism_engine::asset_paths::asset_path(settings.lut.trim())
+    };
     let input = FrameInput {
         draw_items,
         gizmos: &packet.gizmos,
@@ -469,7 +477,8 @@ fn render_one_frame(
         tonemap_mode: settings.tonemap_mode,
         aa_mode: settings.aa_mode,
         debug_rt: settings.debug_rt,
-        grade: packet.grade.unwrap_or_else(|| settings.post_grade()),
+        grade: resolved_grade,
+        lut_path: lut_path.as_deref(),
         proj22: scene.proj22,
         proj32: scene.proj32,
         lights: &scene.lights,

@@ -42,6 +42,26 @@
             }
         },
         {
+            "name": "lutTex",
+            "binding": {"kind": "descriptorTableSlot", "index": 2},
+            "type": {
+                "kind": "resource",
+                "baseShape": "texture3D",
+                "combined": true,
+                "resultType": {
+                    "kind": "vector",
+                    "elementCount": 4,
+                    "elementType": {
+                        "kind": "scalar",
+                        "scalarType": "float32"
+                    }
+                },
+                "sizes": [
+                    {"kind": "descriptorTableSlot", "value": 1}
+                ]
+            }
+        },
+        {
             "name": "pc",
             "binding": {"kind": "pushConstantBuffer", "index": 0},
             "type": {
@@ -240,10 +260,32 @@
                                 ]
                             },
                             "binding": {"kind": "uniform", "offset": 68, "size": 4, "elementStride": 0}
+                        },
+                        {
+                            "name": "lutStrength",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "float32",
+                                "sizes": [
+                                    {"kind": "uniform", "value": 4, "alignment": 4}
+                                ]
+                            },
+                            "binding": {"kind": "uniform", "offset": 72, "size": 4, "elementStride": 0}
+                        },
+                        {
+                            "name": "lutSize",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "float32",
+                                "sizes": [
+                                    {"kind": "uniform", "value": 4, "alignment": 4}
+                                ]
+                            },
+                            "binding": {"kind": "uniform", "offset": 76, "size": 4, "elementStride": 0}
                         }
                     ],
                     "sizes": [
-                        {"kind": "uniform", "value": 72, "alignment": 8}
+                        {"kind": "uniform", "value": 80, "alignment": 8}
                     ]
                 },
                 "containerVarLayout": {
@@ -444,13 +486,35 @@
                                     ]
                                 },
                                 "binding": {"kind": "uniform", "offset": 68, "size": 4, "elementStride": 0}
+                            },
+                            {
+                                "name": "lutStrength",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32",
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 4, "alignment": 4}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 72, "size": 4, "elementStride": 0}
+                            },
+                            {
+                                "name": "lutSize",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32",
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 4, "alignment": 4}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 76, "size": 4, "elementStride": 0}
                             }
                         ],
                         "sizes": [
-                            {"kind": "uniform", "value": 72, "alignment": 8}
+                            {"kind": "uniform", "value": 80, "alignment": 8}
                         ]
                     },
-                    "binding": {"kind": "uniform", "offset": 0, "size": 72, "elementStride": 0}
+                    "binding": {"kind": "uniform", "offset": 0, "size": 80, "elementStride": 0}
                 },
                 "sizes": [
                     {"kind": "pushConstantBuffer", "value": 1}
@@ -487,6 +551,26 @@
                 "type": {
                     "kind": "resource",
                     "baseShape": "texture2D",
+                    "combined": true,
+                    "resultType": {
+                        "kind": "vector",
+                        "elementCount": 4,
+                        "elementType": {
+                            "kind": "scalar",
+                            "scalarType": "float32"
+                        }
+                    },
+                    "sizes": [
+                        {"kind": "descriptorTableSlot", "value": 1}
+                    ]
+                }
+            },
+            {
+                "name": "lutTex",
+                "binding": {"kind": "descriptorTableSlot", "index": 2},
+                "type": {
+                    "kind": "resource",
+                    "baseShape": "texture3D",
                     "combined": true,
                     "resultType": {
                         "kind": "vector",
@@ -700,10 +784,32 @@
                                     ]
                                 },
                                 "binding": {"kind": "uniform", "offset": 68, "size": 4, "elementStride": 0}
+                            },
+                            {
+                                "name": "lutStrength",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32",
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 4, "alignment": 4}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 72, "size": 4, "elementStride": 0}
+                            },
+                            {
+                                "name": "lutSize",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32",
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 4, "alignment": 4}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 76, "size": 4, "elementStride": 0}
                             }
                         ],
                         "sizes": [
-                            {"kind": "uniform", "value": 72, "alignment": 8}
+                            {"kind": "uniform", "value": 80, "alignment": 8}
                         ]
                     },
                     "containerVarLayout": {
@@ -904,13 +1010,35 @@
                                         ]
                                     },
                                     "binding": {"kind": "uniform", "offset": 68, "size": 4, "elementStride": 0}
+                                },
+                                {
+                                    "name": "lutStrength",
+                                    "type": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32",
+                                        "sizes": [
+                                            {"kind": "uniform", "value": 4, "alignment": 4}
+                                        ]
+                                    },
+                                    "binding": {"kind": "uniform", "offset": 72, "size": 4, "elementStride": 0}
+                                },
+                                {
+                                    "name": "lutSize",
+                                    "type": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32",
+                                        "sizes": [
+                                            {"kind": "uniform", "value": 4, "alignment": 4}
+                                        ]
+                                    },
+                                    "binding": {"kind": "uniform", "offset": 76, "size": 4, "elementStride": 0}
                                 }
                             ],
                             "sizes": [
-                                {"kind": "uniform", "value": 72, "alignment": 8}
+                                {"kind": "uniform", "value": 80, "alignment": 8}
                             ]
                         },
-                        "binding": {"kind": "uniform", "offset": 0, "size": 72, "elementStride": 0}
+                        "binding": {"kind": "uniform", "offset": 0, "size": 80, "elementStride": 0}
                     },
                     "sizes": [
                         {"kind": "pushConstantBuffer", "value": 1}
@@ -1024,6 +1152,10 @@
                 {
                     "name": "depthTex",
                     "binding": {"kind": "descriptorTableSlot", "index": 1}
+                },
+                {
+                    "name": "lutTex",
+                    "binding": {"kind": "descriptorTableSlot", "index": 2}
                 },
                 {
                     "name": "pc",
@@ -1147,6 +1279,10 @@
                 {
                     "name": "depthTex",
                     "binding": {"kind": "descriptorTableSlot", "index": 1}
+                },
+                {
+                    "name": "lutTex",
+                    "binding": {"kind": "descriptorTableSlot", "index": 2}
                 },
                 {
                     "name": "pc",

@@ -102,6 +102,7 @@ fn render(renderer: &mut GraphRenderer, cameras: &[CameraView]) -> [u8; 4] {
         aa_mode: 0,
         debug_rt: 0,
         grade: PostGrade::default(),
+        lut_path: None,
         proj22: 1.0,
         proj32: 0.0,
         lights: &[],
