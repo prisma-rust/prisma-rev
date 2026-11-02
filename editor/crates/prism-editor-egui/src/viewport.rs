@@ -456,6 +456,8 @@ pub struct ViewportState {
     pub tool: GizmoTool,
     gizmo: Option<GizmoDrag>,
     ui_drag: Option<UiAnchorDrag>,
+    /// UI 锚点拖动时只写 anchors，不补偿 margin / 宽高（#429 raw mode）。
+    pub raw_ui_edit: bool,
     orbit_last_pos: Option<egui::Pos2>,
     /// 框选起点 / 当前点（视口局部坐标）。
     box_start: Option<egui::Pos2>,
@@ -503,6 +505,7 @@ impl ViewportState {
             tool: GizmoTool::Translate,
             gizmo: None,
             ui_drag: None,
+            raw_ui_edit: false,
             orbit_last_pos: None,
             box_start: None,
             box_current: None,
@@ -1321,14 +1324,21 @@ impl ViewportState {
         if response.drag_stopped_by(egui::PointerButton::Primary) {
             // UI 锚点拖动只在松手时写一次文档：一个撤销步，不会每帧压栈（#429）。
             if let Some(drag) = self.ui_drag.take() {
-                if drag.anchors != drag.start_anchors
-                    && workspace.set_ui_anchors_preserving_rect(
-                        drag.index,
-                        drag.anchors,
-                        drag.parent,
-                        drag.rect,
-                    )
-                {
+                let changed = if drag.anchors != drag.start_anchors {
+                    if self.raw_ui_edit {
+                        workspace.set_ui_anchors_raw(drag.index, drag.anchors)
+                    } else {
+                        workspace.set_ui_anchors_preserving_rect(
+                            drag.index,
+                            drag.anchors,
+                            drag.parent,
+                            drag.rect,
+                        )
+                    }
+                } else {
+                    false
+                };
+                if changed {
                     document_changed = true;
                     self.dirty = true;
                 }
