@@ -371,6 +371,10 @@ impl RenderPassNode for TaaPass {
             ctx.settings.taa, ctx.frame.view_proj_jitter
         );
         if !ctx.settings.taa {
+            // Drop history while TAA is off so re-enabling does not blend a
+            // frame from before the pause.
+            self.history_valid = [false; 2];
+            self.prev_view_proj = None;
             return Ok(());
         }
         self.recreate_target(ctx.context, ctx.render_extent)?;
