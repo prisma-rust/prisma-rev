@@ -46,6 +46,26 @@ impl Aabb {
         any.then_some(Self { min, max })
     }
 
+    /// 两个包围盒的并集（分量取 min/max）。任一方无效时返回另一方。
+    ///
+    /// 蒙皮网格用它把「每个骨骼变换后的 bind 包围盒」合成一个保守包围盒
+    /// （#560 P0-3c）：蒙皮后的顶点是这些盒子的凸包，所以并集不会漏掉。
+    pub fn union(&self, other: &Self) -> Option<Self> {
+        match (self.is_valid(), other.is_valid()) {
+            (true, true) => {
+                let mut bounds = *self;
+                for axis in 0..3 {
+                    bounds.min[axis] = self.min[axis].min(other.min[axis]);
+                    bounds.max[axis] = self.max[axis].max(other.max[axis]);
+                }
+                Some(bounds)
+            }
+            (true, false) => Some(*self),
+            (false, true) => Some(*other),
+            (false, false) => None,
+        }
+    }
+
     /// `min <= max` 且分量有限。空/损坏的包围盒不参与剔除。
     pub fn is_valid(&self) -> bool {
         (0..3).all(|axis| {
@@ -368,6 +388,19 @@ mod tests {
         let frustum = Frustum::from_view_proj(&view_proj).unwrap();
         assert!(frustum.intersects_aabb(&unit_box_at(0.0, 0.0, -15.0)));
         assert!(!frustum.intersects_aabb(&unit_box_at(0.0, 0.0, -5.0)));
+    }
+
+    #[test]
+    fn union_wraps_both_boxes_and_ignores_broken_ones() {
+        let left = Aabb::new([-1.0, 0.0, -1.0], [0.0, 1.0, 1.0]);
+        let right = Aabb::new([0.5, -2.0, -1.0], [2.0, 0.0, 1.0]);
+        let merged = left.union(&right).expect("both valid");
+        assert_eq!(merged.min, [-1.0, -2.0, -1.0]);
+        assert_eq!(merged.max, [2.0, 1.0, 1.0]);
+        // 无效的一方被忽略，两个都无效则没有结果。
+        let broken = Aabb::new([f32::NAN, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        assert_eq!(left.union(&broken), Some(left));
+        assert_eq!(broken.union(&broken), None);
     }
 
     #[test]

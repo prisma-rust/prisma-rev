@@ -12,7 +12,7 @@ use anyhow::Result;
 use ash::vk;
 
 use crate::context::VulkanContext;
-use crate::mesh::Vertex;
+use crate::mesh::{SkinVertex, Vertex};
 use crate::pipeline::{GraphicsPipeline, PipelineDesc};
 use crate::render_graph::{
     GraphResources, PassInfo, PassKind, RenderContext, RenderGraphBuilder, RenderPassNode,
@@ -56,6 +56,21 @@ pub struct ShadowMapPass {
     device: Option<ash::Device>,
     /// Track whether the shadow map image layout has been transitioned from UNDEFINED.
     layout_initialized: bool,
+    /// Skinned depth-only 管线 (#560 P0-3c)：与上面两套同形，但读第二个顶点缓冲
+    /// （关节索引/权重）并用 set 0 binding 3 的骨骼调色板混合顶点。
+    skinned: Option<GraphicsPipeline>,
+    /// 双面版本的蒙皮管线。
+    skinned_two_sided: Option<GraphicsPipeline>,
+    /// set 0 只含 binding 3 = 骨骼调色板 SSBO；仅蒙皮管线使用。
+    bone_layout: Option<vk::DescriptorSetLayout>,
+    bone_pool: Option<vk::DescriptorPool>,
+    /// 上一帧实际提交的 caster 数：`(静态, 蒙皮)`。只用于诊断与测试 ——
+    /// 证明蒙皮分支确实走到了，而不是被静默跳过（#560 P0-3c）。
+    last_casters: (u32, u32),
+    /// 每帧在飞的调色板缓冲（host-visible）+ 对应描述符集。
+    bone_buffers: Vec<vk::Buffer>,
+    bone_memories: Vec<vk::DeviceMemory>,
+    bone_sets: Vec<vk::DescriptorSet>,
 }
 
 /// 阴影贴图边长（texel）。与 [`crate::SHADOW_MAP_SIZE`] 是同一个值，这里 re-export
@@ -75,6 +90,14 @@ impl ShadowMapPass {
             framebuffer: None,
             device: None,
             layout_initialized: false,
+            skinned: None,
+            skinned_two_sided: None,
+            bone_layout: None,
+            bone_pool: None,
+            last_casters: (0, 0),
+            bone_buffers: Vec::new(),
+            bone_memories: Vec::new(),
+            bone_sets: Vec::new(),
         }
     }
 
@@ -85,6 +108,14 @@ impl ShadowMapPass {
 
     /// Square shadow 映射表 extent (`shadow_size` x `shadow_size`). Exposed for
     /// the render-graph visualizer.
+    /// 上一帧提交的 caster 数：`(静态, 蒙皮)`。
+    ///
+    /// 蒙皮 caster 曾经被整个跳过（没有蒙皮深度管线），这里留着计数是为了让
+    /// 回归能被测试抓到，而不是只靠肉眼看阴影。
+    pub fn last_casters(&self) -> (u32, u32) {
+        self.last_casters
+    }
+
     pub fn shadow_extent(&self) -> vk::Extent2D {
         vk::Extent2D {
             width: self.shadow_size,
@@ -254,6 +285,244 @@ impl ShadowMapPass {
     }
 }
 
+/// 蒙皮 casters 的调色板预算 = 主通道的上限（两份缓冲各自 256 KiB）。
+pub const SHADOW_BONE_CAPACITY: usize = crate::forward_pass::ForwardPass::BONE_CAPACITY;
+
+impl ShadowMapPass {
+    /// 蒙皮版本的纯深度管线：读第二个顶点缓冲（binding 1 = 关节/权重）并用
+    /// set 0 binding 3 的骨骼调色板混合顶点（#560 P0-3c）。
+    fn create_skinned_pipeline(
+        device: &ash::Device,
+        render_pass: vk::RenderPass,
+        cull_mode: vk::CullModeFlags,
+        bone_layout: vk::DescriptorSetLayout,
+    ) -> anyhow::Result<GraphicsPipeline> {
+        const VERT_SPV: &[u8] =
+            include_bytes!("../../../assets/shaders/shadow_depth_skinned.vert.spv");
+        const FRAG_SPV: &[u8] = include_bytes!("../../../assets/shaders/shadow_depth.frag.spv");
+        let vert_module =
+            shader::load_shader_module(device, VERT_SPV).context("load skinned shadow vert")?;
+        let frag_module =
+            shader::load_shader_module(device, FRAG_SPV).context("load skinned shadow frag")?;
+
+        // 反射 JSON 只带第一个入口点，bindgen 因此没有 skinned 常量；与
+        // `ForwardPass` 的写法保持一致（同样的字面量）。
+        let vert_entry = std::ffi::CString::new("vertexSkinnedMain").unwrap();
+        let frag_entry = std::ffi::CString::new(bindings::ENTRY_FRAGMENT_MAIN).unwrap();
+        let vert_stage = shader::shader_stage(
+            vk::ShaderStageFlags::VERTEX,
+            vert_module,
+            vert_entry.as_c_str(),
+        );
+        let frag_stage = shader::shader_stage(
+            vk::ShaderStageFlags::FRAGMENT,
+            frag_module,
+            frag_entry.as_c_str(),
+        );
+        let shader_stages = [vert_stage, frag_stage];
+
+        let binding_descs = [
+            Vertex::binding_description(),
+            SkinVertex::binding_description(),
+        ];
+        let mut attributes: Vec<vk::VertexInputAttributeDescription> =
+            Vertex::attribute_descriptions().to_vec();
+        attributes.extend_from_slice(&SkinVertex::attribute_descriptions());
+
+        let set_layouts = [bone_layout];
+        let push = [vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::VERTEX)
+            .offset(0)
+            .size(bindings::PUSH_CONSTANT_SIZE)];
+
+        let pipeline = GraphicsPipeline::new(&PipelineDesc {
+            device,
+            shader_stages: &shader_stages,
+            vertex_binding_desc: &binding_descs,
+            vertex_attr_descs: &attributes,
+            descriptor_set_layouts: &set_layouts,
+            push_constant_ranges: &push,
+            render_pass,
+            subpass: 0,
+            cull_mode: Some(cull_mode),
+            depth_bias_enable: Some(true),
+            depth_bias_constant_factor: Some(32.0),
+            depth_bias_slope_factor: Some(4.0),
+            depth_write_enable: Some(true),
+            depth_test_enable: None,
+            color_attachment_count: Some(0),
+            color_blend_attachments: None,
+            front_face: Some(Self::SHADOW_FRONT_FACE),
+            polygon_mode: None,
+        })
+        .context("create skinned shadow depth-only pipeline")?;
+
+        unsafe {
+            device.destroy_shader_module(vert_module, None);
+            device.destroy_shader_module(frag_module, None);
+        }
+        Ok(pipeline)
+    }
+
+    /// 懒创建蒙皮管线 + 每帧在飞的骨骼调色板缓冲/描述符集。幂等。
+    fn ensure_skinned(
+        &mut self,
+        context: &VulkanContext,
+        render_pass: vk::RenderPass,
+    ) -> Result<()> {
+        let device = &context.device;
+
+        if self.bone_layout.is_none() {
+            let set_bindings = [vk::DescriptorSetLayoutBinding::default()
+                .binding(bindings::BONES_BINDING)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::VERTEX)];
+            let layout = unsafe {
+                device.create_descriptor_set_layout(
+                    &vk::DescriptorSetLayoutCreateInfo::default().bindings(&set_bindings),
+                    None,
+                )
+            }
+            .context("shadow: create bone descriptor set layout")?;
+            self.bone_layout = Some(layout);
+        }
+
+        let layout = self.bone_layout.unwrap();
+        if self.skinned.is_none() {
+            self.skinned = Some(
+                Self::create_skinned_pipeline(
+                    device,
+                    render_pass,
+                    Self::shadow_cull_mode(false),
+                    layout,
+                )
+                .context("create skinned shadow pipeline")?,
+            );
+        }
+        if self.skinned_two_sided.is_none() {
+            self.skinned_two_sided = Some(
+                Self::create_skinned_pipeline(
+                    device,
+                    render_pass,
+                    Self::shadow_cull_mode(true),
+                    layout,
+                )
+                .context("create two-sided skinned shadow pipeline")?,
+            );
+        }
+
+        if self.bone_buffers.is_empty() {
+            let frames = crate::swapchain::FRAMES_IN_FLIGHT;
+            let size =
+                (SHADOW_BONE_CAPACITY * std::mem::size_of::<[[f32; 4]; 4]>()) as vk::DeviceSize;
+            let mut buffers = Vec::with_capacity(frames);
+            let mut memories = Vec::with_capacity(frames);
+            for _ in 0..frames {
+                let (buffer, memory) = crate::buffer::create_buffer(
+                    context,
+                    size,
+                    crate::buffer::BufferUsage::STORAGE_BUFFER,
+                    crate::buffer::MemoryProperties::HOST_VISIBLE
+                        | crate::buffer::MemoryProperties::HOST_COHERENT,
+                )
+                .context("shadow: create bone palette buffer")?;
+                let ptr =
+                    unsafe { device.map_memory(memory, 0, size, vk::MemoryMapFlags::empty()) }
+                        .context("shadow: map bone palette memory")?;
+                unsafe { std::ptr::write_bytes(ptr as *mut u8, 0, size as usize) };
+                unsafe { device.unmap_memory(memory) };
+                buffers.push(buffer);
+                memories.push(memory);
+            }
+
+            let pool_sizes = [vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(frames as u32)];
+            let pool = unsafe {
+                device.create_descriptor_pool(
+                    &vk::DescriptorPoolCreateInfo::default()
+                        .max_sets(frames as u32)
+                        .pool_sizes(&pool_sizes),
+                    None,
+                )
+            }
+            .context("shadow: create bone descriptor pool")?;
+
+            let layouts = vec![layout; frames];
+            let sets = unsafe {
+                device.allocate_descriptor_sets(
+                    &vk::DescriptorSetAllocateInfo::default()
+                        .descriptor_pool(pool)
+                        .set_layouts(&layouts),
+                )
+            }
+            .context("shadow: allocate bone descriptor sets")?;
+
+            for (set, buffer) in sets.iter().zip(&buffers) {
+                let info = [vk::DescriptorBufferInfo::default()
+                    .buffer(*buffer)
+                    .offset(0)
+                    .range(vk::WHOLE_SIZE)];
+                let writes = [vk::WriteDescriptorSet::default()
+                    .dst_set(*set)
+                    .dst_binding(bindings::BONES_BINDING)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .buffer_info(&info)];
+                unsafe { device.update_descriptor_sets(&writes, &[]) };
+            }
+
+            self.bone_pool = Some(pool);
+            self.bone_buffers = buffers;
+            self.bone_memories = memories;
+            self.bone_sets = sets;
+        }
+
+        Ok(())
+    }
+
+    /// 上传本帧的骨骼调色板（列主序 mat4）。超出 [`SHADOW_BONE_CAPACITY`] 的部分截断，
+    /// 与主通道的 `bone_offset` 分配保持一致。
+    pub fn update_bones(
+        &mut self,
+        device: &ash::Device,
+        frame_index: u32,
+        matrices: &[[[f32; 4]; 4]],
+    ) -> Result<()> {
+        if self.bone_memories.is_empty() {
+            return Ok(());
+        }
+        let index = (frame_index as usize) % self.bone_memories.len();
+        let memory = self.bone_memories[index];
+        if memory == vk::DeviceMemory::null() {
+            return Ok(());
+        }
+        let count = matrices.len().min(SHADOW_BONE_CAPACITY);
+        let matrix_size = std::mem::size_of::<[[f32; 4]; 4]>();
+        let total_bytes = (SHADOW_BONE_CAPACITY * matrix_size) as vk::DeviceSize;
+        let ptr = unsafe { device.map_memory(memory, 0, total_bytes, vk::MemoryMapFlags::empty()) }
+            .context("ShadowMapPass::update_bones: map")?;
+        unsafe {
+            let dst = ptr as *mut u8;
+            // 清掉尾部：越界读取时拿到零矩阵，而不是上一帧的骨骼。
+            std::ptr::write_bytes(
+                dst.add(count * matrix_size),
+                0,
+                (SHADOW_BONE_CAPACITY - count) * matrix_size,
+            );
+            if count > 0 {
+                std::ptr::copy_nonoverlapping(
+                    matrices.as_ptr() as *const u8,
+                    dst,
+                    count * matrix_size,
+                );
+            }
+            device.unmap_memory(memory);
+        }
+        Ok(())
+    }
+}
+
 impl Default for ShadowMapPass {
     fn default() -> Self {
         Self::new()
@@ -385,8 +654,23 @@ impl RenderPassNode for ShadowMapPass {
             }
         } // if self.framebuffer.is_none()
 
+        // 蒙皮 casters 的管线 + 用户缓冲（#560 P0-3c）。
+        {
+            let render_pass = self.render_pass.unwrap_or_default();
+            self.ensure_skinned(ctx.context, render_pass)?;
+            self.update_bones(ctx.device, ctx.frame_index, ctx.frame.bone_matrices)?;
+        }
+
         let pipeline_culled = self.pipeline.as_ref().unwrap();
         let pipeline_two_sided = self.pipeline_two_sided.as_ref().unwrap();
+        let skinned_culled = self
+            .skinned
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("skinned shadow pipeline missing"))?;
+        let skinned_two_sided = self
+            .skinned_two_sided
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("two-sided skinned shadow pipeline missing"))?;
         let render_pass = self.render_pass.unwrap();
         let framebuffer = self.framebuffer.unwrap();
 
@@ -422,6 +706,8 @@ impl RenderPassNode for ShadowMapPass {
 
         // 统计真正写进阴影贴图的 caster（`ShadowCastingMode::Off` 会被跳过）。
         let mut casters = 0usize;
+        // 其中有多少走的是蒙皮管线（#560 P0-3c）。
+        let mut skinned_casters = 0u32;
         unsafe {
             ctx.device.cmd_set_viewport(
                 ctx.cmd,
@@ -447,17 +733,11 @@ impl RenderPassNode for ShadowMapPass {
                 }],
             );
 
-            // 按 draw 的剔除模式选管线，只在模式切换时重绑（`TwoSided` 关闭剔除）。
-            let mut bound_two_sided: Option<bool> = None;
+            // 按 (是否蒙皮, 是否双面) 选管线，只在切换时重绑。
+            let mut bound_pipeline: Option<(bool, bool)> = None;
             for item in ctx.frame.draw_list {
                 // `ShadowCastingMode::Off` -> 不写阴影贴图。
                 if !item.cast_shadow {
-                    continue;
-                }
-                // Skinned casters need the skinning path in this pass too
-                // (#560 P0-3c). Until then they must not cast: drawing them
-                // with the static depth pipeline would freeze them in bind pose.
-                if item.bone_offset.is_some() {
                     continue;
                 }
                 let uploaded = match ctx.frame.mesh_manager.get(item.mesh) {
@@ -465,30 +745,80 @@ impl RenderPassNode for ShadowMapPass {
                     None => continue,
                 };
 
-                let two_sided = item.cast_shadow_two_sided;
-                let pipeline = if two_sided {
-                    pipeline_two_sided
+                // 蒙皮 caster 走蒙皮管线（读第二个顶点缓冲 + 骨骼调色板）；
+                // 静态 caster 走原来的纯位置管线（#560 P0-3c）。
+                let skinned = item.bone_offset.is_some();
+                let skin_buffer = if skinned {
+                    match ctx.frame.mesh_manager.get(item.mesh) {
+                        Some(m) => match m.skin.as_ref() {
+                            // 声明了蒙皮但缓冲没上传：画出来会是 bind pose 以外的垃圾，
+                            // 宁可这个 caster 不投影。
+                            Some(skin) => Some(skin.buffer),
+                            None => continue,
+                        },
+                        None => continue,
+                    }
                 } else {
-                    pipeline_culled
+                    None
                 };
-                if bound_two_sided != Some(two_sided) {
+
+                let two_sided = item.cast_shadow_two_sided;
+                let pipeline = match (skinned, two_sided) {
+                    (true, true) => skinned_two_sided,
+                    (true, false) => skinned_culled,
+                    (false, true) => pipeline_two_sided,
+                    (false, false) => pipeline_culled,
+                };
+                if bound_pipeline != Some((skinned, two_sided)) {
                     ctx.device.cmd_bind_pipeline(
                         ctx.cmd,
                         vk::PipelineBindPoint::GRAPHICS,
                         pipeline.pipeline,
                     );
-                    bound_two_sided = Some(two_sided);
+                    bound_pipeline = Some((skinned, two_sided));
                 }
 
                 casters += 1;
-                let vertex_buffers = [uploaded.vertex_buffer];
-                let offsets = [0u64];
-                ctx.device
-                    .cmd_bind_vertex_buffers(ctx.cmd, 0, &vertex_buffers, &offsets);
+                if skinned {
+                    skinned_casters += 1;
+                }
+                let vertex_buffers = match skin_buffer {
+                    Some(skin_buffer) => [uploaded.vertex_buffer, skin_buffer],
+                    None => [uploaded.vertex_buffer, vk::Buffer::null()],
+                };
+                let buffer_count = if skin_buffer.is_some() { 2 } else { 1 };
+                let offsets = [0u64, 0u64];
+                ctx.device.cmd_bind_vertex_buffers(
+                    ctx.cmd,
+                    0,
+                    &vertex_buffers[..buffer_count],
+                    &offsets[..buffer_count],
+                );
+
+                if skin_buffer.is_some() {
+                    let bone_set = match self
+                        .bone_sets
+                        .get(ctx.frame_index as usize % self.bone_sets.len().max(1))
+                    {
+                        Some(set) => *set,
+                        None => continue,
+                    };
+                    let sets = [bone_set];
+                    ctx.device.cmd_bind_descriptor_sets(
+                        ctx.cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        pipeline.layout,
+                        0,
+                        &sets,
+                        &[],
+                    );
+                }
 
                 let pc = bindings::ShadowPush {
                     model: item.model,
                     lightViewProj: ctx.frame.light_view_proj,
+                    bone_offset: item.bone_offset.unwrap_or(0),
+                    ..Default::default()
                 };
                 // 推送常量必须使用当前绑定管线的布局（两套管线各有独立 layout）。
                 ctx.device.cmd_push_constants(
@@ -519,6 +849,10 @@ impl RenderPassNode for ShadowMapPass {
 
         unsafe { ctx.device.cmd_end_render_pass(ctx.cmd) };
         self.layout_initialized = true;
+        self.last_casters = (
+            (casters as u32).saturating_sub(skinned_casters),
+            skinned_casters,
+        );
 
         log::trace!(
             "ShadowMapPass: rendered {} casters into {}x{} shadow map ({} in list)",
@@ -588,6 +922,26 @@ impl ShadowMapPass {
         // GraphicsPipeline::Drop frees the 管线 + 布局
         self.pipeline = None;
         self.pipeline_two_sided = None;
+        self.skinned = None;
+        self.skinned_two_sided = None;
+        // 描述符集随 pool 一起释放。
+        self.bone_sets.clear();
+        if let Some(pool) = self.bone_pool.take() {
+            unsafe { device.destroy_descriptor_pool(pool, None) };
+        }
+        if let Some(layout) = self.bone_layout.take() {
+            unsafe { device.destroy_descriptor_set_layout(layout, None) };
+        }
+        for buffer in self.bone_buffers.drain(..) {
+            if buffer != vk::Buffer::null() {
+                unsafe { device.destroy_buffer(buffer, None) };
+            }
+        }
+        for memory in self.bone_memories.drain(..) {
+            if memory != vk::DeviceMemory::null() {
+                unsafe { device.free_memory(memory, None) };
+            }
+        }
         self.device = None;
         self.layout_initialized = false;
     }
