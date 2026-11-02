@@ -320,3 +320,8 @@ GPU / shader 测试：CI 设置 `PRISM_REQUIRE_VALIDATION=1`，要求 debug 构�
 `crates/prism-render/tests/support/mod.rs` 的 `GpuHarness`（SPIR-V + storage buffer +
 可选 push constants → dispatch → readback），不要把 Vulkan 初始化样板再抄一遍。示例见
 `crates/prism-render/tests/shader_harness_gpu.rs`。
+
+需要比较多个 kernel 配置时，用 `GpuHarness::dispatch_repeated` 在**一次提交**里重复
+dispatch 并返回 `TimedDispatch { outputs, elapsed }`；每个候选先校验 readback，再按
+`elapsed / repeats` 选最快。kernel 必须是幂等的（例如读 A 写 B），因为后一次 dispatch
+会看到前一次的输出。示例见 `crates/prism-render/tests/kernel_benchmark_gpu.rs`。
