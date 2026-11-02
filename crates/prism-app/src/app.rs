@@ -1243,6 +1243,14 @@ impl App {
             );
             // 渲染设置随帧数据包送到渲染线程（快捷键 / 项目配置的修改在此生效）。
             packet.settings = self.render_settings.clone();
+            // 局部后处理体积（#502 Phase 2）：按主相机位置解析本帧的 PostGrade。
+            packet.grade = Some(
+                prism_engine::scene::systems::post_process::resolve_post_grade(
+                    engine.world(),
+                    packet.scene.eye,
+                    packet.settings.post_grade(),
+                ),
+            );
 
             // 运行时诊断 HUD：追加到 ECS UI 叠加（随后统一由 ui_overlay 绘制）。
             if self.debug_hud.show {

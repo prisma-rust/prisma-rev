@@ -1723,6 +1723,73 @@ impl Camera {
     }
 }
 
+/// 局部后处理体积（#502 Phase 2）。
+///
+/// 挂在场景实体上，用轴对齐盒（`size` = 半尺寸，米）圈出一块区域；主相机进入
+/// 盒子后，盒内参数按 `priority` 从低到高混合到本帧的 [`PostGrade`] 上。
+/// `global = true` 时忽略盒子与距离，永远参与混合。
+///
+/// 只读取实体世界变换的**平移 + 轴长**（缩放），旋转不参与 —— 与地形高度场
+/// 的约定一致。`blend_distance` 是盒子外缘再向外淡出的距离（米）；0 表示只在
+/// 盒内生效、边界硬切。
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
+#[reflect(name = "prism_engine::scene::PostProcessVolume")]
+#[serde(default)]
+pub struct PostProcessVolume {
+    /// 关闭后整块体积不参与混合（作者态开关）。
+    pub enabled: bool,
+    /// 优先级：数值大的最后应用，通常覆盖数值小的。
+    pub priority: f32,
+    /// 忽略 `size` / `blend_distance`，永远生效。
+    pub global: bool,
+    /// 盒子的半尺寸（米），按实体缩放放大；旋转被忽略。
+    pub size: [f32; 3],
+    /// 盒子外缘向外淡出的距离（米）；`0` = 盒内硬切。
+    pub blend_distance: f32,
+    /// 显示空间对比度（`1.0` = 不变）。
+    pub contrast: f32,
+    /// 显示空间饱和度（`0.0` = 灰度）。
+    pub saturation: f32,
+    /// 暗角强度（`0.0` = 关闭）。
+    pub vignette: f32,
+    /// 是否启用 HDR bloom。
+    pub bloom: bool,
+    /// bloom 加性强度。
+    pub bloom_intensity: f32,
+    /// bloom 亮度阈值。
+    pub bloom_threshold: f32,
+    /// 镜头色差强度。
+    pub chromatic_aberration: f32,
+    /// 胶片颗粒强度。
+    pub film_grain: f32,
+    /// 白平衡：暖 / 冷（`-1..=1`，`0` = 中性）。
+    pub temperature: f32,
+    /// 白平衡：品红 / 绿（`-1..=1`，`0` = 中性）。
+    pub tint: f32,
+}
+
+impl Default for PostProcessVolume {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            priority: 0.0,
+            global: false,
+            size: [10.0, 5.0, 10.0],
+            blend_distance: 5.0,
+            contrast: 1.0,
+            saturation: 1.0,
+            vignette: 0.0,
+            bloom: false,
+            bloom_intensity: 0.15,
+            bloom_threshold: 1.0,
+            chromatic_aberration: 0.0,
+            film_grain: 0.0,
+            temperature: 0.0,
+            tint: 0.0,
+        }
+    }
+}
+
 /// Free-fly 相机 输入 controller (data 分量
 ///
 /// Splits the runtime/input-owned fields off the old `FlyCamera` 枚举 variant:
