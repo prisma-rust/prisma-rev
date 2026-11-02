@@ -86,6 +86,10 @@ mod hook;
 mod io_runner;
 #[cfg(feature = "physics")]
 mod physics_runner;
+/// Main-thread physics driver. Exposed so headless scenario tests can step the
+/// same runtime the app uses without creating a window.
+#[cfg(feature = "physics")]
+pub use physics_runner::PhysicsRuntime;
 mod render_graph_report;
 mod render_runner;
 mod render_shared;
