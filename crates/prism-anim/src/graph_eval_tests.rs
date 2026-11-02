@@ -5,7 +5,7 @@ use glam::{Mat4, Vec3};
 
 use super::{AnimGraphEvaluator, AnimGraphSource, GraphEvalError};
 use crate::clip::{Clip, ClipNotify, Track, Vec3Key};
-use crate::graph_eval::{BlendSpaceNotifyPolicy, GraphNodeKind};
+use crate::graph_eval::{BlendSpaceNotifyPolicy, GraphNodeKind, StateTransitionNotifyPolicy};
 use crate::montage::Montage;
 use prism_asset::formats_anim_graph::{
     AnimGraphInfo, GraphInputInfo, GraphNodeInfo, GraphParameterInfo, GraphParameterKind,
@@ -344,6 +344,70 @@ fn a_state_machine_transitions_on_a_trigger() {
     evaluator.parameters_mut().set_trigger("go");
     let pose = evaluator.evaluate(&source, &skeleton, 0.1).expect("walk");
     assert!((x(&pose) - 5.0).abs() < 1e-5, "x={}", x(&pose));
+    assert_eq!(evaluator.state_machine_state("sm"), Some(1));
+}
+
+fn transition_machine() -> StateMachine {
+    StateMachine::new(
+        vec![
+            AnimState::new("idle", "idle.ranim"),
+            AnimState::new("walk", "walk.ranim"),
+        ],
+        vec![AnimTransition::new(0, 1)
+            .with_conditions(vec![TransitionCondition::Trigger { name: "go".into() }])],
+    )
+}
+
+#[test]
+fn a_transition_frame_keeps_leaving_state_notifies_by_default() {
+    let mut machine_node = node("sm", GraphNodeKind::StateMachine);
+    machine_node.state_machine_path = "hero.rasm".into();
+    let mut graph = graph(vec![machine_node, output(0)], 1);
+    graph.parameters.push(GraphParameterInfo {
+        name: "go".into(),
+        kind: GraphParameterKind::Trigger,
+        default: 0.0,
+    });
+    let mut evaluator = AnimGraphEvaluator::new(graph);
+    let source = Source::new(&[
+        ("idle.ranim", clip_with_notify("idle", 0.5, "IdleStep")),
+        ("walk.ranim", translation_clip("walk", 5.0)),
+    ])
+    .with_machine("hero.rasm", transition_machine());
+    let skeleton = skeleton();
+    evaluator.evaluate(&source, &skeleton, 0.1).expect("idle");
+    evaluator.parameters_mut().set_trigger("go");
+    let (_, events) = evaluator
+        .evaluate_with_events(&source, &skeleton, 0.5)
+        .expect("transitions");
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].name, "IdleStep");
+}
+
+#[test]
+fn suppress_on_transition_drops_the_leaving_state_interval() {
+    let mut machine_node = node("sm", GraphNodeKind::StateMachine);
+    machine_node.state_machine_path = "hero.rasm".into();
+    let mut graph = graph(vec![machine_node, output(0)], 1);
+    graph.parameters.push(GraphParameterInfo {
+        name: "go".into(),
+        kind: GraphParameterKind::Trigger,
+        default: 0.0,
+    });
+    let mut evaluator = AnimGraphEvaluator::new(graph);
+    evaluator.set_state_transition_notify_policy(StateTransitionNotifyPolicy::SuppressOnTransition);
+    let source = Source::new(&[
+        ("idle.ranim", clip_with_notify("idle", 0.5, "IdleStep")),
+        ("walk.ranim", translation_clip("walk", 5.0)),
+    ])
+    .with_machine("hero.rasm", transition_machine());
+    let skeleton = skeleton();
+    evaluator.evaluate(&source, &skeleton, 0.1).expect("idle");
+    evaluator.parameters_mut().set_trigger("go");
+    let (_, events) = evaluator
+        .evaluate_with_events(&source, &skeleton, 0.5)
+        .expect("transitions");
+    assert!(events.is_empty(), "{events:?}");
     assert_eq!(evaluator.state_machine_state("sm"), Some(1));
 }
 

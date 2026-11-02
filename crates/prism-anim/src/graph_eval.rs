@@ -124,6 +124,16 @@ pub enum BlendSpaceNotifyPolicy {
     Dominant,
 }
 
+/// 状态机发生转移的那一帧，离开状态的事件怎么处理（#560 Notify 区间）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StateTransitionNotifyPolicy {
+    /// 照常扫描到转移点为止（旧行为）。
+    #[default]
+    Keep,
+    /// 本帧发生了转移就不发离开状态的事件，避免刚抬脚就被切走的脚步声。
+    SuppressOnTransition,
+}
+
 /// 一个动画图求值器实例，对应一个角色。
 #[derive(Debug, Clone)]
 pub struct AnimGraphEvaluator {
@@ -136,6 +146,8 @@ pub struct AnimGraphEvaluator {
     montages: HashMap<String, MontagePlayer>,
     /// BlendSpace 的事件策略（#560 Notify 区间）。
     blend_space_notify: BlendSpaceNotifyPolicy,
+    /// 状态转移帧的事件策略。
+    state_transition_notify: StateTransitionNotifyPolicy,
 }
 
 impl AnimGraphEvaluator {
@@ -162,6 +174,7 @@ impl AnimGraphEvaluator {
             pending_events: Vec::new(),
             montages: HashMap::new(),
             blend_space_notify: BlendSpaceNotifyPolicy::default(),
+            state_transition_notify: StateTransitionNotifyPolicy::default(),
         }
     }
 
@@ -218,6 +231,15 @@ impl AnimGraphEvaluator {
 
     pub fn blend_space_notify_policy(&self) -> BlendSpaceNotifyPolicy {
         self.blend_space_notify
+    }
+
+    /// 设置状态转移帧的事件策略。
+    pub fn set_state_transition_notify_policy(&mut self, policy: StateTransitionNotifyPolicy) {
+        self.state_transition_notify = policy;
+    }
+
+    pub fn state_transition_notify_policy(&self) -> StateTransitionNotifyPolicy {
+        self.state_transition_notify
     }
 
     /// 当前状态机节点的状态下标（调试面板 / 测试用）；不是状态机节点时返回 `None`。
@@ -710,7 +732,11 @@ impl AnimGraphEvaluator {
         let previous_local = local_time(current_duration, current_looped, previous_time);
         state_time = advance_time(state_time, dt, speed);
         let active_local = local_time(current_duration, current_looped, state_time);
-        if dt > 0.0 && speed >= 0.0 {
+        let transition =
+            machine.next_transition(state, &mut self.parameters, state_time, current_duration);
+        let suppress = transition.is_some()
+            && self.state_transition_notify == StateTransitionNotifyPolicy::SuppressOnTransition;
+        if dt > 0.0 && speed >= 0.0 && !suppress {
             if let Some(clip) = current_clip.as_ref() {
                 self.record_notifies(
                     &node.name,
@@ -721,9 +747,6 @@ impl AnimGraphEvaluator {
                 );
             }
         }
-
-        let transition =
-            machine.next_transition(state, &mut self.parameters, state_time, current_duration);
 
         let mut previous = None;
         if let Some(target) = transition.filter(|target| target.state < machine.states.len()) {
