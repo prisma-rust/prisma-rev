@@ -3285,6 +3285,26 @@ fn animator_editor(
         }
     }
 
+    // 状态机（#560 P1）：显示当前状态与机器路径。状态由引擎每帧写回组件，这里只读；
+    // 想换起始状态可以直接改 `state` 字段（Add Component 的通用卡片里）。
+    let machine_path = value
+        .get("state_machine_path")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !machine_path.is_empty() {
+        let state = value.get("state").and_then(Value::as_str).unwrap_or("");
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("state").size(10.0).weak());
+            ui.label(
+                RichText::new(if state.is_empty() { "(first)" } else { state })
+                    .size(10.0)
+                    .strong(),
+            );
+            ui.label(RichText::new(clip_label(machine_path)).size(10.0).weak())
+                .on_hover_text(machine_path);
+        });
+    }
+
     if edited {
         workspace.set_field(entity_id, component, "time", Value::from(time as f64));
         workspace.set_field(entity_id, component, "speed", Value::from(speed as f64));

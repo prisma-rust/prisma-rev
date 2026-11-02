@@ -12,7 +12,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use prism_anim::{palette_to_arrays, BlendSample, BlendSpace1D, Clip, Pose, Skeleton};
+use prism_anim::{
+    palette_to_arrays, AnimParameters, BlendSample, BlendSpace1D, Clip, Pose, Skeleton,
+    StateMachine,
+};
 use prism_ecs::{Entity, World};
 use prism_scene::components::{Animator, SkeletonRoot};
 
@@ -154,6 +157,49 @@ impl AnimEvents {
     }
 }
 
+/// 已解码的状态机，按 `.rasm` 路径索引（#560 P1）。
+///
+/// 与 [`SkeletonLibrary`] 分开：状态机是可选的（多数实体只用单剪辑 / 混合空间），
+/// 没挂状态机的场景不该被迫建一张空表。
+#[derive(Debug, Default)]
+pub struct StateMachineLibrary {
+    machines: HashMap<String, Arc<StateMachine>>,
+}
+
+impl StateMachineLibrary {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 存入状态机；返回 `true` 表示这是新路径。
+    pub fn insert(&mut self, path: impl Into<String>, machine: StateMachine) -> bool {
+        self.machines
+            .insert(path.into(), Arc::new(machine))
+            .is_none()
+    }
+
+    pub fn state_machine(&self, path: &str) -> Option<Arc<StateMachine>> {
+        self.machines.get(path).cloned()
+    }
+
+    pub fn has_state_machine(&self, path: &str) -> bool {
+        self.machines.contains_key(path)
+    }
+
+    /// 所有已加载的状态机（资产解析在机器加载完之后要靠它补请求状态剪辑）。
+    pub fn all(&self) -> impl Iterator<Item = &Arc<StateMachine>> {
+        self.machines.values()
+    }
+
+    pub fn len(&self) -> usize {
+        self.machines.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.machines.is_empty()
+    }
+}
+
 /// 播放头（运行时组件，不进场景）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnimatorPlayhead {
@@ -171,6 +217,9 @@ pub struct AnimatorPlayhead {
     pub pose: Pose,
     /// 过渡已经进行的秒数（`>= blend_duration` 时清掉来源）。
     pub blend_elapsed: f32,
+    /// 这一次过渡自己的时长（状态机转移带的 `duration`）；`None` = 用组件的
+    /// `blend_duration`。
+    pub blend_total: Option<f32>,
 }
 
 impl AnimatorPlayhead {
@@ -194,10 +243,22 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
     let Some(library) = world.get_resource::<SkeletonLibrary>() else {
         return 0;
     };
+    let machines: HashMap<String, Arc<StateMachine>> = world
+        .get_resource::<StateMachineLibrary>()
+        .map(|library| library.machines.clone())
+        .unwrap_or_default();
     let library = LibraryView {
         skeletons: library.skeletons.clone(),
         clips: library.clips.clone(),
+        machines,
     };
+    // 状态机参数（项目侧写、引擎每帧读）。克隆一份：`take_trigger` 需要 `&mut`，
+    // 而遍历实体时不能继续借用 World。
+    let mut params = world
+        .get_resource::<AnimParameters>()
+        .cloned()
+        .unwrap_or_default();
+    let mut state_updates: Vec<(Entity, String)> = Vec::new();
 
     let mut updates: Vec<(Entity, BonePalette, AnimatorPlayhead)> = Vec::new();
     let mut events: Vec<AnimEvent> = Vec::new();
@@ -208,10 +269,71 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
         let Some(skeleton) = library.skeleton(&root.skeleton_path) else {
             continue;
         };
-        let single_path = if animator.clip_path.is_empty() {
+        let mut single_path = if animator.clip_path.is_empty() {
             root.default_clip_path.clone()
         } else {
             animator.clip_path.clone()
+        };
+
+        // 状态机（#560 P1）：先看这一帧会不会转移，再用（可能已换掉的）状态决定播什么。
+        //
+        // 转移判据用的是**上一帧**的播放时间与当前状态的剪辑时长：那一帧确实播到了
+        // 这个位置，比用「本帧推进后的时间」更接近作者对 `min_state_fraction` 的预期。
+        let machine = if animator.state_machine_path.trim().is_empty() {
+            None
+        } else {
+            library.machines.get(&animator.state_machine_path).cloned()
+        };
+        let mut state_name = animator.state.clone();
+        let mut transition_duration: Option<f32> = None;
+        let mut state_switched = false;
+        let mut state_speed = 1.0f32;
+        let mut state_looped = true;
+        if let Some(machine) = &machine {
+            let current = machine.state_index(&state_name).unwrap_or(0);
+            let previous_time = world
+                .get::<AnimatorPlayhead>(entity)
+                .map(|head| head.time)
+                .unwrap_or_else(|| sanitize_time(animator.time));
+            let state_duration = machine
+                .state(current)
+                .and_then(|state| library.clips.get(&state.clip_path))
+                .map(|clip| clip.duration)
+                .unwrap_or(0.0);
+            let target =
+                machine.next_transition(current, &mut params, previous_time, state_duration);
+            let index = match &target {
+                Some(target) => target.state,
+                None => current,
+            };
+            if let Some(target) = target {
+                transition_duration = Some(target.duration);
+                state_switched = true;
+            }
+            if let Some(state) = machine.state(index) {
+                // 空 / 未知的状态名也要落成真实名字：编辑器与存档看到的就是「当前状态」，
+                // 而不是一个空串。
+                state_name = state.name.clone();
+                state_speed = state.speed;
+                state_looped = state.looped;
+                if !state.clip_path.trim().is_empty() {
+                    single_path = state.clip_path.clone();
+                }
+            }
+            if state_name != animator.state {
+                state_updates.push((entity, state_name.clone()));
+            }
+        }
+        // 状态机拥有速度 / 循环语义；没挂状态机时照旧读组件。
+        let speed = if machine.is_some() {
+            animator.speed * state_speed
+        } else {
+            animator.speed
+        };
+        let looped = if machine.is_some() {
+            state_looped
+        } else {
+            animator.looped
         };
 
         // 一维混合空间优先（#560 P1）：作者列出的剪辑里至少要有两个真的加载了，
@@ -253,7 +375,11 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
                 // 旧剪辑已经不在库里（删资产 / 上一帧是混合空间）时沿用已有快照 ——
                 // 连续换两次也不会丢掉正在淡出的那一份。
                 clip_path: playback_key.clone(),
-                time: sanitize_time(animator.time),
+                time: if state_switched {
+                    0.0
+                } else {
+                    sanitize_time(animator.time)
+                },
                 finished: false,
                 previous_pose: if head.pose.len() > 0 {
                     Some(head.pose.clone())
@@ -262,6 +388,7 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
                 },
                 pose: Pose::default(),
                 blend_elapsed: 0.0,
+                blend_total: transition_duration,
             },
             None => AnimatorPlayhead {
                 clip_path: playback_key.clone(),
@@ -270,6 +397,7 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
                 previous_pose: None,
                 pose: Pose::default(),
                 blend_elapsed: 0.0,
+                blend_total: transition_duration,
             },
         };
         // 混合空间没有自己的时长：取最长的那条剪辑，短的自然会循环追上。
@@ -285,26 +413,22 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
         // 刚创建 / 刚换剪辑的第一帧不该把整段剪辑的事件一次性播出来。
         let previous_local = match world.get::<AnimatorPlayhead>(entity) {
             Some(head) if head.clip_path == playback_key => {
-                Some(local_time(duration, animator.looped, head.time))
+                Some(local_time(duration, looped, head.time))
             }
             _ => None,
         };
 
-        let speed = if animator.speed.is_finite() {
-            animator.speed
-        } else {
-            0.0
-        };
         if animator.playing && dt.is_finite() {
             playhead.time += dt * speed;
-            if !animator.looped {
+            if !looped {
                 playhead.time = playhead.time.clamp(0.0, duration);
             }
         }
-        playhead.finished = !animator.looped && duration > 0.0 && playhead.time >= duration;
+        playhead.finished = !looped && duration > 0.0 && playhead.time >= duration;
 
-        // 循环与否由 `Animator` 组件说了算（剪辑里的 `looped` 只是默认值）。
-        let local = local_time(duration, animator.looped, playhead.time);
+        // 循环与否：状态机状态优先，否则由 `Animator` 组件说了算（剪辑里的
+        // `looped` 只是导入默认值）。
+        let local = local_time(duration, looped, playhead.time);
 
         // 关键帧事件：只在前向播放、且上一帧确实在这个剪辑上时触发。
         // 倒放（`speed < 0`）需要反向扫区间，暂时不触发 —— 宁可少一次脚步声，
@@ -340,12 +464,16 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
         //
         // 先推进再取权重：换剪辑的那一帧 `dt` 是"距上一帧实际过去的时间"，
         // 过渡就该从那一刻开始计时，否则最后一帧永远到不了权重 1。
-        let blend_duration = sanitize_blend_duration(animator.blend_duration);
+        let blend_duration = playhead
+            .blend_total
+            .map(sanitize_blend_duration)
+            .unwrap_or_else(|| sanitize_blend_duration(animator.blend_duration));
         if blend_duration <= 0.0 {
             // 没有过渡时长 = 硬切：顺手丢掉快照，否则以后把时长调回来的第一帧
             // 会突然淡入一个早已过期的姿态。
             playhead.previous_pose = None;
             playhead.blend_elapsed = 0.0;
+            playhead.blend_total = None;
         } else if playhead.previous_pose.is_some() && animator.playing && dt.is_finite() {
             playhead.blend_elapsed += dt.abs();
         }
@@ -360,6 +488,7 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
             if weight >= 1.0 {
                 playhead.previous_pose = None;
                 playhead.blend_elapsed = 0.0;
+                playhead.blend_total = None;
             }
         }
 
@@ -389,6 +518,12 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
     for (entity, palette, playhead) in updates {
         world.insert(entity, palette);
         world.insert(entity, playhead);
+    }
+    // 状态由引擎写回组件：编辑器 / 存档看到的就是当前状态，不用再问播放头。
+    for (entity, state) in state_updates {
+        if let Some(animator) = world.get_mut::<Animator>(entity) {
+            animator.state = state;
+        }
     }
     world.insert_resource(AnimEvents { events });
     count
@@ -428,6 +563,7 @@ fn sanitize_time(time: f32) -> f32 {
 struct LibraryView {
     skeletons: HashMap<String, Arc<Skeleton>>,
     clips: HashMap<String, Arc<Clip>>,
+    machines: HashMap<String, Arc<StateMachine>>,
 }
 
 impl LibraryView {

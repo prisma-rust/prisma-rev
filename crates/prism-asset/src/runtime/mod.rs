@@ -44,7 +44,7 @@ pub mod typed;
 
 pub use typed::{
     AnimClipAsset, MaterialAsset, MeshAsset, SceneAsset, ShaderAsset, SkeletonAsset,
-    SkinnedMeshAsset, TextureAsset,
+    SkinnedMeshAsset, StateMachineAsset, TextureAsset,
 };
 
 pub use crate::formats::{RmatInfo, RmesInfo};
