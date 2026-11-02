@@ -282,6 +282,14 @@ pub struct UiState {
     pub hierarchy_search_mode: HierarchySearchMode,
     /// 层级 Shift 区间选择的锚点（按实体下标；与资产面板的 `asset_anchor` 同理）。
     pub hierarchy_anchor: Option<usize>,
+    /// 层级锁定：按**实体 id** 钉住高亮的行（Unity 的 Hierarchy Lock，#417）。
+    ///
+    /// 只锁可见的选中高亮，不锁文档 / 展开状态：在 Scene、Project 或资产面板
+    /// 里换选择时，层级仍停在锁定时的那几行，便于对照。层级内部点选会同步更新
+    /// 这份快照；锁住的对象全被删掉时自动解锁。
+    pub hierarchy_lock: Option<Vec<u32>>,
+    /// 下一帧把这一行滚到可视区域中央（Find in Hierarchy / 资产 Ping）。
+    pub hierarchy_reveal: Option<u32>,
     pub asset_search: String,
     /// 历史面板的排序：`true` = 最新在上（引擎的 `m_ShowLatestFirst`）。
     pub history_latest_first: bool,
@@ -619,6 +627,72 @@ fn search_matches(
     keep
 }
 
+/// 层级实际高亮的行（#417）。
+///
+/// 未锁定时就是 `workspace.selection`；锁定时按实体 id 解析，外部选择变化不会
+/// 改动层级高亮。锁住的对象全被删掉后自动解锁并回落到当前选择。
+fn hierarchy_indices(workspace: &Workspace, state: &mut UiState) -> Vec<usize> {
+    let Some(ids) = state.hierarchy_lock.clone() else {
+        return workspace.selection.clone();
+    };
+    let resolved: Vec<usize> = ids
+        .iter()
+        .filter_map(|id| workspace.document().doc.index_of_id(*id))
+        .collect();
+    if resolved.is_empty() {
+        state.hierarchy_lock = None;
+        return workspace.selection.clone();
+    }
+    resolved
+}
+
+/// 锁定 / 解锁层级高亮：锁的是当前选择里的实体 id（与检查器锁一致）。
+fn toggle_hierarchy_lock(workspace: &Workspace, state: &mut UiState) {
+    if state.hierarchy_lock.is_some() {
+        state.hierarchy_lock = None;
+        return;
+    }
+    state.hierarchy_lock = Some(
+        workspace
+            .selection
+            .iter()
+            .filter_map(|index| workspace.document().doc.id_of_index(*index))
+            .collect(),
+    );
+}
+
+/// 层级里发生了点选 / 删除 / 复制：把锁定的快照同步到新的选择。
+///
+/// 只由层级自己的动作调用，外部 Scene / Project 的选择变化不会走到这里，
+/// 否则锁就失效了。
+fn sync_hierarchy_lock(workspace: &Workspace, state: &mut UiState) {
+    if state.hierarchy_lock.is_some() {
+        state.hierarchy_lock = Some(
+            workspace
+                .selection
+                .iter()
+                .filter_map(|index| workspace.document().doc.id_of_index(*index))
+                .collect(),
+        );
+    }
+}
+
+/// 在层级里定位一个实体：清掉会把它过滤掉的搜索、展开祖先、请求下一帧滚动。
+pub(crate) fn reveal_in_hierarchy(workspace: &mut Workspace, state: &mut UiState, index: usize) {
+    state.hierarchy_search.clear();
+    // 定位的目标是「当前选择」；继续锁着旧选择会让它看不见。
+    state.hierarchy_lock = None;
+    let ids: Vec<u32> = workspace
+        .document()
+        .doc
+        .path_of(index)
+        .into_iter()
+        .filter_map(|path_index| workspace.document().doc.id_of_index(path_index))
+        .collect();
+    workspace.expanded.extend(ids);
+    state.hierarchy_reveal = workspace.document().doc.id_of_index(index);
+}
+
 pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
     // ---- 顶部工具条：搜索 + 新建实体（引擎的 Create 下拉） ----
     ui.horizontal(|ui| {
@@ -677,6 +751,37 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
         {
             workspace.set_isolate(!workspace.isolate);
         }
+        // #417：锁定层级高亮，不让 Scene / Project 的选择把它带走。
+        let hierarchy_locked = state.hierarchy_lock.is_some();
+        let lock = ui.add_enabled(
+            hierarchy_locked || !workspace.selection.is_empty(),
+            egui::Button::new(if hierarchy_locked {
+                icons::LOCK_SIMPLE
+            } else {
+                icons::LOCK_SIMPLE_OPEN
+            })
+            .selected(hierarchy_locked),
+        );
+        let lock = if hierarchy_locked {
+            lock.on_hover_text("Unlock the hierarchy selection")
+        } else {
+            lock.on_hover_text("Lock the hierarchy selection")
+        };
+        if lock.clicked() {
+            toggle_hierarchy_lock(workspace, state);
+        }
+        let find = ui.add_enabled(
+            workspace.primary_selection().is_some(),
+            egui::Button::new(icons::CROSSHAIR),
+        );
+        if find
+            .on_hover_text("Find the selected object in the hierarchy")
+            .clicked()
+        {
+            if let Some(index) = workspace.primary_selection() {
+                reveal_in_hierarchy(workspace, state, index);
+            }
+        }
     });
     ui.separator();
 
@@ -700,6 +805,8 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
     }
     let expanded = workspace.expanded.clone();
     let rows = workspace.document().doc.visible_rows(&expanded);
+    // #417：锁定时高亮停在锁定时的实体 id；外部选择变化不改这里。
+    let display_selection = hierarchy_indices(workspace, state);
     // #417：可见性是会话级状态，每帧算一次，行循环里只查集合。
     let hidden_ids: std::collections::HashSet<u32> =
         workspace.hidden_entity_ids().into_iter().collect();
@@ -747,7 +854,7 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
                     continue;
                 }
                 let depth = doc.path_of(index).len().saturating_sub(1);
-                let selected = workspace.selection.contains(&index);
+                let selected = display_selection.contains(&index);
                 let expandable = !doc.children(index).is_empty();
                 let expanded_here = entity
                     .id
@@ -762,6 +869,10 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
                     Vec2::new(ui.available_width(), tree_row_height(state.compact)),
                     egui::Sense::click_and_drag(),
                 );
+                if state.hierarchy_reveal.is_some() && state.hierarchy_reveal == entity.id {
+                    row.scroll_to_me(Some(Align::Center));
+                    state.hierarchy_reveal = None;
+                }
                 if ui.is_rect_visible(row_rect) {
                     use prism_editor_core::ThemeToken;
                     let colors = workspace.colors();
@@ -998,7 +1109,9 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
                 // 之前改选择：`Parent to Selection` 在同一帧就读 `primary_selection()`。
                 if row.secondary_clicked() {
                     row_context_open = true;
-                    workspace.select_for_context(index);
+                    if workspace.select_for_context(index) {
+                        sync_hierarchy_lock(workspace, state);
+                    }
                 }
 
                 row.context_menu(|ui| {
@@ -1046,6 +1159,7 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
                     if ui.button("Select Children").clicked() {
                         let children = workspace.document().doc.descendants(index);
                         workspace.select_many(&children, false);
+                        sync_hierarchy_lock(workspace, state);
                         ui.close();
                     }
                     if ui.button("Set as First Sibling").clicked() {
@@ -1197,6 +1311,7 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
     }
 
     if let Some(action) = action {
+        let selection_before = workspace.selection.clone();
         match action {
             TreeAction::Select(index, extend) => {
                 if extend {
@@ -1296,6 +1411,9 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
                 }
                 state.rename = None;
             }
+        }
+        if workspace.selection != selection_before {
+            sync_hierarchy_lock(workspace, state);
         }
     }
 }
@@ -3518,6 +3636,8 @@ fn ping_asset(workspace: &mut Workspace, state: &mut UiState, path: &str) {
     state.clear_asset_selection();
     workspace.select(entity, false);
     workspace.frame_selection();
+    // 资产 Ping 到场景：层级同时展开祖先并滚到这一行（#417）。
+    reveal_in_hierarchy(workspace, state, entity);
     let name = workspace
         .document()
         .doc
@@ -6923,6 +7043,71 @@ mod window_smoke_tests {
         toggle_inspector_lock(&workspace, &mut state);
         assert!(state.inspector_lock.is_none());
         assert_eq!(inspector_indices(&workspace, &mut state), vec![0]);
+    }
+
+    #[test]
+    fn locking_the_hierarchy_pins_the_highlighted_rows() {
+        // #417：锁定时 Scene / Project 的新选择不改层级高亮；层级内部点选会同步。
+        let mut workspace = Workspace::sample();
+        let mut state = UiState::new();
+        workspace.select(1, false);
+        toggle_hierarchy_lock(&workspace, &mut state);
+        assert!(state.hierarchy_lock.is_some());
+        assert_eq!(hierarchy_indices(&workspace, &mut state), vec![1]);
+
+        workspace.select(0, false);
+        assert_eq!(
+            hierarchy_indices(&workspace, &mut state),
+            vec![1],
+            "外部选择不改变锁定的层级高亮"
+        );
+
+        sync_hierarchy_lock(&workspace, &mut state);
+        assert_eq!(
+            hierarchy_indices(&workspace, &mut state),
+            vec![0],
+            "层级内部点选会更新锁定快照"
+        );
+
+        toggle_hierarchy_lock(&workspace, &mut state);
+        assert!(state.hierarchy_lock.is_none());
+        assert_eq!(hierarchy_indices(&workspace, &mut state), vec![0]);
+    }
+
+    #[test]
+    fn deleting_the_hierarchy_lock_target_releases_the_lock() {
+        let mut workspace = Workspace::sample();
+        let mut state = UiState::new();
+        workspace.select(1, false);
+        toggle_hierarchy_lock(&workspace, &mut state);
+        workspace.delete_selection();
+        let indices = hierarchy_indices(&workspace, &mut state);
+        assert!(
+            state.hierarchy_lock.is_none(),
+            "锁住的对象被删掉后要自动解锁"
+        );
+        assert_eq!(indices, workspace.selection);
+    }
+
+    #[test]
+    fn reveal_expands_ancestors_and_clears_filters() {
+        // #417：Find in Hierarchy 要清掉会过滤掉目标的搜索、展开祖先并请求滚动。
+        let mut workspace = Workspace::sample();
+        let mut state = UiState::new();
+        let detail = 3;
+        let detail_id = workspace.document().doc.id_of_index(detail).unwrap();
+        let cube_id = workspace.document().doc.id_of_index(1).unwrap();
+        state.hierarchy_search = "not-a-match".to_string();
+        state.hierarchy_lock = Some(vec![detail_id]);
+        workspace.expanded.clear();
+
+        reveal_in_hierarchy(&mut workspace, &mut state, detail);
+
+        assert!(state.hierarchy_search.is_empty());
+        assert!(state.hierarchy_lock.is_none());
+        assert!(workspace.expanded.contains(&cube_id), "父级要展开");
+        assert!(workspace.expanded.contains(&detail_id), "目标自身也可展开");
+        assert_eq!(state.hierarchy_reveal, Some(detail_id));
     }
 
     #[test]
