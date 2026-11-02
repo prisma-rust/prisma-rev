@@ -39,6 +39,34 @@ fn snap_active(enabled: bool, modifier: bool) -> bool {
     enabled != modifier
 }
 
+/// Which interaction starts on a primary-button press inside the Scene view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SceneDragIntent {
+    None,
+    /// UI anchor handles always win over the world gizmo (#429).
+    UiAnchor,
+    Gizmo,
+    BoxSelect,
+}
+
+/// Resolve the pointer-drag target. Order is the contract: UI handles before
+/// world gizmos, and box selection only when neither was hit.
+pub(crate) fn scene_drag_intent(
+    has_ui_handle: bool,
+    has_gizmo: bool,
+    dragging: bool,
+) -> SceneDragIntent {
+    if has_ui_handle {
+        SceneDragIntent::UiAnchor
+    } else if has_gizmo {
+        SceneDragIntent::Gizmo
+    } else if dragging {
+        SceneDragIntent::BoxSelect
+    } else {
+        SceneDragIntent::None
+    }
+}
+
 /// 视口角标里的光源预算文本（#468）。
 ///
 /// 前向渲染的局部光 SSBO 只有 `LIGHT_MAX` 个槽位，超出的按重要性挑并丢弃。
@@ -1223,14 +1251,30 @@ impl ViewportState {
             if let Some(pos) = response.interact_pointer_pos() {
                 let local = local_of(pos);
                 // UI 锚点手柄优先于世界 gizmo / 框选（#429）。
-                self.ui_drag = self.ui_handle_at(workspace, rect, self.extent, pos);
-                if self.ui_drag.is_none()
-                    && !self.begin_gizmo_drag(workspace, &frame, rect, local)
-                    && !alt
-                    && response.dragged_by(egui::PointerButton::Primary)
-                {
-                    self.box_start = Some(pos);
-                    self.box_current = Some(pos);
+                let ui_handle = self.ui_handle_at(workspace, rect, self.extent, pos);
+                let has_ui_handle = ui_handle.is_some();
+                let has_gizmo =
+                    !has_ui_handle && self.gizmo_hit_at(workspace, &frame, rect, local).is_some();
+                let intent = scene_drag_intent(
+                    has_ui_handle,
+                    has_gizmo,
+                    response.dragged_by(egui::PointerButton::Primary),
+                );
+                self.ui_drag = ui_handle;
+                match intent {
+                    SceneDragIntent::UiAnchor | SceneDragIntent::None => {}
+                    SceneDragIntent::Gizmo => {
+                        if !self.begin_gizmo_drag(workspace, &frame, rect, local)
+                            && response.dragged_by(egui::PointerButton::Primary)
+                        {
+                            self.box_start = Some(pos);
+                            self.box_current = Some(pos);
+                        }
+                    }
+                    SceneDragIntent::BoxSelect => {
+                        self.box_start = Some(pos);
+                        self.box_current = Some(pos);
+                    }
                 }
             }
         }
@@ -2767,6 +2811,144 @@ mod tests {
             "光标不该超过 InputSnapshot::screen（{} > {}）",
             right_edge[0],
             extent.0
+        );
+    }
+}
+
+#[cfg(test)]
+mod interaction_tests {
+    use super::*;
+    use crate::test_harness::EguiHarness;
+    use std::cell::RefCell;
+
+    const STYLE: &str = "prism_engine::ui::Style";
+
+    struct AnchorScene {
+        workspace: Workspace,
+        index: usize,
+        parent: Rect,
+        anchors: [f32; 4],
+        dragging: Option<UiAnchorHandle>,
+    }
+
+    impl AnchorScene {
+        fn draw(&mut self, ctx: &egui::Context) {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let response = ui.allocate_rect(self.parent, egui::Sense::click_and_drag());
+                let handles = anchor_handles(self.anchors, self.parent);
+                if response.drag_started_by(egui::PointerButton::Primary) {
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        self.dragging = hit_handle(&handles, pos);
+                    }
+                }
+                if response.dragged_by(egui::PointerButton::Primary) {
+                    if let (Some(handle), Some(pos)) =
+                        (self.dragging, response.interact_pointer_pos())
+                    {
+                        self.anchors =
+                            anchors_from_drag(handle, pos, self.parent, self.anchors, false);
+                    }
+                }
+                if response.drag_stopped_by(egui::PointerButton::Primary)
+                    && self.dragging.take().is_some()
+                {
+                    self.workspace.set_ui_anchors_raw(self.index, self.anchors);
+                }
+                for (_, pos) in anchor_handles(self.anchors, self.parent) {
+                    ui.painter()
+                        .circle_filled(pos, HANDLE_RADIUS, egui::Color32::WHITE);
+                }
+            });
+        }
+    }
+
+    fn style(anchors: [f32; 4]) -> serde_json::Value {
+        serde_json::json!({
+            "anchors": {
+                "min_x": anchors[0],
+                "min_y": anchors[1],
+                "max_x": anchors[2],
+                "max_y": anchors[3],
+            }
+        })
+    }
+
+    fn assert_style(workspace: &Workspace, expected: [f32; 4]) {
+        let anchors = &workspace.document().doc.entities[1].components[STYLE]["anchors"];
+        let actual = [
+            anchors["min_x"].as_f64().expect("min_x") as f32,
+            anchors["min_y"].as_f64().expect("min_y") as f32,
+            anchors["max_x"].as_f64().expect("max_x") as f32,
+            anchors["max_y"].as_f64().expect("max_y") as f32,
+        ];
+        for (actual, expected) in actual.iter().zip(expected.iter()) {
+            assert!(
+                (actual - expected).abs() <= 1e-5,
+                "anchor {actual} != {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn point_and_stretch_anchor_drags_use_explicit_frame_steps() {
+        let mut workspace = Workspace::sample();
+        workspace.document_mut().doc.entities[1]
+            .components
+            .insert(STYLE.to_string(), style([0.5; 4]));
+        let parent = Rect::from_min_size(egui::pos2(100.0, 50.0), egui::vec2(200.0, 100.0));
+        let scene = RefCell::new(AnchorScene {
+            workspace,
+            index: 1,
+            parent,
+            anchors: [0.5; 4],
+            dragging: None,
+        });
+        let mut harness = EguiHarness::with_size(500.0, 300.0);
+        let mut draw = |ctx: &egui::Context| scene.borrow_mut().draw(ctx);
+
+        // Point handle at (200, 100) → drag to (250, 125).
+        harness.drag(
+            egui::pos2(200.0, 100.0),
+            egui::pos2(250.0, 125.0),
+            40,
+            &mut draw,
+        );
+        assert_eq!(scene.borrow().anchors, [0.75, 0.75, 0.75, 0.75]);
+        assert_style(&scene.borrow().workspace, [0.75, 0.75, 0.75, 0.75]);
+
+        // Stretch rectangle: right-edge handle at (300, 100) → (250, 100).
+        {
+            let mut scene = scene.borrow_mut();
+            scene.anchors = [0.0, 0.0, 1.0, 1.0];
+            scene.workspace.document_mut().doc.entities[1]
+                .components
+                .insert(STYLE.to_string(), style([0.0, 0.0, 1.0, 1.0]));
+        }
+        harness.drag(
+            egui::pos2(300.0, 100.0),
+            egui::pos2(250.0, 100.0),
+            40,
+            &mut draw,
+        );
+        assert_eq!(scene.borrow().anchors, [0.0, 0.0, 0.75, 1.0]);
+        assert_style(&scene.borrow().workspace, [0.0, 0.0, 0.75, 1.0]);
+    }
+
+    #[test]
+    fn ui_anchor_handles_take_priority_over_world_gizmos() {
+        assert_eq!(
+            scene_drag_intent(true, true, true),
+            SceneDragIntent::UiAnchor,
+            "a UI handle must win even when a gizmo is under the same pixel"
+        );
+        assert_eq!(scene_drag_intent(false, true, true), SceneDragIntent::Gizmo);
+        assert_eq!(
+            scene_drag_intent(false, false, true),
+            SceneDragIntent::BoxSelect
+        );
+        assert_eq!(
+            scene_drag_intent(false, false, false),
+            SceneDragIntent::None
         );
     }
 }
