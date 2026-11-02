@@ -387,6 +387,27 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
   （`mesh_path` → 模型、`sprite_path` → 贴图、`hdr_path`/`env_map` → HDR…），
   选中的相对路径直接写入字段。
 
+### 4.3.1 骨骼动画（#560 P0）
+
+cook 阶段把 glTF 的 `skins` / `JOINTS_0` / `WEIGHTS_0` / `animations` 烘成三份 side asset
+（`{mesh}.skinning/skeleton.rskel`、`mesh.rskin`、`clips/{n}_{name}.ranim`），并给场景实体
+自动补上 `SkinnedMeshRenderer` + `SkeletonRoot` + `Animator`（作者手写的组件优先，
+只有骨架没有权重时保持普通 `MeshRenderer`）。三件套：
+
+- **`Animator`**：检查器里是「▶/⏸、⏮ 重播、时间轴滑杆、Loop、speed」；滑杆下方一条 6px
+  刻度带标出所有轨道的关键帧时刻（`Clip::key_times` 合并去重），拖的时候能看出哪里会变。
+  改时间 / 勾 Loop 直接写回组件字段（一次撤销步），引擎的 `animator::pose` 系统下一帧按
+  新时间重算骨骼调色板。
+- **`SkeletonRoot`**：检查器里画骨骼树（`CollapsingHeader` 按父链缩进，成环有护栏）。
+- **视口叠加**：工具栏 `Bones`（`Outline` 右边）控制，默认开。选中蒙皮实体时按
+  `BonePalette` 还原关节世界位置（`world = palette × inverse_bind⁻¹`），画父 → 子 1.6px
+  连线 + 关节圆点（根关节更大）。拖时间轴时叠加层跟着动，因为它读的就是动画系统当帧的
+  结果而不是作者数据。`show_skeleton` 与 `show_selection_outline` 一样存进 `state.json`
+  的 `scene` 段，旧存档默认开。
+
+还不支持：权重热图（每个顶点的 4 个权重着色）、关键帧刻度点击跳转、视口里直接拖关节做
+IK（P2 的 IK 另立）。
+
 ## 4.4 内置截图与控制通道
 
 截图在编辑器进程里做（`editor/crates/prism-editor-egui/src/screenshot.rs`）：
@@ -450,7 +471,8 @@ egui 壳通过路径依赖直接使用它；将来可以改名为 `prism-editor-
   `cargo check`（本机 + `x86_64-pc-windows-gnu`）。首帧呈现、resize、字体、
   docking 手感都需要桌面复核。
 - **尚未实现**：材质 / 贴图拖到场景里自动挂 `MeshRenderer`；层级多选整组插入排序
-  （整组只支持改父级）；多窗口（egui viewport）的独立 DPI。
+  （整组只支持改父级）；多窗口（egui viewport）的独立 DPI；骨骼动画的权重热图与
+  关键帧刻度点击跳转（见 4.3.1）。
 - **内置图元（已打通）**：`crates/prism-render/src/primitives.rs` 生成 box / sphere /
   cylinder / capsule / quad 的顶点与索引；`mesh_path = "__builtin/<name>"` 由
   `prism-engine` 的资产解析器短路，不读 `.pak`、不需要 cook。对应的实体预设
