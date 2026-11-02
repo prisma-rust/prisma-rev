@@ -168,6 +168,31 @@ fn the_mesh_covers_the_requested_size() {
 }
 
 #[test]
+fn splat_colours_follow_height_and_can_be_disabled() {
+    let field = ramp(5);
+    let plain = field.build_mesh([10.0, 10.0], 1.0);
+    assert!(
+        plain.colors.is_empty(),
+        "splat off keeps the old vertex stream"
+    );
+
+    let splat = field.build_mesh_with_splat([10.0, 10.0], 1.0, true);
+    assert_eq!(splat.colors.len(), splat.positions.len());
+    assert_ne!(splat.colors[0], splat.colors[splat.colors.len() - 1]);
+    // 纯高度带（平地法线）的端点颜色。
+    let low = terrain_splat_color(0.0, 0.0, 1.0, [0.0, 1.0, 0.0]);
+    let high = terrain_splat_color(1.0, 0.0, 1.0, [0.0, 1.0, 0.0]);
+    assert!((low[0] - SPLAT_SAND[0]).abs() < 1e-5);
+    assert!((low[2] - SPLAT_SAND[2]).abs() < 1e-5);
+    assert!((high[0] - SPLAT_SNOW[0]).abs() < 1e-5);
+    assert!((high[2] - SPLAT_SNOW[2]).abs() < 1e-5);
+
+    // LOD 网格同样带颜色，数量与顶点一致。
+    let half = field.build_chunk_mesh_lod_with_splat([10.0, 10.0], 1.0, 0, 4, 0, 4, 2, true);
+    assert_eq!(half.colors.len(), half.positions.len());
+}
+
+#[test]
 fn height_scale_scales_the_vertices() {
     let field = ramp(2);
     let mesh = field.build_mesh([1.0, 1.0], 100.0);

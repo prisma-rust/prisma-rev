@@ -15,8 +15,9 @@
 //! `Terrain.vegetation_*` 按高度 / 坡度确定性散布共享网格的实例，交给渲染器
 //! 静态实例化合批。[`Heightfield::sculpt`]、`prism-build-pipeline sculpt-heightmap`
 //! 与编辑器 Scene 视口 Sculpt 模式提供 raise/lower/smooth/flatten 笔刷；
-//! 分层 splat 仍待后续。rapier 地形碰撞体由 `prism-app` 的物理线程维护（见
-//! `physics_runner`）。
+//! `Terrain.splat` 提供按高度 / 坡度的 4 层程序化色带（顶点色），纹理层 /
+//! 法线粗糙度贴图仍待后续。rapier 地形碰撞体由 `prism-app` 的物理线程维护
+//! （见 `physics_runner`）。
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -147,7 +148,26 @@ impl Heightfield {
 
     /// 生成整张地形的网格（单 chunk）：沿 `size` 铺开，`y = height * height_scale`。
     pub fn build_mesh(&self, size: [f32; 2], height_scale: f32) -> MeshUploadInput {
-        self.build_chunk_mesh(size, height_scale, 0, self.cells - 1, 0, self.cells - 1)
+        self.build_mesh_with_splat(size, height_scale, false)
+    }
+
+    /// 单块网格 + 可选的程序化色带 splat（#517）。
+    pub fn build_mesh_with_splat(
+        &self,
+        size: [f32; 2],
+        height_scale: f32,
+        splat: bool,
+    ) -> MeshUploadInput {
+        self.build_chunk_mesh_lod_with_splat(
+            size,
+            height_scale,
+            0,
+            self.cells - 1,
+            0,
+            self.cells - 1,
+            1,
+            splat,
+        )
     }
 
     /// 生成 `[x0, x1] × [z0, z1]` 格子范围的网格（#517 Phase 2）。
@@ -181,6 +201,22 @@ impl Heightfield {
         z1: usize,
         step: usize,
     ) -> MeshUploadInput {
+        self.build_chunk_mesh_lod_with_splat(size, height_scale, x0, x1, z0, z1, step, false)
+    }
+
+    /// 带步长 + 可选程序化色带 splat 的 chunk 网格。
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_chunk_mesh_lod_with_splat(
+        &self,
+        size: [f32; 2],
+        height_scale: f32,
+        x0: usize,
+        x1: usize,
+        z0: usize,
+        z1: usize,
+        step: usize,
+        splat: bool,
+    ) -> MeshUploadInput {
         let cells = self.cells;
         let last = cells - 1;
         let (x0, x1) = if x0 <= x1 { (x0, x1) } else { (x1, x0) };
@@ -200,9 +236,19 @@ impl Heightfield {
         let columns = xs.len();
         let rows = zs.len();
 
+        let (min_height, max_height) = if splat {
+            self.heights
+                .iter()
+                .fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), height| {
+                    (min.min(*height), max.max(*height))
+                })
+        } else {
+            (0.0, 0.0)
+        };
         let mut positions = Vec::with_capacity(columns * rows);
         let mut normals = Vec::with_capacity(columns * rows);
         let mut uvs = Vec::with_capacity(columns * rows);
+        let mut colors = Vec::with_capacity(if splat { columns * rows } else { 0 });
         for &z in &zs {
             for &x in &xs {
                 let (u, v) = (x as f32 / last_f, z as f32 / last_f);
@@ -211,8 +257,17 @@ impl Heightfield {
                     self.at(x, z) * height_scale,
                     (v - 0.5) * size_z - center_z,
                 ]);
-                normals.push(self.sample_normal(u, v, height_scale));
+                let normal = self.sample_normal(u, v, height_scale);
+                normals.push(normal);
                 uvs.push([u, 1.0 - v]);
+                if splat {
+                    colors.push(terrain_splat_color(
+                        self.at(x, z),
+                        min_height,
+                        max_height,
+                        normal,
+                    ));
+                }
             }
         }
         let mut indices = Vec::with_capacity((columns - 1) * (rows - 1) * 6);
@@ -229,7 +284,7 @@ impl Heightfield {
         MeshUploadInput {
             positions,
             normals,
-            colors: Vec::new(),
+            colors,
             uvs,
             tangents: Vec::new(),
             indices,
@@ -340,6 +395,50 @@ fn sample_indices(start: usize, end: usize, step: usize) -> Vec<usize> {
     }
     indices.push(end);
     indices
+}
+
+/// 程序化色带 splat 的 4 层调色板（沙 / 草 / 岩石 / 雪）。
+const SPLAT_SAND: [f32; 3] = [0.78, 0.70, 0.49];
+const SPLAT_GRASS: [f32; 3] = [0.30, 0.47, 0.21];
+const SPLAT_ROCK: [f32; 3] = [0.43, 0.40, 0.36];
+const SPLAT_SNOW: [f32; 3] = [0.90, 0.92, 0.96];
+
+fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
+    let t = ((value - edge0) / (edge1 - edge0).max(1e-6)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn mix_color(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ]
+}
+
+/// 高度 / 坡度 → 顶点色：低处沙、中段草、高处岩石 / 雪，陡坡偏向岩石。
+fn terrain_splat_color(
+    height: f32,
+    min_height: f32,
+    max_height: f32,
+    normal: [f32; 3],
+) -> [f32; 3] {
+    let range = max_height - min_height;
+    let height_t = if range.abs() < 1e-6 {
+        0.5
+    } else {
+        ((height - min_height) / range).clamp(0.0, 1.0)
+    };
+    let base = if height_t < 0.35 {
+        mix_color(SPLAT_SAND, SPLAT_GRASS, smoothstep(0.0, 0.35, height_t))
+    } else if height_t < 0.7 {
+        mix_color(SPLAT_GRASS, SPLAT_ROCK, smoothstep(0.35, 0.7, height_t))
+    } else {
+        mix_color(SPLAT_ROCK, SPLAT_SNOW, smoothstep(0.7, 1.0, height_t))
+    };
+    let slope = 1.0 - normal[1].clamp(0.0, 1.0);
+    let rock = smoothstep(0.25, 0.6, slope);
+    mix_color(base, SPLAT_ROCK, rock)
 }
 
 /// 进程内生成的网格表：路径 → 顶点数据（资产解析器据此绕过 `.pak`）。
@@ -563,7 +662,7 @@ fn none_entity() -> prism_ecs::Entity {
 /// `Terrain` 的网格参数指纹：变了就要重建网格。
 pub fn terrain_key(entity_id: u32, terrain: &Terrain) -> String {
     format!(
-        "{entity_id}|{}|{}x{}|{}|{}|{}|{:?}|{}|{}|{}|{}",
+        "{entity_id}|{}|{}x{}|{}|{}|{}|{:?}|{}|{}|{}|{}|{}",
         terrain.heightmap,
         terrain.size[0],
         terrain.size[1],
@@ -574,7 +673,8 @@ pub fn terrain_key(entity_id: u32, terrain: &Terrain) -> String {
         terrain.vegetation_density,
         terrain.vegetation_mesh,
         terrain.vegetation_material,
-        terrain.vegetation_size
+        terrain.vegetation_size,
+        terrain.splat
     )
 }
 
@@ -1023,7 +1123,7 @@ fn rebuild_terrain(
     let levels = terrain.lod_level_count();
     if chunks == 1 && levels == 1 {
         let path = format!("{PROCEDURAL_PREFIX}terrain/{}-{hash:x}", entity.id());
-        let mesh = field.build_mesh(size, height_scale);
+        let mesh = field.build_mesh_with_splat(size, height_scale, terrain.splat);
         if let Some(meshes) = world.get_resource_mut::<ProceduralMeshes>() {
             meshes.insert(path.clone(), mesh);
         }
@@ -1099,7 +1199,7 @@ fn rebuild_terrain(
                     "{PROCEDURAL_PREFIX}terrain/{}-{hash:x}/l{level}/c{x}_{z}",
                     entity.id()
                 );
-                let mesh = field.build_chunk_mesh_lod(
+                let mesh = field.build_chunk_mesh_lod_with_splat(
                     size,
                     height_scale,
                     bounds[x],
@@ -1107,6 +1207,7 @@ fn rebuild_terrain(
                     bounds[z],
                     bounds[z + 1],
                     step,
+                    terrain.splat,
                 );
                 if let Some(meshes) = world.get_resource_mut::<ProceduralMeshes>() {
                     meshes.insert(path.clone(), mesh);
