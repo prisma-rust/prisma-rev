@@ -555,7 +555,8 @@ fn an_animator_survives_cook_and_decode() {
                         "time": 0.5,
                         "speed": 2.0,
                         "looped": false,
-                        "playing": true
+                        "playing": true,
+                        "blend_duration": 0.35
                     }
                 }
             }]
@@ -582,6 +583,37 @@ fn an_animator_survives_cook_and_decode() {
     assert_eq!(animator.speed, 2.0);
     assert!(!animator.looped);
     assert!(animator.playing);
+    assert_eq!(animator.blend_duration, 0.35, "交叉淡入时长要进 RSCN");
+}
+
+#[test]
+fn an_animator_without_a_blend_duration_falls_back_to_the_default() {
+    // 新增字段必须对旧文档宽容：缺 `blend_duration` 时用 0.2s，而不是 0（硬切）。
+    let mut registry = ComponentRegistry::new();
+    register_builtin_components(&mut registry);
+    let scene = SceneJson::parse(
+        r#"{
+            "version": 3,
+            "entities": [{
+                "id": 0,
+                "name": "Rig",
+                "components": {
+                    "prism_engine::scene::Animator": { "clip_path": "a.ranim" }
+                }
+            }]
+        }"#,
+    )
+    .unwrap();
+
+    let bytes = crate::encode_scene(&scene, &registry).expect("cook");
+    let decoded = crate::decode_scene(&bytes, &registry).expect("decode");
+    let mut world = prism_ecs::World::new();
+    let entity = world.spawn();
+    for component in &decoded.entities[0].components {
+        assert!(registry.apply_object(&mut world, entity, component));
+    }
+    let animator = world.get::<crate::components::Animator>(entity).unwrap();
+    assert_eq!(animator.blend_duration, 0.2);
 }
 
 #[test]

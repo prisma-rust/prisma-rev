@@ -188,6 +188,177 @@ fn changing_the_clip_restarts_from_the_authored_time() {
     assert!((head.time - 0.25).abs() < 1e-5, "换剪辑按作者时间重来");
 }
 
+/// 子骨骼恒等于 +90°（绕 Z）的剪辑：与 [`bend_clip`] 的起始姿态（0°）明确不同。
+fn bent_90_clip(name: &str) -> Clip {
+    Clip {
+        name: name.into(),
+        duration: 1.0,
+        fps: 30.0,
+        looped: true,
+        additive: false,
+        tracks: vec![Track {
+            joint: 1,
+            translation: Vec::new(),
+            rotation: vec![prism_anim::QuatKey {
+                time: 0.0,
+                value: Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+            }],
+            scale: Vec::new(),
+        }],
+    }
+}
+
+/// 把实体切到 `path`，并把 `blend_duration` / `playing` 设好（不跑系统）。
+fn switch_clip(world: &mut World, entity: Entity, path: &str, blend_duration: f32) {
+    let animator = world.get_mut::<Animator>(entity).unwrap();
+    animator.clip_path = path.into();
+    animator.time = 0.0;
+    animator.blend_duration = blend_duration;
+    animator.playing = true;
+}
+
+#[test]
+fn switching_clips_crossfades_instead_of_popping() {
+    let (mut world, entity) = world_with_animator("");
+    world
+        .get_resource_mut::<SkeletonLibrary>()
+        .unwrap()
+        .insert_clip("bent90.ranim", bent_90_clip("bent90"));
+    // 起点：bend 的 0s（子骨骼 0°）。
+    animator_system(&mut world, 0.0);
+    let start = child_tip(&world, entity);
+    assert!((start.y - 1.0).abs() < 1e-4, "start tip {start:?}");
+
+    switch_clip(&mut world, entity, "bent90.ranim", 1.0);
+    // 第一帧：权重仍接近 0 → 还是旧姿态（这就是"不硬切"）。
+    animator_system(&mut world, 0.0);
+    let faded_in = child_tip(&world, entity);
+    assert!(
+        (faded_in.y - 1.0).abs() < 1e-4,
+        "过渡开头该是旧姿态，得到 {faded_in:?}"
+    );
+
+    // 半程：权重 0.5 → 约 45°。
+    animator_system(&mut world, 0.5);
+    let half = child_tip(&world, entity);
+    let angle = std::f32::consts::FRAC_PI_4;
+    assert!(
+        (half.x - (2.0 - angle.sin())).abs() < 1e-3,
+        "半程该在 45°，得到 {half:?}"
+    );
+    assert!((half.y - angle.cos()).abs() < 1e-3, "half {half:?}");
+
+    // 走完：权重 1 → 完整的新剪辑（90°），来源被清掉。
+    animator_system(&mut world, 0.5);
+    let done = child_tip(&world, entity);
+    assert!((done.x - 1.0).abs() < 1e-3, "结束该是 90°，得到 {done:?}");
+    assert!(done.y.abs() < 1e-3, "结束该是 90°，得到 {done:?}");
+    let head = world.get::<AnimatorPlayhead>(entity).unwrap();
+    assert!(
+        head.previous_clip_path.is_empty(),
+        "过渡结束后不该继续持有来源"
+    );
+}
+
+#[test]
+fn a_zero_blend_duration_switches_immediately() {
+    let (mut world, entity) = world_with_animator("");
+    world
+        .get_resource_mut::<SkeletonLibrary>()
+        .unwrap()
+        .insert_clip("bent90.ranim", bent_90_clip("bent90"));
+    animator_system(&mut world, 0.0);
+
+    switch_clip(&mut world, entity, "bent90.ranim", 0.0);
+    animator_system(&mut world, 0.0);
+
+    let tip = child_tip(&world, entity);
+    assert!((tip.x - 1.0).abs() < 1e-3, "0 时长 = 直接切，得到 {tip:?}");
+    assert!(world
+        .get::<AnimatorPlayhead>(entity)
+        .unwrap()
+        .previous_clip_path
+        .is_empty());
+}
+
+#[test]
+fn a_paused_animator_does_not_advance_the_crossfade() {
+    let (mut world, entity) = world_with_animator("");
+    world
+        .get_resource_mut::<SkeletonLibrary>()
+        .unwrap()
+        .insert_clip("bent90.ranim", bent_90_clip("bent90"));
+    animator_system(&mut world, 0.0);
+
+    switch_clip(&mut world, entity, "bent90.ranim", 1.0);
+    world.get_mut::<Animator>(entity).unwrap().playing = false;
+    animator_system(&mut world, 0.4);
+    animator_system(&mut world, 0.4);
+
+    let head = world.get::<AnimatorPlayhead>(entity).unwrap();
+    assert_eq!(head.blend_elapsed, 0.0, "暂停时过渡也不该走");
+    assert_eq!(head.previous_clip_path, "bend.ranim", "来源仍然保留");
+    let tip = child_tip(&world, entity);
+    assert!(
+        (tip.y - 1.0).abs() < 1e-4,
+        "仍然显示旧姿态（0° 的 tip 在 y=1），得到 {tip:?}"
+    );
+}
+
+#[test]
+fn losing_the_source_clip_drops_the_fade_instead_of_sticking() {
+    let (mut world, entity) = world_with_animator("");
+    world
+        .get_resource_mut::<SkeletonLibrary>()
+        .unwrap()
+        .insert_clip("bent90.ranim", bent_90_clip("bent90"));
+    animator_system(&mut world, 0.0);
+
+    switch_clip(&mut world, entity, "bent90.ranim", 1.0);
+    // 过渡开始的同一帧就把旧剪辑从库里拿掉（热重载/删资产）。
+    {
+        let library = world.get_resource_mut::<SkeletonLibrary>().unwrap();
+        library.clear();
+        library.insert_skeleton("rig.rskel", two_bone_skeleton());
+        library.insert_clip("bent90.ranim", bent_90_clip("bent90"));
+    }
+    animator_system(&mut world, 0.0);
+
+    let head = world.get::<AnimatorPlayhead>(entity).unwrap();
+    assert!(head.previous_clip_path.is_empty(), "缺来源时直接放弃过渡");
+    let tip = child_tip(&world, entity);
+    assert!((tip.x - 1.0).abs() < 1e-3, "直接切到新剪辑，得到 {tip:?}");
+}
+
+#[test]
+fn blend_weights_are_clamped_and_need_both_a_source_and_a_duration() {
+    let mut head = AnimatorPlayhead {
+        clip_path: "new".into(),
+        time: 0.0,
+        finished: false,
+        previous_clip_path: "old".into(),
+        previous_time: 0.0,
+        blend_elapsed: 0.0,
+    };
+    assert_eq!(head.blend_weight(1.0), Some(0.0));
+    head.blend_elapsed = 0.5;
+    assert_eq!(head.blend_weight(1.0), Some(0.5));
+    head.blend_elapsed = 99.0;
+    assert_eq!(head.blend_weight(1.0), Some(1.0), "权重夹到 1");
+    assert_eq!(head.blend_weight(0.0), None, "0 时长 = 无过渡");
+    head.previous_clip_path.clear();
+    assert_eq!(head.blend_weight(1.0), None, "没有来源就没有权重");
+}
+
+#[test]
+fn bad_blend_durations_are_treated_as_zero() {
+    assert_eq!(sanitize_blend_duration(f32::NAN), 0.0);
+    assert_eq!(sanitize_blend_duration(-1.0), 0.0);
+    assert_eq!(sanitize_blend_duration(f32::INFINITY), 0.0);
+    assert_eq!(sanitize_blend_duration(0.0), 0.0);
+    assert_eq!(sanitize_blend_duration(0.2), 0.2);
+}
+
 #[test]
 fn the_sanitizer_rejects_bad_times() {
     assert_eq!(sanitize_time(f32::NAN), 0.0);

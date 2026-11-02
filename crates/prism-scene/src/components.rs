@@ -2079,6 +2079,12 @@ pub struct Animator {
     pub looped: bool,
     /// 是否推进时间。
     pub playing: bool,
+    /// 换剪辑时的交叉淡入时长（秒）。
+    ///
+    /// `clip_path` 在运行时被改掉时，从**旧剪辑停在那一刻的姿态**过渡到新剪辑，
+    /// 而不是硬切（硬切会让角色"跳"一下）。`0` = 直接切换；负值 / NaN 同样按 0
+    /// 处理。过渡本身只影响姿态，不改变组件里的 `time`。
+    pub blend_duration: f32,
 }
 
 impl Default for Animator {
@@ -2089,6 +2095,8 @@ impl Default for Animator {
             speed: 1.0,
             looped: true,
             playing: true,
+            // 0.2s ≈ UE 的默认混合时间：短到不拖沓，又能盖住大部分姿势差。
+            blend_duration: 0.2,
         }
     }
 }
