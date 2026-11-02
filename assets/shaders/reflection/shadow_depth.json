@@ -1,6 +1,23 @@
 {
     "parameters": [
         {
+            "name": "bones",
+            "binding": {"kind": "descriptorTableSlot", "index": 3},
+            "type": {
+                "kind": "resource",
+                "baseShape": "structuredBuffer",
+                "resultType": {
+                    "kind": "matrix",
+                    "rowCount": 4,
+                    "columnCount": 4,
+                    "elementType": {
+                        "kind": "scalar",
+                        "scalarType": "float32"
+                    }
+                }
+            }
+        },
+        {
             "name": "push",
             "binding": {"kind": "pushConstantBuffer", "index": 0},
             "type": {
@@ -34,6 +51,26 @@
                                 }
                             },
                             "binding": {"kind": "uniform", "offset": 64, "size": 64}
+                        },
+                        {
+                            "name": "bone_offset",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "uint32"
+                            },
+                            "binding": {"kind": "uniform", "offset": 128, "size": 4}
+                        },
+                        {
+                            "name": "_pad",
+                            "type": {
+                                "kind": "vector",
+                                "elementCount": 3,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint32"
+                                }
+                            },
+                            "binding": {"kind": "uniform", "offset": 144, "size": 12}
                         }
                     ]
                 },
@@ -70,10 +107,30 @@
                                     }
                                 },
                                 "binding": {"kind": "uniform", "offset": 64, "size": 64}
+                            },
+                            {
+                                "name": "bone_offset",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint32"
+                                },
+                                "binding": {"kind": "uniform", "offset": 128, "size": 4}
+                            },
+                            {
+                                "name": "_pad",
+                                "type": {
+                                    "kind": "vector",
+                                    "elementCount": 3,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "uint32"
+                                    }
+                                },
+                                "binding": {"kind": "uniform", "offset": 144, "size": 12}
                             }
                         ]
                     },
-                    "binding": {"kind": "uniform", "offset": 0, "size": 128}
+                    "binding": {"kind": "uniform", "offset": 0, "size": 160}
                 }
             }
         }
@@ -178,6 +235,10 @@
             },
             "bindings": [
                 {
+                    "name": "bones",
+                    "binding": {"kind": "descriptorTableSlot", "index": 3}
+                },
+                {
                     "name": "push",
                     "binding": {"kind": "pushConstantBuffer", "index": 0}
                 }
@@ -187,6 +248,10 @@
             "name": "fragmentMain",
             "stage": "fragment",
             "bindings": [
+                {
+                    "name": "bones",
+                    "binding": {"kind": "descriptorTableSlot", "index": 3}
+                },
                 {
                     "name": "push",
                     "binding": {"kind": "pushConstantBuffer", "index": 0}

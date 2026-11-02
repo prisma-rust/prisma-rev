@@ -4,7 +4,7 @@
 // 还要顺手把每个实体的骨骼调色板追加进帧包。
 
 use prism_ecs::{Entity, World};
-use prism_render::culling::Frustum;
+use prism_render::culling::{Aabb, Frustum};
 use prism_render::render_graph::DrawItem;
 
 use super::animator::BonePalette;
@@ -41,9 +41,18 @@ pub fn append_skinned_draw_items(
             continue;
         }
         let model = wt.0.to_cols_array_2d();
-        let world_bounds = bounds
+        let palette = world
+            .get::<BonePalette>(entity)
+            .filter(|palette| !palette.matrices.is_empty());
+        // 剔除用**蒙皮后**的包围盒：bind pose 的盒子在角色摆大动作时会偏，
+        // 用它做剔除会把还在画面里的角色剔掉（#560 P0-3c）。
+        let local_bounds = bounds
             .and_then(|bounds| bounds.get(mr.render_handle))
-            .and_then(|local| local.transformed(&model));
+            .map(|bind| match palette {
+                Some(palette) => skinned_local_bounds(bind, &palette.matrices).unwrap_or(*bind),
+                None => *bind,
+            });
+        let world_bounds = local_bounds.and_then(|local| local.transformed(&model));
         if let Some(frustum) = frustum {
             if let Some(world_bounds) = world_bounds {
                 if !frustum.intersects_aabb(&world_bounds) {
@@ -52,7 +61,7 @@ pub fn append_skinned_draw_items(
             }
         }
 
-        let bone_offset = append_palette(world, entity, BONE_BUDGET, bones);
+        let bone_offset = append_palette(palette, entity, BONE_BUDGET, bones);
         let renderer = skinned.as_mesh_renderer();
         let state = draw_state(Some(&renderer));
         let material_ref = world.get::<MaterialRef>(entity);
@@ -114,12 +123,12 @@ pub fn append_skinned_draw_items(
 /// 没有 `BonePalette`（动画系统还没跑 / 骨架缺失）或超出预算时返回 `None`，
 /// 绘制项按 bind pose 画。
 fn append_palette(
-    world: &World,
+    palette: Option<&BonePalette>,
     entity: Entity,
     budget: usize,
     bones: &mut Vec<[[f32; 4]; 4]>,
 ) -> Option<u32> {
-    let palette = world.get::<BonePalette>(entity)?;
+    let palette = palette?;
     if palette.matrices.is_empty() {
         return None;
     }
@@ -138,6 +147,28 @@ fn append_palette(
     Some(offset)
 }
 
+/// 蒙皮后的局部包围盒：把 bind 包围盒按调色板里每个骨骼矩阵变换后取并集。
+///
+/// 蒙皮顶点 = `Σ wᵢ · (Mᵢ · p)`（权重非负、和为 1），因此它一定落在
+/// `{Mᵢ · p}` 的凸包里 —— 并集是保守上界，不会把可见几何剔掉。
+/// 调色板为空或全部矩阵非有限时返回 `None`，调用方退回 bind 包围盒。
+fn skinned_local_bounds(bind: &Aabb, palette: &[[[f32; 4]; 4]]) -> Option<Aabb> {
+    let mut merged: Option<Aabb> = None;
+    for matrix in palette {
+        if let Some(bounds) = bind.transformed(matrix) {
+            merged = match merged {
+                Some(accumulated) => accumulated.union(&bounds),
+                None => Some(bounds),
+            };
+        }
+    }
+    merged
+}
+
 #[cfg(test)]
 #[path = "skinned_draw_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "skinned_draw_bounds_tests.rs"]
+mod bounds_tests;

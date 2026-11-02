@@ -108,6 +108,9 @@ emit_reflection gizmo vertexMain vertex fragmentMain fragment
 
 # shadow_depth: vertex + fragment (rasterized depth-only shadow map).
 compile_stage shadow_depth vertexMain vertex
+# shadow_depth, skinned entry point: same module, extra vertex buffer
+# (binding 1 = joints/weights, #560 P0-3c).
+compile_stage shadow_depth vertexSkinnedMain vertex shadow_depth_skinned
 compile_stage shadow_depth fragmentMain fragment
 emit_reflection shadow_depth vertexMain vertex fragmentMain fragment
 
