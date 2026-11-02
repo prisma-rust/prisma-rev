@@ -2644,6 +2644,8 @@ fn inspector_single(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState,
             skeleton_root_editor(ui, state, &schema.name, &value);
         } else if name == "prism_engine::scene::KeyframeAnimation" {
             keyframe_animation_editor(ui, workspace, entity_id, &schema.name, &value);
+        } else if name == "prism_engine::scene::Terrain" {
+            terrain_editor(ui, workspace, &value);
         }
     }
     for action in actions {
@@ -3532,6 +3534,152 @@ fn clip_label(path: &str) -> String {
         "(none)".to_string()
     } else {
         path.rsplit('/').next().unwrap_or(path).to_string()
+    }
+}
+
+/// 高度图片段统计（#517）：检查器直接显示，不再要求用户去日志里找
+/// `terrain:` 警告。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TerrainHeightmapStats {
+    pub cells: usize,
+    pub samples: usize,
+    pub min: f32,
+    pub max: f32,
+}
+
+/// 解析 `.raw`（f32 LE）高度图并校验分辨率，规则与引擎的
+/// `load_heightfield` 一致：
+///
+/// - `resolution == 0` 时样本数必须是完全平方数；
+/// - 非 0 时样本数必须正好是 `resolution²`；
+/// - 非有限高度按 0 处理（与 `Heightfield::from_raw` 相同）。
+pub fn terrain_heightmap_stats(
+    bytes: &[u8],
+    resolution: u32,
+) -> Result<TerrainHeightmapStats, String> {
+    if bytes.len() % 4 != 0 {
+        return Err(format!(
+            "{} bytes is not a multiple of 4 (f32 samples)",
+            bytes.len()
+        ));
+    }
+    let samples = bytes.len() / 4;
+    let cells = if resolution == 0 {
+        let cells = (samples as f64).sqrt() as usize;
+        if cells < 2 || cells * cells != samples {
+            return Err(format!(
+                "expected a square heightmap, got {samples} samples"
+            ));
+        }
+        cells
+    } else {
+        let cells = resolution.clamp(2, 1024) as usize;
+        if samples != cells * cells {
+            return Err(format!(
+                "expected {} samples for {cells}×{cells} cells, got {samples}",
+                cells * cells
+            ));
+        }
+        cells
+    };
+    let mut min = f32::INFINITY;
+    let mut max = f32::NEG_INFINITY;
+    for chunk in bytes.chunks_exact(4) {
+        let raw = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        let value = if raw.is_finite() { raw } else { 0.0 };
+        min = min.min(value);
+        max = max.max(value);
+    }
+    Ok(TerrainHeightmapStats {
+        cells,
+        samples,
+        min,
+        max,
+    })
+}
+
+/// `Terrain` 的检查器补充区：高度图文件、分辨率与高度范围（#517）。
+///
+/// 通用 reflect 卡片已经能改字段；这里只补运行时才会知道的信息，并把
+/// 「文件缺失 / 字节数不匹配 / 不是方形」翻译成和 `load_heightfield` 一致的提示。
+fn terrain_editor(ui: &mut Ui, workspace: &Workspace, value: &Value) {
+    let heightmap = value
+        .get("heightmap")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    let resolution = value.get("resolution").and_then(Value::as_u64).unwrap_or(0) as u32;
+    let height_scale = value
+        .get("height_scale")
+        .and_then(Value::as_f64)
+        .unwrap_or(1.0) as f32;
+    let height_scale = if height_scale.is_finite() {
+        height_scale
+    } else {
+        1.0
+    };
+
+    ui.separator();
+    ui.label(RichText::new("Heightmap").strong().size(11.0));
+    if heightmap.is_empty() {
+        ui.label(
+            RichText::new("no heightmap — flat terrain at y = 0")
+                .weak()
+                .size(10.0),
+        );
+        return;
+    }
+    ui.label(RichText::new(heightmap).monospace().size(10.0));
+
+    let Some(root) = workspace.project_root.as_ref() else {
+        ui.label(
+            RichText::new("no project root; cannot read the heightmap")
+                .weak()
+                .size(10.0),
+        );
+        return;
+    };
+    // 引擎的 `heightmap` 是相对 `assets/` 的路径；也接受显式 `assets/...`。
+    let relative = heightmap.strip_prefix("assets/").unwrap_or(heightmap);
+    let path = root.join("assets").join(relative);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            ui.colored_label(
+                Color32::from_rgb(220, 90, 90),
+                format!("cannot read {}: {error}", path.display()),
+            );
+            return;
+        }
+    };
+
+    match terrain_heightmap_stats(&bytes, resolution) {
+        Ok(stats) => {
+            ui.label(format!(
+                "{} × {} cells ({} samples)",
+                stats.cells, stats.cells, stats.samples
+            ));
+            ui.label(format!(
+                "height {:.2} .. {:.2} raw → {:.2} .. {:.2} m",
+                stats.min,
+                stats.max,
+                stats.min * height_scale,
+                stats.max * height_scale
+            ));
+            if let Some(size) = value.get("size").and_then(Value::as_array) {
+                if size.len() >= 2 {
+                    let x = size[0].as_f64().unwrap_or(0.0);
+                    let z = size[1].as_f64().unwrap_or(0.0);
+                    ui.label(format!("world {x:.1} × {z:.1} m"));
+                }
+            }
+        }
+        Err(error) => {
+            ui.colored_label(
+                Color32::from_rgb(220, 90, 90),
+                format!("heightmap: {error}"),
+            );
+        }
     }
 }
 
@@ -9046,5 +9194,48 @@ fn texture_import_settings(ui: &mut Ui, workspace: &Workspace, state: &mut UiSta
                 .weak()
                 .size(10.0),
         );
+    }
+}
+
+#[cfg(test)]
+mod terrain_stats_tests {
+    use super::*;
+
+    fn raw(values: &[f32]) -> Vec<u8> {
+        values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect()
+    }
+
+    #[test]
+    fn infers_a_square_heightmap_and_reports_the_range() {
+        let stats =
+            terrain_heightmap_stats(&raw(&[-1.5, 2.0, 0.0, 3.0]), 0).expect("2×2 heightmap");
+        assert_eq!(stats.cells, 2);
+        assert_eq!(stats.samples, 4);
+        assert_eq!(stats.min, -1.5);
+        assert_eq!(stats.max, 3.0);
+    }
+
+    #[test]
+    fn explicit_resolution_must_match_the_sample_count() {
+        let error = terrain_heightmap_stats(&raw(&[0.0; 4]), 3).expect_err("3×3 needs 9 samples");
+        assert!(error.contains("expected 9 samples"), "{error}");
+    }
+
+    #[test]
+    fn rejects_unaligned_non_square_and_empty_files() {
+        assert!(terrain_heightmap_stats(&[0, 1, 2], 0).is_err());
+        assert!(terrain_heightmap_stats(&raw(&[0.0; 5]), 0).is_err());
+        assert!(terrain_heightmap_stats(&[], 0).is_err());
+    }
+
+    #[test]
+    fn non_finite_heights_are_treated_as_zero() {
+        let stats = terrain_heightmap_stats(&raw(&[f32::NAN, 1.0, -2.0, f32::INFINITY]), 0)
+            .expect("2×2 heightmap");
+        assert_eq!(stats.min, -2.0);
+        assert_eq!(stats.max, 1.0);
     }
 }
