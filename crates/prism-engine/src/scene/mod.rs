@@ -3,7 +3,8 @@
 //! 场景加载（manifest → world）由场景系统 [`SceneManager`] 统一负责；
 //! `Engine::init_scene` 委托给 [`SceneManager::load_first_from_manifest`]。
 //!
-//! See `docs/plans/2026-07-25-modern-scene-system-design.md`.
+//! See `docs/DESIGN.md` (scene/asset layering) and the root `AGENTS.md`
+//! ("Scene / asset layering rules").
 
 pub mod component_registry {
     //! Compatibility re-export of [`prism_scene::registry`].

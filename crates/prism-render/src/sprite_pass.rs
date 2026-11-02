@@ -5,7 +5,7 @@
 //! [`crate::skybox_pass::SkyboxPass`] 一样，它不拥有自己的 render pass /
 //! 帧缓冲，而是在 ForwardPass 已开启的 pass 内记录命令。
 //!
-//! 设计要点（见 `docs/plans/2026-10-27-cozy-fishing-design.md`）：
+//! 设计要点（见 `projects/fishing/DESIGN.md`）：
 //!
 //! - **一次 draw call**：所有精灵共享一个实例缓冲，纹理索引进 bindless 表；
 //! - **关闭深度测试/写入**：2D 的前后关系由 CPU 侧排序

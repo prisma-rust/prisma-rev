@@ -1,25 +1,36 @@
 # Editor / Engine / Project Module Architecture
 
-> Status: design proposal
+> **Status (2026-11-02): P0–P2 implemented; P3–P4 future / optional.**
+>
+> The editor is now the Rust + egui editor in `editor/`. References below to a
+> Tauri/Vue backend describe the original design context and are historical.
+> Current agent-facing rules live in `AGENTS.md` ("Project code runs as a
+> dynamic module in Game View"); when this document disagrees with `AGENTS.md`
+> or the code, those win.
 >
 > Goal: let the editor run the user's gameplay code in Play mode while keeping
 > the engine reusable and keeping the runtime boundary explicit.
 
 ## Current implementation status
 
-The first implementation slice adds `prism-project-api` and
-`prism-runtime-host`. It validates a versioned entry point, keeps a loaded
-desktop module alive safely, and drives an opaque `create -> tick -> shutdown`
-session from Game View. The module does not receive `Engine`, `World`, Vulkan
-handles, or ECS component pointers.
+`prism-project-api` (C ABI) and `prism-runtime-host` load a same-build
+`preview-module` cdylib, validate the versioned entry point, keep the module
+alive safely, and drive an opaque `create -> tick -> shutdown` session from
+Game View. The module does not receive `Engine`, `World`, Vulkan handles, or
+Rust component values.
 
-The editor still owns the hosted engine directly. ABI v2 adds a synchronous
-tick-scoped host table with opaque entity handles and two world commands:
-spawn an entity and set its `Name`. The table's world context is valid only
-during the tick callback, so scene reload cannot leave a retained world pointer
-in project state. Passing `prism_engine::Engine`, `World`, or Rust component
-values across the dynamic-library boundary remains forbidden. Full gameplay
-component registration and typed component access remain tracked by issue #374.
+The current ABI (v10) exposes capability bits for logging, world commands,
+components, drawing, and asset access. Components cross the boundary as RTTIBin
+bytes through the host's `ComponentRegistry`, so adding a component type does
+not change the ABI. The host table is tick-scoped: project code cannot retain a
+world pointer across frames. Scene switching and raycast requests are recorded
+and applied after the tick (`HOST_CAP_SCENE` / `HOST_CAP_PHYSICS`). Project logs
+and panics are bridged by `install_host_logger` / `install_host_panic_hook`; a
+failed tick latches until the module is reloaded.
+
+P0–P2 of the phase list below are implemented. P3 (a separate engine dynamic
+library) and P4 (a stable third-party SDK) remain future work and are not on the
+current release path; standalone desktop/Android players stay monolithic.
 
 ## 1. Decision
 
@@ -67,13 +78,14 @@ the project module supplies behavior and project-specific registration.
 
 ### 3.1 Editor
 
-The Tauri backend remains the editor application and owns:
+The editor (currently `editor/`, Rust + egui + ash; originally Tauri + Vue)
+owns:
 
 - project discovery and build commands;
 - the preview process/session;
 - Scene View and Game View state;
 - document snapshots and editor-only camera/gizmo state;
-- log and frame transport to Vue.
+- log and frame transport to the editor UI.
 
 The editor must not link project gameplay crates directly. It requests a
 preview session from the runtime host and receives opaque session handles and
@@ -81,8 +93,7 @@ diagnostics.
 
 ### 3.2 Prism runtime host
 
-Add a small runtime-facing layer, initially inside `prism-app` or a new
-`prism-runtime-host` crate. Its responsibilities are:
+`prism-runtime-host` is the runtime-facing layer. Its responsibilities are:
 
 - load the engine dynamic library;
 - resolve and validate the engine API version;
@@ -268,6 +279,12 @@ security cost.
 
 ## 8. Build and packaging
 
+> **Current state:** the manifest sketch below is historical. The implemented
+> flow builds `projects/<p>` with `--no-default-features --features
+> preview-module` into `projects/<p>/target/preview-module/` and stages the
+> cdylib before loading it; see `AGENTS.md`. The principles below still hold:
+> same-profile modules, absolute paths, and explicit diagnostics.
+
 Add a project manifest section describing the module contract, for example:
 
 ```toml
@@ -296,7 +313,7 @@ that resolves a known game executable before spawning is the right precedent.
 - An ABI mismatch prevents the preview session from starting and shows the
   expected/actual versions.
 - A project `tick` error stops simulation but leaves the editor usable.
-- A module load failure must not crash the Tauri process.
+- A module load failure must not crash the editor process.
 - A failed hot reload destroys the project session and starts a clean session;
   it must not leave old function pointers active.
 - The engine library is unloaded only after renderer shutdown, asset uploads,
@@ -305,17 +322,17 @@ that resolves a known game executable before spawning is the right precedent.
 
 ## 10. Implementation phases
 
-### P0: contract and split
+### P0: contract and split — implemented
 
 - Extract project registration from `build_app()` into a project adapter module.
 - Keep standalone desktop and Android behavior unchanged.
 - Define `PrismProjectApi`, `PrismHostApi`, status codes, and ownership rules.
 - Add ABI validation tests without dynamic loading.
 
-### P1: engine runtime host
+### P1: engine runtime host — implemented
 
-Current slice: the host loads the project module and drives its opaque
-session. The engine/session integration below remains pending.
+The host loads the project module, drives its opaque session, and integrates it
+with the hosted engine through `EngineHost`.
 
 - Introduce the runtime host abstraction behind the current hosted viewport.
 - Move viewport code from directly constructing project-agnostic `App::hosted()`
@@ -323,14 +340,14 @@ session. The engine/session integration below remains pending.
 - Load a same-build project module on desktop.
 - Run project startup, tick, pause, step, input, and shutdown callbacks.
 
-### P2: editor Play integration
+### P2: editor Play integration — implemented
 
 - Make Game View use the project module session.
 - Preserve current unsaved scene snapshot and reload behavior.
 - Route project logs into the existing editor/game log streams.
 - Add module diagnostics to the editor status panel.
 
-### P3: optional engine dynamic library
+### P3: optional engine dynamic library — not implemented
 
 - Split the engine runtime implementation from the host-facing API.
 - Build `libprism_runtime` for supported desktop platforms.
@@ -338,7 +355,7 @@ session. The engine/session integration below remains pending.
   link the same engine implementation.
 - Add unload and repeated start/stop tests.
 
-### P4: stable SDK, if needed
+### P4: stable SDK, if needed — not implemented
 
 - Freeze the C-compatible SDK only after the same-build flow is exercised.
 - Add compatibility ranges, feature negotiation, and independent module build
@@ -349,11 +366,14 @@ session. The engine/session integration below remains pending.
 - Do not make `prism-engine` scan arbitrary project directories.
 - Do not expose Rust `World` or Vulkan handles through the plugin ABI.
 - Do not make Android load editor-style project modules from writable storage.
-- Do not couple project modules to Tauri or Vue.
+- Do not couple project modules to a specific editor UI or web framework.
 - Do not require dynamic loading for the first standalone game release.
 - Do not reload native project code for ordinary scene document edits.
 
 ## 12. Acceptance criteria
+
+The same-build desktop path satisfies criteria 1–6 as of 2026-11. The optional
+engine dynamic library (P3) and stable SDK (P4) are not required for this.
 
 The design is considered implemented when all of the following are true:
 
