@@ -3736,6 +3736,23 @@ impl EditorApp {
                     view.mark_dirty();
                 }
             }
+            let raw_ui = self
+                .scene_view
+                .as_ref()
+                .map(|view| view.raw_ui_edit)
+                .unwrap_or(false);
+            if ui
+                .selectable_label(raw_ui, "UI Raw")
+                .on_hover_text(
+                    "Move UI anchors without compensating margins or size \
+                     (Unity RectTransformRaw)",
+                )
+                .clicked()
+            {
+                if let Some(view) = self.scene_view.as_mut() {
+                    view.raw_ui_edit = !raw_ui;
+                }
+            }
             // 相机 / 组件图标设置（#416）：FOV、近远裁剪面、按类型开关图标。
             let mut fov = self.workspace.camera.fov_y_degrees;
             let mut near = self.workspace.camera.near;
