@@ -6,9 +6,13 @@
 
 pub use prism_render::{InternalScaleMode, RenderMode};
 
-/// PBR isolate flag names, ordered by shader bit (`PBR_FLAG_*` in
+/// Debug flag names, ordered by shader bit (`PBR_FLAG_*` in
 /// `scene_frag.slang`). Bit `i` corresponds to `PBR_FLAG_NAMES[i]`.
-pub const PBR_FLAG_NAMES: [&str; 15] = [
+///
+/// Bits 0-14 isolate a single PBR term; bit 15 is *not* a component: it turns
+/// on the skin-weight heatmap (#560), which the vertex stage resolves into a
+/// colour before the material is sampled.
+pub const PBR_FLAG_NAMES: [&str; 16] = [
     "Direct",
     "Shadow",
     "Specular",
@@ -24,6 +28,7 @@ pub const PBR_FLAG_NAMES: [&str; 15] = [
     "Anisotropy",
     "ClearCoat",
     "GI",
+    "SkinWeights",
 ];
 
 /// Human-readable label for a PBR debug-flag mask (`0` = normal render).
@@ -51,9 +56,10 @@ pub const DEFAULT_SHADOW_DISTANCE: f32 = 60.0;
 /// 标量 parameters to `render_system`.
 #[derive(Clone, Debug)]
 pub struct RenderSettings {
-    /// PBR 分量 isolate selector (15 bits, see `scene_frag.slang`
-    /// `PBR_FLAG_*`). `0` = 法线 full-PBR 渲染 (all components on);
-    /// `1 << bit` = isolate that one 分量 as a grayscale visualization.
+    /// Debug flag mask (16 bits, see `scene_frag.slang` `PBR_FLAG_*`).
+    /// `0` = normal full-PBR render (all components on); `1 << bit` for
+    /// bits 0-14 isolates that one component as a grayscale visualization;
+    /// bit 15 (`1 << 15`) = skin-weight heatmap (#560).
     pub debug_flags: u32,
     /// 色调映射 operator: 0 = Reinhard, 1 = ACES (Narkowicz),
     /// 2 = passthrough (2D 像素画：保留原始调色板，只做 saturate).
@@ -193,7 +199,20 @@ impl RenderSettings {
 
 #[cfg(test)]
 mod tests {
-    use super::{InternalScaleMode, RenderSettings};
+    use super::{pbr_flag_label, InternalScaleMode, RenderSettings, PBR_FLAG_NAMES};
+
+    #[test]
+    fn every_flag_bit_has_a_label_and_the_heatmap_bit_is_not_a_pbr_component() {
+        for bit in 0..PBR_FLAG_NAMES.len() {
+            let label = pbr_flag_label(1u32 << bit);
+            assert_ne!(label, "(custom flags)", "bit {bit} has no name");
+        }
+        // 第 16 位是蒙皮权重热图（#560），不是 PBR 分量；组合值仍然算自定义。
+        assert_eq!(pbr_flag_label(1 << 15), "SkinWeights");
+        assert_eq!(pbr_flag_label((1 << 0) | (1 << 15)), "(custom flags)");
+        assert_eq!(pbr_flag_label(0), "(normal render)");
+        assert_eq!(pbr_flag_label(1 << 16), "(custom flags)");
+    }
 
     #[test]
     fn post_grade_only_passes_bloom_when_enabled() {

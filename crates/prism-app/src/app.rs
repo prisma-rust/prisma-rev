@@ -1481,7 +1481,7 @@ impl App {
                 1u32 << bit
             };
             log::info!(
-                "PBR isolate = {} (flags=0x{:x})",
+                "debug view = {} (flags=0x{:x})",
                 self.pbr_flag_label(),
                 self.render_settings.debug_flags
             );
@@ -1537,6 +1537,8 @@ impl App {
             (Key::Digit3, true) => 12,
             (Key::Digit4, true) => 13,
             (Key::Digit5, true) => 14,
+            // Shift+6 = 蒙皮权重热图（#560）：不是 PBR 分量，是顶点调试。
+            (Key::Digit6, true) => 15,
             _ => return None,
         })
     }

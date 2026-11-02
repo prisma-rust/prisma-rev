@@ -906,7 +906,7 @@
                 {
                     "name": "in",
                     "stage": "fragment",
-                    "binding": {"kind": "varyingInput", "index": 0, "count": 5},
+                    "binding": {"kind": "varyingInput", "index": 0, "count": 6},
                     "type": {
                         "kind": "struct",
                         "name": "MeshVaryings",
@@ -993,6 +993,21 @@
                                 "stage": "fragment",
                                 "binding": {"kind": "varyingInput", "index": 4},
                                 "semanticName": "TANGENT"
+                            },
+                            {
+                                "name": "skinHeat",
+                                "type": {
+                                    "kind": "vector",
+                                    "elementCount": 3,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    }
+                                },
+                                "stage": "fragment",
+                                "binding": {"kind": "varyingInput", "index": 5},
+                                "semanticName": "COLOR",
+                                "semanticIndex": 1
                             }
                         ]
                     }

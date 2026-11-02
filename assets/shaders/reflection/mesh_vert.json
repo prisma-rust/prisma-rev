@@ -589,7 +589,7 @@
             ],
             "result": {
                 "stage": "vertex",
-                "binding": {"kind": "varyingOutput", "index": 0, "count": 5},
+                "binding": {"kind": "varyingOutput", "index": 0, "count": 6},
                 "type": {
                     "kind": "struct",
                     "name": "MeshVaryings",
@@ -676,6 +676,21 @@
                             "stage": "vertex",
                             "binding": {"kind": "varyingOutput", "index": 4},
                             "semanticName": "TANGENT"
+                        },
+                        {
+                            "name": "skinHeat",
+                            "type": {
+                                "kind": "vector",
+                                "elementCount": 3,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                }
+                            },
+                            "stage": "vertex",
+                            "binding": {"kind": "varyingOutput", "index": 5},
+                            "semanticName": "COLOR",
+                            "semanticIndex": 1
                         }
                     ]
                 }
