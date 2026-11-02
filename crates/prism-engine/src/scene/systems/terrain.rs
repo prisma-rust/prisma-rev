@@ -9,15 +9,17 @@
 //! [`terrain_height`] / [`terrain_sample`] 在世界上按 `TerrainData` 找覆盖点，
 //! [`terrain_raycast`] 用同样的采样做解析射线查询（玩法落地 / 拾取用）。
 //!
-//! 多 chunk 已实现（#517 Phase 2）：`Terrain.chunks > 1` 时每个块是独立子实体
-//! / 独立网格，渲染与阴影可以逐块剔除；LOD、分层 splat、植被仍待后续。
-//! rapier 地形碰撞体由 `prism-app` 的物理线程维护（见 `physics_runner`）。
+//! 多 chunk + LOD 已实现（#517 Phase 2）：`Terrain.chunks > 1` 时每个块是
+//! 独立子实体 / 独立网格，渲染与阴影可以逐块剔除；`Terrain.lod_distances`
+//! 控制 1–3 级 LOD，整张地形按最近相机统一切级（避免跨块裂缝）。
+//! 分层 splat、植被、雕刻工具仍待后续。rapier 地形碰撞体由 `prism-app`
+//! 的物理线程维护（见 `physics_runner`）。
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::scene::components::{
-    Child, LocalToWorld, LocalTransform, MeshRef, MeshRenderer, Terrain,
+    Camera, Child, LocalToWorld, LocalTransform, MeshRef, MeshRenderer, Terrain,
 };
 use crate::scene::helpers::HierarchyHelper;
 use prism_render::managers::mesh_manager::MeshHandle;
@@ -144,6 +146,23 @@ impl Heightfield {
         z0: usize,
         z1: usize,
     ) -> MeshUploadInput {
+        self.build_chunk_mesh_lod(size, height_scale, x0, x1, z0, z1, 1)
+    }
+
+    /// 带步长的 chunk 网格（#517 LOD）：`step = 1/2/4` 对应 LOD0/1/2。
+    ///
+    /// 两端格子始终保留，所以每一级的边界与相邻块 / 更细一级对齐；级内
+    /// 只是减少中间的采样行。整张地形统一选级时不会出现跨块裂缝。
+    pub fn build_chunk_mesh_lod(
+        &self,
+        size: [f32; 2],
+        height_scale: f32,
+        x0: usize,
+        x1: usize,
+        z0: usize,
+        z1: usize,
+        step: usize,
+    ) -> MeshUploadInput {
         let cells = self.cells;
         let last = cells - 1;
         let (x0, x1) = if x0 <= x1 { (x0, x1) } else { (x1, x0) };
@@ -158,14 +177,16 @@ impl Heightfield {
         // 块中心在整张地形局部空间里的位置；顶点再减掉它。
         let center_x = ((x0 + x1) as f32 * 0.5 / last_f - 0.5) * size_x;
         let center_z = ((z0 + z1) as f32 * 0.5 / last_f - 0.5) * size_z;
-        let columns = x1 - x0 + 1;
-        let rows = z1 - z0 + 1;
+        let xs = sample_indices(x0, x1, step);
+        let zs = sample_indices(z0, z1, step);
+        let columns = xs.len();
+        let rows = zs.len();
 
         let mut positions = Vec::with_capacity(columns * rows);
         let mut normals = Vec::with_capacity(columns * rows);
         let mut uvs = Vec::with_capacity(columns * rows);
-        for z in z0..=z1 {
-            for x in x0..=x1 {
+        for &z in &zs {
+            for &x in &xs {
                 let (u, v) = (x as f32 / last_f, z as f32 / last_f);
                 positions.push([
                     (u - 0.5) * size_x - center_x,
@@ -196,6 +217,19 @@ impl Heightfield {
             indices,
         }
     }
+}
+
+/// `[start, end]` 的采样下标：按 `step` 跳，但始终包含两端。
+fn sample_indices(start: usize, end: usize, step: usize) -> Vec<usize> {
+    let step = step.max(1);
+    let mut indices = Vec::new();
+    let mut index = start;
+    while index < end {
+        indices.push(index);
+        index += step;
+    }
+    indices.push(end);
+    indices
 }
 
 /// 进程内生成的网格表：路径 → 顶点数据（资产解析器据此绕过 `.pak`）。
@@ -252,6 +286,16 @@ pub struct TerrainData {
 pub struct TerrainChunk {
     pub owner: prism_ecs::Entity,
     pub mesh_path: String,
+}
+
+/// 某一级 LOD 下的一组地形块；`Child` 里是这一级的所有块实体。
+///
+/// 整张地形统一切级（而不是每块各自切），所以相邻块永远用同一个步长，
+/// 不会因为边界顶点密度不同产生裂缝。
+#[derive(Debug, Clone)]
+pub struct TerrainLodSet {
+    pub owner: prism_ecs::Entity,
+    pub level: usize,
 }
 
 /// 世界坐标 `(x, z)` 上的地形高度（米）。没被任何地形覆盖时返回 `None`。
@@ -402,13 +446,14 @@ fn none_entity() -> prism_ecs::Entity {
 /// `Terrain` 的网格参数指纹：变了就要重建网格。
 pub fn terrain_key(entity_id: u32, terrain: &Terrain) -> String {
     format!(
-        "{entity_id}|{}|{}x{}|{}|{}|{}",
+        "{entity_id}|{}|{}x{}|{}|{}|{}|{:?}",
         terrain.heightmap,
         terrain.size[0],
         terrain.size[1],
         terrain.height_scale,
         terrain.cells(),
-        terrain.chunks
+        terrain.chunks,
+        terrain.lod_distances
     )
 }
 
@@ -473,13 +518,10 @@ pub fn terrain_system(world: &mut prism_ecs::World) {
             pending.push((entity, key, terrain.clone()));
         }
     }
-    if pending.is_empty() {
-        return;
-    }
-
     for (entity, key, terrain) in pending {
         rebuild_terrain(world, entity, key, terrain);
     }
+    apply_terrain_lod(world);
 }
 
 /// 每边块数对应的格子边界：长度 `chunks + 1`，至少每块一个 quad。
@@ -492,17 +534,24 @@ fn chunk_bounds(cells: usize, chunks: usize) -> Vec<usize> {
 
 /// 回收某个地形 owner 名下的所有分块实体与程序化网格。
 fn despawn_chunks(world: &mut prism_ecs::World, owner: prism_ecs::Entity) {
-    let stale: Vec<(prism_ecs::Entity, String)> = world
+    let chunks: Vec<(prism_ecs::Entity, String)> = world
         .query::<TerrainChunk>()
         .filter(|(_, chunk)| chunk.owner == owner)
         .map(|(entity, chunk)| (entity, chunk.mesh_path.clone()))
         .collect();
-    if stale.is_empty() {
+    let sets: Vec<prism_ecs::Entity> = world
+        .query::<TerrainLodSet>()
+        .filter(|(_, set)| set.owner == owner)
+        .map(|(entity, _)| entity)
+        .collect();
+    if chunks.is_empty() && sets.is_empty() {
         return;
     }
-    let stale_ids: HashSet<prism_ecs::Entity> = stale.iter().map(|(entity, _)| *entity).collect();
+    let mut stale_ids: HashSet<prism_ecs::Entity> =
+        chunks.iter().map(|(entity, _)| *entity).collect();
+    stale_ids.extend(sets.iter().copied());
     if let Some(meshes) = world.get_resource_mut::<ProceduralMeshes>() {
-        for (_, path) in &stale {
+        for (_, path) in &chunks {
             meshes.remove(path);
         }
     }
@@ -517,7 +566,10 @@ fn despawn_chunks(world: &mut prism_ecs::World, owner: prism_ecs::Entity) {
             world.remove::<Child>(owner);
         }
     }
-    for (entity, _) in stale {
+    for (entity, _) in chunks {
+        world.despawn(entity);
+    }
+    for entity in sets {
         world.despawn(entity);
     }
 }
@@ -529,11 +581,92 @@ fn cleanup_orphan_chunks(world: &mut prism_ecs::World) {
     let stale: HashSet<prism_ecs::Entity> = world
         .query::<TerrainChunk>()
         .map(|(_, chunk)| chunk.owner)
+        .chain(world.query::<TerrainLodSet>().map(|(_, set)| set.owner))
         .filter(|owner| !live.contains(owner))
         .collect();
     for owner in stale {
         despawn_chunks(world, owner);
     }
+}
+
+/// 按最近的启用相机到地形原点的距离选择 LOD 级，并整张地形统一切级。
+fn apply_terrain_lod(world: &mut prism_ecs::World) {
+    let eyes: Vec<glam::Vec3> = world
+        .query2::<Camera, LocalToWorld>()
+        .filter(|(_, camera, _)| camera.enabled)
+        .map(|(_, _, world)| world.0.w_axis.truncate())
+        .collect();
+
+    let terrains: Vec<(prism_ecs::Entity, Vec<f32>, glam::Vec3)> = world
+        .query2::<Terrain, LocalToWorld>()
+        .map(|(entity, terrain, world)| {
+            (
+                entity,
+                terrain.lod_distances.clone(),
+                world.0.w_axis.truncate(),
+            )
+        })
+        .collect();
+    // 还没有世界矩阵的地形（刚 spawn）：按原点算距离。
+    let terrains_without_transform: Vec<(prism_ecs::Entity, Vec<f32>)> = world
+        .query::<Terrain>()
+        .filter(|(entity, _)| world.get::<LocalToWorld>(*entity).is_none())
+        .map(|(entity, terrain)| (entity, terrain.lod_distances.clone()))
+        .collect();
+
+    let mut levels: HashMap<prism_ecs::Entity, usize> = HashMap::new();
+    for (entity, distances, position) in terrains {
+        levels.insert(entity, lod_level(&distances, position, &eyes));
+    }
+    for (entity, distances) in terrains_without_transform {
+        levels.insert(entity, lod_level(&distances, glam::Vec3::ZERO, &eyes));
+    }
+    if levels.is_empty() {
+        return;
+    }
+
+    let sets: Vec<(prism_ecs::Entity, prism_ecs::Entity, usize)> = world
+        .query::<TerrainLodSet>()
+        .map(|(entity, set)| (entity, set.owner, set.level))
+        .collect();
+    for (set_entity, owner, set_level) in sets {
+        let visible = levels.get(&owner).copied().unwrap_or(0) == set_level;
+        let children: Vec<prism_ecs::Entity> = world
+            .get::<Child>(set_entity)
+            .map(|children| children.0.clone())
+            .unwrap_or_default();
+        for child in children {
+            world.insert(child, crate::scene::components::LodHidden(!visible));
+        }
+    }
+}
+
+/// 距离 → LOD 级：取第一个大于等于距离的阈值；超过全部阈值时用最后一级。
+fn lod_level(distances: &[f32], position: glam::Vec3, eyes: &[glam::Vec3]) -> usize {
+    if distances.is_empty() {
+        return 0;
+    }
+    let distance = eyes
+        .iter()
+        .map(|eye| (*eye - position).length())
+        .fold(f32::INFINITY, f32::min);
+    let distance = if distance.is_finite() {
+        distance.max(0.0)
+    } else {
+        0.0
+    };
+    distances
+        .iter()
+        .position(|limit| {
+            let limit = if limit.is_finite() {
+                limit.max(0.0)
+            } else {
+                f32::INFINITY
+            };
+            distance <= limit
+        })
+        .unwrap_or(distances.len())
+        .min(2)
 }
 
 /// 确保实体进入「等待资产解析」状态。
@@ -584,7 +717,8 @@ fn rebuild_terrain(
     // 每块至少一个 quad；小网格（cells = 2）自动退化成单块。
     let chunks = terrain.chunk_count().min(field.cells() - 1).max(1);
 
-    if chunks == 1 {
+    let levels = terrain.lod_level_count();
+    if chunks == 1 && levels == 1 {
         let path = format!("{PROCEDURAL_PREFIX}terrain/{}-{hash:x}", entity.id());
         let mesh = field.build_mesh(size, height_scale);
         if let Some(meshes) = world.get_resource_mut::<ProceduralMeshes>() {
@@ -618,7 +752,8 @@ fn rebuild_terrain(
         return;
     }
 
-    // 多块：owner 只保留材质 / 阴影设置，不再直接绘制；每块是独立实体。
+    // 多块 / LOD：owner 只保留材质 / 阴影设置，不再直接绘制。
+    // 每个 LOD 级是一个 set 实体，set 下挂这一级的全部 chunk。
     let renderer_template = world
         .get::<MeshRenderer>(entity)
         .cloned()
@@ -629,56 +764,71 @@ fn rebuild_terrain(
     let size_z = size[1].max(0.001);
     let mut first_path = String::new();
 
-    for z in 0..chunks {
-        for x in 0..chunks {
-            let path = format!(
-                "{PROCEDURAL_PREFIX}terrain/{}-{hash:x}/c{x}_{z}",
-                entity.id()
-            );
-            let mesh = field.build_chunk_mesh(
-                size,
-                height_scale,
-                bounds[x],
-                bounds[x + 1],
-                bounds[z],
-                bounds[z + 1],
-            );
-            if let Some(meshes) = world.get_resource_mut::<ProceduralMeshes>() {
-                meshes.insert(path.clone(), mesh);
-            }
-            if first_path.is_empty() {
-                first_path = path.clone();
-            }
+    for level in 0..levels {
+        let step = 1usize << level;
+        let set_entity = world.spawn();
+        world.insert(set_entity, LocalTransform::default());
+        world.insert(
+            set_entity,
+            TerrainLodSet {
+                owner: entity,
+                level,
+            },
+        );
+        HierarchyHelper::reparent(world, set_entity, Some(entity));
 
-            let center_x = (((bounds[x] + bounds[x + 1]) as f32 * 0.5 / last) - 0.5) * size_x;
-            let center_z = (((bounds[z] + bounds[z + 1]) as f32 * 0.5 / last) - 0.5) * size_z;
-            let chunk_entity = world.spawn();
-            world.insert(
-                chunk_entity,
-                LocalTransform {
-                    position: glam::Vec3::new(center_x, 0.0, center_z),
-                    ..Default::default()
-                },
-            );
-            let mut renderer = renderer_template.clone();
-            renderer.mesh_path = path.clone();
-            world.insert(chunk_entity, renderer);
-            world.insert(
-                chunk_entity,
-                MeshRef {
-                    asset_id: SceneAssetId::generate(),
-                    render_handle: MeshHandle::default(),
-                    generation: 0,
-                },
-            );
-            world.insert(
-                chunk_entity,
-                TerrainChunk {
-                    owner: entity,
-                    mesh_path: path,
-                },
-            );
-            HierarchyHelper::reparent(world, chunk_entity, Some(entity));
+        for z in 0..chunks {
+            for x in 0..chunks {
+                let path = format!(
+                    "{PROCEDURAL_PREFIX}terrain/{}-{hash:x}/l{level}/c{x}_{z}",
+                    entity.id()
+                );
+                let mesh = field.build_chunk_mesh_lod(
+                    size,
+                    height_scale,
+                    bounds[x],
+                    bounds[x + 1],
+                    bounds[z],
+                    bounds[z + 1],
+                    step,
+                );
+                if let Some(meshes) = world.get_resource_mut::<ProceduralMeshes>() {
+                    meshes.insert(path.clone(), mesh);
+                }
+                if first_path.is_empty() {
+                    first_path = path.clone();
+                }
+
+                let center_x = (((bounds[x] + bounds[x + 1]) as f32 * 0.5 / last) - 0.5) * size_x;
+                let center_z = (((bounds[z] + bounds[z + 1]) as f32 * 0.5 / last) - 0.5) * size_z;
+                let chunk_entity = world.spawn();
+                world.insert(
+                    chunk_entity,
+                    LocalTransform {
+                        position: glam::Vec3::new(center_x, 0.0, center_z),
+                        ..Default::default()
+                    },
+                );
+                let mut renderer = renderer_template.clone();
+                renderer.mesh_path = path.clone();
+                world.insert(chunk_entity, renderer);
+                world.insert(
+                    chunk_entity,
+                    MeshRef {
+                        asset_id: SceneAssetId::generate(),
+                        render_handle: MeshHandle::default(),
+                        generation: 0,
+                    },
+                );
+                world.insert(
+                    chunk_entity,
+                    TerrainChunk {
+                        owner: entity,
+                        mesh_path: path,
+                    },
+                );
+                HierarchyHelper::reparent(world, chunk_entity, Some(set_entity));
+            }
         }
     }
 
