@@ -321,6 +321,19 @@ GPU / shader 测试：CI 设置 `PRISM_REQUIRE_VALIDATION=1`，要求 debug 构�
 可选 push constants → dispatch → readback），不要把 Vulkan 初始化样板再抄一遍。示例见
 `crates/prism-render/tests/shader_harness_gpu.rs`。
 
+黄金帧渲染测试用 `crates/prism-render/tests/golden_support` 的 `FrameHarness`：固定
+256×256 离屏目标、相机、灯光与单个 box，走真实 `GraphRenderer` 图（阴影 → 前向 →
+GTAO → post），读回 RGBA8 后与 `crates/prism-render/tests/goldens/*.png` 做逐通道
+容差比较。没有 Vulkan 驱动时测试自动跳过。故意改渲染后先跑
+`bash assets/shaders/compile.sh`（旧 `.spv` 会让基准图与 CI 不一致），再：
+
+```bash
+PRISM_UPDATE_GOLDENS=1 cargo test -p prism-render --test golden_frame
+```
+
+不匹配时 actual / diff 会写到 `target/golden-frames/<name>.{actual,diff}.png`，先看
+diff 再决定是修代码还是更新基准。
+
 编辑器数据层测试优先复用
 `editor/crates/prism-editor-gpui-core/tests/support` 的 `EditorHarness`：它创建临时项目
 （scene + prefab + 最小 schema），测试通过 `Workspace` 的公开 API 执行选择、编辑、撤销、
