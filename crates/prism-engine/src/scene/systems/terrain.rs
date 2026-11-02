@@ -12,8 +12,10 @@
 //! 多 chunk + LOD 已实现（#517 Phase 2）：`Terrain.chunks > 1` 时每个块是
 //! 独立子实体 / 独立网格，渲染与阴影可以逐块剔除；`Terrain.lod_distances`
 //! 控制 1–3 级 LOD，整张地形按最近相机统一切级（避免跨块裂缝）。
-//! 分层 splat、植被、雕刻工具仍待后续。rapier 地形碰撞体由 `prism-app`
-//! 的物理线程维护（见 `physics_runner`）。
+//! 分层 splat、植被、编辑器视口笔刷仍待后续；[`Heightfield::sculpt`] 与
+//! `prism-build-pipeline sculpt-heightmap` 已提供 raise/lower/smooth/flatten
+//! 的基础雕刻层。rapier 地形碰撞体由 `prism-app` 的物理线程维护（见
+//! `physics_runner`）。
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -37,6 +39,19 @@ pub const PROCEDURAL_PREFIX: &str = "__proc/";
 pub struct Heightfield {
     cells: usize,
     heights: Vec<f32>,
+}
+
+/// 高度场笔刷模式（#517 Phase 2 雕刻基础层）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SculptMode {
+    /// 在笔刷范围内加高：`h += strength * falloff`（strength 是高度场单位）。
+    Raise,
+    /// 在笔刷范围内降低：`h -= strength * falloff`。
+    Lower,
+    /// 向邻域平均高度靠拢；`strength` 是 0..1 的混合系数。
+    Smooth,
+    /// 向笔刷中心高度靠拢；`strength` 是 0..1 的混合系数。
+    Flatten,
 }
 
 impl Heightfield {
@@ -216,6 +231,98 @@ impl Heightfield {
             tangents: Vec::new(),
             indices,
         }
+    }
+
+    /// 在归一化坐标 `(center_u, center_v)` 处应用一次笔刷（#517 Phase 2）。
+    ///
+    /// `radius` 也是归一化到地形宽度的 `[0, 1]`；`strength` 对 Raise/Lower
+    /// 是高度场单位，对 Smooth/Flatten 是 `0..1` 的混合系数。半径外的格子
+    /// 完全不动，边缘用 `(1 - t²)²` 平滑衰减。返回受影响的格子数。
+    ///
+    /// 非有限 / 非正参数按 no-op 处理；高度不会产生 NaN。
+    pub fn sculpt(
+        &mut self,
+        center_u: f32,
+        center_v: f32,
+        radius: f32,
+        strength: f32,
+        mode: SculptMode,
+    ) -> usize {
+        if !center_u.is_finite()
+            || !center_v.is_finite()
+            || !radius.is_finite()
+            || !strength.is_finite()
+            || radius <= 0.0
+            || strength <= 0.0
+        {
+            return 0;
+        }
+        let cells = self.cells;
+        let last = (cells - 1) as f32;
+        let center_u = center_u.clamp(0.0, 1.0);
+        let center_v = center_v.clamp(0.0, 1.0);
+        let radius = radius.min(1.0) * last;
+        if radius <= 0.0 {
+            return 0;
+        }
+        let center_x = center_u * last;
+        let center_z = center_v * last;
+        let min_x = (center_x - radius).floor().max(0.0) as usize;
+        let max_x = (center_x + radius).ceil().min(last) as usize;
+        let min_z = (center_z - radius).floor().max(0.0) as usize;
+        let max_z = (center_z + radius).ceil().min(last) as usize;
+        let original = (mode == SculptMode::Smooth).then(|| self.heights.clone());
+        let target = if mode == SculptMode::Flatten {
+            self.sample_height(center_u, center_v)
+        } else {
+            0.0
+        };
+        let blend = strength.clamp(0.0, 1.0);
+
+        let mut affected = 0;
+        for z in min_z..=max_z {
+            for x in min_x..=max_x {
+                let dx = x as f32 - center_x;
+                let dz = z as f32 - center_z;
+                let distance = (dx * dx + dz * dz).sqrt() / radius;
+                if distance > 1.0 {
+                    continue;
+                }
+                let falloff = (1.0 - distance * distance).max(0.0).powi(2);
+                if falloff <= 0.0 {
+                    continue;
+                }
+                let index = z * cells + x;
+                match mode {
+                    SculptMode::Raise => self.heights[index] += strength * falloff,
+                    SculptMode::Lower => self.heights[index] -= strength * falloff,
+                    SculptMode::Smooth => {
+                        let original = original.as_ref().expect("smooth keeps a snapshot");
+                        let left = original[z * cells + x.saturating_sub(1)];
+                        let right = original[z * cells + (x + 1).min(cells - 1)];
+                        let up = original[z.saturating_sub(1) * cells + x];
+                        let down = original[(z + 1).min(cells - 1) * cells + x];
+                        let average = (left + right + up + down) * 0.25;
+                        let value = original[index];
+                        self.heights[index] = value + (average - value) * falloff * blend;
+                    }
+                    SculptMode::Flatten => {
+                        let value = self.heights[index];
+                        self.heights[index] = value + (target - value) * falloff * blend;
+                    }
+                }
+                affected += 1;
+            }
+        }
+        affected
+    }
+
+    /// 序列化回 `.raw`（f32 little-endian，行优先）——供 CLI / 编辑器写盘。
+    pub fn to_raw_bytes(&self) -> Vec<u8> {
+        self.heights
+            .iter()
+            .flat_map(|height| height.to_le_bytes())
+            .collect()
     }
 }
 

@@ -6,17 +6,39 @@
 //!   build-scenes — cook `scenes.json` entries and pack `scenes.pak`
 //!   pack       — pack a cooked directory into a `.pak` + path manifest
 //!   heightmap  — generate + erode a procedural heightmap, write raw f32
+//!   sculpt-heightmap — raise/lower/smooth/flatten a raw heightmap (#517)
 
 use std::path::PathBuf;
 
-use anyhow::Result;
-use clap::{Parser, Subcommand};
+use anyhow::{anyhow, Result};
+use clap::{Parser, Subcommand, ValueEnum};
+
+use prism_engine::scene::systems::terrain::{Heightfield, SculptMode};
 
 #[derive(Parser)]
 #[command(name = "prism-build-pipeline", about = "Prisma build pipeline CLI")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum SculptModeArg {
+    Raise,
+    Lower,
+    Smooth,
+    Flatten,
+}
+
+impl From<SculptModeArg> for SculptMode {
+    fn from(value: SculptModeArg) -> Self {
+        match value {
+            SculptModeArg::Raise => SculptMode::Raise,
+            SculptModeArg::Lower => SculptMode::Lower,
+            SculptModeArg::Smooth => SculptMode::Smooth,
+            SculptModeArg::Flatten => SculptMode::Flatten,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -130,6 +152,32 @@ enum Command {
         /// Skip erosion entirely; output the raw generated terrain.
         #[arg(long)]
         no_erode: bool,
+    },
+    /// Sculpt a raw f32 heightmap with a radial brush (#517)
+    ///
+    /// `--x/--z/--radius` are normalized to the heightmap width. Raise/Lower
+    /// take `--strength` in heightfield units; Smooth/Flatten blend 0..1.
+    SculptHeightmap {
+        /// Input .raw (f32 little-endian, row-major)
+        input: PathBuf,
+        /// Output path (default: overwrite the input)
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Brush center X in [0, 1]
+        #[arg(long, default_value_t = 0.5)]
+        x: f32,
+        /// Brush center Z in [0, 1]
+        #[arg(long, default_value_t = 0.5)]
+        z: f32,
+        /// Brush radius in [0, 1] (relative to the heightmap width)
+        #[arg(long, default_value_t = 0.2)]
+        radius: f32,
+        /// Raise/Lower: height delta; Smooth/Flatten: blend factor 0..1
+        #[arg(long, default_value_t = 1.0)]
+        strength: f32,
+        /// Brush mode
+        #[arg(long, value_enum, default_value = "raise")]
+        mode: SculptModeArg,
     },
 }
 
@@ -373,6 +421,42 @@ fn main() -> Result<()> {
                 "wrote {} samples ({} bytes) to {}",
                 abs.data.len(),
                 abs.data.len() * 4,
+                output.display()
+            );
+            Ok(())
+        }
+        Command::SculptHeightmap {
+            input,
+            output,
+            x,
+            z,
+            radius,
+            strength,
+            mode,
+        } => {
+            let bytes = std::fs::read(&input)
+                .map_err(|error| anyhow!("cannot read {}: {error}", input.display()))?;
+            let mut field = Heightfield::from_raw_auto(&bytes).ok_or_else(|| {
+                anyhow!(
+                    "{} is not a square f32 heightmap ({} bytes)",
+                    input.display(),
+                    bytes.len()
+                )
+            })?;
+            let affected = field.sculpt(x, z, radius, strength, mode.into());
+            if affected == 0 {
+                return Err(anyhow!(
+                    "brush affected no cells (check --x/--z/--radius/--strength)"
+                ));
+            }
+            let output = output.unwrap_or(input);
+            if let Some(parent) = output.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&output, field.to_raw_bytes())?;
+            log::info!(
+                "sculpted {affected} cells ({:?}) -> {}",
+                mode,
                 output.display()
             );
             Ok(())
