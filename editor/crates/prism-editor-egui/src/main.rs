@@ -21,6 +21,8 @@ mod project_module;
 mod screenshot;
 mod selection_history;
 mod skeleton_overlay;
+#[cfg(test)]
+mod test_harness;
 mod theme;
 mod ui_gizmo;
 mod ui_tree;

@@ -345,6 +345,12 @@ MCP 文档工具测试优先复用
 dispatch 层，覆盖文档列表 / 读取、组件增删、反射字段写入和结构化错误；示例见
 `crates/prism-editor-mcp/tests/mcp_harness.rs`。
 
+egui 控件交互测试用 `editor/crates/prism-editor-egui/src/test_harness.rs` 的
+`EguiHarness`：真实 `egui::Context::run` + 脚本化 `RawInput`，提供 click / drag /
+key press / text / frame 等确定性操作，不需要窗口、`DISPLAY` 或 GPU。示例覆盖层级
+工具条的搜索 / 搜索模式 / Isolate / Lock / Find、Shift 区间选择，以及 Scene 视图
+UI 锚点（点锚点与拉伸边）的拖动和 UI 手柄优先级。
+
 引擎模拟测试优先复用 `crates/prism-engine/tests/support` 的 `SimHarness`：固定
 `step` 的 `Engine::update`、脚本化输入、种子化随机游走，以及逐 tick 的 `Snapshot`
 （实体/组件集合、局部/世界变换、动画播放头与事件、UI 布局与绘制四边形、场景代数

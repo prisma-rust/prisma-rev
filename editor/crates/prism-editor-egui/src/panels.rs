@@ -710,10 +710,29 @@ pub(crate) fn reveal_in_hierarchy(workspace: &mut Workspace, state: &mut UiState
     state.hierarchy_reveal = workspace.document().doc.id_of_index(index);
 }
 
-pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
-    // ---- 顶部工具条：搜索 + 新建实体（引擎的 Create 下拉） ----
+#[allow(dead_code)] // Responses are read by the headless interaction tests.
+struct HierarchyToolbar {
+    search: egui::Response,
+    mode: egui::Response,
+    create: egui::Response,
+    show_all: Option<egui::Response>,
+    isolate: egui::Response,
+    lock: egui::Response,
+    find: egui::Response,
+}
+
+/// Hierarchy toolbar: search / search mode / create / visibility / lock / find.
+///
+/// Returns the widget responses so interaction tests can click the real
+/// controls without duplicating the layout.
+fn hierarchy_toolbar(
+    ui: &mut Ui,
+    workspace: &mut Workspace,
+    state: &mut UiState,
+) -> HierarchyToolbar {
+    let mut toolbar = None;
     ui.horizontal(|ui| {
-        ui.add(
+        let search = ui.add(
             egui::TextEdit::singleline(&mut state.hierarchy_search)
                 .hint_text(
                     if state.hierarchy_search_mode == HierarchySearchMode::Component {
@@ -724,23 +743,26 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
                 )
                 .desired_width(110.0),
         );
-        egui::ComboBox::from_id_salt("hierarchy-search-mode")
+        let mode = egui::ComboBox::from_id_salt("hierarchy-search-mode")
             .width(56.0)
             .selected_text(state.hierarchy_search_mode.label())
             .show_ui(ui, |ui| {
                 for mode in [HierarchySearchMode::Name, HierarchySearchMode::Component] {
                     ui.selectable_value(&mut state.hierarchy_search_mode, mode, mode.label());
                 }
-            });
+            })
+            .response;
         let presets: Vec<(String, String)> = workspace
             .presets
             .iter()
             .map(|preset| (preset.id.clone(), preset.label.clone()))
             .collect();
-        if presets.is_empty() {
-            if ui.button("Create").clicked() {
+        let create = if presets.is_empty() {
+            let create = ui.button("Create");
+            if create.clicked() {
                 workspace.add_entity("");
             }
+            create
         } else {
             let current = state.preset_choice.min(presets.len().saturating_sub(1));
             ui.menu_button("Create", |ui| {
@@ -751,21 +773,24 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
                         ui.close();
                     }
                 }
-            });
-        }
+            })
+            .response
+        };
         let visibility_changed =
             !workspace.document().hidden_entities.is_empty() || workspace.isolate;
-        if visibility_changed && ui.button(format!("{} Show All", icons::EYE)).clicked() {
-            workspace.show_all_entities();
-        }
+        let show_all = visibility_changed.then(|| {
+            let response = ui.button(format!("{} Show All", icons::EYE));
+            if response.clicked() {
+                workspace.show_all_entities();
+            }
+            response
+        });
         let isolate = ui.add_enabled(
             workspace.isolate || !workspace.selection.is_empty(),
             egui::Button::new(format!("{} Isolate", icons::TARGET)).selected(workspace.isolate),
         );
-        if isolate
-            .on_hover_text("Only show the selected entities and their children")
-            .clicked()
-        {
+        let isolate = isolate.on_hover_text("Only show the selected entities and their children");
+        if isolate.clicked() {
             workspace.set_isolate(!workspace.isolate);
         }
         // #417：锁定层级高亮，不让 Scene / Project 的选择把它带走。
@@ -791,15 +816,73 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
             workspace.primary_selection().is_some(),
             egui::Button::new(icons::CROSSHAIR),
         );
-        if find
-            .on_hover_text("Find the selected object in the hierarchy")
-            .clicked()
-        {
+        let find = find.on_hover_text("Find the selected object in the hierarchy");
+        if find.clicked() {
             if let Some(index) = workspace.primary_selection() {
                 reveal_in_hierarchy(workspace, state, index);
             }
         }
+        toolbar = Some(HierarchyToolbar {
+            search,
+            mode,
+            create,
+            show_all,
+            isolate,
+            lock,
+            find,
+        });
     });
+    toolbar.expect("horizontal layout always runs")
+}
+
+/// Apply one hierarchy row click (also used by the interaction tests).
+///
+/// `extend` is Shift; Ctrl/Cmd uses [`apply_hierarchy_toggle`] instead. The
+/// range walks `visible_rows`, so collapsed/filtered entities never sneak in.
+fn apply_hierarchy_select(
+    workspace: &mut Workspace,
+    state: &mut UiState,
+    index: usize,
+    extend: bool,
+    visible_rows: &[usize],
+) {
+    if extend {
+        let anchor = state
+            .hierarchy_anchor
+            .filter(|anchor| visible_rows.contains(anchor))
+            .or_else(|| workspace.primary_selection());
+        match anchor {
+            Some(anchor) => workspace.select_visible_range(visible_rows, anchor, index),
+            None => {
+                workspace.select(index, false);
+                state.hierarchy_anchor = Some(index);
+            }
+        }
+    } else {
+        workspace.select(index, false);
+        state.hierarchy_anchor = Some(index);
+    }
+}
+
+/// Ctrl/Cmd-click one hierarchy row: add or remove it from the selection.
+fn apply_hierarchy_toggle(workspace: &mut Workspace, state: &mut UiState, index: usize) {
+    state.hierarchy_anchor = Some(index);
+    if workspace.selection.contains(&index) {
+        let remaining: Vec<usize> = workspace
+            .selection
+            .iter()
+            .copied()
+            .filter(|selected| *selected != index)
+            .collect();
+        workspace.select_many(&remaining, false);
+    } else {
+        workspace.select_many(&[index], true);
+    }
+}
+
+pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
+    // ---- 顶部工具条：搜索 + 新建实体（引擎的 Create 下拉） ----
+    let _ = hierarchy_toolbar(ui, workspace, state);
     ui.separator();
 
     let filter = state.hierarchy_search.to_lowercase();
@@ -1331,38 +1414,10 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
         let selection_before = workspace.selection.clone();
         match action {
             TreeAction::Select(index, extend) => {
-                if extend {
-                    let anchor = state
-                        .hierarchy_anchor
-                        .filter(|anchor| visible_rows.contains(anchor))
-                        .or_else(|| workspace.primary_selection());
-                    match anchor {
-                        Some(anchor) => {
-                            workspace.select_visible_range(&visible_rows, anchor, index);
-                        }
-                        None => {
-                            workspace.select(index, false);
-                            state.hierarchy_anchor = Some(index);
-                        }
-                    }
-                } else {
-                    workspace.select(index, false);
-                    state.hierarchy_anchor = Some(index);
-                }
+                apply_hierarchy_select(workspace, state, index, extend, &visible_rows);
             }
             TreeAction::Toggle(index) => {
-                state.hierarchy_anchor = Some(index);
-                if workspace.selection.contains(&index) {
-                    let remaining: Vec<usize> = workspace
-                        .selection
-                        .iter()
-                        .copied()
-                        .filter(|selected| *selected != index)
-                        .collect();
-                    workspace.select_many(&remaining, false);
-                } else {
-                    workspace.select_many(&[index], true);
-                }
+                apply_hierarchy_toggle(workspace, state, index);
             }
             TreeAction::ToggleExpand(index) => workspace.toggle_expanded(index),
             TreeAction::ToggleActive(index) => {
@@ -7054,6 +7109,149 @@ mod hierarchy_search_tests {
         // 名字搜索不把组件名当命中；类型搜索也不按实体名匹配。
         assert!(search_matches(&doc, "pointlight", HierarchySearchMode::Name).is_empty());
         assert!(search_matches(&doc, "lamp", HierarchySearchMode::Component).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod interaction_tests {
+    use super::*;
+    use crate::test_harness::EguiHarness;
+    use std::cell::RefCell;
+
+    struct ToolbarScene {
+        workspace: Workspace,
+        state: UiState,
+        toolbar: Option<HierarchyToolbar>,
+    }
+
+    impl ToolbarScene {
+        fn new() -> Self {
+            let mut workspace = Workspace::sample();
+            workspace.select(1, false);
+            Self {
+                workspace,
+                state: UiState::new(),
+                toolbar: None,
+            }
+        }
+
+        fn draw(&mut self, ctx: &egui::Context) {
+            let mut toolbar = None;
+            egui::CentralPanel::default().show(ctx, |ui| {
+                toolbar = Some(hierarchy_toolbar(ui, &mut self.workspace, &mut self.state));
+            });
+            self.toolbar = toolbar;
+        }
+
+        fn toolbar(&self) -> &HierarchyToolbar {
+            self.toolbar.as_ref().expect("draw a frame first")
+        }
+    }
+
+    #[test]
+    fn hierarchy_toolbar_search_isolate_lock_and_find_are_interactive() {
+        let mut harness = EguiHarness::with_size(1000.0, 220.0);
+        let scene = RefCell::new(ToolbarScene::new());
+        let mut draw = |ctx: &egui::Context| scene.borrow_mut().draw(ctx);
+
+        harness.frame(&mut draw);
+        let search = scene.borrow().toolbar().search.rect;
+        harness.click(search.center(), &mut draw);
+        harness.text("cube", &mut draw);
+        assert_eq!(scene.borrow().state.hierarchy_search, "cube");
+        assert!(search_matches(
+            &scene.borrow().workspace.document().doc,
+            "cube",
+            scene.borrow().state.hierarchy_search_mode
+        )
+        .contains(&1));
+
+        // Isolate appears before the lock/find buttons, so re-read their rects
+        // after every state-changing click.
+        let isolate = scene.borrow().toolbar().isolate.rect;
+        harness.click(isolate.center(), &mut draw);
+        assert!(
+            scene.borrow().workspace.isolate,
+            "isolate button toggles the workspace"
+        );
+        // The new Show All button shifts the following controls; lay out one
+        // more frame before reading their rects.
+        harness.frame(&mut draw);
+
+        let lock = scene.borrow().toolbar().lock.rect;
+        harness.click(lock.center(), &mut draw);
+        let cube_id = scene
+            .borrow()
+            .workspace
+            .document()
+            .doc
+            .id_of_index(1)
+            .expect("cube id");
+        assert_eq!(scene.borrow().state.hierarchy_lock, Some(vec![cube_id]));
+
+        let find = scene.borrow().toolbar().find.rect;
+        harness.click(find.center(), &mut draw);
+        assert!(
+            scene.borrow().state.hierarchy_search.is_empty(),
+            "find must clear the search that filters the target out"
+        );
+        assert!(
+            scene.borrow().state.hierarchy_lock.is_none(),
+            "find must release the old locked selection"
+        );
+        assert_eq!(scene.borrow().state.hierarchy_reveal, Some(cube_id));
+    }
+
+    #[test]
+    fn hierarchy_search_mode_combo_switches_to_type() {
+        let mut harness = EguiHarness::with_size(1000.0, 220.0);
+        let scene = RefCell::new(ToolbarScene::new());
+        let mut draw = |ctx: &egui::Context| scene.borrow_mut().draw(ctx);
+
+        harness.frame(&mut draw);
+        let mode = scene.borrow().toolbar().mode.rect;
+        harness.click(mode.center(), &mut draw);
+        // The popup opens below the combo: Name first, Type second.
+        harness.click(egui::pos2(mode.center().x, mode.bottom() + 33.0), &mut draw);
+        assert_eq!(
+            scene.borrow().state.hierarchy_search_mode,
+            HierarchySearchMode::Component
+        );
+    }
+
+    #[test]
+    fn shift_click_uses_visible_rows_and_lock_keeps_the_snapshot() {
+        let mut workspace = Workspace::sample();
+        let mut state = UiState::new();
+        // Tree order is camera, cube, cube/Detail, light.
+        let visible = vec![0, 1, 3, 2];
+
+        apply_hierarchy_select(&mut workspace, &mut state, 1, false, &visible);
+        assert_eq!(workspace.selection, vec![1]);
+        apply_hierarchy_select(&mut workspace, &mut state, 2, true, &visible);
+        assert_eq!(
+            workspace.selection,
+            vec![1, 2, 3],
+            "Shift range walks visible rows and includes the nested Detail"
+        );
+
+        let locked_ids: Vec<u32> = workspace
+            .selection
+            .iter()
+            .filter_map(|index| workspace.document().doc.id_of_index(*index))
+            .collect();
+        toggle_hierarchy_lock(&workspace, &mut state);
+        assert_eq!(state.hierarchy_lock, Some(locked_ids));
+
+        // A Scene/Project selection change must not move the locked highlight.
+        workspace.select(0, false);
+        assert_eq!(hierarchy_indices(&workspace, &mut state), vec![1, 2, 3]);
+
+        // Clicking inside the hierarchy re-syncs the lock to the new selection.
+        apply_hierarchy_select(&mut workspace, &mut state, 0, false, &visible);
+        sync_hierarchy_lock(&workspace, &mut state);
+        let camera_id = workspace.document().doc.id_of_index(0).expect("camera id");
+        assert_eq!(state.hierarchy_lock, Some(vec![camera_id]));
     }
 }
 
