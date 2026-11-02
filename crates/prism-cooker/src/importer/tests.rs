@@ -1683,3 +1683,55 @@ fn animation_graph_importer_rejects_invalid_graphs() {
     assert!(imp.import(&ctx).is_err());
     std::fs::remove_dir_all(dir).ok();
 }
+
+#[test]
+fn an_authored_sync_marker_file_is_merged_into_the_matching_clip() {
+    use prism_asset::formats_skinned::decode_ranim;
+
+    let glb = skinned_glb();
+    let dir = std::env::temp_dir().join("prisma_sync_markers_author");
+    std::fs::create_dir_all(dir.join("hero.glb.skinning")).unwrap();
+    let path = dir.join("hero.glb");
+    std::fs::write(&path, &glb).unwrap();
+    std::fs::write(
+        dir.join("hero.glb.skinning/sync_markers.json"),
+        br#"{"clips": {"walk": [0.5, 0.0, 0.5, -0.25, 1.25]}}"#,
+    )
+    .unwrap();
+
+    let side = GltfImporter::side_assets(&path, "models/hero.glb").expect("side assets");
+    std::fs::remove_dir_all(&dir).ok();
+
+    let clip_path = side.clip_paths.first().expect("one clip").clone();
+    let bytes = side
+        .assets
+        .iter()
+        .find(|asset| asset.path == clip_path)
+        .expect("cooked clip")
+        .cooked_data
+        .clone();
+    let clip = decode_ranim(&bytes).expect("decode");
+    assert_eq!(clip.sync_markers, vec![0.0, 0.25, 0.5, 0.75]);
+}
+
+#[test]
+fn a_broken_sync_marker_file_fails_instead_of_silently_dropping_markers() {
+    let glb = skinned_glb();
+    let dir = std::env::temp_dir().join("prisma_sync_markers_broken");
+    std::fs::create_dir_all(dir.join("hero.glb.skinning")).unwrap();
+    let path = dir.join("hero.glb");
+    std::fs::write(&path, &glb).unwrap();
+    std::fs::write(
+        dir.join("hero.glb.skinning/sync_markers.json"),
+        b"{ not json",
+    )
+    .unwrap();
+
+    let error = GltfImporter::side_assets(&path, "models/hero.glb").unwrap_err();
+    std::fs::remove_dir_all(&dir).ok();
+    let message = format!("{error}");
+    assert!(
+        message.contains("invalid sync marker file"),
+        "错误要点名同步标记表: {message}"
+    );
+}

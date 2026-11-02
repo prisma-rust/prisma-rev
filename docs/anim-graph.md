@@ -120,6 +120,10 @@ FIFO 排队、单次播完自动接下一段，`stop` / `stop_after_current` 清
 `enqueue_montage` / `stop_montage` 按节点名操作，活动段按权重覆盖 Slot 输入；
 没有活动段时回退到作者写的 `clips[0]`。
 
+同步标记：`.ranim` v3 的同步标记表通过 `Clip::sync_marker_set()` 转成
+`SyncMarkerSet`，再由 `SyncGroup` 做跨剪辑相位映射；资产侧来自
+`*.skinning/sync_markers.json`。
+
 编辑器面板：`Window → General → Animation Graph` 选中 `.animgraph.json` / `.statemachine.json`
 后显示结构化只读视图（参数、节点、连线、状态、转移条件）。
 

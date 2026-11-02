@@ -224,6 +224,7 @@ fn notified_clip(duration: f32, looped: bool, notifies: &[(f32, &str)]) -> Clip 
                 name: (*name).to_string(),
             })
             .collect(),
+        sync_markers: Vec::new(),
     }
 }
 
@@ -257,4 +258,17 @@ fn a_looped_clip_fires_notifies_on_both_sides_of_the_wrap() {
     assert_eq!(fired(&clip, 0.9, 0.98), vec!["end"]);
     // 只跨过开头（0 点本身也要能触发）。
     assert_eq!(fired(&clip, 0.98, 0.05), vec!["start"]);
+}
+
+#[test]
+fn sync_markers_expose_a_normalized_marker_set() {
+    let clip = Clip {
+        sync_markers: vec![0.5, 0.0, 0.5, 1.25],
+        ..Default::default()
+    };
+    let markers = clip.sync_marker_set().expect("markers");
+    assert_eq!(markers.phases(), &[0.0, 0.25, 0.5]);
+
+    let empty = Clip::default();
+    assert!(empty.sync_marker_set().is_none());
 }

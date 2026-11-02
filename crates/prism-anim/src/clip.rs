@@ -3,6 +3,7 @@
 use glam::{Quat, Vec3};
 
 use crate::pose::Pose;
+use crate::sync::SyncMarkerSet;
 
 /// 单个骨骼的一条通道关键帧（时间升序）。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -56,6 +57,8 @@ pub struct Clip {
     pub tracks: Vec<Track>,
     /// 关键帧事件（时间升序由 `from_info` / 编码器保证，这里不再排序）。
     pub notifies: Vec<ClipNotify>,
+    /// 同步标记的归一化相位（升序；`from_info` 保证有限、去重）。
+    pub sync_markers: Vec<f32>,
 }
 
 impl Clip {
@@ -114,7 +117,19 @@ impl Clip {
                     name: notify.name.clone(),
                 })
                 .collect(),
+            sync_markers: info
+                .sync_markers
+                .iter()
+                .copied()
+                .filter(|phase| phase.is_finite())
+                .map(|phase| phase.rem_euclid(1.0))
+                .collect(),
         }
+    }
+
+    /// 这段剪辑的同步标记；没有标记时返回 `None`。
+    pub fn sync_marker_set(&self) -> Option<SyncMarkerSet> {
+        SyncMarkerSet::new(self.sync_markers.iter().copied())
     }
 
     pub fn is_empty(&self) -> bool {

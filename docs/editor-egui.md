@@ -447,7 +447,7 @@ cook 阶段把 glTF 的 `skins` / `JOINTS_0` / `WEIGHTS_0` / `animations` 烘成
 关键帧，鼠标悬停时刻度加粗并显示 `Jump to this keyframe`；点空白处不跳，避免拖时间轴时
 被吸到某个关键帧。
 
-**关键帧事件（Notify，#560 P1）**：`.ranim` v2 在剪辑末尾追加事件表（`time` + 名字），
+**关键帧事件（Notify，#560 P1）**：`.ranim` v3 在剪辑末尾追加事件表（`time` + 名字）和同步标记表，
 引擎每帧把「这一帧跨过的时间点」写进 `AnimEvents` 资源（整体重建，不是累加）：
 
 ```rust
@@ -476,6 +476,17 @@ for event in world.get_resource::<AnimEvents>().map(|e| e.drain()).unwrap_or_def
   cook 时按剪辑名合并进 `.ranim`（编码按时间排序、丢掉负时间/空名字）；文件**存在但
   解析失败会让 build 失败**，名字对不上任何动画会 warn —— 打错的事件表不该静默消失。
 - 编辑器还没有 Notify 的编辑界面（改文件后靠松散资产热重载重新 cook）；时间轴打点留给后续。
+
+**同步标记（Sync marker）**：走路 / 跑步循环的脚落地相位不同，混合时可以按标记对齐。
+作者写侧车 `assets/<mesh>.skinning/sync_markers.json`，键是 glTF 动画名，值是归一化相位：
+
+```json
+{ "clips": { "walk": [0.0, 0.5], "run": [0.05, 0.55] } }
+```
+
+cook 时归一化到 `[0, 1)`、排序去重，写进 `.ranim` v3；运行时
+`Clip::sync_marker_set()` 返回 `SyncMarkerSet`，可以构造 `SyncGroup` 做相位映射。
+文件不存在 = 没有标记；存在但解析失败会让 build 失败；名字对不上任何动画会 warn。
 
 ### 状态机
 

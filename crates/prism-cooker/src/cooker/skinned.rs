@@ -252,6 +252,22 @@ pub fn encode_ranim(clip: &AnimClipInfo) -> Option<Vec<u8>> {
         out.extend_from_slice(notify.name.as_bytes());
     }
 
+    // v3 同步标记（#560）：归一化相位、升序、去重，保证同一份作者数据每次 cook
+    // 出同样的字节。非有限值直接丢弃。
+    let mut markers: Vec<f32> = clip
+        .sync_markers
+        .iter()
+        .copied()
+        .filter(|phase| phase.is_finite())
+        .map(|phase| phase.rem_euclid(1.0))
+        .collect();
+    markers.sort_by(f32::total_cmp);
+    markers.dedup_by(|a, b| (*a - *b).abs() <= 1e-6);
+    out.extend_from_slice(&(markers.len() as u32).to_le_bytes());
+    for phase in markers {
+        out.extend_from_slice(&phase.to_le_bytes());
+    }
+
     Some(out)
 }
 
