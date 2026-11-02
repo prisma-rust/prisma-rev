@@ -21,6 +21,9 @@ fn baked_mip_layout_matches_texture_format_block_sizes() {
         TextureFormat::Astc6x6Srgb,
         TextureFormat::Astc8x8Unorm,
         TextureFormat::Astc8x8Srgb,
+        TextureFormat::Astc12x12Unorm,
+        TextureFormat::Astc12x12Srgb,
+        TextureFormat::Etc2R8G8B8A8Unorm,
         TextureFormat::Etc2R8G8B8A8Srgb,
     ] {
         for (width, height) in extents {

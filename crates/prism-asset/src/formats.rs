@@ -28,6 +28,16 @@ pub const RTEX_FORMAT_BC3: u8 = 4;
 pub const RTEX_FORMAT_BC6H: u8 = 5;
 /// BC7 (RGBA, 16 bytes per 4×4 block).
 pub const RTEX_FORMAT_BC7: u8 = 6;
+/// ASTC 4×4 (16 bytes per block).
+pub const RTEX_FORMAT_ASTC_4X4: u8 = 7;
+/// ASTC 6×6 (16 bytes per block).
+pub const RTEX_FORMAT_ASTC_6X6: u8 = 8;
+/// ASTC 8×8 (16 bytes per block).
+pub const RTEX_FORMAT_ASTC_8X8: u8 = 9;
+/// ASTC 12×12 (16 bytes per block).
+pub const RTEX_FORMAT_ASTC_12X12: u8 = 10;
+/// ETC2 RGBA8 (16 bytes per 4×4 block).
+pub const RTEX_FORMAT_ETC2_RGBA8: u8 = 11;
 
 #[derive(Debug, Clone)]
 pub struct RtexInfo {

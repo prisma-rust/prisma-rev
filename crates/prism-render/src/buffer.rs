@@ -620,7 +620,8 @@ fn format_block_layout(format: vk::Format) -> Option<(u32, u32, u32)> {
         F::ASTC_4X4_UNORM_BLOCK | F::ASTC_4X4_SRGB_BLOCK => (4, 4, 16),
         F::ASTC_6X6_UNORM_BLOCK | F::ASTC_6X6_SRGB_BLOCK => (6, 6, 16),
         F::ASTC_8X8_UNORM_BLOCK | F::ASTC_8X8_SRGB_BLOCK => (8, 8, 16),
-        F::ETC2_R8G8B8A8_SRGB_BLOCK => (4, 4, 16),
+        F::ASTC_12X12_UNORM_BLOCK | F::ASTC_12X12_SRGB_BLOCK => (12, 12, 16),
+        F::ETC2_R8G8B8A8_UNORM_BLOCK | F::ETC2_R8G8B8A8_SRGB_BLOCK => (4, 4, 16),
         _ => return None,
     };
     Some(layout)

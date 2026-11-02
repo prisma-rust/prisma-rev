@@ -18,8 +18,9 @@ use prism_asset::core::{AssetId, AssetType};
 // RTEX format bytes are part of the wire format; the single source of truth
 // lives in `prism-asset::formats` (shared with the runtime decoder).
 use prism_asset::formats::{
-    RMES_VERSION, RTEX_FORMAT_BC1, RTEX_FORMAT_BC3, RTEX_FORMAT_BC5, RTEX_FORMAT_BC7,
-    RTEX_FORMAT_RGBA8,
+    RMES_VERSION, RTEX_FORMAT_ASTC_12X12, RTEX_FORMAT_ASTC_4X4, RTEX_FORMAT_ASTC_6X6,
+    RTEX_FORMAT_ASTC_8X8, RTEX_FORMAT_BC1, RTEX_FORMAT_BC3, RTEX_FORMAT_BC5, RTEX_FORMAT_BC7,
+    RTEX_FORMAT_ETC2_RGBA8, RTEX_FORMAT_RGBA8,
 };
 use prism_asset::package::PackageBuilder;
 use std::collections::HashMap;
@@ -376,6 +377,89 @@ impl TextureCooker {
             .collect()
     }
 
+    /// Encode every mip level with ARM's ASTC encoder.
+    ///
+    /// ASTC blocks are 16 bytes regardless of block dimensions; the encoder
+    /// pads partial edge blocks internally, so the output size is exactly
+    /// `ceil(width / block_x) * ceil(height / block_y) * 16`.
+    fn encode_astc_mips(
+        mips: &[(u32, u32, Vec<u8>)],
+        block_x: u32,
+        block_y: u32,
+    ) -> Result<Vec<(u32, u32, Vec<u8>)>, CookError> {
+        let config = ctt_astcenc::config_init(
+            ctt_astcenc::Profile::Ldr,
+            block_x,
+            block_y,
+            1,
+            ctt_astcenc::Preset::Fast,
+            ctt_astcenc::Flags::empty(),
+        )
+        .map_err(|error| CookError::CookFailed(format!("ASTC config: {error}")))?;
+        let mut context = ctt_astcenc::Context::new(&config)
+            .map_err(|error| CookError::CookFailed(format!("ASTC context: {error}")))?;
+
+        let mut encoded = Vec::with_capacity(mips.len());
+        for (width, height, rgba) in mips {
+            let mut pixels = rgba.clone();
+            let mut slice = pixels.as_mut_ptr().cast::<std::ffi::c_void>();
+            let mut image = ctt_astcenc::bindings::astcenc_image {
+                dim_x: *width,
+                dim_y: *height,
+                dim_z: 1,
+                data_type: ctt_astcenc::bindings::astcenc_type_ASTCENC_TYPE_U8,
+                data: &mut slice,
+            };
+            let blocks_x = width.div_ceil(block_x);
+            let blocks_y = height.div_ceil(block_y);
+            let mut bytes = vec![0u8; (blocks_x * blocks_y * 16) as usize];
+            context
+                .compress(&mut image, ctt_astcenc::Swizzle::IDENTITY, &mut bytes)
+                .map_err(|error| {
+                    CookError::CookFailed(format!(
+                        "ASTC encode {width}x{height} ({block_x}x{block_y}): {error}"
+                    ))
+                })?;
+            context
+                .compress_reset()
+                .map_err(|error| CookError::CookFailed(format!("ASTC reset: {error}")))?;
+            encoded.push((*width, *height, bytes));
+        }
+        Ok(encoded)
+    }
+
+    /// Encode every mip level as ETC2 RGBA8.
+    ///
+    /// etcpak consumes BGRA and whole 4×4 blocks, so edge pixels are replicated
+    /// into a padded surface. The RTEX mip size uses the same `ceil(w/4)`
+    /// block count, so padding does not change the payload contract.
+    fn encode_etc2_mips(
+        mips: &[(u32, u32, Vec<u8>)],
+    ) -> Result<Vec<(u32, u32, Vec<u8>)>, CookError> {
+        mips.iter()
+            .map(|(width, height, rgba)| {
+                let padded_w = width.div_ceil(4) * 4;
+                let padded_h = height.div_ceil(4) * 4;
+                let mut bgra = vec![0u8; (padded_w * padded_h * 4) as usize];
+                for y in 0..padded_h {
+                    let src_y = y.min(height - 1);
+                    for x in 0..padded_w {
+                        let src_x = x.min(width - 1);
+                        let src = ((src_y * width + src_x) * 4) as usize;
+                        let dst = ((y * padded_w + x) * 4) as usize;
+                        bgra[dst] = rgba[src + 2];
+                        bgra[dst + 1] = rgba[src + 1];
+                        bgra[dst + 2] = rgba[src];
+                        bgra[dst + 3] = rgba[src + 3];
+                    }
+                }
+                let surface = ctt_etcpak::Surface::new(&bgra, padded_w, padded_h);
+                let bytes = ctt_etcpak::etc2_rgba::compress_blocks(&surface, true);
+                Ok((*width, *height, bytes))
+            })
+            .collect()
+    }
+
     fn write_rtex(mips: &[(u32, u32, Vec<u8>)], format: u8) -> Vec<u8> {
         let levels = mips.len() as u32;
         // Header: magic(4) + version(1) + w(4) + h(4) + levels(4) + format(1) + offsets(levels*4)
@@ -434,8 +518,9 @@ impl Cooker for TextureCooker {
             vec![(w, h, rgba.to_vec())]
         };
 
-        // 格式 byte：桌面 BC1/BC3/BC5/BC7 走纯 Rust 编码器；ASTC / ETC2 的移动
-        // 编码器还没接，继续明确回退到 RGBA8（不静默冒充已压缩，#519）。
+        // 格式 byte：桌面 BC1/BC3/BC5/BC7 走纯 Rust 编码器；移动端 ASTC /
+        // ETC2 走 vendored 的 astcenc / etcpak。只有 BC6H（HDR）还没有编码器，
+        // 明确 warning 后回退 RGBA8（不静默冒充已压缩，#519）。
         let (format, mips, block_compressed) = match ctx.settings.texture.compression {
             profile::TextureCompression::Rgba8 | profile::TextureCompression::None => {
                 (RTEX_FORMAT_RGBA8, mips_rgba, false)
@@ -458,6 +543,31 @@ impl Cooker for TextureCooker {
             profile::TextureCompression::Bc7 => (
                 RTEX_FORMAT_BC7,
                 Self::encode_block_mips(&mips_rgba, texture_compressor::Format::Bc7)?,
+                true,
+            ),
+            profile::TextureCompression::Astc4x4 => (
+                RTEX_FORMAT_ASTC_4X4,
+                Self::encode_astc_mips(&mips_rgba, 4, 4)?,
+                true,
+            ),
+            profile::TextureCompression::Astc6x6 => (
+                RTEX_FORMAT_ASTC_6X6,
+                Self::encode_astc_mips(&mips_rgba, 6, 6)?,
+                true,
+            ),
+            profile::TextureCompression::Astc8x8 => (
+                RTEX_FORMAT_ASTC_8X8,
+                Self::encode_astc_mips(&mips_rgba, 8, 8)?,
+                true,
+            ),
+            profile::TextureCompression::Astc12x12 => (
+                RTEX_FORMAT_ASTC_12X12,
+                Self::encode_astc_mips(&mips_rgba, 12, 12)?,
+                true,
+            ),
+            profile::TextureCompression::Etc2Rgba => (
+                RTEX_FORMAT_ETC2_RGBA8,
+                Self::encode_etc2_mips(&mips_rgba)?,
                 true,
             ),
             other => {

@@ -80,6 +80,9 @@ pub enum TextureFormat {
     Astc6x6Srgb,
     Astc8x8Unorm,
     Astc8x8Srgb,
+    Astc12x12Unorm,
+    Astc12x12Srgb,
+    Etc2R8G8B8A8Unorm,
     Etc2R8G8B8A8Srgb,
 }
 
@@ -97,7 +100,8 @@ impl TextureFormat {
             TextureFormat::Astc4x4Unorm | TextureFormat::Astc4x4Srgb => 1, // 8 bpp
             TextureFormat::Astc6x6Unorm | TextureFormat::Astc6x6Srgb => 1, // 3.56 bpp 近似
             TextureFormat::Astc8x8Unorm | TextureFormat::Astc8x8Srgb => 1,
-            TextureFormat::Etc2R8G8B8A8Srgb => 1,
+            TextureFormat::Astc12x12Unorm | TextureFormat::Astc12x12Srgb => 1,
+            TextureFormat::Etc2R8G8B8A8Unorm | TextureFormat::Etc2R8G8B8A8Srgb => 1,
         }
     }
 
@@ -141,7 +145,12 @@ impl TextureFormat {
                 let bh = (height + 7) / 8;
                 (bw as usize) * (bh as usize) * 16
             }
-            TextureFormat::Etc2R8G8B8A8Srgb => {
+            TextureFormat::Astc12x12Unorm | TextureFormat::Astc12x12Srgb => {
+                let bw = (width + 11) / 12;
+                let bh = (height + 11) / 12;
+                (bw as usize) * (bh as usize) * 16
+            }
+            TextureFormat::Etc2R8G8B8A8Unorm | TextureFormat::Etc2R8G8B8A8Srgb => {
                 let bw = (width + 3) / 4;
                 let bh = (height + 3) / 4;
                 (bw as usize) * (bh as usize) * 16
@@ -169,6 +178,9 @@ impl TextureFormat {
             TextureFormat::Astc6x6Srgb => vk::Format::ASTC_6X6_SRGB_BLOCK,
             TextureFormat::Astc8x8Unorm => vk::Format::ASTC_8X8_UNORM_BLOCK,
             TextureFormat::Astc8x8Srgb => vk::Format::ASTC_8X8_SRGB_BLOCK,
+            TextureFormat::Astc12x12Unorm => vk::Format::ASTC_12X12_UNORM_BLOCK,
+            TextureFormat::Astc12x12Srgb => vk::Format::ASTC_12X12_SRGB_BLOCK,
+            TextureFormat::Etc2R8G8B8A8Unorm => vk::Format::ETC2_R8G8B8A8_UNORM_BLOCK,
             TextureFormat::Etc2R8G8B8A8Srgb => vk::Format::ETC2_R8G8B8A8_SRGB_BLOCK,
         }
     }

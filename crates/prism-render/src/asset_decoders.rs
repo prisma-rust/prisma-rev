@@ -34,6 +34,11 @@ const RTEX_FORMAT_BC1: u8 = 3;
 const RTEX_FORMAT_BC3: u8 = 4;
 const RTEX_FORMAT_BC6H: u8 = 5;
 const RTEX_FORMAT_BC7: u8 = 6;
+const RTEX_FORMAT_ASTC_4X4: u8 = 7;
+const RTEX_FORMAT_ASTC_6X6: u8 = 8;
+const RTEX_FORMAT_ASTC_8X8: u8 = 9;
+const RTEX_FORMAT_ASTC_12X12: u8 = 10;
+const RTEX_FORMAT_ETC2_RGBA8: u8 = 11;
 
 /// Fixed part of the RTEX header: magic + version + w/h + mip count + format.
 const RTEX_HEADER_SIZE: usize = 4 + 1 + 4 + 4 + 4 + 1;
@@ -172,6 +177,11 @@ fn rtex_texture_format(code: u8) -> Result<TextureFormat> {
         RTEX_FORMAT_BC1 => Ok(TextureFormat::Bc1Srgb),
         RTEX_FORMAT_BC3 => Ok(TextureFormat::Bc3Srgb),
         RTEX_FORMAT_BC7 => Ok(TextureFormat::Bc7Srgb),
+        RTEX_FORMAT_ASTC_4X4 => Ok(TextureFormat::Astc4x4Srgb),
+        RTEX_FORMAT_ASTC_6X6 => Ok(TextureFormat::Astc6x6Srgb),
+        RTEX_FORMAT_ASTC_8X8 => Ok(TextureFormat::Astc8x8Srgb),
+        RTEX_FORMAT_ASTC_12X12 => Ok(TextureFormat::Astc12x12Srgb),
+        RTEX_FORMAT_ETC2_RGBA8 => Ok(TextureFormat::Etc2R8G8B8A8Srgb),
         other => bail!("RTEX unknown format code {other}"),
     }
 }
