@@ -63,6 +63,7 @@ pub mod hdr;
 pub mod ibl;
 pub mod lut;
 pub mod managers;
+mod math;
 pub mod mesh;
 pub mod offscreen;
 pub mod particle_pass;

@@ -1819,6 +1819,10 @@ pub struct PostProcessVolume {
     pub dof_aperture: f32,
     /// 景深最大模糊半径（像素，0–32）。
     pub dof_max_blur: f32,
+    /// 相机运动模糊强度（`0.0` = 关闭，`1.0` = 最强）。
+    pub motion_blur: f32,
+    /// 运动模糊最大拖影长度（像素，0–64）。
+    pub motion_blur_max_pixels: f32,
 }
 
 impl Default for PostProcessVolume {
@@ -1842,6 +1846,8 @@ impl Default for PostProcessVolume {
             dof_focus_distance: 1.0,
             dof_aperture: 0.0,
             dof_max_blur: 8.0,
+            motion_blur: 0.0,
+            motion_blur_max_pixels: 16.0,
         }
     }
 }

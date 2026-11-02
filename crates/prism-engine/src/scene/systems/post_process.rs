@@ -123,6 +123,8 @@ fn volume_grade(volume: &PostProcessVolume) -> PostGrade {
         // LUT 是全局资源；体积只混合上面这些逐像素参数，强度由
         // `render_system` 在解析后统一覆盖为 `settings.lut_strength`。
         lut_strength: 0.0,
+        motion_blur: volume.motion_blur,
+        motion_blur_max_pixels: volume.motion_blur_max_pixels,
     }
     .sanitized()
 }
@@ -149,6 +151,8 @@ fn lerp_grade(a: PostGrade, b: PostGrade, t: f32) -> PostGrade {
         dof_aperture: mix(a.dof_aperture, b.dof_aperture),
         dof_max_blur: mix(a.dof_max_blur, b.dof_max_blur),
         lut_strength: 0.0,
+        motion_blur: mix(a.motion_blur, b.motion_blur),
+        motion_blur_max_pixels: mix(a.motion_blur_max_pixels, b.motion_blur_max_pixels),
     }
     .sanitized()
 }

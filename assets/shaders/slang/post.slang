@@ -10,6 +10,7 @@
 //   set 0, binding 0 - HDR color texture (combined Sampler2D)
 //   set 0, binding 1 - scene depth (combined Sampler2D, DOF)
 //   set 0, binding 2 - 3D color-grading LUT (combined Sampler3D, #502)
+//   set 0, binding 3 - motion-blur matrices (uniform buffer, #502 Phase 2)
 //
 // Push constants: PostPush - `tonemapMode` (0 = Reinhard, 1 = ACES,
 // 2 = passthrough for 2D scenes so the sprite palette survives untouched),
@@ -38,6 +39,20 @@ Sampler2D depthTex;
 // (or the loaded `.cube`) so the descriptor is never unbound.
 [[vk::binding(2, 0)]]
 Sampler3D lutTex;
+
+// ---- set 0, binding 3 - camera motion-blur matrices (#502 Phase 2) ----
+// `invViewProj` reconstructs world space from the current depth; `prevViewProj`
+// projects that world point into the previous frame. `resolution` converts a
+// normalized velocity to pixels for the trail clamp.
+struct MotionBlurData
+{
+    float4x4 invViewProj;
+    float4x4 prevViewProj;
+    float2 resolution;
+    float2 _pad;
+};
+[[vk::binding(3, 0)]]
+ConstantBuffer<MotionBlurData> motion;
 
 // Push constants: tonemap operator selector (matches `tonemapMode` in FrameUBO).
 //
@@ -87,6 +102,11 @@ public struct PostPush
     // 32) and is used to place samples on texel centres.
     public float lutStrength;
     public float lutSize;
+    // Camera motion blur (#502 Phase 2). `motionBlur` scales the reprojected
+    // velocity; 0 skips the depth reconstruction and is bit-identical to the
+    // pre-effect path. `motionBlurMaxPixels` caps long camera jumps.
+    public float motionBlur;
+    public float motionBlurMaxPixels;
 };
 [[vk::push_constant]]
 PostPush pc;
@@ -239,9 +259,59 @@ float3 depthOfField(float2 uv, float3 sharp)
     return sum / weight;
 }
 
-// Sample + depth of field + bloom + tonemap + grade. DOF runs in linear HDR
-// before bloom so out-of-focus highlights can still bloom. Bloom is applied
-// before the tonemap so highlights can spill without being clipped first.
+// Screen-space velocity for a static world point at `depth`. The current depth
+// is enough because the scene is opaque: reconstruct the world position with
+// the current inverse view-projection, then project it with the previous
+// frame's view-projection. Missing / behind-camera previous positions return 0
+// so a camera cut does not smear the whole frame.
+float2 cameraMotionVector(float2 uv, float depth)
+{
+    float4 clip = float4(uv * 2.0 - 1.0, depth, 1.0);
+    // Slang/HLSL treat `mul(vector, matrix)` as row-vector * matrix; the
+    // matrices are uploaded column-major from Rust, so this is the correct
+    // order for a constant buffer read on SPIR-V.
+    float4 world = mul(clip, motion.invViewProj);
+    if (abs(world.w) < 1e-6)
+        return float2(0.0, 0.0);
+    world /= world.w;
+    float4 prev = mul(world, motion.prevViewProj);
+    if (prev.w <= 1e-5)
+        return float2(0.0, 0.0);
+    float2 prevUv = prev.xy / prev.w * 0.5 + 0.5;
+    return prevUv - uv;
+}
+
+// Fixed 8-tap trail along the camera-motion vector. `motionBlur = 0` never
+// reaches this function; the trail is clamped to `motionBlurMaxPixels` so a
+// fast camera turn stays a blur instead of sampling the whole screen.
+float3 applyMotionBlur(float2 uv, float3 sharp)
+{
+    float2 velocity = cameraMotionVector(uv, depthTex.Sample(uv).r)
+                    * pc.motionBlur;
+    float2 maxUv = pc.motionBlurMaxPixels
+                 / max(motion.resolution, float2(1.0, 1.0));
+    velocity = clamp(velocity, -maxUv, maxUv);
+
+    // Sub-pixel motion is visually identical to staying sharp; skip the taps
+    // so the idle camera path costs only the depth sample above.
+    if (length(velocity * motion.resolution) < 0.5)
+        return sharp;
+
+    float3 sum = sharp;
+    float weight = 1.0;
+    for (int i = 1; i < 8; i++)
+    {
+        float t = float(i) / 7.0;
+        sum += hdrTex.Sample(uv - velocity * t).rgb;
+        weight += 1.0;
+    }
+    return sum / weight;
+}
+
+// Sample + depth of field + motion blur + bloom + tonemap + grade. DOF and
+// camera motion blur run in linear HDR before bloom so out-of-focus / moving
+// highlights can still bloom. Bloom is applied before the tonemap so highlights
+// can spill without being clipped first.
 // FXAA runs entirely in this display-referred space so the edge-luma it
 // compares is perceptually uniform (the hardware sRGB encode to the swapchain
 // happens after this shader, so the values written back are still linear).
@@ -265,6 +335,8 @@ float3 shade(float2 uv)
     }
     if (pc.dofAperture > 0.0)
         hdr = depthOfField(uv, hdr);
+    if (pc.motionBlur > 0.0)
+        hdr = applyMotionBlur(uv, hdr);
     if (pc.bloomIntensity > 0.0)
         hdr += bloom(uv) * pc.bloomIntensity;
     return grade(saturate(tonemap(hdr)));

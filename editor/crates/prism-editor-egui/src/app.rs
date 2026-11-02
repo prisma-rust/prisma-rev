@@ -5955,6 +5955,8 @@ fn render_settings_json(
         "dofMaxBlur": settings.dof_max_blur,
         "lut": settings.lut,
         "lutStrength": settings.lut_strength,
+        "motionBlur": settings.motion_blur,
+        "motionBlurMaxPixels": settings.motion_blur_max_pixels,
         "shadowDistance": settings.shadow_distance,
         "shadowCascadeCount": settings.shadow_cascade_count,
         "debugRt": settings.debug_rt,
@@ -6019,6 +6021,8 @@ fn render_settings_from_json(
             .map(str::to_string)
             .unwrap_or(base.lut),
         lut_strength: f32_field("lutStrength", base.lut_strength),
+        motion_blur: f32_field("motionBlur", base.motion_blur),
+        motion_blur_max_pixels: f32_field("motionBlurMaxPixels", base.motion_blur_max_pixels),
         shadow_distance: f32_field("shadowDistance", base.shadow_distance),
         // #526：贴图边长只在构造渲染器时生效；编辑器 UI 还没暴露滑杆时保持默认。
         shadow_map_size: u32_field("shadowMapSize", base.shadow_map_size),
@@ -6382,6 +6386,8 @@ mod tests {
         settings.dof_max_blur = 10.0;
         settings.lut = "luts/grade.cube".to_string();
         settings.lut_strength = 0.8;
+        settings.motion_blur = 0.65;
+        settings.motion_blur_max_pixels = 20.0;
         settings.shadow_distance = 90.0;
         settings.shadow_cascade_count = 2;
         settings.shaded_wireframe = true;
@@ -6405,6 +6411,8 @@ mod tests {
         assert_eq!(loaded.dof_max_blur, 10.0);
         assert_eq!(loaded.lut, "luts/grade.cube");
         assert_eq!(loaded.lut_strength, 0.8);
+        assert_eq!(loaded.motion_blur, 0.65);
+        assert_eq!(loaded.motion_blur_max_pixels, 20.0);
         assert_eq!(loaded.shadow_distance, 90.0);
         assert_eq!(loaded.shadow_cascade_count, 2);
         assert!(loaded.shaded_wireframe);
