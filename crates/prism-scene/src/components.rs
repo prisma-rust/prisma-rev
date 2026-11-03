@@ -2353,6 +2353,10 @@ pub struct Animator {
     pub lod_enabled: bool,
     /// 动画 LOD 的冻结距离（米）。非有限值或 `<= 0` 时按 50m 处理。
     pub lod_far: f32,
+    /// 动画 LOD 的降频起点（米）：`lod_near..lod_far` 之间隔帧求值，
+    /// 每次更新推进 `2 * dt` 保持播放速度。非有限 / `<= 0` / 大于 `lod_far`
+    /// 时等于 `lod_far`（没有降频档）。
+    pub lod_near: f32,
 }
 
 impl Default for Animator {
@@ -2379,6 +2383,7 @@ impl Default for Animator {
             layers: Vec::new(),
             lod_enabled: false,
             lod_far: 50.0,
+            lod_near: 25.0,
         }
     }
 }

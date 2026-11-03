@@ -277,6 +277,8 @@ struct GraphPoseJob {
     entity: Entity,
     skeleton: Arc<Skeleton>,
     runtime: GraphRuntime,
+    /// 这一帧该推进的时间（LOD 降频帧是 `2 * dt`）。
+    dt: f32,
     result: Option<Result<(Pose, Vec<AnimEvent>), GraphEvalError>>,
 }
 
@@ -313,8 +315,7 @@ fn evaluate_graph_poses(
     params: &AnimParameters,
     montage_requests: &mut HashMap<Entity, Vec<MontageRequest>>,
     graph_entities: &mut HashSet<Entity>,
-    frozen: &HashSet<Entity>,
-    dt: f32,
+    plans: &HashMap<Entity, f32>,
 ) -> HashMap<Entity, Result<(Pose, Vec<AnimEvent>), GraphEvalError>> {
     let mut jobs: Vec<GraphPoseJob> = Vec::new();
     for (entity, animator) in world.query::<Animator>() {
@@ -332,10 +333,10 @@ fn evaluate_graph_poses(
             continue;
         };
         graph_entities.insert(entity);
-        if frozen.contains(&entity) {
-            // 冻结的实体保留求值器（状态机 / Montage 进度回来接着走），这一帧不推进。
+        // 冻结 / 跳帧的实体保留求值器（状态机 / Montage 进度回来接着走），这一帧不推进。
+        let Some(&entity_dt) = plans.get(&entity) else {
             continue;
-        }
+        };
         let evaluator = graph_runtimes.get_or_create(entity, path, graph);
         if let Some(requests) = montage_requests.remove(&entity) {
             apply_montage_requests(evaluator, requests, &library.clips);
@@ -367,6 +368,7 @@ fn evaluate_graph_poses(
             entity,
             skeleton,
             runtime,
+            dt: entity_dt,
             result: None,
         });
     }
@@ -377,7 +379,7 @@ fn evaluate_graph_poses(
         .min(jobs.len())
         .min(MAX_GRAPH_EVAL_THREADS);
     prism_ecs::jobs::scoped_parallel_chunks(&mut jobs, threads, |job| {
-        job.evaluate(library, dt);
+        job.evaluate(library, job.dt);
     });
 
     let mut results = HashMap::with_capacity(jobs.len());
@@ -625,13 +627,25 @@ pub const BLEND_SPACE_KEY: &str = "<blend-space>";
 pub const BLEND_SPACE_2D_KEY: &str = "<blend-space-2d>";
 
 /// 推进所有 `Animator` 并重算骨骼矩阵，返回更新过的实体数。
-/// 动画 LOD 的冻结距离；坏值回落到 50m（#560 P6）。
-fn lod_far_distance(animator: &Animator) -> f32 {
-    if animator.lod_far.is_finite() && animator.lod_far > 0.0 {
+/// 动画 LOD 的近档起点与冻结距离；坏值回落到 25m / 50m（#560 P6）。
+fn lod_thresholds(animator: &Animator) -> (f32, f32) {
+    let far = if animator.lod_far.is_finite() && animator.lod_far > 0.0 {
         animator.lod_far
     } else {
         50.0
-    }
+    };
+    let near = if animator.lod_near.is_finite() && animator.lod_near > 0.0 {
+        animator.lod_near.min(far)
+    } else {
+        far
+    };
+    (near, far)
+}
+
+/// 动画 LOD 的降频状态：记录这一帧被跳过、下一帧该更新的实体（#560 P6）。
+#[derive(Debug, Default, Clone)]
+pub struct AnimLodThrottle {
+    skipped: HashSet<Entity>,
 }
 
 /// 第一个启用相机的世界位置；没有相机时动画 LOD 不生效。
@@ -660,19 +674,47 @@ fn entity_position(world: &World, entity: Entity) -> glam::Vec3 {
     glam::Vec3::ZERO
 }
 
-/// 需要冻结动画的实体：开启了 LOD 且离相机超过 `lod_far`。
-fn frozen_animators(world: &World, eye: Option<glam::Vec3>) -> HashSet<Entity> {
-    let Some(eye) = eye else {
-        return HashSet::new();
-    };
-    world
-        .query::<Animator>()
-        .filter(|(entity, animator)| {
-            animator.lod_enabled
-                && entity_position(world, *entity).distance(eye) > lod_far_distance(animator)
-        })
-        .map(|(entity, _)| entity)
-        .collect()
+/// 每个动画实体这一帧该用的 `dt`；**不在表里的实体这一帧完全跳过**。
+///
+/// - 超过 `lod_far`：冻结（不进表，图求值器保留）；
+/// - `lod_near..lod_far`：隔帧求值，更新帧用 `2 * dt` 保持播放速度；
+/// - 近处 / 没开 LOD / 没有相机：每帧 `dt`。
+fn animation_frame_plans(
+    world: &World,
+    eye: Option<glam::Vec3>,
+    dt: f32,
+    throttle: &mut AnimLodThrottle,
+) -> HashMap<Entity, f32> {
+    let mut plans = HashMap::new();
+    for (entity, animator) in world.query::<Animator>() {
+        let Some(eye) = eye else {
+            plans.insert(entity, dt);
+            continue;
+        };
+        if !animator.lod_enabled {
+            throttle.skipped.remove(&entity);
+            plans.insert(entity, dt);
+            continue;
+        }
+        let (near, far) = lod_thresholds(animator);
+        let distance = entity_position(world, entity).distance(eye);
+        if distance > far {
+            throttle.skipped.remove(&entity);
+            continue;
+        }
+        if distance > near {
+            if throttle.skipped.remove(&entity) {
+                // 上一帧更新过，这一帧跳过并清掉标记。
+                continue;
+            }
+            throttle.skipped.insert(entity);
+            plans.insert(entity, dt * 2.0);
+            continue;
+        }
+        throttle.skipped.remove(&entity);
+        plans.insert(entity, dt);
+    }
+    plans
 }
 
 pub fn animator_system(world: &mut World, dt: f32) -> usize {
@@ -717,8 +759,12 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
 
     let mut updates: Vec<(Entity, BonePalette, AnimatorPlayhead)> = Vec::new();
     let mut events: Vec<AnimEvent> = Vec::new();
-    // 动画 LOD（#560 P6）：远处实体这一帧完全不推进，图运行时保留状态等回来再续。
-    let frozen = frozen_animators(world, camera_eye(world));
+    // 动画 LOD（#560 P6）：远处实体冻结、近档隔帧求值；图运行时保留状态等回来再续。
+    let mut throttle = world
+        .remove_resource::<AnimLodThrottle>()
+        .unwrap_or_default();
+    let plans = animation_frame_plans(world, camera_eye(world), dt, &mut throttle);
+    world.insert_resource(throttle);
     // 图求值先按实体并行算好（#560 P6）；下面的循环只做顺序的 World 读写。
     let mut graph_results = evaluate_graph_poses(
         world,
@@ -727,8 +773,7 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
         &params,
         &mut montage_requests,
         &mut graph_entities,
-        &frozen,
-        dt,
+        &plans,
     );
     for (entity, animator) in world.query::<Animator>() {
         let Some(root) = world.get::<SkeletonRoot>(entity) else {
@@ -737,9 +782,10 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
         let Some(skeleton) = library.skeleton(&root.skeleton_path) else {
             continue;
         };
-        if frozen.contains(&entity) {
+        let Some(&entity_dt) = plans.get(&entity) else {
             continue;
-        }
+        };
+        let dt = entity_dt;
 
         // 动画图（#560 P1）：路径非空且图已加载时优先于状态机 / 混合空间 / 单剪辑。
         // 求值器按实体持久化（状态机节点需要跨帧状态）；图换路径时重建。
