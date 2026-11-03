@@ -5750,7 +5750,7 @@ pub fn anim_graph(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
                         if let Some((old_name, new_name)) =
                             state.anim_graph_edit.graph_parameter_rename.take()
                         {
-                            let status = match workspace
+                            state.status = match workspace
                                 .rename_anim_graph_parameter(&path, &old_name, &new_name)
                             {
                                 Ok(updated) if updated.is_empty() => {
@@ -5762,10 +5762,6 @@ pub fn anim_graph(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
                                 ),
                                 Err(error) => error,
                             };
-                            if let Ok(after) = workspace.read_asset_json(&path) {
-                                workspace.record_asset_edit(&path, &before, &after);
-                            }
-                            state.status = status;
                         }
                     }
                     Err(error) => {
@@ -5821,7 +5817,7 @@ fn draw_asset_edit_buttons(ui: &mut Ui, workspace: &mut Workspace, state: &mut U
             .clicked()
         {
             state.status = match workspace.undo_asset_edit() {
-                Ok(Some(path)) => format!("undid edit in {path}"),
+                Ok(Some(paths)) => format!("undid edit in {}", paths.join(", ")),
                 Ok(None) => "nothing to undo".to_string(),
                 Err(error) => error,
             };
@@ -5835,7 +5831,7 @@ fn draw_asset_edit_buttons(ui: &mut Ui, workspace: &mut Workspace, state: &mut U
             .clicked()
         {
             state.status = match workspace.redo_asset_edit() {
-                Ok(Some(path)) => format!("redid edit in {path}"),
+                Ok(Some(paths)) => format!("redid edit in {}", paths.join(", ")),
                 Ok(None) => "nothing to redo".to_string(),
                 Err(error) => error,
             };

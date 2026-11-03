@@ -22,9 +22,10 @@ pub struct AssetEdit {
     pub after: Value,
 }
 
+/// 一步编辑可以同时改多个文件（例如参数改名连带状态机条件）。
 #[derive(Debug, Clone)]
 struct Entry {
-    edit: AssetEdit,
+    edits: Vec<AssetEdit>,
     at_ms: u64,
 }
 
@@ -67,28 +68,48 @@ impl AssetEditHistory {
     }
 
     fn record_at(&mut self, path: &str, before: &Value, after: &Value, at_ms: u64) {
-        if before == after {
-            return;
-        }
-        self.redo.clear();
-        if let Some(last) = self.undo.last_mut() {
-            let same_file = last.edit.path == path;
-            let in_window = at_ms.saturating_sub(last.at_ms) <= self.coalesce_ms;
-            let continues = last.edit.after == *before;
-            if same_file && in_window && continues {
-                last.edit.after = after.clone();
-                last.at_ms = at_ms;
-                return;
-            }
-        }
-        self.undo.push(Entry {
-            edit: AssetEdit {
+        self.record_group_at(
+            vec![AssetEdit {
                 path: path.to_string(),
                 before: before.clone(),
                 after: after.clone(),
-            },
+            }],
             at_ms,
-        });
+            true,
+        );
+    }
+
+    /// 把多个文件的改动记成**同一步**（撤销 / 重做一起回滚）。
+    pub fn record_group(&mut self, edits: Vec<AssetEdit>) {
+        self.record_group_at(edits, now_ms(), false);
+    }
+
+    fn record_group_at(&mut self, edits: Vec<AssetEdit>, at_ms: u64, allow_coalesce: bool) {
+        let edits: Vec<AssetEdit> = edits
+            .into_iter()
+            .filter(|edit| edit.before != edit.after)
+            .collect();
+        if edits.is_empty() {
+            return;
+        }
+        self.redo.clear();
+        // 只有单文件编辑参与拖拽合并；多文件事务一旦提交就是独立一步。
+        if allow_coalesce && edits.len() == 1 {
+            if let Some(last) = self.undo.last_mut() {
+                if last.edits.len() == 1 {
+                    let last_edit = &mut last.edits[0];
+                    let same_file = last_edit.path == edits[0].path;
+                    let in_window = at_ms.saturating_sub(last.at_ms) <= self.coalesce_ms;
+                    let continues = last_edit.after == edits[0].before;
+                    if same_file && in_window && continues {
+                        last_edit.after = edits[0].after.clone();
+                        last.at_ms = at_ms;
+                        return;
+                    }
+                }
+            }
+        }
+        self.undo.push(Entry { edits, at_ms });
         if self.undo.len() > self.limit {
             let overflow = self.undo.len() - self.limit;
             self.undo.drain(0..overflow);
@@ -105,26 +126,32 @@ impl AssetEditHistory {
 
     /// 下一次撤销会改的文件。
     pub fn undo_path(&self) -> Option<&str> {
-        self.undo.last().map(|entry| entry.edit.path.as_str())
+        self.undo
+            .last()
+            .and_then(|entry| entry.edits.first())
+            .map(|edit| edit.path.as_str())
     }
 
     /// 下一次重做会改的文件。
     pub fn redo_path(&self) -> Option<&str> {
-        self.redo.last().map(|entry| entry.edit.path.as_str())
+        self.redo
+            .last()
+            .and_then(|entry| entry.edits.first())
+            .map(|edit| edit.path.as_str())
     }
 
-    /// 撤销一步，返回要写回的状态（`before`）。
-    pub fn undo(&mut self) -> Option<AssetEdit> {
+    /// 撤销一步，返回要写回的状态（每个文件的 `before`）。
+    pub fn undo(&mut self) -> Option<Vec<AssetEdit>> {
         let entry = self.undo.pop()?;
-        let outcome = entry.edit.clone();
+        let outcome = entry.edits.clone();
         self.redo.push(entry);
         Some(outcome)
     }
 
-    /// 重做一步，返回要写回的状态（`after`）。
-    pub fn redo(&mut self) -> Option<AssetEdit> {
+    /// 重做一步，返回要写回的状态（每个文件的 `after`）。
+    pub fn redo(&mut self) -> Option<Vec<AssetEdit>> {
         let entry = self.redo.pop()?;
-        let outcome = entry.edit.clone();
+        let outcome = entry.edits.clone();
         self.undo.push(entry);
         Some(outcome)
     }
@@ -157,16 +184,16 @@ mod tests {
         assert_eq!(history.undo_path(), Some("a.json"));
 
         let first = history.undo().expect("undo");
-        assert_eq!(first.before, json!({ "x": 1 }));
+        assert_eq!(first[0].before, json!({ "x": 1 }));
         let second = history.undo().expect("undo again");
-        assert_eq!(second.before, json!({ "x": 0 }));
+        assert_eq!(second[0].before, json!({ "x": 0 }));
         assert!(!history.can_undo());
         assert!(history.can_redo());
 
         let redo = history.redo().expect("redo");
-        assert_eq!(redo.after, json!({ "x": 1 }));
+        assert_eq!(redo[0].after, json!({ "x": 1 }));
         let redo = history.redo().expect("redo again");
-        assert_eq!(redo.after, json!({ "x": 2 }));
+        assert_eq!(redo[0].after, json!({ "x": 2 }));
         assert!(!history.can_redo());
     }
 
@@ -178,7 +205,7 @@ mod tests {
         history.undo();
         history.record_at("a.json", &json!({ "x": 1 }), &json!({ "x": 9 }), 20_000);
         assert!(!history.can_redo());
-        assert_eq!(history.undo().expect("undo").before, json!({ "x": 1 }));
+        assert_eq!(history.undo().expect("undo")[0].before, json!({ "x": 1 }));
     }
 
     #[test]
@@ -189,8 +216,8 @@ mod tests {
         history.record_at("a.json", &json!({ "x": 1 }), &json!({ "x": 2 }), 1_200);
         history.record_at("a.json", &json!({ "x": 2 }), &json!({ "x": 3 }), 1_400);
         let undo = history.undo().expect("one step");
-        assert_eq!(undo.before, json!({ "x": 0 }));
-        assert_eq!(undo.after, json!({ "x": 3 }));
+        assert_eq!(undo[0].before, json!({ "x": 0 }));
+        assert_eq!(undo[0].after, json!({ "x": 3 }));
         assert!(!history.can_undo(), "拖拽只该占一步");
     }
 
@@ -200,17 +227,83 @@ mod tests {
         history.set_coalesce_ms(800);
         history.record_at("a.json", &json!({ "x": 0 }), &json!({ "x": 1 }), 0);
         history.record_at("a.json", &json!({ "x": 1 }), &json!({ "x": 2 }), 5_000);
-        assert_eq!(history.undo().expect("gap").before, json!({ "x": 1 }));
+        assert_eq!(history.undo().expect("gap")[0].before, json!({ "x": 1 }));
 
         let mut history = AssetEditHistory::new();
         history.record_at("a.json", &json!({ "x": 0 }), &json!({ "x": 1 }), 0);
         history.record_at("b.json", &json!({ "x": 1 }), &json!({ "x": 2 }), 10);
-        assert_eq!(history.undo().expect("file").before, json!({ "x": 1 }));
+        assert_eq!(history.undo().expect("file")[0].before, json!({ "x": 1 }));
 
         let mut history = AssetEditHistory::new();
         history.record_at("a.json", &json!({ "x": 0 }), &json!({ "x": 1 }), 0);
         history.record_at("a.json", &json!({ "x": 7 }), &json!({ "x": 8 }), 10);
-        assert_eq!(history.undo().expect("chain").before, json!({ "x": 7 }));
+        assert_eq!(history.undo().expect("chain")[0].before, json!({ "x": 7 }));
+    }
+
+    #[test]
+    fn a_group_edit_undoes_and_redoes_every_file_together() {
+        let mut history = AssetEditHistory::new();
+        history.record_group(vec![
+            AssetEdit {
+                path: "graph.json".to_string(),
+                before: json!({ "name": "speed" }),
+                after: json!({ "name": "velocity" }),
+            },
+            AssetEdit {
+                path: "machine.json".to_string(),
+                before: json!({ "name": "speed" }),
+                after: json!({ "name": "velocity" }),
+            },
+        ]);
+        let undo = history.undo().expect("one step for both files");
+        assert_eq!(undo.len(), 2);
+        assert_eq!(undo[0].path, "graph.json");
+        assert_eq!(undo[1].path, "machine.json");
+        assert_eq!(undo[0].before, json!({ "name": "speed" }));
+        assert!(!history.can_undo(), "两个文件只占一步");
+        let redo = history.redo().expect("redo both");
+        assert_eq!(redo[1].after, json!({ "name": "velocity" }));
+        assert!(!history.can_redo());
+    }
+
+    #[test]
+    fn groups_drop_unchanged_files_and_do_not_coalesce_with_trailing_drags() {
+        let mut history = AssetEditHistory::new();
+        history.set_coalesce_ms(800);
+        history.record_group(vec![
+            AssetEdit {
+                path: "graph.json".to_string(),
+                before: json!({ "x": 0 }),
+                after: json!({ "x": 1 }),
+            },
+            AssetEdit {
+                path: "machine.json".to_string(),
+                before: json!({ "x": 1 }),
+                after: json!({ "x": 1 }),
+            },
+        ]);
+        assert_eq!(history.undo().expect("group")[0].path, "graph.json");
+
+        let mut history = AssetEditHistory::new();
+        history.record_group(vec![AssetEdit {
+            path: "graph.json".to_string(),
+            before: json!({ "x": 0 }),
+            after: json!({ "x": 1 }),
+        }]);
+        history.record_group(vec![AssetEdit {
+            path: "graph.json".to_string(),
+            before: json!({ "x": 1 }),
+            after: json!({ "x": 2 }),
+        }]);
+        assert_eq!(
+            history.undo().expect("group 2")[0].before,
+            json!({ "x": 1 })
+        );
+        assert!(history.can_undo(), "多文件事务不与后续改动合并，各自成步");
+
+        let mut empty = AssetEditHistory::new();
+        empty.record_group(Vec::new());
+        assert!(!empty.can_undo());
     }
 
     #[test]
@@ -238,8 +331,8 @@ mod tests {
                 x as u64 * 10_000,
             );
         }
-        assert_eq!(history.undo().expect("step 3").before, json!({ "x": 2 }));
-        assert_eq!(history.undo().expect("step 2").before, json!({ "x": 1 }));
+        assert_eq!(history.undo().expect("step 3")[0].before, json!({ "x": 2 }));
+        assert_eq!(history.undo().expect("step 2")[0].before, json!({ "x": 1 }));
         assert!(!history.can_undo(), "最老的一步被挤掉");
     }
 }
