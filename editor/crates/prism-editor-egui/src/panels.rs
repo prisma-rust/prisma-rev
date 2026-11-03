@@ -6699,6 +6699,12 @@ fn draw_state_machine_view(
             .strong()
             .size(11.0),
     );
+    ui.label(
+        RichText::new("first match wins — ↑/↓ change priority")
+            .weak()
+            .size(9.0),
+    );
+    let mut move_transition = None;
     let mut remove = None;
     let mut timing_edits = Vec::new();
     let mut threshold_edits = Vec::new();
@@ -6717,9 +6723,30 @@ fn draw_state_machine_view(
         egui::CollapsingHeader::new(RichText::new(title).monospace().size(10.0))
             .id_salt(("anim-sm-transition", from, &transition.to))
             .show(ui, |ui| {
-                if ui.small_button("× Remove transition").clicked() {
-                    remove = Some(index);
-                }
+                ui.horizontal(|ui| {
+                    let last = machine.transitions.len().saturating_sub(1);
+                    ui.add_enabled_ui(index > 0, |ui| {
+                        if ui
+                            .small_button("↑")
+                            .on_hover_text("move earlier (higher priority)")
+                            .clicked()
+                        {
+                            move_transition = Some((index, -1));
+                        }
+                    });
+                    ui.add_enabled_ui(index < last, |ui| {
+                        if ui
+                            .small_button("↓")
+                            .on_hover_text("move later (lower priority)")
+                            .clicked()
+                        {
+                            move_transition = Some((index, 1));
+                        }
+                    });
+                    if ui.small_button("× Remove transition").clicked() {
+                        remove = Some(index);
+                    }
+                });
 
                 ui.horizontal(|ui| {
                     ui.label("from");
@@ -6872,6 +6899,10 @@ fn draw_state_machine_view(
                     });
                 }
             });
+    }
+    if let Some((index, offset)) = move_transition {
+        prism_editor_core::move_state_transition(document, index, offset)?;
+        changed = true;
     }
     for (index, from, to) in retargets {
         prism_editor_core::set_transition_states(document, index, from.as_deref(), &to)?;

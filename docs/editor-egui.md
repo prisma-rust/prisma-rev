@@ -532,7 +532,8 @@ cooker 校验）；`× Remove node` 删除节点，输出节点和仍被引用�
 其它节点类型（blend space / 状态机 / blend stack）需要剪辑坐标、机器路径或至少一条输入才合法，
 仍然手写 JSON。状态机视图支持 `+ Transition`（任意状态 / 指定 from → to）和 `× Remove transition`，
 保存回 `.statemachine.json`。展开一条转移后 `from` / `to` 是下拉框（`from` 可选 `any`），
-重连会拒绝重名状态、自连和与现有转移完全重复的 `(from, to)`。状态行的名字与剪辑是文本框（失焦写回）、`speed` 是 DragValue（0..5）、
+重连会拒绝重名状态、自连和与现有转移完全重复的 `(from, to)`；`↑` / `↓` 调整转移顺序，
+顺序就是优先级（运行时取第一条条件命中的转移，列表上也写了这句提示）。状态行的名字与剪辑是文本框（失焦写回）、`speed` 是 DragValue（0..5）、
 `loop` 是复选框；重命名会同步改写转移里的 `from` / `to`，但不会改运行时 `Animator.state`
 或 `.scene.json` 里按旧名字写死的字段，改名后要自己检查场景。每条转移的 `blend` / `min` 是 DragValue（混合时长 / 最小状态占比）；
 条件行可以直接改 float 阈值或 bool 期望值、`×` 删除，`+ Condition` 打开草稿表单（类型下拉

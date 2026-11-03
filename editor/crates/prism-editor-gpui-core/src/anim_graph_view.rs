@@ -1616,6 +1616,35 @@ pub fn set_transition_states(
     Ok(())
 }
 
+/// 在 `transitions` 数组里前后移动一条转移，返回移动后的下标。
+///
+/// 运行时按数组顺序取**第一条**条件命中且起点状态匹配的转移（`state_machine.rs`
+/// 的 `next_transition`），所以顺序就是优先级。越界移动返回错误而不是静默夹到端点，
+/// 面板据此禁用端点上的箭头。
+pub fn move_state_transition(
+    document: &mut Value,
+    index: usize,
+    offset: isize,
+) -> Result<usize, String> {
+    let transitions = document
+        .get_mut("transitions")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "state machine has no editable `transitions` array".to_string())?;
+    if index >= transitions.len() {
+        return Err(format!("state machine has no transition #{index}"));
+    }
+    let len = transitions.len() as isize;
+    let target = index as isize + offset;
+    if target < 0 || target >= len {
+        return Err(format!(
+            "transition #{index} cannot move by {offset} (only {len} transitions)"
+        ));
+    }
+    let transition = transitions.remove(index);
+    transitions.insert(target as usize, transition);
+    Ok(target as usize)
+}
+
 /// 删除状态机 `transitions` 数组里的第 `index` 条转移。
 pub fn remove_state_transition(document: &mut Value, index: usize) -> Result<(), String> {
     let Some(transitions) = document
@@ -2113,6 +2142,22 @@ mod transition_tests {
         set_transition_states(&mut doc, 0, None, "Idle").expect("any state");
         assert_eq!(doc["transitions"][0]["from"], "*");
         assert_eq!(doc["transitions"][0]["to"], "Idle");
+    }
+
+    #[test]
+    fn transitions_move_and_clamp_at_the_ends() {
+        let mut doc = document();
+        add_state_transition(&mut doc, Some("Run"), "Jump").expect("adds");
+        let moved = move_state_transition(&mut doc, 1, -1).expect("moves up");
+        assert_eq!(moved, 0);
+        assert_eq!(doc["transitions"][0]["to"], "Jump");
+        assert_eq!(doc["transitions"][1]["to"], "Run");
+        let moved = move_state_transition(&mut doc, 0, 1).expect("moves down");
+        assert_eq!(moved, 1);
+        assert_eq!(doc["transitions"][1]["to"], "Jump");
+        assert!(move_state_transition(&mut doc, 0, -1).is_err(), "已在最前");
+        assert!(move_state_transition(&mut doc, 1, 1).is_err(), "已在最后");
+        assert!(move_state_transition(&mut doc, 9, -1).is_err());
     }
 
     #[test]
