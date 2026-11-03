@@ -42,9 +42,9 @@ pub mod viewport_math;
 pub mod workspace;
 
 pub use anim_graph_view::{
-    parse_anim_graph_view, parse_state_machine_view, AnimConditionView, AnimGraphView,
-    AnimInputView, AnimNodeView, AnimParameterView, AnimStateMachineView, AnimStateView,
-    AnimTransitionView,
+    parse_anim_graph_view, parse_state_machine_view, AnimConditionView, AnimGraphLayout,
+    AnimGraphView, AnimInputView, AnimNodeView, AnimParameterView, AnimStateMachineView,
+    AnimStateView, AnimTransitionView,
 };
 pub use asset_meta::{AssetMeta, META_SUFFIX};
 pub use assets::{

@@ -362,6 +362,8 @@ pub struct UiState {
     /// 选中资产上一次算好的详情 + 时间戳：详情会扫磁盘上的文档，不能每帧重算（#514）。
     pub asset_details: Option<(String, prism_editor_core::AssetDetails)>,
     pub asset_details_at: Option<std::time::Instant>,
+    /// Animation Graph 面板的节点布局缓存：(图路径, 布局)。
+    pub anim_graph_layout: Option<(String, prism_editor_core::AnimGraphLayout)>,
     pub asset_selection: Vec<String>,
     /// 区间选择的锚点：Shift+单击从它选到目标（#486）。
     pub asset_anchor: Option<String>,
@@ -5693,7 +5695,34 @@ pub fn anim_graph(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
 
     if graph_asset {
         match prism_editor_core::parse_anim_graph_view(&value) {
-            Ok(graph) => draw_anim_graph_view(ui, &graph),
+            Ok(graph) => {
+                let stale = state
+                    .anim_graph_layout
+                    .as_ref()
+                    .map(|(cached, _)| cached != &path)
+                    .unwrap_or(true);
+                if stale {
+                    let layout = workspace.read_anim_graph_layout(&path);
+                    state.anim_graph_layout = Some((path.clone(), layout));
+                }
+                let mut changed = false;
+                if let Some((_, layout)) = state.anim_graph_layout.as_mut() {
+                    changed = draw_anim_graph_layout(ui, &graph, layout);
+                }
+                if changed {
+                    ui.label(RichText::new("layout modified").weak().size(10.0));
+                }
+                if ui.button("Save Layout").clicked() {
+                    if let Some((_, layout)) = state.anim_graph_layout.as_ref() {
+                        state.status = match workspace.write_anim_graph_layout(&path, layout) {
+                            Ok(()) => format!("saved {}.layout.json", path),
+                            Err(error) => format!("save layout failed: {error}"),
+                        };
+                    }
+                }
+                ui.separator();
+                draw_anim_graph_view(ui, &graph);
+            }
             Err(error) => {
                 ui.label(RichText::new(error).color(Color32::from_rgb(232, 96, 96)));
             }
@@ -5706,6 +5735,92 @@ pub fn anim_graph(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
             }
         }
     }
+}
+
+/// 画布上的节点拖拽；返回这一帧是否有节点移动。
+fn draw_anim_graph_layout(
+    ui: &mut Ui,
+    graph: &prism_editor_core::AnimGraphView,
+    layout: &mut prism_editor_core::AnimGraphLayout,
+) -> bool {
+    let width = ui.available_width().clamp(240.0, 560.0);
+    let height = 300.0;
+    let (response, painter) =
+        ui.allocate_painter(Vec2::new(width, height), Sense::click_and_drag());
+    painter.rect_filled(response.rect, 4.0, Color32::from_rgb(28, 30, 34));
+
+    // 先补齐缺省位置：新节点排成网格。
+    for (index, node) in graph.nodes.iter().enumerate() {
+        if layout.position(&node.name).is_none() {
+            let position = [
+                40.0 + (index % 5) as f32 * 120.0,
+                30.0 + (index / 5) as f32 * 70.0,
+            ];
+            layout.set_position(node.name.clone(), position);
+        }
+    }
+
+    let origin = response.rect.min;
+    let to_screen = |position: [f32; 2]| egui::pos2(origin.x + position[0], origin.y + position[1]);
+
+    // 连线先画，节点盖在上面。
+    for node in &graph.nodes {
+        let Some(target) = layout.position(&node.name) else {
+            continue;
+        };
+        for input in &node.inputs {
+            let Some(source) = layout.position(&input.node) else {
+                continue;
+            };
+            painter.line_segment(
+                [to_screen(source), to_screen(target)],
+                egui::Stroke::new(1.0, Color32::from_rgb(88, 96, 108)),
+            );
+        }
+    }
+
+    let mut changed = false;
+    for node in &graph.nodes {
+        let Some(position) = layout.position(&node.name) else {
+            continue;
+        };
+        let center = to_screen(position);
+        let rect = egui::Rect::from_center_size(center, Vec2::new(112.0, 34.0));
+        let response = ui.interact(
+            rect,
+            ui.id().with(("anim-graph-layout", &node.name)),
+            Sense::drag(),
+        );
+        if response.dragged() {
+            let delta = response.drag_delta();
+            let next = [
+                (position[0] + delta.x).clamp(12.0, width - 12.0),
+                (position[1] + delta.y).clamp(12.0, height - 12.0),
+            ];
+            layout.set_position(node.name.clone(), next);
+            changed = true;
+        }
+        let fill = if node.is_output() {
+            Color32::from_rgb(52, 74, 52)
+        } else {
+            Color32::from_rgb(48, 54, 64)
+        };
+        painter.rect_filled(rect, 4.0, fill);
+        painter.rect_stroke(
+            rect,
+            4.0,
+            egui::Stroke::new(1.0, Color32::from_rgb(120, 132, 150)),
+            egui::StrokeKind::Inside,
+        );
+        painter.text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            &node.name,
+            egui::FontId::monospace(11.0),
+            Color32::from_rgb(230, 234, 240),
+        );
+    }
+    changed
 }
 
 fn draw_anim_graph_view(ui: &mut Ui, graph: &prism_editor_core::AnimGraphView) {
