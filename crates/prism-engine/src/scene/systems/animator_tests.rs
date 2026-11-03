@@ -139,6 +139,66 @@ fn lod_is_off_by_default_and_bad_distances_fall_back_to_fifty_metres() {
     assert!((head.time - 0.25).abs() < 1e-5, "坏距离按 50m，400m 外冻结");
 }
 
+#[test]
+fn near_animators_update_every_other_frame_with_double_dt() {
+    let (mut world, entity) = world_with_animator("");
+    world.insert(
+        entity,
+        LocalTransform {
+            position: Vec3::new(0.0, 0.0, 30.0),
+            ..Default::default()
+        },
+    );
+    {
+        let animator = world.get_mut::<Animator>(entity).unwrap();
+        animator.lod_enabled = true;
+        animator.lod_near = 25.0;
+        animator.lod_far = 50.0;
+    }
+    let camera = add_camera(&mut world, Vec3::ZERO);
+
+    animator_system(&mut world, 0.1);
+    let time = world.get::<AnimatorPlayhead>(entity).unwrap().time;
+    assert!((time - 0.2).abs() < 1e-5, "更新帧按 2*dt 推进，time {time}");
+    animator_system(&mut world, 0.1);
+    let time = world.get::<AnimatorPlayhead>(entity).unwrap().time;
+    assert!((time - 0.2).abs() < 1e-5, "下一帧跳过，time {time}");
+    animator_system(&mut world, 0.1);
+    let time = world.get::<AnimatorPlayhead>(entity).unwrap().time;
+    assert!((time - 0.4).abs() < 1e-5, "再下一帧继续，time {time}");
+
+    // 回到近处：下一帧立刻恢复正常 dt，不残留跳过标记。
+    world.get_mut::<LocalTransform>(camera).unwrap().position = Vec3::new(0.0, 0.0, 30.0);
+    animator_system(&mut world, 0.1);
+    let time = world.get::<AnimatorPlayhead>(entity).unwrap().time;
+    assert!((time - 0.5).abs() < 1e-5, "近处每帧 dt，time {time}");
+}
+
+#[test]
+fn a_near_threshold_past_the_far_threshold_disables_the_middle_tier() {
+    let (mut world, entity) = world_with_animator("");
+    world.insert(
+        entity,
+        LocalTransform {
+            position: Vec3::new(0.0, 0.0, 30.0),
+            ..Default::default()
+        },
+    );
+    {
+        let animator = world.get_mut::<Animator>(entity).unwrap();
+        animator.lod_enabled = true;
+        animator.lod_near = 80.0;
+        animator.lod_far = 50.0;
+    }
+    add_camera(&mut world, Vec3::ZERO);
+    animator_system(&mut world, 0.1);
+    let time = world.get::<AnimatorPlayhead>(entity).unwrap().time;
+    assert!((time - 0.1).abs() < 1e-5, "没有降频档，time {time}");
+    animator_system(&mut world, 0.1);
+    let time = world.get::<AnimatorPlayhead>(entity).unwrap().time;
+    assert!((time - 0.2).abs() < 1e-5, "每帧都更新，time {time}");
+}
+
 /// 把 bind 姿态下一个**离关节有距离**的顶点（局部 `(2, 1, 0)`）变换到世界。
 ///
 /// 关节原点本身在旋转下是不动的，所以必须取一个偏置点才看得出动画。
@@ -1328,6 +1388,41 @@ fn a_frozen_graph_animator_keeps_its_evaluator_and_resumes() {
     assert!(
         (tip.x - (2.0 - std::f32::consts::FRAC_PI_4.sin())).abs() < 1e-3,
         "tip {tip:?}"
+    );
+}
+
+#[test]
+fn a_throttled_graph_animator_keeps_its_playback_speed() {
+    let (mut world, entity) = world_with_animator("bend.ranim");
+    world.insert_resource(AnimGraphLibrary::new());
+    world
+        .get_resource_mut::<AnimGraphLibrary>()
+        .unwrap()
+        .insert("hero.rag", single_clip_graph("bend.ranim"));
+    world.insert(
+        entity,
+        LocalTransform {
+            position: Vec3::new(0.0, 0.0, 30.0),
+            ..Default::default()
+        },
+    );
+    {
+        let animator = world.get_mut::<Animator>(entity).unwrap();
+        animator.anim_graph_path = "hero.rag".into();
+        animator.lod_enabled = true;
+        animator.lod_near = 25.0;
+        animator.lod_far = 50.0;
+    }
+    add_camera(&mut world, Vec3::ZERO);
+
+    // 两帧 0.1s：第一帧 0.2s，第二帧跳过，累计仍应是 0.2s。
+    animator_system(&mut world, 0.1);
+    animator_system(&mut world, 0.1);
+    let tip = child_tip(&world, entity);
+    let angle = 0.2 * std::f32::consts::FRAC_PI_2;
+    assert!(
+        (tip.x - (2.0 - angle.sin())).abs() < 1e-3,
+        "tip {tip:?} 应对应 0.2s"
     );
 }
 
