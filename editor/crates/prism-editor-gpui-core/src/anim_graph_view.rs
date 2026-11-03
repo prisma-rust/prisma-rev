@@ -602,6 +602,146 @@ pub fn remove_graph_input(document: &mut Value, target: &str, index: usize) -> R
     Ok(())
 }
 
+/// 追加一个剪辑节点（`clip_player`，单剪辑）。
+///
+/// 只创建**当帧就能通过 cooker 校验**的形状：剪辑节点的必需字段只有剪辑路径，
+/// 连线可以后补。`blend_space_*` / `state_machine` / `blend_stack` 需要剪辑、
+/// 坐标、机器路径或至少一条输入才算合法，凭空创建会写出 cook 不了的文档，
+/// 所以这些类型仍然手写 JSON。
+pub fn add_clip_node(document: &mut Value, name: &str, clip: &str) -> Result<(), String> {
+    let name = name.trim();
+    let clip = clip.trim();
+    if name.is_empty() {
+        return Err("a node needs a non-empty name".to_string());
+    }
+    if clip.is_empty() {
+        return Err("a clip node needs a clip path".to_string());
+    }
+    let Some(nodes) = document.get_mut("nodes").and_then(Value::as_array_mut) else {
+        return Err("animation graph needs a `nodes` array".to_string());
+    };
+    if nodes
+        .iter()
+        .any(|node| node.get("name").and_then(Value::as_str) == Some(name))
+    {
+        return Err(format!("a node named '{name}' already exists"));
+    }
+    nodes.push(json!({ "name": name, "type": "clip_player", "clip": clip }));
+    Ok(())
+}
+
+/// 删除一个节点；输出节点、最后一个节点和被引用的节点不能直接删。
+///
+/// 被引用时返回错误并点名引用者，而不是顺手断开连线：先由作者决定那条线接
+/// 到哪里，面板再写回，半截图不会落盘。
+pub fn remove_graph_node(document: &mut Value, name: &str) -> Result<(), String> {
+    let nodes = document
+        .get("nodes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "animation graph needs a `nodes` array".to_string())?;
+    let index = nodes
+        .iter()
+        .position(|node| node.get("name").and_then(Value::as_str) == Some(name))
+        .ok_or_else(|| format!("unknown node '{name}'"))?;
+    if nodes.len() <= 1 {
+        return Err("an animation graph needs at least one node".to_string());
+    }
+    if nodes[index]
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind.eq_ignore_ascii_case("output"))
+    {
+        return Err(format!(
+            "node '{name}' is the graph output; rewire it instead"
+        ));
+    }
+    for node in nodes {
+        let target = node.get("name").and_then(Value::as_str).unwrap_or("?");
+        let referenced = node
+            .get("inputs")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(input_name)
+            .any(|source| source == name)
+            || node
+                .get("input")
+                .and_then(Value::as_str)
+                .is_some_and(|source| source == name);
+        if referenced {
+            return Err(format!(
+                "node '{target}' still connects to '{name}'; remove that link first"
+            ));
+        }
+    }
+    let Some(nodes) = document.get_mut("nodes").and_then(Value::as_array_mut) else {
+        return Err("animation graph needs a `nodes` array".to_string());
+    };
+    nodes.remove(index);
+    Ok(())
+}
+
+#[cfg(test)]
+mod node_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn document() -> Value {
+        json!({
+            "nodes": [
+                { "name": "a", "type": "clip_player", "clip": "a.ranim" },
+                { "name": "b", "type": "clip_player", "clip": "b.ranim" },
+                { "name": "stack", "type": "blend_stack", "inputs": ["a"] },
+                { "name": "out", "type": "output", "input": "stack" }
+            ]
+        })
+    }
+
+    #[test]
+    fn a_clip_node_can_be_added_and_shows_up_in_the_view() {
+        let mut doc = document();
+        add_clip_node(&mut doc, "  aim  ", " aim.ranim ").expect("adds");
+        assert_eq!(doc["nodes"][4]["name"], "aim");
+        assert_eq!(doc["nodes"][4]["type"], "clip_player");
+        assert_eq!(doc["nodes"][4]["clip"], "aim.ranim");
+        let view = parse_anim_graph_view(&doc).expect("still parses");
+        assert_eq!(view.nodes.len(), 5);
+    }
+
+    #[test]
+    fn duplicate_or_blank_clip_nodes_are_rejected() {
+        let mut doc = document();
+        assert!(add_clip_node(&mut doc, "a", "a.ranim").is_err());
+        assert!(add_clip_node(&mut doc, "  ", "a.ranim").is_err());
+        assert!(add_clip_node(&mut doc, "aim", "  ").is_err());
+        assert!(add_clip_node(&mut json!({}), "aim", "a.ranim").is_err());
+    }
+
+    #[test]
+    fn an_unreferenced_node_can_be_removed() {
+        let mut doc = document();
+        remove_graph_node(&mut doc, "b").expect("removes");
+        assert_eq!(doc["nodes"].as_array().unwrap().len(), 3);
+        assert!(doc["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|node| node["name"] != "b"));
+    }
+
+    #[test]
+    fn the_output_referenced_and_missing_nodes_are_protected() {
+        let mut doc = document();
+        assert!(remove_graph_node(&mut doc, "out").is_err());
+        assert!(remove_graph_node(&mut doc, "a").is_err());
+        assert!(remove_graph_node(&mut doc, "stack").is_err());
+        assert!(remove_graph_node(&mut doc, "missing").is_err());
+        let mut single = json!({ "nodes": [{ "name": "a", "type": "clip_player" }] });
+        assert!(remove_graph_node(&mut single, "a").is_err());
+    }
+}
+
 #[cfg(test)]
 mod link_tests {
     use super::*;

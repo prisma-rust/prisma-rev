@@ -364,6 +364,8 @@ pub struct UiState {
     pub asset_details_at: Option<std::time::Instant>,
     /// Animation Graph 面板的节点布局缓存：(图路径, 布局)。
     pub anim_graph_layout: Option<(String, prism_editor_core::AnimGraphLayout)>,
+    /// Animation Graph 面板「新增剪辑节点」的输入缓冲：(节点名, 剪辑路径)。
+    pub anim_graph_new_node: (String, String),
     pub asset_selection: Vec<String>,
     /// 区间选择的锚点：Shift+单击从它选到目标（#486）。
     pub asset_anchor: Option<String>,
@@ -5652,8 +5654,8 @@ pub fn delete_asset_now(workspace: &mut Workspace, state: &mut UiState, path: &s
 
 /// 选中 `.animgraph.json` / `.statemachine.json` 时显示结构化视图。
 ///
-/// 只读：节点位置、连线走向等编辑能力留给后续；这里先让作者不用在 JSON 和
-/// 运行结果之间来回猜。
+/// 图侧可以改连线（增删 / 权重）、增删剪辑节点，并把布局写进 sidecar；状态机侧
+/// 可以增删转移。其余字段（blend space 坐标、bone mask、条件）仍手改 JSON。
 pub fn anim_graph(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
     let Some(path) = state.asset_primary().cloned() else {
         ui.label(
@@ -5696,7 +5698,6 @@ pub fn anim_graph(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
     if graph_asset {
         match prism_editor_core::parse_anim_graph_view(&value) {
             Ok(graph) => {
-                let mut links_changed = false;
                 let stale = state
                     .anim_graph_layout
                     .as_ref()
@@ -5722,12 +5723,15 @@ pub fn anim_graph(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
                     }
                 }
                 ui.separator();
-                links_changed |= draw_anim_graph_view(ui, &graph, &mut value);
-                if links_changed {
-                    state.status = match workspace.write_asset_json(&path, &value) {
-                        Ok(()) => format!("saved links in {path}"),
-                        Err(error) => format!("save links failed: {error}"),
-                    };
+                match draw_anim_graph_view(ui, &graph, &mut value, &mut state.anim_graph_new_node) {
+                    Ok(true) => {
+                        state.status = match workspace.write_asset_json(&path, &value) {
+                            Ok(()) => format!("saved nodes/links in {path}"),
+                            Err(error) => format!("save graph failed: {error}"),
+                        };
+                    }
+                    Ok(false) => {}
+                    Err(error) => state.status = format!("animation graph: {error}"),
                 }
             }
             Err(error) => {
@@ -5841,7 +5845,8 @@ fn draw_anim_graph_view(
     ui: &mut Ui,
     graph: &prism_editor_core::AnimGraphView,
     document: &mut Value,
-) -> bool {
+    new_node: &mut (String, String),
+) -> Result<bool, String> {
     let mut changed = false;
     if !graph.parameters.is_empty() {
         ui.label(RichText::new("Parameters").strong().size(11.0));
@@ -5863,6 +5868,7 @@ fn draw_anim_graph_view(
             .strong()
             .size(11.0),
     );
+    let mut remove_node = None;
     for node in &graph.nodes {
         let title = if node.is_output() {
             format!("{} · {} (output)", node.name, node.kind)
@@ -5872,6 +5878,9 @@ fn draw_anim_graph_view(
         egui::CollapsingHeader::new(RichText::new(title).monospace().size(10.0))
             .id_salt(("anim-graph-node", &node.name))
             .show(ui, |ui| {
+                if !node.is_output() && ui.small_button("× Remove node").clicked() {
+                    remove_node = Some(node.name.clone());
+                }
                 if !node.clips.is_empty() {
                     ui.label(
                         RichText::new(format!("clips: {}", node.clips.join(", ")))
@@ -5993,6 +6002,32 @@ fn draw_anim_graph_view(
                 }
             });
     }
+    if let Some(node) = remove_node {
+        prism_editor_core::remove_graph_node(document, &node)?;
+        changed = true;
+    }
+
+    ui.separator();
+    ui.label(RichText::new("Add clip node").strong().size(11.0));
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::TextEdit::singleline(&mut new_node.0)
+                .hint_text("node name")
+                .desired_width(96.0),
+        );
+        ui.add(
+            egui::TextEdit::singleline(&mut new_node.1)
+                .hint_text("clip.ranim")
+                .desired_width(150.0),
+        );
+    });
+    if ui.button("+ Clip Node").clicked() {
+        prism_editor_core::add_clip_node(document, &new_node.0, &new_node.1)?;
+        new_node.0.clear();
+        new_node.1.clear();
+        changed = true;
+    }
+
     if let Some(output) = &graph.output {
         ui.separator();
         ui.label(
@@ -6001,7 +6036,7 @@ fn draw_anim_graph_view(
                 .size(11.0),
         );
     }
-    changed
+    Ok(changed)
 }
 
 fn draw_state_machine_view(
