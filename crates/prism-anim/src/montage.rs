@@ -87,6 +87,7 @@ pub struct MontagePlayer {
     active: Option<ActiveMontage>,
     queue: VecDeque<Montage>,
     finished: bool,
+    paused: bool,
     pending_notifies: Vec<MontageNotify>,
 }
 
@@ -100,6 +101,7 @@ impl MontagePlayer {
         self.active = Some(start(montage));
         self.queue.clear();
         self.finished = false;
+        self.paused = false;
         self.pending_notifies.clear();
         true
     }
@@ -123,6 +125,7 @@ impl MontagePlayer {
         self.active = None;
         self.queue.clear();
         self.finished = false;
+        self.paused = false;
         self.pending_notifies.clear();
     }
 
@@ -133,6 +136,21 @@ impl MontagePlayer {
 
     pub fn is_playing(&self) -> bool {
         self.active.is_some()
+    }
+
+    /// 暂停 / 恢复活动段（#560 Montage 播放控制）。暂停期间 `tick` 不推进时间、
+    /// 不采样新的 Notify，队列和权重都保持不变。
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.paused
+    }
+
+    /// 活动段已经播放的时间（秒）；没有活动段返回 `None`。
+    pub fn active_time(&self) -> Option<f32> {
+        self.active.as_ref().map(|active| active.time)
     }
 
     pub fn is_finished(&self) -> bool {
@@ -159,6 +177,9 @@ impl MontagePlayer {
 
     /// 推进时间；单次 Montage 播完时自动接下一段。返回是否仍在一段里。
     pub fn tick(&mut self, dt: f32) -> bool {
+        if self.paused {
+            return self.active.is_some();
+        }
         let dt = if dt.is_finite() { dt.max(0.0) } else { 0.0 };
         let Some(active) = self.active.as_mut() else {
             return false;

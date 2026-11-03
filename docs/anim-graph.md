@@ -183,9 +183,13 @@ if let Some(states) = world.get_resource::<AnimGraphDebug>().and_then(|d| d.stat
 LayeredBlend 的连线权重就是层权重）。`weight` 只用于显示，不参与求值。
 
 引擎侧项目代码通过 `AnimMontageRequests` 资源发请求（`MontageRequest::play` /
-`enqueue` / `stop` / `stop_after_current`，可带循环 / 速度 / 权重 / 开始时间）；
-`animator_system` 每帧消费一次，把剪辑路径解析成 `Montage` 注入对应实体的 Slot。
-请求只活一帧；剪辑未加载、实体没有图或 Slot 名不存在时忽略并告警。
+`enqueue` / `stop` / `stop_after_current` / `pause` / `resume`，可带循环 / 速度 / 权重 /
+开始时间）；`animator_system` 每帧消费一次，把剪辑路径解析成 `Montage` 注入对应实体的
+Slot。请求只活一帧；剪辑未加载、实体没有图或 Slot 名不存在时忽略并告警。
+
+`pause` 只冻结该 Slot 的活动段：时间、队列、权重都不变，暂停期间不产生 Notify；
+`resume` 从原时间继续。显式 `play` / `play_now` 会解除暂停，`stop` 清零暂停状态。
+`MontagePlayer` 同时提供 `set_paused` / `is_paused` / `active_time` 便于 UI 显示。
 
 引擎侧：`Animator.anim_graph_path` 非空且图已加载时优先于状态机 / 混合空间 /
 单剪辑；`load_animation_assets` 会加载 `.rag` / `*.animgraph.json`，再补加载图引用的

@@ -138,3 +138,39 @@ fn the_queue_is_bounded() {
     assert!(!player.enqueue(Montage::new(clip("overflow", 0.0, None))));
     assert_eq!(player.queue_len(), MAX_MONTAGE_QUEUE);
 }
+
+#[test]
+fn a_paused_player_freezes_time_and_notifies_until_resumed() {
+    let mut player = MontagePlayer::new();
+    player.play_now(Montage::new(clip("hit", 1.0, Some(("step", 0.2)))));
+    player.tick(0.1);
+    assert!((player.active_time().unwrap() - 0.1).abs() < 1e-5);
+    player.take_notifies();
+
+    player.set_paused(true);
+    assert!(player.is_paused());
+    assert!(player.tick(0.5), "暂停时仍然在播");
+    assert!(
+        (player.active_time().unwrap() - 0.1).abs() < 1e-5,
+        "暂停不推进时间"
+    );
+    assert!(player.take_notifies().is_empty(), "暂停不发 Notify");
+
+    player.set_paused(false);
+    assert!(!player.is_paused());
+    player.tick(0.1);
+    assert!((player.active_time().unwrap() - 0.2).abs() < 1e-5);
+    let notifies = player.take_notifies();
+    assert_eq!(notifies.len(), 1, "恢复后跨过的 Notify 才发");
+    assert_eq!(notifies[0].name, "step");
+}
+
+#[test]
+fn playing_a_new_montage_resumes_the_player() {
+    let mut player = MontagePlayer::new();
+    player.play_now(Montage::new(clip("a", 1.0, None)));
+    player.set_paused(true);
+    player.play_now(Montage::new(clip("b", 2.0, None)));
+    assert!(!player.is_paused(), "显式播放会解除暂停");
+    assert!((player.active_time().unwrap()).abs() < 1e-5);
+}
