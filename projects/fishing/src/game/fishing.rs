@@ -259,6 +259,7 @@ fn spawn_line(world: &mut GameWorld<'_>) -> Option<EntityHandle> {
             width: 0.6,
             sorting_layer: LINE_LAYER,
             order_in_layer: 0,
+            ..LineRenderer::default()
         },
     );
     Some(entity)
