@@ -42,10 +42,12 @@ pub mod viewport_math;
 pub mod workspace;
 
 pub use anim_graph_view::{
-    add_clip_node, add_graph_input, add_state_transition, parse_anim_graph_view,
-    parse_state_machine_view, remove_graph_input, remove_graph_node, remove_state_transition,
-    set_graph_input_weight, AnimConditionView, AnimGraphLayout, AnimGraphView, AnimInputView,
-    AnimNodeView, AnimParameterView, AnimStateMachineView, AnimStateView, AnimTransitionView,
+    add_clip_node, add_graph_input, add_state_condition, add_state_transition,
+    parse_anim_graph_view, parse_state_machine_view, remove_graph_input, remove_graph_node,
+    remove_state_condition, remove_state_transition, set_condition_threshold, set_condition_value,
+    set_graph_input_weight, set_transition_timing, AnimConditionView, AnimGraphLayout,
+    AnimGraphView, AnimInputView, AnimNodeView, AnimParameterView, AnimStateMachineView,
+    AnimStateView, AnimTransitionView,
 };
 pub use asset_meta::{AssetMeta, META_SUFFIX};
 pub use assets::{

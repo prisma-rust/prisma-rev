@@ -136,7 +136,9 @@ FIFO 排队、单次播完自动接下一段，`stop` / `stop_after_current` 清
 此时每个样本按自己的速度推进、跳过 SyncGroup 映射；空配置恢复共享相位。
 
 编辑器面板：`Window → General → Animation Graph` 选中 `.animgraph.json` / `.statemachine.json`
-后显示结构化只读视图（参数、节点、连线、状态、转移条件）。
+后显示结构化视图（参数、节点、连线、状态、转移条件）。图侧可以拖动布局、增删剪辑节点、
+增删连线并改权重；状态机侧可以增删转移、拖转移的 `blend` / `min` 时长，以及增删条件和
+改 float 阈值 / bool 期望值。
 
 引擎侧项目代码通过 `AnimMontageRequests` 资源发请求（`MontageRequest::play` /
 `enqueue` / `stop` / `stop_after_current`，可带循环 / 速度 / 权重 / 开始时间）；
