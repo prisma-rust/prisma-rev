@@ -1,7 +1,7 @@
 //! PrismaRev 编辑器（egui + ash Vulkan）。
 //!
 //! 与 Web 编辑器（Tauri + Vue）共享同一份数据层（`prism-editor-core`），
-//! 与 GPUI 编辑器共享同一套布局 / 文档 / 撤销模型。关键差异在视口：
+//! 与 Web 编辑器共享同一套布局 / 文档 / 撤销模型。关键差异在视口：
 //! Scene / Game 视图**零拷贝** —— 引擎渲染到离屏 `VkImage`，egui 用同一个
 //! `VkDevice` 直接采样，没有 GPU→CPU 回读。
 //!

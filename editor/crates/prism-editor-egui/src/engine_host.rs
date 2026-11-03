@@ -435,7 +435,7 @@ impl EngineHost {
         &self.packet.scene.dropped_light_ids
     }
 
-    /// 从 `.scene.json` 重建世界（与 Tauri / GPUI 编辑器同一条路径）。
+    /// 从 `.scene.json` 重建世界（与 Web 编辑器同一条路径）。
     pub fn load_scene(&mut self, path: &Path) -> Result<usize, String> {
         // 旧世界的实体句柄全部失效：项目模块按这个代数丢弃缓存的句柄。
         self.scene_generation = self.scene_generation.wrapping_add(1).max(1);

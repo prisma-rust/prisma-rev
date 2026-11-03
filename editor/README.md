@@ -7,7 +7,7 @@ PrismaRev 的 **egui 编辑器**（egui + ash Vulkan）。独立 workspace，不
 - 菜单 / 快捷键按项目约定（含 `Ctrl+1..5` 面板、命名布局、Prefab Variant）。
 - 交互：菜单二/三级、层级拖拽改父级、检查器多选批量、W/E/R 三种 gizmo、
   框选、标签页拖拽分屏/浮动、资产拖拽（目录移动 / 层级实例化 / 字段写入）。
-- 数据层完全复用 `editor/crates/prism-editor-gpui-core`（UI 框架无关：
+- 数据层完全复用 `editor/crates/prism-editor-core`（UI 框架无关：
   文档模型、schema、撤销栈、dock 树、日志缓冲、资产树、i18n、项目读写）。
 - **Scene / Game 视口零拷贝**：`prism-render` 渲染到自己的离屏 `VkImage`，
   编辑器和引擎共用同一个 `VkDevice` / 队列，egui 直接把该图像的 `VkImageView`

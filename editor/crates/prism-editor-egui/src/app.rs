@@ -1,7 +1,7 @@
 //! 编辑器外壳：菜单 / 工具栏 / 状态栏 + split-tree docking + Scene/Game 视口。
 //!
 //! 布局与功能对齐 Web 编辑器（`editor/`）与引擎的经典布局；数据模型、
-//! 命令与撤销都来自 `prism-editor-core`（与 GPUI 编辑器共用同一份）。
+//! 命令与撤销都来自 `prism-editor-core`（与 Web 编辑器共用同一份）。
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

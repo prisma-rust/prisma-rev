@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/prism-editor-egui", "crates/prism-editor-gpui-core"]
+members = ["crates/prism-editor-egui", "crates/prism-editor-core"]
 
 [workspace.package]
 version = "0.1.0"

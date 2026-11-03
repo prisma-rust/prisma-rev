@@ -1,7 +1,7 @@
-//! 主题：把数据层的 token（Web 编辑器 / GPUI 编辑器同一套）映射到 egui。
+//! 主题：把数据层的 token（Web 编辑器同一套）映射到 egui。
 //!
 //! 颜色只在数据层定义一次，egui 侧不写死色值（与 Web 编辑器的
-//! `style.css` / GPUI 的 `theme.rs` 保持一致）。
+//! `style.css` 保持一致）。
 //!
 //! 视觉规则（对齐 `editor/src/style.css`）：
 //! - 表面是**中性灰**：菜单/状态栏 `chrome`、面板 `panel`、标签栏 `bg-sunken`、

@@ -8,7 +8,7 @@
 //! 这也是 ImGui docking 的核心行为。
 //!
 //! 序列化形状与前端 `prisma-editor.dock.v4` 完全一致（`{version, dock, floating}`），
-//! 因此同一份布局可以在 WebView 编辑器与 GPUI 编辑器之间搬运。
+//! 因此同一份布局可以在 Web 编辑器与 egui 编辑器之间搬运。
 
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};

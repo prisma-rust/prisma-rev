@@ -672,7 +672,7 @@ mod tests {
     impl TempProject {
         fn new() -> Self {
             let root = std::env::temp_dir().join(format!(
-                "prism-editor-gpui-{}-{}",
+                "prism-editor-core-{}-{}",
                 std::process::id(),
                 SEQ.fetch_add(1, Ordering::Relaxed)
             ));

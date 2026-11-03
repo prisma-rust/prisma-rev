@@ -9,7 +9,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use prism_editor_gpui_core::{FieldSchema, SceneDoc, TypeSchema, Workspace};
+use prism_editor_core::{FieldSchema, SceneDoc, TypeSchema, Workspace};
 use serde_json::{json, Value};
 
 pub const HEALTH: &str = "test::Health";

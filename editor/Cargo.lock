@@ -2609,7 +2609,7 @@ dependencies = [
  "gpu-allocator",
  "log",
  "prism-audio",
- "prism-editor-gpui-core",
+ "prism-editor-core",
  "prism-engine",
  "prism-render",
  "prism-runtime-host",
@@ -2619,7 +2619,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "prism-editor-gpui-core"
+name = "prism-editor-core"
 version = "0.1.0"
 dependencies = [
  "log",

@@ -1,6 +1,6 @@
 //! schema 驱动的字段控件（检查器用）。
 //!
-//! 规则与 Web 编辑器 / GPUI 编辑器一致：控件类型完全来自
+//! 规则与 Web 编辑器一致：控件类型完全来自
 //! `prism-editor-core` 的 `FieldSchema::widget()`，所以新增组件字段不需要改
 //! 这里。写回统一走 `Workspace::set_field`（反射校验 + 撤销合并）。
 
