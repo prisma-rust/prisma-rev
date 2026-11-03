@@ -17,6 +17,10 @@ use crate::pose::Pose;
 /// 队列上限：坏逻辑（每帧 enqueue）不应该无限吃内存。
 pub const MAX_MONTAGE_QUEUE: usize = 32;
 
+/// Montage BranchIn 的 Notify 前缀：`BranchIn.<section>` 会在跨过该事件时跳到
+/// 同名段起点（#560 P4）。段不存在时事件照常发出，但不跳转。
+pub const BRANCH_IN_PREFIX: &str = "BranchIn.";
+
 /// 一段待播放的 Montage。
 #[derive(Debug, Clone)]
 pub struct Montage {
@@ -290,8 +294,20 @@ impl MontagePlayer {
             active.montage.looped,
             active.time,
         );
+        let mut branch_target = None;
         if dt > 0.0 && speed >= 0.0 {
             for notify in active.montage.clip.notifies_between(previous_local, local) {
+                if let Some(target_name) = notify.name.strip_prefix(BRANCH_IN_PREFIX) {
+                    if let Some(target) = active
+                        .montage
+                        .clip
+                        .sections
+                        .iter()
+                        .find(|section| section.name == target_name)
+                    {
+                        branch_target = Some(target.start);
+                    }
+                }
                 self.pending_notifies.push(MontageNotify {
                     clip_name: active.montage.clip.name.clone(),
                     name: notify.name.clone(),
@@ -299,7 +315,10 @@ impl MontagePlayer {
                 });
             }
         }
-        if active.montage.looped {
+        if let Some(start) = branch_target {
+            // BranchIn 是显式跳段：不再按循环回绕，也不在同一帧继续扫目标段里的 Notify。
+            active.time = start;
+        } else if active.montage.looped {
             active.time = local;
         }
 

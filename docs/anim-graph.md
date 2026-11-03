@@ -141,6 +141,11 @@ Montage blend-in / blend-out（#560 P4）：`Montage::with_blend_in(seconds)` �
 淡出系数的实际权重（调试快照的 `weight` 也是它），暂停时淡入不推进。引擎请求对应
 `MontageRequest::with_blend_in` / `with_blend_out`。
 
+Montage BranchIn（#560 P4）：剪辑 Notify 名为 `BranchIn.<section>` 时，播放头跨过该事件
+会跳到同名段的起点（`BRANCH_IN_PREFIX`）。目标段不存在时事件照常发出但不跳转；暂停时
+不触发。BranchIn 本身仍作为普通 Notify 进入事件队列，编辑器现有的 Notify 侧车就能写。
+例如 `{"time": 0.5, "name": "BranchIn.Land"}`。
+
 同步标记：`.ranim` v4 的同步标记表通过 `Clip::sync_marker_set()` 转成
 `SyncMarkerSet`；资产侧来自 `*.skinning/sync_markers.json`。`BlendSpace1D/2D`
 在所有样本都有同结构标记时自动建 `SyncGroup`，以**当前权重最大的样本**为领跑剪辑把

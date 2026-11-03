@@ -552,8 +552,10 @@ Window → General → Animation Graph，按剪辑列出标记。每条有 `phas
 段名必须非空且同一剪辑内唯一；时间必须有限、`0 <= start <= end`，`end` 不能超过剪辑时长。
 cook 时按 `start` 排序写进 `.ranim` v4，运行时 `Clip.sections` / `MontagePlayer::active_section`
 可直接读；`MontageRequest::play_section(...)` 或 `with_section("Vault")` 会从段首开始，
-`MontagePlayer::jump_to_section` 可在播放中跳段。文件不存在 = 没有段；存在但解析失败 /
-超出剪辑长度会让 build 失败；名字对不上任何动画会 warn。
+`MontagePlayer::jump_to_section` 可在播放中跳段。BranchIn 用 Notify 约定：
+`BranchIn.<section>` 事件跨过时跳到同名段（例如 `BranchIn.Land`），可以直接在 Notify
+侧车里写。文件不存在 = 没有段；存在但解析失败 / 超出剪辑长度会让 build 失败；名字对不上
+任何动画会 warn。
 
 编辑器可以编辑这张表：在资产面板选中 `assets/<mesh>.skinning/montages.json` 后打开
 Window → General → Animation Graph，按剪辑列出段。每个剪辑上方有一条彩色区间条（按时间画

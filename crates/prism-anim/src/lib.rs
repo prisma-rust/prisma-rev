@@ -39,7 +39,7 @@ pub use graph_eval::{
     AnimGraphEvaluator, AnimGraphSource, GraphEvalError, GraphNodeSnapshot, GraphNotifyEvent,
     MontageSnapshot,
 };
-pub use montage::{Montage, MontageNotify, MontagePlayer, MAX_MONTAGE_QUEUE};
+pub use montage::{Montage, MontageNotify, MontagePlayer, BRANCH_IN_PREFIX, MAX_MONTAGE_QUEUE};
 pub use pose::Pose;
 pub use prism_asset::formats_anim_graph::GraphNodeKind;
 pub use prism_asset::formats_skinned::{
