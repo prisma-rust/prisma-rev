@@ -514,7 +514,9 @@ cook 时归一化到 `[0, 1)`、排序去重，写进 `.ranim` v3；运行时
   一帧只走一条转移；`min_state_fraction` 在剪辑时长未知时视为已播完，否则单次剪辑会卡在最后一帧；
 编辑器提供 **Animation Graph** 面板（Window → General）：选中 `.animgraph.json` 或
 `.statemachine.json` 后显示参数、节点 / 连线、输出，以及状态、转移和可读条件。
-图节点可以在画布上拖动，位置保存到 `<graph>.layout.json`（不改图本身）；连线编辑仍是后续。视口里直接拖关节做 IK（P2 的 IK 另立）、Notify 的编写界面
+图节点可以在画布上拖动，位置保存到 `<graph>.layout.json`（不改图本身）；节点卡片里可以增删
+`inputs` 连线（`+ Link` / `×`），保存后直接写回 `.animgraph.json`。使用单数 `input` 的链式节点
+仍需手改 JSON。视口里直接拖关节做 IK（P2 的 IK 另立）、Notify 的编写界面
 也还没做。
 
 运行时（#560 P1）：`Animator.state_machine_path` 指向 `.rasm`、`state` 是当前状态名（引擎每帧

@@ -5682,7 +5682,7 @@ pub fn anim_graph(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
     ui.label(RichText::new(&path).weak().size(10.0));
     ui.separator();
 
-    let value = match workspace.read_asset_json(&path) {
+    let mut value = match workspace.read_asset_json(&path) {
         Ok(value) => value,
         Err(error) => {
             ui.label(
@@ -5696,6 +5696,7 @@ pub fn anim_graph(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
     if graph_asset {
         match prism_editor_core::parse_anim_graph_view(&value) {
             Ok(graph) => {
+                let mut links_changed = false;
                 let stale = state
                     .anim_graph_layout
                     .as_ref()
@@ -5721,7 +5722,13 @@ pub fn anim_graph(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
                     }
                 }
                 ui.separator();
-                draw_anim_graph_view(ui, &graph);
+                links_changed |= draw_anim_graph_view(ui, &graph, &mut value);
+                if links_changed {
+                    state.status = match workspace.write_asset_json(&path, &value) {
+                        Ok(()) => format!("saved links in {path}"),
+                        Err(error) => format!("save links failed: {error}"),
+                    };
+                }
             }
             Err(error) => {
                 ui.label(RichText::new(error).color(Color32::from_rgb(232, 96, 96)));
@@ -5823,7 +5830,12 @@ fn draw_anim_graph_layout(
     changed
 }
 
-fn draw_anim_graph_view(ui: &mut Ui, graph: &prism_editor_core::AnimGraphView) {
+fn draw_anim_graph_view(
+    ui: &mut Ui,
+    graph: &prism_editor_core::AnimGraphView,
+    document: &mut Value,
+) -> bool {
+    let mut changed = false;
     if !graph.parameters.is_empty() {
         ui.label(RichText::new("Parameters").strong().size(11.0));
         for parameter in &graph.parameters {
@@ -5881,6 +5893,74 @@ fn draw_anim_graph_view(ui: &mut Ui, graph: &prism_editor_core::AnimGraphView) {
                             .size(10.0),
                     );
                 }
+
+                // 连线编辑：只对使用 `inputs` 数组的节点开放；链式单输入节点提示手改 JSON。
+                let raw = document
+                    .get_mut("nodes")
+                    .and_then(Value::as_array_mut)
+                    .and_then(|nodes| {
+                        nodes.iter_mut().find(|value| {
+                            value.get("name").and_then(Value::as_str) == Some(&node.name)
+                        })
+                    });
+                if let Some(raw) = raw {
+                    if let Some(inputs) = raw.get("inputs").and_then(Value::as_array) {
+                        let mut remove = None;
+                        for (index, input) in inputs.iter().enumerate() {
+                            let name = match input {
+                                Value::String(name) => name.clone(),
+                                Value::Object(map) => map
+                                    .get("node")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("?")
+                                    .to_string(),
+                                _ => continue,
+                            };
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(format!("link #{index}: {name}")).size(10.0),
+                                );
+                                if ui.small_button("×").clicked() {
+                                    remove = Some(index);
+                                }
+                            });
+                        }
+                        if let Some(index) = remove {
+                            if prism_editor_core::remove_graph_input(document, &node.name, index)
+                                .is_ok()
+                            {
+                                changed = true;
+                            }
+                        }
+                        ui.menu_button("+ Link", |ui| {
+                            for other in &graph.nodes {
+                                if other.name == node.name
+                                    || node.inputs.iter().any(|input| input.node == other.name)
+                                {
+                                    continue;
+                                }
+                                if ui.button(&other.name).clicked() {
+                                    if prism_editor_core::add_graph_input(
+                                        document,
+                                        &node.name,
+                                        &other.name,
+                                    )
+                                    .is_ok()
+                                    {
+                                        changed = true;
+                                    }
+                                    ui.close();
+                                }
+                            }
+                        });
+                    } else if raw.get("input").is_some() {
+                        ui.label(
+                            RichText::new("single input — edit JSON to rewire")
+                                .weak()
+                                .size(10.0),
+                        );
+                    }
+                }
             });
     }
     if let Some(output) = &graph.output {
@@ -5891,6 +5971,7 @@ fn draw_anim_graph_view(ui: &mut Ui, graph: &prism_editor_core::AnimGraphView) {
                 .size(11.0),
         );
     }
+    changed
 }
 
 fn draw_state_machine_view(ui: &mut Ui, machine: &prism_editor_core::AnimStateMachineView) {
