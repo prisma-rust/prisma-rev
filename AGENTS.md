@@ -33,8 +33,12 @@ deviating from those conventions is a bug. (`README.md` is the human-facing over
 - **推送前先拉主干、本地解冲突**：`git fetch origin && git rebase origin/master`，冲突在本分支内解决
   并重新跑 `pr_ready.py` 再 push。**不要把「PR 冲突了」留给维护者或下一个 agent**——
   别人的时间不该花在解你引入的冲突上。rebase 后必须 `--force-with-lease`，只推自己的分支。
-- 只读侦察交给 subagent，写操作留在主会话；交接时写清已完成 / 未完成 / 风险 / 验证命令。
-  侦察 issue 也算调查 —— 派 subagent 之前先认领。
+- **subagent 只做只读侦察**（搜索、读文件、定位实现）；所有写操作（编辑、格式化、批量注释 / 翻译、
+  提交）留在主会话。不要把批量文件改写拆给 subagent：多个写入者会互相覆盖，集中并发也容易触发
+  provider 限流（HTTP 429）。
+- 并行只读侦察同样要限量：同一时间最多 3 个 subagent，按互不重叠的文件 / 目录分批，先跑一小批
+  确认结果再扩大。subagent 的输出必须由主会话复核（`git diff` + 检查脚本）后才能提交。
+- 交接时写清已完成 / 未完成 / 风险 / 验证命令。侦察 issue 也算调查 —— 派 subagent 之前先认领。
 
 ## Termux / aarch64 ARM 验证例外（用户已明确授权）
 
