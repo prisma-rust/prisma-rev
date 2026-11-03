@@ -533,6 +533,70 @@ fn input_name(value: &Value) -> Option<&str> {
     }
 }
 
+/// 重命名图节点，并同步改写所有引用它的地方。
+///
+/// 会改：节点自身的 `name`、其它节点的 `inputs` / `input` 连线、顶层 `output`
+/// （如果它指向这个节点）。图布局在 `<graph>.layout.json` 里，单独存，不跟着改名
+/// —— 重命名后节点会回到画布的默认网格位置，重新拖动即可。
+pub fn rename_graph_node(document: &mut Value, old: &str, new: &str) -> Result<(), String> {
+    let new = new.trim();
+    if new.is_empty() {
+        return Err("a node needs a non-empty name".to_string());
+    }
+    if old == new {
+        return Ok(());
+    }
+    let Some(old_name) = find_node_mut(document, old)
+        .and_then(|node| node.get("name").and_then(Value::as_str))
+        .map(str::to_string)
+    else {
+        return Err(format!("unknown node '{old}'"));
+    };
+    let names: Vec<String> = document
+        .get("nodes")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|node| node.get("name").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect();
+    if names.iter().any(|name| name == new) {
+        return Err(format!("a node named '{new}' already exists"));
+    }
+    let Some(node) = find_node_mut(document, &old_name) else {
+        return Err(format!("unknown node '{old_name}'"));
+    };
+    node["name"] = json!(new);
+    if let Some(nodes) = document.get_mut("nodes").and_then(Value::as_array_mut) {
+        for node in nodes.iter_mut() {
+            if let Some(input) = node.get_mut("input") {
+                if input.as_str() == Some(old_name.as_str()) {
+                    *input = json!(new);
+                }
+            }
+            let Some(inputs) = node.get_mut("inputs").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for input in inputs.iter_mut() {
+                match input {
+                    Value::String(name) if name == &old_name => *name = new.to_string(),
+                    Value::Object(map)
+                        if map.get("node").and_then(Value::as_str) == Some(old_name.as_str()) =>
+                    {
+                        map.insert("node".to_string(), json!(new));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    if document.get("output").and_then(Value::as_str) == Some(old_name.as_str()) {
+        document["output"] = json!(new);
+    }
+    Ok(())
+}
+
 /// 给图节点追加一条连线（写回作者的 `inputs` 数组）。
 ///
 /// 链式节点（用单数 `input` 的 `slot` / `cached_pose` / `output`）不混用数组：
@@ -817,6 +881,60 @@ pub fn remove_graph_node(document: &mut Value, name: &str) -> Result<(), String>
     };
     nodes.remove(index);
     Ok(())
+}
+
+#[cfg(test)]
+mod rename_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn document() -> Value {
+        json!({
+            "output": "out",
+            "nodes": [
+                { "name": "a", "type": "clip_player", "clip": "a.ranim" },
+                { "name": "b", "type": "clip_player", "clip": "b.ranim" },
+                { "name": "stack", "type": "blend_stack",
+                  "inputs": ["a", { "node": "b", "weight": 0.5 }] },
+                { "name": "out", "type": "output", "input": "stack" }
+            ]
+        })
+    }
+
+    #[test]
+    fn renaming_rewrites_every_reference() {
+        let mut doc = document();
+        rename_graph_node(&mut doc, "a", " run ").expect("renames");
+        assert_eq!(doc["nodes"][0]["name"], "run");
+        assert_eq!(doc["nodes"][2]["inputs"][0], "run");
+        assert_eq!(doc["nodes"][2]["inputs"][1]["node"], "b");
+
+        rename_graph_node(&mut doc, "b", "aim").expect("renames");
+        assert_eq!(doc["nodes"][2]["inputs"][1]["node"], "aim");
+        assert_eq!(doc["nodes"][2]["inputs"][1]["weight"], 0.5);
+
+        rename_graph_node(&mut doc, "out", "root").expect("renames output");
+        assert_eq!(doc["nodes"][3]["name"], "root");
+        assert_eq!(doc["nodes"][3]["input"], "stack");
+        assert_eq!(doc["output"], "root");
+        assert_eq!(
+            parse_anim_graph_view(&doc)
+                .expect("parses")
+                .output
+                .as_deref(),
+            Some("root")
+        );
+    }
+
+    #[test]
+    fn rename_rejects_duplicates_blanks_and_unknown_names() {
+        let mut doc = document();
+        assert!(rename_graph_node(&mut doc, "a", "b").is_err());
+        assert!(rename_graph_node(&mut doc, "a", "  ").is_err());
+        assert!(rename_graph_node(&mut doc, "missing", "aim").is_err());
+        rename_graph_node(&mut doc, "a", "a").expect("same name is a no-op");
+        assert_eq!(doc["nodes"][0]["name"], "a");
+    }
 }
 
 #[cfg(test)]

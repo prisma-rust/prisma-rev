@@ -5865,6 +5865,8 @@ pub struct AnimGraphEditState {
     pub sm_state_clip: Option<(usize, String)>,
     /// 正在编辑的图节点剪辑：(节点名, 文本)。
     pub graph_node_clip: Option<(String, String)>,
+    /// 正在编辑的图节点名字：(旧名字, 文本)。
+    pub graph_node_name: Option<(String, String)>,
 }
 
 fn is_clip_player(kind: &str) -> bool {
@@ -5910,6 +5912,7 @@ fn draw_anim_graph_view(
     let mut node_speed_edits = Vec::new();
     let mut node_weight_edits = Vec::new();
     let mut node_loop_edits = Vec::new();
+    let mut node_name_edits = Vec::new();
     for node in &graph.nodes {
         let title = if node.is_output() {
             format!("{} · {} (output)", node.name, node.kind)
@@ -5921,6 +5924,27 @@ fn draw_anim_graph_view(
             .show(ui, |ui| {
                 if !node.is_output() && ui.small_button("× Remove node").clicked() {
                     remove_node = Some(node.name.clone());
+                }
+                let editing_name = edit
+                    .graph_node_name
+                    .as_ref()
+                    .filter(|(owner, _)| owner == &node.name);
+                let mut name_text = editing_name
+                    .map(|(_, text)| text.clone())
+                    .unwrap_or_else(|| node.name.clone());
+                let name_response = ui.add(
+                    egui::TextEdit::singleline(&mut name_text)
+                        .hint_text("node name")
+                        .desired_width(140.0),
+                );
+                if name_response.changed() {
+                    edit.graph_node_name = Some((node.name.clone(), name_text));
+                } else if name_response.lost_focus() {
+                    if let Some((owner, text)) = edit.graph_node_name.take() {
+                        if owner == node.name {
+                            node_name_edits.push((owner, text));
+                        }
+                    }
                 }
                 if !node.parameter.is_empty() {
                     ui.label(
@@ -6129,6 +6153,10 @@ fn draw_anim_graph_view(
     }
     if let Some(node) = remove_node {
         prism_editor_core::remove_graph_node(document, &node)?;
+        changed = true;
+    }
+    for (old, new) in node_name_edits {
+        prism_editor_core::rename_graph_node(document, &old, &new)?;
         changed = true;
     }
     for (node, clip) in node_clip_edits {
