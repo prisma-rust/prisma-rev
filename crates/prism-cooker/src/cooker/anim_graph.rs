@@ -90,6 +90,18 @@ pub fn encode_rag(graph: &AnimGraphInfo) -> Option<Vec<u8>> {
                 write_string(&mut out, joint)?;
             }
         }
+
+        // v2：每样本速度表。
+        if node.sample_speeds.len() > MAX_GRAPH_CLIPS {
+            return None;
+        }
+        out.extend_from_slice(&(node.sample_speeds.len() as u32).to_le_bytes());
+        for speed in &node.sample_speeds {
+            if !speed.is_finite() || *speed < 0.0 {
+                return None;
+            }
+            out.extend_from_slice(&speed.to_le_bytes());
+        }
     }
 
     out.extend_from_slice(&graph.output.to_le_bytes());
@@ -153,6 +165,7 @@ pub fn parse_anim_graph_json(document: &Value) -> Result<AnimGraphInfo, String> 
 
         let clips = parse_clips(node_json);
         let positions = parse_positions(node_json, kind, name)?;
+        let sample_speeds = parse_sample_speeds(node_json, name, kind, clips.len())?;
         let parameter_x = node_json
             .get("parameter")
             .or_else(|| node_json.get("parameter_x"))
@@ -211,6 +224,7 @@ pub fn parse_anim_graph_json(document: &Value) -> Result<AnimGraphInfo, String> 
             ),
             clips,
             positions,
+            sample_speeds,
             parameter_x,
             parameter_y,
             state_machine_path,
@@ -250,6 +264,7 @@ pub fn parse_anim_graph_json(document: &Value) -> Result<AnimGraphInfo, String> 
             weight: node.weight.clamp(0.0, 1.0),
             clips: node.clips,
             positions: node.positions,
+            sample_speeds: node.sample_speeds,
             parameter_x: node.parameter_x,
             parameter_y: node.parameter_y,
             state_machine_path: node.state_machine_path,
@@ -298,6 +313,7 @@ struct ParsedNode {
     weight: f32,
     clips: Vec<String>,
     positions: Vec<[f32; 2]>,
+    sample_speeds: Vec<f32>,
     parameter_x: String,
     parameter_y: String,
     state_machine_path: String,
@@ -395,6 +411,48 @@ fn parse_clips(node: &Value) -> Vec<String> {
         }
     }
     clips
+}
+
+fn parse_sample_speeds(
+    node_json: &Value,
+    name: &str,
+    kind: GraphNodeKind,
+    clip_count: usize,
+) -> Result<Vec<f32>, String> {
+    let Some(entries) = node_json.get("speeds").and_then(Value::as_array) else {
+        return Ok(Vec::new());
+    };
+    if !matches!(
+        kind,
+        GraphNodeKind::BlendSpace1D | GraphNodeKind::BlendSpace2D
+    ) {
+        return Err(format!(
+            "node '{name}' has sample speeds but is not a blend space"
+        ));
+    }
+    if entries.len() != clip_count {
+        return Err(format!(
+            "node '{name}' needs one speed per clip ({} clips, {} speeds)",
+            clip_count,
+            entries.len()
+        ));
+    }
+    entries
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let speed = value
+                .as_f64()
+                .ok_or_else(|| format!("node '{name}' speed #{index} must be a number"))?
+                as f32;
+            if !speed.is_finite() || speed < 0.0 {
+                return Err(format!(
+                    "node '{name}' speed #{index} must be finite and >= 0"
+                ));
+            }
+            Ok(speed)
+        })
+        .collect()
 }
 
 fn parse_positions(node: &Value, kind: GraphNodeKind, name: &str) -> Result<Vec<[f32; 2]>, String> {

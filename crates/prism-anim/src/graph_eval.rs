@@ -458,7 +458,11 @@ impl AnimGraphEvaluator {
         };
 
         // 每样本速度：给这个节点维护独立播放头，相位数组按 node.clips 顺序。
-        let speeds = self.blend_space_speeds.get(&node.name).cloned();
+        let speeds = self
+            .blend_space_speeds
+            .get(&node.name)
+            .cloned()
+            .or_else(|| (!node.sample_speeds.is_empty()).then(|| node.sample_speeds.clone()));
         let (previous_sample_phases, sample_phases) = if let Some(speeds) = speeds {
             let runtime = &mut self.runtime[index];
             if runtime.sample_times.len() != node.clips.len() {

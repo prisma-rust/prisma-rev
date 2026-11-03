@@ -60,6 +60,7 @@ fn node(name: &str, kind: GraphNodeKind) -> GraphNodeInfo {
         weight: 1.0,
         clips: Vec::new(),
         positions: Vec::new(),
+        sample_speeds: Vec::new(),
         parameter_x: String::new(),
         parameter_y: String::new(),
         state_machine_path: String::new(),
@@ -797,6 +798,7 @@ fn blend_space_per_sample_speeds_drive_independent_playheads() {
     let mut space = node("locomotion", GraphNodeKind::BlendSpace1D);
     space.clips = vec!["idle.ranim".into(), "run.ranim".into()];
     space.positions = vec![[0.0, 0.0], [10.0, 0.0]];
+    space.sample_speeds = vec![1.0, 2.0];
     space.parameter_x = "speed".into();
     let mut graph = graph(vec![space, output(0)], 1);
     graph.parameters.push(GraphParameterInfo {
@@ -805,7 +807,6 @@ fn blend_space_per_sample_speeds_drive_independent_playheads() {
         default: 10.0,
     });
     let mut evaluator = AnimGraphEvaluator::new(graph);
-    evaluator.set_blend_space_speeds("locomotion", vec![1.0, 2.0]);
     let source = Source::new(&[
         ("idle.ranim", ramp_clip("idle", 10.0)),
         ("run.ranim", ramp_clip("run", 20.0)),

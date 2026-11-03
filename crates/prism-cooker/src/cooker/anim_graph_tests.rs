@@ -14,6 +14,7 @@ fn document() -> serde_json::Value {
                 "type": "blend_space_1d",
                 "clips": ["idle.ranim", "run.ranim"],
                 "positions": [0.0, 5.0],
+                "speeds": [1.0, 2.0],
                 "parameter": "speed"
             },
             {
@@ -67,6 +68,7 @@ fn a_graph_round_trips_through_json_and_ragp() {
         GraphNodeKind::Output
     );
     assert_eq!(graph.nodes[0].positions, [[0.0, 0.0], [5.0, 0.0]]);
+    assert_eq!(graph.nodes[0].sample_speeds, [1.0, 2.0]);
     assert_eq!(graph.nodes[4].clips, ["montage.ranim"]);
     assert_eq!(graph.nodes[5].inputs[0].node, 4); // cached -> slot
     assert_eq!(graph.nodes[6].inputs[1].bone_mask, ["spine_02"]);
@@ -174,4 +176,17 @@ fn the_anim_graph_cooker_validates_and_passes_ragp_through() {
         settings: &settings,
     };
     assert!(AnimGraphCooker.cook(&bad).is_err());
+}
+
+#[test]
+fn blend_space_sample_speeds_must_match_the_clips() {
+    let mut graph_document = document();
+    graph_document["nodes"][1]["speeds"] = json!([1.0]);
+    let error = parse_anim_graph_json(&graph_document).expect_err("must fail");
+    assert!(error.contains("one speed per clip"), "{error}");
+
+    let mut negative = document();
+    negative["nodes"][1]["speeds"] = json!([1.0, -2.0, 0.0]);
+    let error = parse_anim_graph_json(&negative).expect_err("must fail");
+    assert!(error.contains("finite and >= 0"), "{error}");
 }
