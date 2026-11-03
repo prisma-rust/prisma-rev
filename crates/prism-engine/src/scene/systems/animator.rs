@@ -15,7 +15,7 @@ use std::sync::Arc;
 use prism_anim::{
     palette_to_arrays, AnimGraphEvaluator, AnimGraphSource, AnimParameters, BlendLayer,
     BlendSample, BlendSample2D, BlendSpace1D, BlendSpace2D, BlendStack, BoneMask, Clip,
-    GraphEvalError, GraphNodeSnapshot, Montage, Pose, Skeleton, StateMachine,
+    GraphEvalError, GraphNodeSnapshot, Montage, MontageSnapshot, Pose, Skeleton, StateMachine,
 };
 use prism_asset::formats_anim_graph::AnimGraphInfo;
 use prism_ecs::{Entity, World};
@@ -135,12 +135,19 @@ pub struct AnimEvent {
 #[derive(Debug, Clone, Default)]
 pub struct AnimGraphDebug {
     pub entities: HashMap<Entity, Vec<GraphNodeSnapshot>>,
+    /// 每个图实体的 Slot Montage 摘要（按 Slot 名排序）。
+    pub montages: HashMap<Entity, Vec<MontageSnapshot>>,
 }
 
 impl AnimGraphDebug {
     /// 某个实体的节点快照；不是图实体返回 `None`。
     pub fn states(&self, entity: Entity) -> Option<&[GraphNodeSnapshot]> {
         self.entities.get(&entity).map(Vec::as_slice)
+    }
+
+    /// 某个实体的 Slot Montage 摘要；没有播放过 Montage 时是空列表。
+    pub fn montages(&self, entity: Entity) -> Option<&[MontageSnapshot]> {
+        self.montages.get(&entity).map(Vec::as_slice)
     }
 }
 
@@ -1399,10 +1406,14 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
         .retain(|entity, _| graph_entities.contains(entity));
     if let Some(debug) = graph_debug.as_mut() {
         debug.entities.clear();
+        debug.montages.clear();
         for (entity, runtime) in &graph_runtimes.runtimes {
             debug
                 .entities
                 .insert(*entity, runtime.evaluator.node_snapshots());
+            debug
+                .montages
+                .insert(*entity, runtime.evaluator.montage_snapshots());
         }
     }
     world.insert_resource(graph_runtimes);

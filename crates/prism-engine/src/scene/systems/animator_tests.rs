@@ -2006,6 +2006,37 @@ fn montage_clip(notify: &str, time: f32) -> Clip {
 }
 
 #[test]
+fn graph_debug_lists_montage_slots() {
+    let (mut world, entity) = setup_slot_world();
+    world
+        .get_resource_mut::<SkeletonLibrary>()
+        .unwrap()
+        .insert_clip("montage.ranim", montage_clip("MontageStep", 0.5));
+    world.insert_resource(AnimGraphDebug::default());
+    world
+        .get_resource_mut::<AnimMontageRequests>()
+        .unwrap()
+        .push(MontageRequest::play(entity, "slot", "montage.ranim"));
+
+    animator_system(&mut world, 0.2);
+    let debug = world.get_resource::<AnimGraphDebug>().unwrap();
+    let montages = debug.montages(entity).expect("图实体");
+    assert_eq!(montages.len(), 1);
+    assert_eq!(montages[0].slot, "slot");
+    assert_eq!(montages[0].clip.as_deref(), Some("montage"));
+    assert!((montages[0].time.unwrap() - 0.2).abs() < 1e-5);
+    assert!(montages[0].playing && !montages[0].paused);
+
+    world
+        .get_resource_mut::<AnimMontageRequests>()
+        .unwrap()
+        .push(MontageRequest::pause(entity, "slot"));
+    animator_system(&mut world, 0.2);
+    let debug = world.get_resource::<AnimGraphDebug>().unwrap();
+    assert!(debug.montages(entity).unwrap()[0].paused);
+}
+
+#[test]
 fn a_pause_request_freezes_the_montage_until_resumed() {
     let (mut world, entity) = setup_slot_world();
     world

@@ -155,6 +155,23 @@ pub struct GraphNodeSnapshot {
     pub weight: f32,
 }
 
+/// 一个 Slot 的 Montage 运行时摘要（[`AnimGraphEvaluator::montage_snapshots`]）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct MontageSnapshot {
+    pub slot: String,
+    /// 活动段的剪辑名；没有活动段时为 `None`。
+    pub clip: Option<String>,
+    /// 活动段已经播放的时间（秒）。
+    pub time: Option<f32>,
+    pub weight: f32,
+    pub playing: bool,
+    pub paused: bool,
+    /// 活动段播完且队列为空。
+    pub finished: bool,
+    /// 排队等着的段数（不含活动段）。
+    pub queued: usize,
+}
+
 /// 一个动画图求值器实例，对应一个角色。
 #[derive(Debug, Clone)]
 pub struct AnimGraphEvaluator {
@@ -366,6 +383,28 @@ impl AnimGraphEvaluator {
             let weight = (weight * input.weight).clamp(0.0, 1.0);
             self.collect_weights(input.node, weight, weights, seen);
         }
+    }
+
+    /// 每个 Slot 的 Montage 运行时摘要（按 Slot 名排序，调试面板用）。
+    ///
+    /// 只包含被 `play` / `enqueue` 过的 Slot；活动段播完且队列空时
+    /// `playing = false`、`finished = true`。
+    pub fn montage_snapshots(&self) -> Vec<MontageSnapshot> {
+        let mut slots: Vec<(&String, &MontagePlayer)> = self.montages.iter().collect();
+        slots.sort_by(|left, right| left.0.cmp(right.0));
+        slots
+            .into_iter()
+            .map(|(slot, player)| MontageSnapshot {
+                slot: slot.clone(),
+                clip: player.active_clip().map(|clip| clip.name.clone()),
+                time: player.active_time(),
+                weight: player.active_weight(),
+                playing: player.is_playing(),
+                paused: player.is_paused(),
+                finished: player.is_finished(),
+                queued: player.queue_len(),
+            })
+            .collect()
     }
 
     /// 当前状态机节点的状态下标（调试面板 / 测试用）；不是状态机节点时返回 `None`。

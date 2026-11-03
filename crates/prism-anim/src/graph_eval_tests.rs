@@ -827,6 +827,44 @@ fn queued_evaluator_montages_advance_after_the_current_one() {
 }
 
 #[test]
+fn montage_snapshots_report_slot_state() {
+    let mut evaluator = AnimGraphEvaluator::new(slot_graph());
+    let skeleton = skeleton();
+    let source = Source::new(&[("base.ranim", translation_clip("base", 0.0))]);
+    assert!(
+        evaluator.montage_snapshots().is_empty(),
+        "没播放过就没有 Slot"
+    );
+
+    evaluator.play_montage(
+        "slot",
+        Montage::new(Arc::new(translation_clip("montage", 10.0))).with_weight(0.5),
+    );
+    evaluator.enqueue_montage(
+        "slot",
+        Montage::new(Arc::new(translation_clip("next", 1.0))).with_looping(false),
+    );
+    evaluator
+        .evaluate(&source, &skeleton, 0.2)
+        .expect("evaluates");
+
+    let snapshots = evaluator.montage_snapshots();
+    assert_eq!(snapshots.len(), 1);
+    let snapshot = &snapshots[0];
+    assert_eq!(snapshot.slot, "slot");
+    assert_eq!(snapshot.clip.as_deref(), Some("montage"));
+    assert!((snapshot.time.unwrap() - 0.2).abs() < 1e-5);
+    assert!((snapshot.weight - 0.5).abs() < 1e-6);
+    assert!(snapshot.playing && !snapshot.paused && !snapshot.finished);
+    assert_eq!(snapshot.queued, 1);
+
+    evaluator.pause_montage("slot");
+    assert!(evaluator.montage_snapshots()[0].paused);
+    evaluator.resume_montage("slot");
+    assert!(!evaluator.montage_snapshots()[0].paused);
+}
+
+#[test]
 fn stopping_a_slot_montage_returns_to_the_slot_input() {
     let mut evaluator = AnimGraphEvaluator::new(slot_graph());
     let skeleton = skeleton();
