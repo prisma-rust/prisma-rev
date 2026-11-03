@@ -28,6 +28,7 @@ pub mod ini;
 pub mod keys;
 pub mod logbuf;
 pub mod manifest;
+pub mod notify_view;
 pub mod palette;
 pub mod project;
 pub mod recovery;
@@ -70,6 +71,10 @@ pub use keys::{
 };
 pub use logbuf::{LogBuffer, LogFilter, LogLevel, LogLine, LogSource, LOG_ROW_HEIGHT};
 pub use manifest::{doc_relative_path, SceneEntry, SceneManifest};
+pub use notify_view::{
+    add_notify, parse_notifies_view, remove_notify, set_notify, ClipNotifiesView, NotifiesView,
+    NotifyEntryView,
+};
 pub use project::{find_project_root, scan_documents, ProjectFile};
 pub use recovery::{RecoveredDocument, RECOVERY_DIR, RECOVERY_FILE};
 pub use schema::{
