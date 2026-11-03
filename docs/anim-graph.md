@@ -152,7 +152,13 @@ FIFO 排队、单次播完自动接下一段，`stop` / `stop_after_current` 清
 让姿态弹一下；默认 0 = 直通。
 
 运行时每帧还会在 `AnimatorPlayhead.root_motion` 记录根关节相对上一帧的位移 / 偏航增量
-（首帧与换剪辑首帧为零），P2 才消费它驱动位移 —— 当前只记录，不改实体 Transform。
+（首帧与换剪辑首帧为零）。默认只记录，不改实体 Transform。
+
+`Animator.root_motion_consume = true`（#560 P2）时，引擎把这一帧的**根平移**加到实体的
+`LocalTransform.position` 上（先按实体当前朝向旋到世界空间），同时把姿态里的根平移清零，
+避免「实体走了、骨骼根也跟着走」的双倍位移。首帧 / 换剪辑首帧 delta 为零，所以不会瞬移。
+根**旋转**增量目前仍然只记录、不消费：偏航要连同整条骨骼链一起扣掉才不会双转，
+留给 CharacterMovement 统一处理。
 
 引擎侧项目代码通过 `AnimMontageRequests` 资源发请求（`MontageRequest::play` /
 `enqueue` / `stop` / `stop_after_current`，可带循环 / 速度 / 权重 / 开始时间）；

@@ -96,6 +96,91 @@ fn add_camera(world: &mut World, position: Vec3) -> Entity {
     entity
 }
 
+/// 根骨骼沿 +X 从 0 走到 2 的剪辑（1s），用来验证根运动消费。
+fn forward_clip() -> Clip {
+    Clip {
+        name: "forward".into(),
+        duration: 1.0,
+        fps: 30.0,
+        looped: false,
+        additive: false,
+        tracks: vec![Track {
+            joint: 0,
+            translation: vec![
+                Vec3Key {
+                    time: 0.0,
+                    value: Vec3::ZERO,
+                },
+                Vec3Key {
+                    time: 1.0,
+                    value: Vec3::new(2.0, 0.0, 0.0),
+                },
+            ],
+            rotation: Vec::new(),
+            scale: Vec::new(),
+        }],
+        ..Default::default()
+    }
+}
+
+fn install_forward(world: &mut World) {
+    world
+        .get_resource_mut::<SkeletonLibrary>()
+        .unwrap()
+        .insert_clip("forward.ranim", forward_clip());
+}
+
+fn root_translation(world: &World, entity: Entity) -> Vec3 {
+    let palette = world.get::<BonePalette>(entity).expect("palette");
+    Mat4::from_cols_array_2d(&palette.matrices[0])
+        .w_axis
+        .truncate()
+}
+
+#[test]
+fn root_motion_consumption_moves_the_entity_and_zeroes_the_bone_offset() {
+    let (mut world, entity) = world_with_animator("");
+    install_forward(&mut world);
+    world.insert(entity, LocalTransform::default());
+    {
+        let animator = world.get_mut::<Animator>(entity).unwrap();
+        animator.clip_path = "forward.ranim".into();
+        animator.looped = false;
+        animator.root_motion_consume = true;
+    }
+
+    animator_system(&mut world, 0.0);
+    animator_system(&mut world, 0.5);
+
+    let position = world.get::<LocalTransform>(entity).unwrap().position;
+    assert!(
+        (position.x - 1.0).abs() < 1e-4,
+        "实体走了半程，position {position:?}"
+    );
+    assert!(
+        root_translation(&world, entity).length() < 1e-4,
+        "骨骼根平移被扣掉，避免双倍位移"
+    );
+    let head = world.get::<AnimatorPlayhead>(entity).unwrap();
+    assert!((head.root_motion.translation.x - 1.0).abs() < 1e-4);
+}
+
+#[test]
+fn root_motion_is_not_consumed_by_default() {
+    let (mut world, entity) = world_with_animator("");
+    install_forward(&mut world);
+    world.insert(entity, LocalTransform::default());
+    world.get_mut::<Animator>(entity).unwrap().clip_path = "forward.ranim".into();
+    world.get_mut::<Animator>(entity).unwrap().looped = false;
+
+    animator_system(&mut world, 0.0);
+    animator_system(&mut world, 0.5);
+
+    let position = world.get::<LocalTransform>(entity).unwrap().position;
+    assert_eq!(position, Vec3::ZERO, "默认只记录，不动 Transform");
+    assert!((root_translation(&world, entity).x - 1.0).abs() < 1e-4);
+}
+
 #[test]
 fn far_animators_freeze_and_resume_when_the_camera_comes_back() {
     let (mut world, entity) = world_with_animator("");

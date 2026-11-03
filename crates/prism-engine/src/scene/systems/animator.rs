@@ -647,6 +647,29 @@ impl AnimatorPlayhead {
     }
 }
 
+/// 根运动消费（#560 P2）：把这一帧的根平移从姿态里扣掉，交给实体的
+/// [`LocalTransform`]。返回需要应用的模型空间增量。
+fn consume_root_translation(
+    animator: &Animator,
+    playhead: &AnimatorPlayhead,
+    pose: &mut Pose,
+    entity: Entity,
+    moves: &mut Vec<(Entity, glam::Vec3)>,
+) {
+    if !animator.root_motion_consume {
+        return;
+    }
+    let delta = playhead.root_motion.translation;
+    if !delta.is_finite() || delta.length_squared() <= f32::EPSILON {
+        return;
+    }
+    if let Some(mut root) = pose.local(0) {
+        root.translation = glam::Vec3::ZERO;
+        pose.set_local(0, root);
+    }
+    moves.push((entity, delta));
+}
+
 /// 混合参数的指数平滑（#560 P1）。`dt = 0` 时返回当前值（首帧直接落在目标上）。
 fn smoothed_blend_parameters(
     playhead: &mut AnimatorPlayhead,
@@ -823,6 +846,8 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
         .cloned()
         .unwrap_or_default();
     let mut state_updates: Vec<(Entity, String)> = Vec::new();
+    // 根运动消费：等遍历完实体再写 Transform，避免借 World。
+    let mut root_motion_moves: Vec<(Entity, glam::Vec3)> = Vec::new();
     // 项目侧请求只活一帧；按实体分组，驱动图时消费。
     let mut montage_requests: HashMap<Entity, Vec<MontageRequest>> = HashMap::new();
     if let Some(resource) = world.get_resource_mut::<AnimMontageRequests>() {
@@ -887,8 +912,16 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
                     playhead.clip_path = ANIM_GRAPH_KEY.into();
                     playhead.finished = false;
                     playhead.previous_pose = None;
-                    playhead.pose = pose.clone();
                     playhead.record_root_motion(&pose);
+                    let mut pose = pose;
+                    consume_root_translation(
+                        animator,
+                        &playhead,
+                        &mut pose,
+                        entity,
+                        &mut root_motion_moves,
+                    );
+                    playhead.pose = pose.clone();
                     let palette = BonePalette::from_matrices(&skeleton.bone_palette(&pose));
                     updates.push((entity, palette, playhead));
                     continue;
@@ -1223,8 +1256,16 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
             pose = stacked;
         }
 
-        // Root motion（#560 P0）：记录根关节相对上一帧的增量，P2 再交给 CharacterMovement。
+        // Root motion（#560 P0）：记录根关节相对上一帧的增量；开了消费就把平移
+        // 交给实体 Transform，并从姿态里扣掉（#560 P2）。
         playhead.record_root_motion(&pose);
+        consume_root_translation(
+            animator,
+            &playhead,
+            &mut pose,
+            entity,
+            &mut root_motion_moves,
+        );
         // 这份姿态就是下一次过渡的淡出源（不需要 clone：上面已经用完 `pose`）。
         playhead.pose = pose;
         let palette = BonePalette::from_matrices(&skeleton.bone_palette(&playhead.pose));
@@ -1240,6 +1281,12 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
     }
 
     let count = updates.len();
+    for (entity, delta) in root_motion_moves {
+        if let Some(transform) = world.get_mut::<LocalTransform>(entity) {
+            transform.position += transform.rotation * delta;
+        }
+    }
+
     for (entity, palette, playhead) in updates {
         world.insert(entity, palette);
         world.insert(entity, playhead);

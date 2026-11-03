@@ -2361,6 +2361,11 @@ pub struct Animator {
     /// 每次更新推进 `2 * dt` 保持播放速度。非有限 / `<= 0` / 大于 `lod_far`
     /// 时等于 `lod_far`（没有降频档）。
     pub lod_near: f32,
+    /// 根运动消费（#560 P2）：`true` 时把每帧的根位移增量加到实体的
+    /// [`LocalTransform`] 上，并把姿态里的根平移清零，避免「实体走了、骨骼里的
+    /// 根也跟着走」的双倍位移。只消费**平移**；根旋转增量仍只记录在
+    /// `AnimatorPlayhead.root_motion`，等 CharacterMovement 接管。
+    pub root_motion_consume: bool,
 }
 
 impl Default for Animator {
@@ -2389,6 +2394,7 @@ impl Default for Animator {
             lod_enabled: false,
             lod_far: 50.0,
             lod_near: 25.0,
+            root_motion_consume: false,
         }
     }
 }
