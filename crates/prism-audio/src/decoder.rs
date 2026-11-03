@@ -76,9 +76,6 @@ pub fn decode_file(path: impl AsRef<Path>) -> Result<AudioData, AudioError> {
     decode_probed(probed)
 }
 
-// ---------------------------------------------------------------------------
-// Shared helper: decode a probed source → AudioData
-
 fn decode_probed(probed: symphonium::ProbedAudioSource) -> Result<AudioData, AudioError> {
     let config = DecodeConfig::default();
     let decoded: DecodedAudioF32 = symphonium::decode_f32(probed, &config, None, None, None)
