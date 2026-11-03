@@ -24,7 +24,7 @@ use crate::viewport_math::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -1078,7 +1078,8 @@ impl Workspace {
                 format!("{path} 不存在"),
             ));
         }
-        std::fs::remove_file(full)?;
+        std::fs::remove_file(&full)?;
+        remove_asset_sidecar(&full);
         self.refresh_project_files();
         self.log(LogSource::Editor, LogLevel::Info, format!("已删除 {path}"));
         Ok(())
@@ -1106,7 +1107,8 @@ impl Workspace {
                 format!("{path} 不存在"),
             ));
         }
-        std::fs::remove_file(full)?;
+        std::fs::remove_file(&full)?;
+        remove_asset_sidecar(&full);
 
         let removed = self
             .docs
@@ -1172,6 +1174,7 @@ impl Workspace {
         root: &Path,
         moves: &[(String, String)],
     ) -> (usize, Vec<String>) {
+        let protected_guids = moved_guids(root, moves);
         let mut references = 0;
         let mut affected = Vec::new();
         let mut ambiguous: Vec<String> = Vec::new();
@@ -1180,7 +1183,12 @@ impl Workspace {
         for document in &mut self.docs {
             let doc_dir = document_dir(document.path.as_deref());
             for (from, to) in moves {
-                let rewrite = document.doc.rewrite_asset_references(&doc_dir, from, to);
+                let rewrite = document.doc.rewrite_asset_references_with_guids(
+                    &doc_dir,
+                    from,
+                    to,
+                    &protected_guids,
+                );
                 ambiguous.extend(rewrite.ambiguous);
                 if rewrite.rewritten > 0 {
                     document.dirty = true;
@@ -1214,7 +1222,8 @@ impl Workspace {
             let doc_dir = document_dir(Some(&path));
             let mut rewritten = 0;
             for (from, to) in moves {
-                let rewrite = doc.rewrite_asset_references(&doc_dir, from, to);
+                let rewrite =
+                    doc.rewrite_asset_references_with_guids(&doc_dir, from, to, &protected_guids);
                 ambiguous.extend(rewrite.ambiguous);
                 rewritten += rewrite.rewritten;
             }
@@ -1263,19 +1272,36 @@ impl Workspace {
     /// 「解析不到」= 文件被删 / 改名 / 拼错。引擎侧只会往日志里写一句，
     /// 画面表现是物体消失或贴图变白，所以编辑器要主动标出来（#467）。
     pub fn missing_references(&self, index: usize) -> Vec<(String, String)> {
-        let doc = &self.document().doc;
-        if doc.entities.get(index).is_none() {
-            return Vec::new();
-        }
-        let dir = self.document_dir();
-        let paths = self.asset_paths();
-        doc.reference_values()
+        self.broken_references()
             .into_iter()
             .filter(|(entity, _, _)| *entity == index)
-            .filter_map(|(_, field, value)| {
-                crate::assets::resolve_reference(&paths, &dir, &value)
-                    .is_none()
-                    .then_some((field, value))
+            .map(|(_, field, value)| (field, value))
+            .collect()
+    }
+
+    /// Every broken asset reference in the active document:
+    /// `(entity, field, value)`.
+    ///
+    /// A slot whose sibling `*_guid` still resolves to an existing asset is
+    /// **not** broken even if its stored path is stale (#466); path resolution
+    /// remains the fallback for legacy references.
+    pub fn broken_references(&self) -> Vec<(usize, String, String)> {
+        let doc = &self.document().doc;
+        let dir = self.document_dir();
+        let paths = self.asset_paths();
+        let live_guids: BTreeSet<String> = self
+            .assets
+            .iter()
+            .filter_map(|asset| asset.guid.as_deref())
+            .map(str::to_ascii_lowercase)
+            .collect();
+        doc.reference_values()
+            .into_iter()
+            .filter(|(entity, field, value)| {
+                if reference_has_live_guid(doc, *entity, field, &live_guids) {
+                    return false;
+                }
+                crate::assets::resolve_reference(&paths, &dir, value).is_none()
             })
             .collect()
     }
@@ -1299,6 +1325,15 @@ impl Workspace {
             .clone()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "没有绑定项目根"))?;
         project::read_json_asset(&root, path)
+    }
+
+    /// 读一个资产的原始字节（`.ranim` 等二进制资产用；只读）。
+    pub fn read_asset_bytes(&self, path: &str) -> io::Result<Vec<u8>> {
+        let root = self
+            .project_root
+            .clone()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "没有绑定项目根"))?;
+        std::fs::read(root.join(path))
     }
 
     /// 读动画图节点布局；文件不存在或内容坏掉时返回空布局。
@@ -1379,6 +1414,97 @@ impl Workspace {
             written.push(edit.path);
         }
         Ok(Some(written))
+    }
+
+    /// 重命名状态机里的一个状态，并同步场景 / 预制体里的 `Animator.state` 引用。
+    ///
+    /// 只改写 `state_machine_path` 指向同一份状态机（cooked `*.rasm`）的 Animator。
+    /// 打开着的文档就地改并标脏；磁盘上没打开的文档读-改-写回。状态机本身的改动
+    /// 进入资产编辑撤销栈；文档改动沿用资产重命名的约定（标脏后由用户保存）。
+    /// 返回被改写的文档路径。
+    pub fn rename_state_machine_state(
+        &mut self,
+        machine_path: &str,
+        index: usize,
+        new_name: &str,
+    ) -> Result<Vec<String>, String> {
+        let new_name = new_name.trim();
+        if new_name.is_empty() {
+            return Err("a state needs a non-empty name".to_string());
+        }
+        let before = self
+            .read_asset_json(machine_path)
+            .map_err(|error| format!("read {machine_path} failed: {error}"))?;
+        let view = crate::anim_graph_view::parse_state_machine_view(&before)?;
+        let old_name = view
+            .states
+            .get(index)
+            .ok_or_else(|| format!("state machine has no state #{index}"))?
+            .name
+            .clone();
+        if old_name == new_name {
+            return Ok(Vec::new());
+        }
+        let mut machine = before.clone();
+        crate::anim_graph_view::rename_state(&mut machine, index, new_name)?;
+        let updated = self.rewrite_animator_state_references(machine_path, &old_name, new_name)?;
+        self.write_asset_json(machine_path, &machine)
+            .map_err(|error| format!("write {machine_path} failed: {error}"))?;
+        self.record_asset_edit(machine_path, &before, &machine);
+        Ok(updated)
+    }
+
+    fn rewrite_animator_state_references(
+        &mut self,
+        machine_path: &str,
+        old: &str,
+        new: &str,
+    ) -> Result<Vec<String>, String> {
+        let Some(root) = self.project_root.clone() else {
+            return Ok(Vec::new());
+        };
+        let paths = state_machine_runtime_paths(machine_path);
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut affected = Vec::new();
+        let mut open_paths = Vec::new();
+        for document in &mut self.docs {
+            if rewrite_animator_state(&mut document.doc, &paths, old, new) > 0 {
+                document.dirty = true;
+                affected.push(document.path.clone().unwrap_or_else(|| document.title()));
+            }
+            if let Some(path) = document.path.clone() {
+                open_paths.push(path);
+            }
+        }
+        let closed: Vec<String> = self
+            .project_files
+            .iter()
+            .filter(|file| matches!(file.kind, DocKind::Scene | DocKind::Prefab))
+            .map(|file| file.path.clone())
+            .filter(|path| !open_paths.contains(path))
+            .collect();
+        for path in closed {
+            let mut doc = match project::read_document(&root, &path) {
+                Ok(doc) => doc,
+                Err(error) => {
+                    log::warn!("state rename: cannot read {path}: {error}");
+                    continue;
+                }
+            };
+            if rewrite_animator_state(&mut doc, &paths, old, new) == 0 {
+                continue;
+            }
+            let doc = self.pruned_doc(doc);
+            match project::write_document(&root, &path, &doc) {
+                Ok(()) => affected.push(path),
+                Err(error) => log::warn!("state rename: cannot write {path}: {error}"),
+            }
+        }
+        affected.sort();
+        affected.dedup();
+        Ok(affected)
     }
 
     /// 重做一步资产编辑；返回被写回的文件。
@@ -1701,9 +1827,14 @@ impl Workspace {
         let root = self.project_root.as_deref();
         let preview = crate::assets::asset_preview(root, &asset, 32 * 1024);
 
+        let target_guids: BTreeSet<String> = asset
+            .guid
+            .iter()
+            .map(|guid| guid.to_ascii_lowercase())
+            .collect();
         let mut references = Vec::new();
         let collect = |document: &str, doc: &SceneDoc, out: &mut Vec<AssetReference>| {
-            for (entity, field, _) in doc.field_references(&asset.path) {
+            for (entity, field, _) in doc.field_references_with_guids(&asset.path, &target_guids) {
                 out.push(AssetReference {
                     document: document.to_string(),
                     entity: doc
@@ -1752,6 +1883,16 @@ impl Workspace {
             preview,
             references,
         })
+    }
+
+    /// Lower-case GUIDs of an asset, for GUID-aware reference lookups.
+    pub fn asset_guids(&self, path: &str) -> BTreeSet<String> {
+        self.assets
+            .iter()
+            .filter(|asset| asset.path == path)
+            .filter_map(|asset| asset.guid.as_deref())
+            .map(str::to_ascii_lowercase)
+            .collect()
     }
 
     /// 打开（或切到）磁盘上的文档。
@@ -5446,6 +5587,60 @@ fn overrides_between(
     out
 }
 
+/// 作者侧状态机路径 → 场景 / 预制体里可能写的运行时路径。
+///
+/// 同时接受 `assets/anim/hero.statemachine.json`、`anim/hero.statemachine.json`
+/// 和 cooked 的 `anim/hero.rasm`，避免作者手写路径时漏改。
+fn state_machine_runtime_paths(source: &str) -> Vec<String> {
+    let source = source.trim();
+    if source.is_empty() {
+        return Vec::new();
+    }
+    let mut paths = vec![source.to_string()];
+    if let Some(relative) = source.strip_prefix("assets/") {
+        paths.push(relative.to_string());
+    }
+    if let Some(stem) = source.strip_suffix(".statemachine.json") {
+        let stem = stem.strip_prefix("assets/").unwrap_or(stem);
+        paths.push(format!("{stem}.rasm"));
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+/// 把指向同一份状态机的 `Animator.state` 从 `old` 改成 `new`，返回改动处数。
+fn rewrite_animator_state(
+    doc: &mut SceneDoc,
+    machine_paths: &[String],
+    old: &str,
+    new: &str,
+) -> usize {
+    let mut rewritten = 0;
+    for entity in &mut doc.entities {
+        let Some(animator) = entity
+            .components
+            .get_mut("prism_engine::scene::Animator")
+            .and_then(Value::as_object_mut)
+        else {
+            continue;
+        };
+        let machine = animator
+            .get("state_machine_path")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if !machine_paths.iter().any(|path| path == machine) {
+            continue;
+        }
+        if animator.get("state").and_then(Value::as_str) == Some(old) {
+            animator.insert("state".to_string(), Value::String(new.to_string()));
+            rewritten += 1;
+        }
+    }
+    rewritten
+}
+
 /// 文档所在的目录（`assets/scenes` 这种），没有路径时按 `assets` 处理。
 /// 图节点里的 `*.rasm` → 同名 `*.statemachine.json`；已经是作者路径就原样返回。
 fn state_machine_source_path(machine: &str) -> Option<String> {
@@ -5472,6 +5667,78 @@ fn document_dir(path: Option<&str>) -> String {
     path.and_then(|path| path.rsplit_once('/'))
         .map(|(dir, _)| dir.to_string())
         .unwrap_or_else(|| "assets".to_string())
+}
+
+fn remove_asset_sidecar(path: &Path) {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".rmeta");
+    let meta = path.with_file_name(name);
+    if let Err(error) = std::fs::remove_file(&meta) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            log::warn!("asset meta: failed to remove {}: {error}", meta.display());
+        }
+    }
+}
+
+/// GUIDs of the assets moved by a rename (file or directory subtree).
+fn moved_guids(root: &Path, moves: &[(String, String)]) -> BTreeSet<String> {
+    let assets = project::scan_assets(root);
+    let mut out = BTreeSet::new();
+    for (from, to) in moves {
+        let from_prefix = format!("{from}/");
+        let to_prefix = format!("{to}/");
+        for asset in &assets {
+            // `rewrite_moved_references` runs after the filesystem move, so the
+            // assets are already under `to`; match both sides for robustness.
+            if asset.path == *from
+                || asset.path == *to
+                || asset.path.starts_with(&from_prefix)
+                || asset.path.starts_with(&to_prefix)
+            {
+                if let Some(guid) = &asset.guid {
+                    out.insert(guid.to_ascii_lowercase());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Does the path slot behind `field` have a sibling GUID that still exists?
+fn reference_has_live_guid(
+    doc: &SceneDoc,
+    entity: usize,
+    field: &str,
+    live_guids: &BTreeSet<String>,
+) -> bool {
+    let Some((component, path_field)) = field.split_once('.') else {
+        return false;
+    };
+    let Some(payload) = doc
+        .entities
+        .get(entity)
+        .and_then(|entity| entity.components.get(component))
+        .and_then(Value::as_object)
+    else {
+        return false;
+    };
+    let leaf = path_field.split(['.', '[']).next().unwrap_or(path_field);
+    let Some(guid_field) = crate::assets::guid_field_for_path(component, leaf) else {
+        return false;
+    };
+    let Some(value) = payload.get(&guid_field) else {
+        return false;
+    };
+    let index = path_field
+        .split_once('[')
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .and_then(|(number, _)| number.parse::<usize>().ok());
+    let guid = match (index, value) {
+        (Some(index), Value::Array(items)) => items.get(index).and_then(Value::as_str),
+        (None, Value::String(guid)) => Some(guid.as_str()),
+        _ => None,
+    };
+    guid.is_some_and(|guid| live_guids.contains(&guid.to_ascii_lowercase()))
 }
 
 fn hydrate_doc(schema: &Schema, doc: &mut SceneDoc) {
@@ -7837,6 +8104,194 @@ mod tests {
     }
 
     #[test]
+    fn renaming_a_state_machine_state_rewrites_animator_references() {
+        let project = TempProject::new("rename-state-refs");
+        std::fs::create_dir_all(project.root.join("assets/anim")).unwrap();
+        std::fs::write(
+            project.root.join("assets/anim/hero.statemachine.json"),
+            r#"{
+                "states": [
+                    { "name": "Idle", "clip": "anim/idle.ranim" },
+                    { "name": "Run", "clip": "anim/run.ranim" }
+                ],
+                "transitions": [{ "from": "Idle", "to": "Run", "duration": 0.2 }]
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            project.root.join("assets/scenes/main.scene.json"),
+            r#"{
+                "version": 3,
+                "entities": [
+                    { "id": 1, "name": "Hero", "components": {
+                        "prism_engine::scene::Animator": {
+                            "state_machine_path": "anim/hero.rasm", "state": "Idle"
+                        } } },
+                    { "id": 2, "name": "Other", "components": {
+                        "prism_engine::scene::Animator": {
+                            "state_machine_path": "anim/other.rasm", "state": "Idle"
+                        } } }
+                ]
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            project.root.join("assets/prefabs/hero.prefab.json"),
+            r#"{
+                "version": 3,
+                "entities": [
+                    { "id": 1, "name": "HeroPrefab", "components": {
+                        "prism_engine::scene::Animator": {
+                            "state_machine_path": "anim/hero.rasm", "state": "Idle"
+                        } } }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let mut workspace = Workspace::load_fixture(&fixture());
+        workspace.load_project(project.root.clone()).unwrap();
+        let prefab = workspace
+            .docs
+            .iter()
+            .position(|document| {
+                document.path.as_deref() == Some("assets/prefabs/hero.prefab.json")
+            })
+            .expect("prefab is open");
+        workspace.close_document(prefab);
+
+        let updated = workspace
+            .rename_state_machine_state("assets/anim/hero.statemachine.json", 0, "Stand")
+            .expect("renames state and references");
+        assert_eq!(
+            updated,
+            vec![
+                "assets/prefabs/hero.prefab.json".to_string(),
+                "assets/scenes/main.scene.json".to_string(),
+            ]
+        );
+
+        let scene = workspace
+            .docs
+            .iter()
+            .find(|document| document.path.as_deref() == Some("assets/scenes/main.scene.json"))
+            .expect("scene is open");
+        assert!(scene.dirty, "打开着的场景要标脏");
+        let hero = scene
+            .doc
+            .entities
+            .iter()
+            .find(|entity| entity.name.as_deref() == Some("Hero"))
+            .expect("Hero entity");
+        assert_eq!(
+            hero.components["prism_engine::scene::Animator"]["state"],
+            "Stand"
+        );
+        let other = scene
+            .doc
+            .entities
+            .iter()
+            .find(|entity| entity.name.as_deref() == Some("Other"))
+            .expect("Other entity");
+        assert_eq!(
+            other.components["prism_engine::scene::Animator"]["state"], "Idle",
+            "其它状态机的引用不受影响"
+        );
+
+        let prefab: Value = serde_json::from_str(
+            &std::fs::read_to_string(project.root.join("assets/prefabs/hero.prefab.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            prefab["entities"][0]["components"]["prism_engine::scene::Animator"]["state"], "Stand",
+            "没打开的预制体直接写回磁盘"
+        );
+
+        let machine: Value = serde_json::from_str(
+            &std::fs::read_to_string(project.root.join("assets/anim/hero.statemachine.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(machine["states"][0]["name"], "Stand");
+        assert_eq!(machine["transitions"][0]["from"], "Stand");
+
+        let undone = workspace.undo_asset_edit().unwrap().expect("one step");
+        assert_eq!(
+            undone,
+            vec!["assets/anim/hero.statemachine.json".to_string()]
+        );
+        let machine: Value = serde_json::from_str(
+            &std::fs::read_to_string(project.root.join("assets/anim/hero.statemachine.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(machine["states"][0]["name"], "Idle");
+        assert_eq!(machine["transitions"][0]["from"], "Idle");
+    }
+
+    #[test]
+    fn renaming_a_state_machine_state_rejects_bad_input_without_touching_documents() {
+        let project = TempProject::new("rename-state-bad");
+        std::fs::create_dir_all(project.root.join("assets/anim")).unwrap();
+        std::fs::write(
+            project.root.join("assets/anim/hero.statemachine.json"),
+            r#"{
+                "states": [
+                    { "name": "Idle", "clip": "anim/idle.ranim" },
+                    { "name": "Run", "clip": "anim/run.ranim" }
+                ]
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            project.root.join("assets/scenes/main.scene.json"),
+            r#"{
+                "version": 3,
+                "entities": [{ "id": 1, "name": "Hero", "components": {
+                    "prism_engine::scene::Animator": {
+                        "state_machine_path": "anim/hero.rasm", "state": "Idle"
+                    } } }]
+            }"#,
+        )
+        .unwrap();
+        let mut workspace = Workspace::load_fixture(&fixture());
+        workspace.load_project(project.root.clone()).unwrap();
+
+        assert!(workspace
+            .rename_state_machine_state("assets/anim/hero.statemachine.json", 9, "Stand")
+            .is_err());
+        assert!(
+            workspace
+                .rename_state_machine_state("assets/anim/hero.statemachine.json", 0, "Run")
+                .is_err(),
+            "重名"
+        );
+        assert!(
+            workspace
+                .rename_state_machine_state("assets/anim/hero.statemachine.json", 0, "  ")
+                .is_err(),
+            "空名"
+        );
+
+        let scene = workspace
+            .docs
+            .iter()
+            .find(|document| document.path.as_deref() == Some("assets/scenes/main.scene.json"))
+            .expect("scene is open");
+        assert!(!scene.dirty);
+        assert_eq!(
+            scene.doc.entities[0].components["prism_engine::scene::Animator"]["state"],
+            "Idle"
+        );
+        let machine: Value = serde_json::from_str(
+            &std::fs::read_to_string(project.root.join("assets/anim/hero.statemachine.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(machine["states"][0]["name"], "Idle");
+    }
+
+    #[test]
     fn saving_after_an_external_edit_is_refused_until_forced() {
         let project = TempProject::new("save-conflict");
         std::fs::write(
@@ -8676,6 +9131,87 @@ mod tests {
         assert!(workspace
             .rename_asset("assets/textures/b.png", "outside.png")
             .is_err());
+    }
+
+    /// #466: a GUID-backed reference is not rewritten and still resolves.
+    #[test]
+    fn rename_asset_with_guid_leaves_document_untouched() {
+        let guid = "11111111111111111111111111111111";
+        let project = TempProject::new("rename-guid");
+        std::fs::create_dir_all(project.root.join("assets/textures")).unwrap();
+        std::fs::write(project.root.join("assets/textures/a.png"), b"png").unwrap();
+        std::fs::write(
+            project.root.join("assets/textures/a.png.rmeta"),
+            format!(r#"{{"guid":"{guid}","importer":"TextureImporter"}}"#),
+        )
+        .unwrap();
+        let scene = r#"{"version":3,"entities":[
+            {"id":1,"name":"Sprite","parent":null,
+             "transform":{"position":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
+             "components":{"prism_engine::scene::SpriteRenderer":{
+                "sprite_path":"assets/textures/a.png","sprite_guid":"11111111111111111111111111111111"}}}
+        ]}"#;
+        let scene_path = project.root.join("assets/scenes/main.scene.json");
+        std::fs::write(&scene_path, scene).unwrap();
+
+        let mut workspace = Workspace::load_fixture(&fixture());
+        workspace.load_project(project.root.clone()).unwrap();
+        let assets_before = workspace.assets.clone();
+        let (references, affected) = workspace
+            .rename_asset("assets/textures/a.png", "assets/textures/b.png")
+            .unwrap();
+        println!("DEBUG assets_before={assets_before:?}");
+        println!("DEBUG assets_after={:?}", workspace.assets);
+        println!(
+            "DEBUG components={:?}",
+            workspace.document().doc.entities[0].components
+        );
+        assert_eq!(references, 0);
+        assert!(affected.is_empty());
+        assert!(!workspace.document().dirty, "文档不应被改写");
+        assert_eq!(std::fs::read_to_string(&scene_path).unwrap(), scene);
+        assert!(project.root.join("assets/textures/b.png.rmeta").is_file());
+        assert!(!project.root.join("assets/textures/a.png.rmeta").exists());
+        assert!(workspace.broken_references().is_empty());
+
+        let details = workspace.asset_details("assets/textures/b.png").unwrap();
+        assert!(
+            details
+                .references
+                .iter()
+                .any(|reference| reference.field.ends_with("sprite_path")),
+            "asset details must find the stale-path GUID reference"
+        );
+    }
+
+    /// Broken-reference detection must not flag a live GUID with a stale path.
+    #[test]
+    fn missing_references_ignores_guid_backed_stale_paths() {
+        let guid = "22222222222222222222222222222222";
+        let mut workspace = Workspace::sample();
+        workspace.assets = vec![AssetInfo {
+            path: "assets/models/new.gltf".to_string(),
+            size_bytes: 1,
+            kind: AssetKind::Model,
+            importer: "GltfImporter".to_string(),
+            guid: Some(guid.to_string()),
+        }];
+        workspace.document_mut().doc.entities[0].components.insert(
+            "prism_engine::scene::MeshRenderer".to_string(),
+            json!({
+                "mesh_path": "assets/models/old.gltf",
+                "mesh_guid": guid
+            }),
+        );
+
+        assert!(workspace.broken_references().is_empty());
+        assert!(workspace.missing_references(0).is_empty());
+
+        workspace.document_mut().doc.entities[0].components.insert(
+            "prism_engine::scene::MeshRenderer".to_string(),
+            json!({ "mesh_path": "assets/models/gone.gltf" }),
+        );
+        assert_eq!(workspace.broken_references().len(), 1);
     }
 
     #[test]

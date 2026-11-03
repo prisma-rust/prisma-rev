@@ -927,21 +927,12 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
         .map(|(index, _)| *index)
         .collect();
     // 引用断掉的实体（文件被删 / 改名 / 拼错）：行尾标一个警告图标。
-    // 每帧只算一次——`resolve_reference` 要扫资产表，放在行循环里是 O(实体 × 资产)（#467）。
-    let broken: std::collections::HashSet<usize> = {
-        let dir = workspace.document_dir();
-        let paths = workspace.asset_paths();
-        workspace
-            .document()
-            .doc
-            .reference_values()
-            .into_iter()
-            .filter(|(_, _, value)| {
-                prism_editor_core::assets::resolve_reference(&paths, &dir, value).is_none()
-            })
-            .map(|(entity, _, _)| entity)
-            .collect()
-    };
+    // 每帧只算一次；GUID 仍能解析的引用不算断（#466 / #467）。
+    let broken: std::collections::HashSet<usize> = workspace
+        .broken_references()
+        .into_iter()
+        .map(|(entity, _, _)| entity)
+        .collect();
     let mut action: Option<TreeAction> = None;
     // 资产拖到实体上 = 实例化预制体（引擎的 Project → Hierarchy 拖拽）。
     let mut asset_drop: Option<(usize, String)> = None;
@@ -4270,6 +4261,16 @@ mod keyframe_editor_tests {
     }
 
     #[test]
+    fn clip_runtime_paths_strip_only_the_assets_prefix() {
+        assert_eq!(
+            clip_runtime_path("assets/char/walk.ranim"),
+            "char/walk.ranim"
+        );
+        assert_eq!(clip_runtime_path("char/walk.ranim"), "char/walk.ranim");
+        assert_eq!(clip_runtime_path("walk.ranim"), "walk.ranim");
+    }
+
+    #[test]
     fn appending_a_key_lands_one_second_after_the_last_one() {
         let mut keys = vec![json!({"time": 0.0, "value": [0.0, 0.0, 0.0]})];
         append_key(&mut keys, [1.0, 1.0, 1.0]);
@@ -4917,13 +4918,19 @@ struct AssetActions {
 /// 选中它并在 Scene / Hierarchy 里一起高亮。找不到时只写状态栏，不改选择。
 fn ping_asset(workspace: &mut Workspace, state: &mut UiState, path: &str) {
     let active = workspace.active_index();
+    let target_guids = workspace.asset_guids(path);
     let mut found: Option<(usize, usize)> = None;
     for offset in 0..workspace.docs.len() {
         let index = (active + offset) % workspace.docs.len().max(1);
         let Some(doc) = workspace.docs.get(index) else {
             continue;
         };
-        if let Some((entity, _, _)) = doc.doc.field_references(path).into_iter().next() {
+        if let Some((entity, _, _)) = doc
+            .doc
+            .field_references_with_guids(path, &target_guids)
+            .into_iter()
+            .next()
+        {
             found = Some((index, entity));
             break;
         }
@@ -5675,6 +5682,11 @@ fn runtime_node_summary(node: &prism_anim::GraphNodeSnapshot) -> String {
 /// 运行中的 Montage Slot 一行。
 fn runtime_montage_summary(montage: &prism_anim::MontageSnapshot) -> String {
     let clip = montage.clip.as_deref().unwrap_or("-");
+    let section = montage
+        .section
+        .as_deref()
+        .map(|section| format!(" · {section}"))
+        .unwrap_or_default();
     let time = montage
         .time
         .map(|time| format!("{time:.2}s"))
@@ -5690,7 +5702,7 @@ fn runtime_montage_summary(montage: &prism_anim::MontageSnapshot) -> String {
         flags.push_str(&format!(" +{} queued", montage.queued));
     }
     format!(
-        "slot {} · {clip} {time} w={:.2}{flags}",
+        "slot {} · {clip}{section} {time} w={:.2}{flags}",
         montage.slot, montage.weight
     )
 }
@@ -5771,18 +5783,27 @@ pub fn anim_graph(
 ) {
     let Some(path) = state.asset_primary().cloned() else {
         ui.label(
-            RichText::new("select an .animgraph.json / .statemachine.json asset")
+            RichText::new("select an animation graph / state machine / clip / sidecar asset")
                 .weak()
                 .size(11.0),
         );
         return;
     };
     let notify_asset = is_notify_sidecar(&path);
+    let sync_marker_asset = is_sync_markers_sidecar(&path);
+    let montage_asset = is_montages_sidecar(&path);
+    let clip_asset = path.ends_with(".ranim");
     let graph_asset = path.ends_with(".animgraph.json");
     let machine_asset = path.ends_with(".statemachine.json");
-    if !notify_asset && !graph_asset && !machine_asset {
+    if !notify_asset
+        && !sync_marker_asset
+        && !montage_asset
+        && !clip_asset
+        && !graph_asset
+        && !machine_asset
+    {
         ui.label(
-            RichText::new("select an .animgraph.json / .statemachine.json asset")
+            RichText::new("select an animation graph / state machine / clip / sidecar asset")
                 .weak()
                 .size(11.0),
         );
@@ -5800,6 +5821,18 @@ pub fn anim_graph(
 
     if notify_asset {
         draw_notifies_asset(ui, workspace, state, &path);
+        return;
+    }
+    if sync_marker_asset {
+        draw_sync_markers_asset(ui, workspace, state, &path);
+        return;
+    }
+    if montage_asset {
+        draw_montages_asset(ui, workspace, state, &path);
+        return;
+    }
+    if clip_asset {
+        draw_clip_asset(ui, workspace, &path);
         return;
     }
 
@@ -5922,13 +5955,29 @@ pub fn anim_graph(
                         state.status = match workspace.write_asset_json(&path, &value) {
                             Ok(()) => {
                                 workspace.record_asset_edit(&path, &before, &value);
-                                format!("saved transitions in {path}")
+                                format!("saved state machine in {path}")
                             }
                             Err(error) => format!("save transitions failed: {error}"),
                         };
                     }
                     Ok(false) => {}
-                    Err(error) => state.status = format!("state machine: {error}"),
+                    Err(error) => {
+                        state.anim_graph_edit.sm_state_rename = None;
+                        state.status = format!("state machine: {error}");
+                    }
+                }
+                if let Some((index, new_name)) = state.anim_graph_edit.sm_state_rename.take() {
+                    state.status =
+                        match workspace.rename_state_machine_state(&path, index, &new_name) {
+                            Ok(updated) if updated.is_empty() => {
+                                format!("renamed state to '{new_name}'")
+                            }
+                            Ok(updated) => format!(
+                                "renamed state to '{new_name}', updated {}",
+                                updated.join(", ")
+                            ),
+                            Err(error) => format!("state machine: {error}"),
+                        };
                 }
             }
             Err(error) => {
@@ -5977,6 +6026,16 @@ fn is_notify_sidecar(path: &str) -> bool {
         .ends_with(".skinning/notifies.json")
 }
 
+fn is_sync_markers_sidecar(path: &str) -> bool {
+    path.to_ascii_lowercase()
+        .ends_with(".skinning/sync_markers.json")
+}
+
+fn is_montages_sidecar(path: &str) -> bool {
+    path.to_ascii_lowercase()
+        .ends_with(".skinning/montages.json")
+}
+
 /// `*.skinning/notifies.json`：按剪辑列出事件，可改时间 / 名字、增删。
 fn draw_notifies_asset(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState, path: &str) {
     ui.label(
@@ -6020,6 +6079,916 @@ fn draw_notifies_asset(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiSta
     }
 }
 
+const ANIMATOR_COMPONENT: &str = "prism_engine::scene::Animator";
+
+/// 资产路径 → `Animator.clip_path` 使用的、相对 `assets/` 的运行时路径。
+fn clip_runtime_path(asset_path: &str) -> &str {
+    asset_path.strip_prefix("assets/").unwrap_or(asset_path)
+}
+
+/// 当前场景选择里第一个带 Animator 的实体下标。
+fn selected_animator_index(workspace: &Workspace) -> Option<usize> {
+    workspace.selection.iter().rev().copied().find(|index| {
+        workspace
+            .document()
+            .doc
+            .entities
+            .get(*index)
+            .is_some_and(|entity| entity.components.contains_key(ANIMATOR_COMPONENT))
+    })
+}
+
+fn edit_animator(
+    workspace: &mut Workspace,
+    index: usize,
+    label: &str,
+    mutate: impl FnOnce(&mut Value),
+) {
+    workspace.edit(label, |document| {
+        if let Some(animator) = document
+            .doc
+            .entities
+            .get_mut(index)
+            .and_then(|entity| entity.components.get_mut(ANIMATOR_COMPONENT))
+        {
+            mutate(animator);
+        }
+    });
+}
+
+/// `.ranim`：剪辑检查器（时长、轨道、Notify / 同步标记、根运动）。
+///
+/// 事件 / 标记的编辑走作者侧侧车；这里不写二进制资产。选中带 Animator 的实体时，
+/// 还可以把剪辑套到该实体上并做点击 seek / 播放暂停 / 倍速 / loop。
+fn draw_clip_asset(ui: &mut Ui, workspace: &mut Workspace, path: &str) {
+    let bytes = match workspace.read_asset_bytes(path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            ui.label(
+                RichText::new(format!("read {path} failed: {error}"))
+                    .color(Color32::from_rgb(232, 96, 96)),
+            );
+            return;
+        }
+    };
+    let Some(clip) = prism_anim::decode_ranim(&bytes) else {
+        ui.label(RichText::new("not a valid .ranim clip").color(Color32::from_rgb(232, 96, 96)));
+        return;
+    };
+    let duration = clip.clip_duration().max(0.0);
+    ui.label(RichText::new(&clip.name).strong().size(13.0));
+    ui.label(RichText::new(path).weak().size(10.0));
+    let flags = match (clip.looped, clip.additive) {
+        (true, true) => "looped · additive",
+        (true, false) => "looped",
+        (false, true) => "additive",
+        (false, false) => "one-shot",
+    };
+    ui.label(
+        RichText::new(format!(
+            "{duration:.2}s · {:.0} fps · {flags} · {} tracks · {} notifies · {} sync markers",
+            clip.fps,
+            clip.tracks.len(),
+            clip.notifies.len(),
+            clip.sync_markers.len()
+        ))
+        .weak()
+        .size(10.0),
+    );
+
+    let selected = selected_animator_index(workspace);
+    let runtime_path = clip_runtime_path(path).to_string();
+    let current_animator = selected.and_then(|index| {
+        workspace.document().doc.entities[index]
+            .components
+            .get(ANIMATOR_COMPONENT)
+            .cloned()
+    });
+    let matches = current_animator
+        .as_ref()
+        .and_then(|animator| animator.get("clip_path").and_then(Value::as_str))
+        == Some(runtime_path.as_str());
+
+    ui.separator();
+    let width = ui.available_width().clamp(160.0, 560.0);
+    let (track, painter) = ui.allocate_painter(Vec2::new(width, 44.0), egui::Sense::click());
+    let rect = track.rect;
+    painter.rect_filled(rect, 3.0, Color32::from_rgb(26, 28, 32));
+    let inset = 8.0;
+    let left = rect.left() + inset;
+    let usable = (rect.width() - inset * 2.0).max(1.0);
+    let y = rect.center().y;
+    painter.line_segment(
+        [egui::pos2(left, y), egui::pos2(left + usable, y)],
+        egui::Stroke::new(1.0_f32, Color32::from_rgb(58, 63, 72)),
+    );
+    painter.text(
+        egui::pos2(left, rect.bottom() - 1.0),
+        egui::Align2::LEFT_BOTTOM,
+        "0",
+        egui::FontId::monospace(8.0),
+        Color32::from_rgb(110, 116, 126),
+    );
+    painter.text(
+        egui::pos2(left + usable, rect.bottom() - 1.0),
+        egui::Align2::RIGHT_BOTTOM,
+        format!("{duration:.2}s"),
+        egui::FontId::monospace(8.0),
+        Color32::from_rgb(110, 116, 126),
+    );
+    for notify in &clip.notifies {
+        let x = prism_editor_core::timeline_x(notify.time, duration, left, usable);
+        painter.circle_filled(egui::pos2(x, y), 3.5, Color32::from_rgb(214, 178, 74));
+    }
+    for phase in &clip.sync_markers {
+        let x = prism_editor_core::timeline_x(phase * duration, duration, left, usable);
+        painter.rect_filled(
+            egui::Rect::from_center_size(egui::pos2(x, y - 7.0), Vec2::new(5.0, 5.0)),
+            1.0,
+            Color32::from_rgb(112, 196, 168),
+        );
+    }
+    if let Some(pos) = track.hover_pos() {
+        let mut closest: Option<(f32, String)> = None;
+        for notify in &clip.notifies {
+            let x = prism_editor_core::timeline_x(notify.time, duration, left, usable);
+            let distance = (x - pos.x).abs();
+            if distance <= 8.0 && closest.as_ref().is_none_or(|(best, _)| distance < *best) {
+                closest = Some((distance, format!("{} @ {:.2}s", notify.name, notify.time)));
+            }
+        }
+        for phase in &clip.sync_markers {
+            let x = prism_editor_core::timeline_x(phase * duration, duration, left, usable);
+            let distance = (x - pos.x).abs();
+            if distance <= 8.0 && closest.as_ref().is_none_or(|(best, _)| distance < *best) {
+                closest = Some((distance, format!("sync {phase:.3}")));
+            }
+        }
+        if let Some((_, text)) = closest {
+            track.clone().on_hover_text(text);
+        }
+    }
+    ui.label(
+        RichText::new("gold = notify · green = sync marker · read-only (edit sidecars)")
+            .weak()
+            .size(9.0),
+    );
+
+    if let Some(root) = clip.tracks.iter().min_by_key(|track| track.joint) {
+        if let (Some(first), Some(last)) = (
+            root.positions
+                .iter()
+                .min_by(|a, b| a.time.total_cmp(&b.time)),
+            root.positions
+                .iter()
+                .max_by(|a, b| a.time.total_cmp(&b.time)),
+        ) {
+            let (delta, yaw) = prism_editor_core::root_motion_delta(first.value, last.value);
+            ui.label(
+                RichText::new(format!(
+                    "root joint {} · Δ ({:.2}, {:.2}, {:.2}) m · yaw {:.1}°",
+                    root.joint, delta[0], delta[1], delta[2], yaw
+                ))
+                .monospace()
+                .size(10.0),
+            );
+        }
+    }
+
+    egui::CollapsingHeader::new(
+        RichText::new(format!("Tracks ({})", clip.tracks.len()))
+            .strong()
+            .size(11.0),
+    )
+    .id_salt("clip-tracks")
+    .show(ui, |ui| {
+        for track in &clip.tracks {
+            let first = track
+                .positions
+                .iter()
+                .map(|key| key.time)
+                .chain(track.rotations.iter().map(|key| key.time))
+                .chain(track.scales.iter().map(|key| key.time))
+                .filter(|time| time.is_finite())
+                .fold(f32::INFINITY, f32::min);
+            let last = track
+                .positions
+                .iter()
+                .map(|key| key.time)
+                .chain(track.rotations.iter().map(|key| key.time))
+                .chain(track.scales.iter().map(|key| key.time))
+                .filter(|time| time.is_finite())
+                .fold(f32::NEG_INFINITY, f32::max);
+            let range = if first.is_finite() && last.is_finite() {
+                format!("{first:.2}..{last:.2}s")
+            } else {
+                "no keys".to_string()
+            };
+            ui.label(
+                RichText::new(format!(
+                    "#{} · pos {} · rot {} · scale {} · {range}",
+                    track.joint,
+                    track.positions.len(),
+                    track.rotations.len(),
+                    track.scales.len()
+                ))
+                .monospace()
+                .size(9.0),
+            );
+        }
+    });
+
+    if !clip.notifies.is_empty() {
+        egui::CollapsingHeader::new(
+            RichText::new(format!("Notifies ({})", clip.notifies.len()))
+                .strong()
+                .size(11.0),
+        )
+        .id_salt("clip-notifies")
+        .show(ui, |ui| {
+            for notify in &clip.notifies {
+                ui.label(
+                    RichText::new(format!("{:.2}s · {}", notify.time, notify.name))
+                        .monospace()
+                        .size(9.0),
+                );
+            }
+        });
+    }
+
+    ui.separator();
+    ui.label(RichText::new("Selected Animator").strong().size(11.0));
+    let Some(index) = selected else {
+        ui.label(
+            RichText::new("select an entity with an Animator in the scene")
+                .weak()
+                .size(10.0),
+        );
+        return;
+    };
+    let Some(animator) = current_animator.as_ref() else {
+        return;
+    };
+    if !matches {
+        let current_clip = animator
+            .get("clip_path")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        ui.label(
+            RichText::new(format!(
+                "current clip: {}",
+                if current_clip.is_empty() {
+                    "-"
+                } else {
+                    current_clip
+                }
+            ))
+            .weak()
+            .size(10.0),
+        );
+        if ui
+            .button("Use this clip (clears state machine / graph overrides)")
+            .clicked()
+        {
+            edit_animator(workspace, index, "use animation clip", |animator| {
+                animator["clip_path"] = json!(runtime_path.as_str());
+                animator["time"] = json!(0.0);
+                animator["playing"] = json!(true);
+                animator["looped"] = json!(clip.looped);
+                animator["state_machine_path"] = json!("");
+                animator["anim_graph_path"] = json!("");
+            });
+            ui.label(
+                RichText::new("applied; the scene reloads after the edit debounce")
+                    .weak()
+                    .size(9.0),
+            );
+        }
+        return;
+    }
+
+    let mut speed = animator.get("speed").and_then(Value::as_f64).unwrap_or(1.0) as f32;
+    let playing = animator
+        .get("playing")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let mut looped = animator
+        .get("looped")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let time = animator.get("time").and_then(Value::as_f64).unwrap_or(0.0) as f32;
+    ui.horizontal(|ui| {
+        if ui.button(if playing { "Pause" } else { "Play" }).clicked() {
+            let next = !playing;
+            edit_animator(workspace, index, "toggle animation playback", |animator| {
+                animator["playing"] = json!(next);
+            });
+        }
+        if ui
+            .add(
+                egui::DragValue::new(&mut speed)
+                    .speed(0.01)
+                    .range(-4.0..=4.0)
+                    .prefix("speed "),
+            )
+            .changed()
+        {
+            edit_animator(workspace, index, "set animation speed", |animator| {
+                animator["speed"] = json!(speed);
+            });
+        }
+        if ui.checkbox(&mut looped, "loop").changed() {
+            edit_animator(workspace, index, "toggle animation loop", |animator| {
+                animator["looped"] = json!(looped);
+            });
+        }
+        ui.label(format!("t {time:.2}s"));
+    });
+    if matches && track.clicked() {
+        if let Some(pos) = track.interact_pointer_pos() {
+            let time = prism_editor_core::timeline_time_at(pos.x, left, usable, duration);
+            edit_animator(workspace, index, "scrub animation", |animator| {
+                animator["time"] = json!(time);
+            });
+        }
+    }
+    ui.label(
+        RichText::new("click the timeline to seek · edits are undoable")
+            .weak()
+            .size(9.0),
+    );
+}
+
+/// `*.skinning/montages.json`：按剪辑列出 Montage 段，可改 / 增删。
+fn draw_montages_asset(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState, path: &str) {
+    let mut value = match workspace.read_asset_json(path) {
+        Ok(value) => value,
+        Err(error) => {
+            ui.label(
+                RichText::new(format!("read {path} failed: {error}"))
+                    .color(Color32::from_rgb(232, 96, 96)),
+            );
+            return;
+        }
+    };
+    let view = match prism_editor_core::parse_montages_view(&value) {
+        Ok(view) => view,
+        Err(error) => {
+            ui.label(RichText::new(error).color(Color32::from_rgb(232, 96, 96)));
+            return;
+        }
+    };
+    let before = value.clone();
+    match draw_montages_view(ui, &view, &mut value, &mut state.anim_graph_edit) {
+        Ok(true) => {
+            state.status = match workspace.write_asset_json(path, &value) {
+                Ok(()) => {
+                    workspace.record_asset_edit(path, &before, &value);
+                    format!("saved montage sections in {path}")
+                }
+                Err(error) => format!("save montage sections failed: {error}"),
+            };
+        }
+        Ok(false) => {}
+        Err(error) => state.status = format!("montage file: {error}"),
+    }
+}
+
+fn draw_montages_view(
+    ui: &mut Ui,
+    view: &prism_editor_core::MontagesView,
+    document: &mut Value,
+    edit: &mut AnimGraphEditState,
+) -> Result<bool, String> {
+    let mut changed = false;
+    let mut error: Option<String> = None;
+    ui.label(
+        RichText::new(format!("Montage sections ({})", view.len()))
+            .strong()
+            .size(11.0),
+    );
+    if view.is_empty() {
+        ui.label(
+            RichText::new("no montage sections yet — add one below")
+                .weak()
+                .size(10.0),
+        );
+    }
+    if edit.montage_new_section.is_none() && ui.button("+ New clip section").clicked() {
+        edit.montage_new_section = Some((String::new(), String::new(), 0.0, 0.5));
+    }
+
+    for clip in &view.clips {
+        ui.label(
+            RichText::new(format!("{} ({})", clip.clip, clip.sections.len()))
+                .strong()
+                .size(10.0),
+        );
+        let span = clip
+            .sections
+            .iter()
+            .map(|section| section.end)
+            .filter(|end| end.is_finite() && *end > 0.0)
+            .fold(1.0_f32, f32::max)
+            * 1.1;
+        let width = ui.available_width().clamp(160.0, 560.0);
+        let (track, painter) = ui.allocate_painter(Vec2::new(width, 28.0), egui::Sense::hover());
+        let rect = track.rect;
+        painter.rect_filled(rect, 3.0, Color32::from_rgb(26, 28, 32));
+        let inset = 6.0;
+        let left = rect.left() + inset;
+        let usable = (rect.width() - inset * 2.0).max(1.0);
+        for (index, section) in clip.sections.iter().enumerate() {
+            let start = prism_editor_core::timeline_x(section.start, span, left, usable);
+            let end = prism_editor_core::timeline_x(section.end, span, left, usable);
+            let bar = egui::Rect::from_min_max(
+                egui::pos2(start, rect.top() + 5.0),
+                egui::pos2(end.max(start + 2.0), rect.bottom() - 5.0),
+            );
+            let color = if index % 2 == 0 {
+                Color32::from_rgb(86, 142, 196)
+            } else {
+                Color32::from_rgb(112, 168, 124)
+            };
+            painter.rect_filled(bar, 2.0, color);
+            if bar.width() > 28.0 {
+                painter.text(
+                    bar.center(),
+                    egui::Align2::CENTER_CENTER,
+                    &section.name,
+                    egui::FontId::monospace(8.0),
+                    Color32::from_rgb(18, 20, 24),
+                );
+            }
+        }
+        painter.text(
+            egui::pos2(left + usable, rect.bottom() - 1.0),
+            egui::Align2::RIGHT_BOTTOM,
+            format!("{span:.2}s"),
+            egui::FontId::monospace(8.0),
+            Color32::from_rgb(110, 116, 126),
+        );
+
+        for (index, section) in clip.sections.iter().enumerate() {
+            ui.horizontal(|ui| {
+                let editing = matches!(
+                    &edit.montage_section_name,
+                    Some((clip_path, edit_index, _))
+                        if clip_path == &clip.clip && *edit_index == index
+                );
+                let mut name = if editing {
+                    edit.montage_section_name
+                        .as_ref()
+                        .map(|(_, _, name)| name.clone())
+                        .unwrap_or_else(|| section.name.clone())
+                } else {
+                    section.name.clone()
+                };
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut name)
+                        .desired_width(96.0)
+                        .hint_text("section name"),
+                );
+                if response.has_focus() {
+                    edit.montage_section_name = Some((clip.clip.clone(), index, name.clone()));
+                }
+                if response.lost_focus() && name.trim() != section.name {
+                    if let Err(err) = prism_editor_core::set_montage_section(
+                        document,
+                        &clip.clip,
+                        index,
+                        &name,
+                        section.start,
+                        section.end,
+                    ) {
+                        error = Some(err);
+                    } else {
+                        edit.montage_section_name = None;
+                        changed = true;
+                    }
+                }
+
+                let mut start = section.start;
+                let mut end = section.end;
+                let start_changed = ui
+                    .add(
+                        egui::DragValue::new(&mut start)
+                            .speed(0.01)
+                            .range(0.0..=span)
+                            .prefix("start "),
+                    )
+                    .changed();
+                let end_changed = ui
+                    .add(
+                        egui::DragValue::new(&mut end)
+                            .speed(0.01)
+                            .range(start..=span)
+                            .prefix("end "),
+                    )
+                    .changed();
+                if start_changed || end_changed {
+                    let current_name = edit
+                        .montage_section_name
+                        .as_ref()
+                        .filter(|(clip_path, edit_index, _)| {
+                            clip_path == &clip.clip && *edit_index == index
+                        })
+                        .map(|(_, _, name)| name.as_str())
+                        .unwrap_or(&section.name);
+                    if let Err(err) = prism_editor_core::set_montage_section(
+                        document,
+                        &clip.clip,
+                        index,
+                        current_name,
+                        start,
+                        end,
+                    ) {
+                        error = Some(err);
+                    } else {
+                        changed = true;
+                    }
+                }
+                if ui
+                    .button("×")
+                    .on_hover_text("delete this montage section")
+                    .clicked()
+                {
+                    if let Err(err) =
+                        prism_editor_core::remove_montage_section(document, &clip.clip, index)
+                    {
+                        error = Some(err);
+                    } else {
+                        edit.montage_section_name = None;
+                        changed = true;
+                    }
+                }
+            });
+            if let Some(err) = error.take() {
+                return Err(err);
+            }
+        }
+
+        let draft_matches = matches!(
+            &edit.montage_new_section,
+            Some((clip_path, _, _, _)) if clip_path == &clip.clip
+        );
+        if draft_matches {
+            let mut add = false;
+            let mut cancel = false;
+            {
+                let (_, name, start, end) = edit
+                    .montage_new_section
+                    .as_mut()
+                    .expect("draft checked above");
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(name)
+                            .desired_width(96.0)
+                            .hint_text("new section"),
+                    );
+                    ui.add(
+                        egui::DragValue::new(start)
+                            .speed(0.01)
+                            .range(0.0..=span)
+                            .prefix("start "),
+                    );
+                    ui.add(
+                        egui::DragValue::new(end)
+                            .speed(0.01)
+                            .range(*start..=span)
+                            .prefix("end "),
+                    );
+                    add = ui.button("Add").clicked();
+                    cancel = ui.button("Cancel").clicked();
+                });
+            }
+            if add {
+                let (_, name, start, end) = edit
+                    .montage_new_section
+                    .clone()
+                    .expect("draft checked above");
+                prism_editor_core::add_montage_section(document, &clip.clip, &name, start, end)?;
+                edit.montage_new_section = None;
+                changed = true;
+            } else if cancel {
+                edit.montage_new_section = None;
+            }
+        } else if ui.button("+ Section").clicked() {
+            edit.montage_new_section = Some((clip.clip.clone(), String::new(), 0.0, span.min(0.5)));
+        }
+    }
+
+    // 新剪辑的段：顶部按钮打开草稿后，这里允许填剪辑名（glTF 动画原名）。
+    if let Some((clip, _, _, _)) = edit.montage_new_section.as_ref() {
+        if !view.clips.iter().any(|entry| &entry.clip == clip) {
+            ui.separator();
+            let mut add = false;
+            let mut cancel = false;
+            {
+                let (clip_name, name, start, end) = edit
+                    .montage_new_section
+                    .as_mut()
+                    .expect("draft checked above");
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(clip_name)
+                            .desired_width(110.0)
+                            .hint_text("glTF clip name"),
+                    );
+                    ui.add(
+                        egui::TextEdit::singleline(name)
+                            .desired_width(96.0)
+                            .hint_text("section name"),
+                    );
+                    ui.add(
+                        egui::DragValue::new(start)
+                            .speed(0.01)
+                            .range(0.0..=f32::MAX)
+                            .prefix("start "),
+                    );
+                    ui.add(
+                        egui::DragValue::new(end)
+                            .speed(0.01)
+                            .range(*start..=f32::MAX)
+                            .prefix("end "),
+                    );
+                    add = ui.button("Add").clicked();
+                    cancel = ui.button("Cancel").clicked();
+                });
+            }
+            if add {
+                let (clip_name, name, start, end) = edit
+                    .montage_new_section
+                    .clone()
+                    .expect("draft checked above");
+                prism_editor_core::add_montage_section(document, &clip_name, &name, start, end)?;
+                edit.montage_new_section = None;
+                changed = true;
+            } else if cancel {
+                edit.montage_new_section = None;
+            }
+        }
+    }
+
+    ui.label(
+        RichText::new(
+            "cook merges sections into .ranim v4 · MontageRequest::with_section jumps to them",
+        )
+        .weak()
+        .size(9.0),
+    );
+    Ok(changed)
+}
+
+/// `*.skinning/sync_markers.json`：按剪辑列出归一化相位，可改 / 增删。
+fn draw_sync_markers_asset(
+    ui: &mut Ui,
+    workspace: &mut Workspace,
+    state: &mut UiState,
+    path: &str,
+) {
+    let mut value = match workspace.read_asset_json(path) {
+        Ok(value) => value,
+        Err(error) => {
+            ui.label(
+                RichText::new(format!("read {path} failed: {error}"))
+                    .color(Color32::from_rgb(232, 96, 96)),
+            );
+            return;
+        }
+    };
+    let view = match prism_editor_core::parse_sync_markers_view(&value) {
+        Ok(view) => view,
+        Err(error) => {
+            ui.label(RichText::new(error).color(Color32::from_rgb(232, 96, 96)));
+            return;
+        }
+    };
+    let before = value.clone();
+    match draw_sync_markers_view(ui, &view, &mut value, &mut state.anim_graph_edit) {
+        Ok(true) => {
+            state.status = match workspace.write_asset_json(path, &value) {
+                Ok(()) => {
+                    workspace.record_asset_edit(path, &before, &value);
+                    format!("saved sync markers in {path}")
+                }
+                Err(error) => format!("save sync markers failed: {error}"),
+            };
+        }
+        Ok(false) => {}
+        Err(error) => state.status = format!("sync markers: {error}"),
+    }
+}
+
+fn draw_sync_markers_view(
+    ui: &mut Ui,
+    view: &prism_editor_core::SyncMarkersView,
+    document: &mut Value,
+    edit: &mut AnimGraphEditState,
+) -> Result<bool, String> {
+    let mut changed = false;
+    ui.label(
+        RichText::new(format!("Sync markers ({})", view.len()))
+            .strong()
+            .size(11.0),
+    );
+    if view.is_empty() {
+        ui.label(
+            RichText::new("no sync markers yet — add one below")
+                .weak()
+                .size(10.0),
+        );
+    }
+
+    let mut phase_edits = Vec::new();
+    let mut removals = Vec::new();
+    for clip in &view.clips {
+        ui.label(
+            RichText::new(format!("{} ({})", clip.clip, clip.phases.len()))
+                .strong()
+                .size(10.0),
+        );
+        let width = ui.available_width().clamp(140.0, 520.0);
+        let (track, painter) =
+            ui.allocate_painter(Vec2::new(width, 20.0), egui::Sense::click_and_drag());
+        let rect = track.rect;
+        painter.rect_filled(rect, 3.0, Color32::from_rgb(26, 28, 32));
+        let inset = 5.0;
+        let left = rect.left() + inset;
+        let usable = (rect.width() - inset * 2.0).max(1.0);
+        let y = rect.center().y;
+        painter.line_segment(
+            [egui::pos2(left, y), egui::pos2(left + usable, y)],
+            egui::Stroke::new(1.0_f32, Color32::from_rgb(58, 63, 72)),
+        );
+        for tick in [0.25, 0.5, 0.75] {
+            let x = left + tick * usable;
+            painter.line_segment(
+                [egui::pos2(x, y - 3.0), egui::pos2(x, y + 3.0)],
+                egui::Stroke::new(1.0_f32, Color32::from_rgb(48, 52, 60)),
+            );
+        }
+        painter.text(
+            egui::pos2(left, rect.top() + 1.0),
+            egui::Align2::LEFT_TOP,
+            "0",
+            egui::FontId::monospace(8.0),
+            Color32::from_rgb(110, 116, 126),
+        );
+        painter.text(
+            egui::pos2(left + usable, rect.top() + 1.0),
+            egui::Align2::RIGHT_TOP,
+            "1",
+            egui::FontId::monospace(8.0),
+            Color32::from_rgb(110, 116, 126),
+        );
+        let x_of = |phase: f32| left + phase.clamp(0.0, 1.0) * usable;
+        if track.drag_started() {
+            edit.sync_marker_drag = track
+                .interact_pointer_pos()
+                .and_then(|pos| {
+                    prism_editor_core::nearest_sync_marker_index(
+                        &clip.phases,
+                        pos.x,
+                        left,
+                        usable,
+                        8.0,
+                    )
+                })
+                .map(|index| (clip.clip.clone(), index));
+        }
+        if track.dragged() {
+            if let (Some(pos), Some((owner, index))) =
+                (track.interact_pointer_pos(), edit.sync_marker_drag.as_ref())
+            {
+                if owner == &clip.clip && *index < clip.phases.len() {
+                    phase_edits.push((
+                        clip.clip.clone(),
+                        *index,
+                        prism_editor_core::sync_marker_phase_at(pos.x, left, usable),
+                    ));
+                }
+            }
+        }
+        if track.drag_stopped() {
+            edit.sync_marker_drag = None;
+        }
+        if track.clicked() {
+            if let Some(pos) = track.interact_pointer_pos() {
+                let hit = prism_editor_core::nearest_sync_marker_index(
+                    &clip.phases,
+                    pos.x,
+                    left,
+                    usable,
+                    8.0,
+                );
+                if hit.is_none() {
+                    edit.sync_marker_draft = Some((
+                        clip.clip.clone(),
+                        prism_editor_core::sync_marker_phase_at(pos.x, left, usable),
+                    ));
+                }
+            }
+        }
+        let hovered = track.hover_pos().and_then(|pos| {
+            prism_editor_core::nearest_sync_marker_index(&clip.phases, pos.x, left, usable, 8.0)
+        });
+        for (index, phase) in clip.phases.iter().enumerate() {
+            let active = edit
+                .sync_marker_drag
+                .as_ref()
+                .is_some_and(|(owner, slot)| owner == &clip.clip && *slot == index);
+            let radius = if active || hovered == Some(index) {
+                4.5
+            } else {
+                3.5
+            };
+            painter.circle_filled(
+                egui::pos2(x_of(*phase), y),
+                radius,
+                Color32::from_rgb(112, 196, 168),
+            );
+        }
+        if let Some(phase) = hovered.and_then(|index| clip.phases.get(index)) {
+            track
+                .clone()
+                .on_hover_text(format!("phase {phase:.3} — drag to move"));
+        } else if track.hovered() {
+            track
+                .clone()
+                .on_hover_text("click to add a sync marker at this phase");
+        }
+        for (index, phase) in clip.phases.iter().enumerate() {
+            ui.horizontal(|ui| {
+                let mut phase = *phase;
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut phase)
+                            .speed(0.001)
+                            .range(0.0..=1.0)
+                            .max_decimals(3)
+                            .prefix("phase "),
+                    )
+                    .changed()
+                {
+                    phase_edits.push((clip.clip.clone(), index, phase));
+                }
+                if ui.small_button("×").clicked() {
+                    removals.push((clip.clip.clone(), index));
+                }
+            });
+        }
+    }
+
+    ui.separator();
+    let mut add = None;
+    let mut cancel = false;
+    if let Some(draft) = edit.sync_marker_draft.as_mut() {
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut draft.0)
+                    .hint_text("clip (glTF name)")
+                    .desired_width(120.0),
+            );
+            ui.add(
+                egui::DragValue::new(&mut draft.1)
+                    .speed(0.001)
+                    .range(0.0..=1.0)
+                    .max_decimals(3)
+                    .prefix("phase "),
+            );
+        });
+        ui.horizontal(|ui| {
+            if ui.button("Add marker").clicked() {
+                add = Some(draft.clone());
+            }
+            if ui.button("Cancel").clicked() {
+                cancel = true;
+            }
+        });
+    } else if ui.button("+ Marker").clicked() {
+        edit.sync_marker_draft = Some((String::new(), 0.0));
+    }
+
+    for (clip, index, phase) in phase_edits {
+        prism_editor_core::set_sync_marker(document, &clip, index, phase)?;
+        changed = true;
+    }
+    for (clip, index) in removals {
+        prism_editor_core::remove_sync_marker(document, &clip, index)?;
+        changed = true;
+    }
+    if let Some((clip, phase)) = add {
+        prism_editor_core::add_sync_marker(document, &clip, phase)?;
+        edit.sync_marker_draft = None;
+        changed = true;
+    }
+    if cancel {
+        edit.sync_marker_draft = None;
+    }
+    Ok(changed)
+}
+
 fn draw_notifies_view(
     ui: &mut Ui,
     view: &prism_editor_core::NotifiesView,
@@ -6061,7 +7030,7 @@ fn draw_notifies_view(
         let y = rect.center().y;
         painter.line_segment(
             [egui::pos2(left, y), egui::pos2(left + usable, y)],
-            egui::Stroke::new(1.0, Color32::from_rgb(58, 63, 72)),
+            egui::Stroke::new(1.0_f32, Color32::from_rgb(58, 63, 72)),
         );
         painter.text(
             egui::pos2(left + usable, rect.top() + 1.0),
@@ -6338,8 +7307,10 @@ fn draw_anim_graph_layout(
 /// Animation Graph 面板的输入缓冲（跨帧保留正在编辑的文本）。
 #[derive(Debug, Default)]
 pub struct AnimGraphEditState {
-    /// 「新增剪辑节点」：(节点名, 剪辑路径)。
+    /// 「新增节点」：(节点名, 剪辑 / 状态机路径或可选上游节点)。
     pub new_node: (String, String),
+    /// 「新增节点」类型；空串按 `clip_player` 处理。
+    pub new_node_kind: String,
     /// 正在编辑的连线骨骼掩码：(节点名, 连线下标, 文本)。
     ///
     /// 失焦时才写回：边打字边规范化会把还没打完的逗号吃掉。
@@ -6347,6 +7318,12 @@ pub struct AnimGraphEditState {
     /// 正在编辑的状态名 / 剪辑：(状态下标, 文本)，同样失焦才写回。
     pub sm_state_name: Option<(usize, String)>,
     pub sm_state_clip: Option<(usize, String)>,
+    /// 「+ State」草稿：(名字, 剪辑路径)。
+    pub sm_new_state: Option<(String, String)>,
+    /// 待执行的状态改名：(状态下标, 新名字)，由工作区同步场景 / 预制体引用。
+    pub sm_state_rename: Option<(usize, String)>,
+    /// 正在编辑的条件参数名：(转移下标, 条件下标, 文本)，失焦才写回。
+    pub sm_condition_name: Option<(usize, usize, String)>,
     /// 正在编辑的图节点剪辑：(节点名, 文本)。
     pub graph_node_clip: Option<(String, String)>,
     /// 正在编辑的图节点名字：(旧名字, 文本)。
@@ -6368,8 +7345,34 @@ pub struct AnimGraphEditState {
     pub notify_draft: Option<(String, f32, String)>,
     /// 正在拖拽的 Notify 标记：(剪辑, 下标)。
     pub notify_drag: Option<(String, usize)>,
+    /// 正在拖拽的同步标记：(剪辑, 下标)。
+    pub sync_marker_drag: Option<(String, usize)>,
+    /// 新增同步标记草稿：(剪辑, 相位)。
+    pub sync_marker_draft: Option<(String, f32)>,
+    /// 正在编辑的 Montage 段名：(剪辑, 下标, 文本)，失焦才写回。
+    pub montage_section_name: Option<(String, usize, String)>,
+    /// 新增 Montage 段草稿：(剪辑, 名字, 起点, 终点)。
+    pub montage_new_section: Option<(String, String, f32, f32)>,
     /// 正在拖拽的二维混合空间样本：(节点, 下标)。
     pub graph_sample_drag: Option<(String, usize)>,
+}
+
+/// 「Add node」下拉框里能用缺省字段构成合法形状的节点类型。
+const GRAPH_NODE_KINDS: [(&str, &str); 6] = [
+    ("clip_player", "clip"),
+    ("blend_stack", "blend stack"),
+    ("slot", "slot"),
+    ("layered_blend", "layered blend"),
+    ("cached_pose", "cached pose"),
+    ("state_machine", "state machine"),
+];
+
+fn graph_node_kind_label(kind: &str) -> &str {
+    GRAPH_NODE_KINDS
+        .iter()
+        .find(|(value, _)| *value == kind)
+        .map(|(_, label)| *label)
+        .unwrap_or(kind)
 }
 
 fn is_clip_player(kind: &str) -> bool {
@@ -6539,6 +7542,7 @@ fn draw_anim_graph_view(
     let mut node_name_edits = Vec::new();
     let mut parameter_edits = Vec::new();
     let mut position_edits = Vec::new();
+    let mut sample_speed_edits = Vec::new();
     let mut sample_removals = Vec::new();
     let mut sample_adds = Vec::new();
     let mut sample_draft_cancel = false;
@@ -6736,6 +7740,18 @@ fn draw_anim_graph_view(
                                     ));
                                 }
                             }
+                            let mut speed = node.speeds.get(index).copied().unwrap_or(1.0);
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut speed)
+                                        .speed(0.01)
+                                        .range(0.0..=10.0)
+                                        .prefix("speed "),
+                                )
+                                .changed()
+                            {
+                                sample_speed_edits.push((node.name.clone(), index, speed));
+                            }
                             if ui.small_button("×").clicked() {
                                 sample_removals.push((node.name.clone(), index));
                             }
@@ -6899,6 +7915,17 @@ fn draw_anim_graph_view(
                             .size(10.0),
                         );
                     }
+                    if !node.speeds.is_empty() && node.speeds.len() != node.clips.len() {
+                        ui.label(
+                            RichText::new(format!(
+                                "{} clips vs {} sample speeds — cooker rejects this",
+                                node.clips.len(),
+                                node.speeds.len()
+                            ))
+                            .color(Color32::from_rgb(232, 160, 96))
+                            .size(10.0),
+                        );
+                    }
                 }
                 if !node.state_machine.is_empty() {
                     ui.label(
@@ -7051,6 +8078,10 @@ fn draw_anim_graph_view(
         prism_editor_core::set_blend_space_position(document, &node, index, position)?;
         changed = true;
     }
+    for (node, index, speed) in sample_speed_edits {
+        prism_editor_core::set_blend_space_sample_speed(document, &node, index, speed)?;
+        changed = true;
+    }
     for (node, index) in sample_removals {
         prism_editor_core::remove_blend_space_sample(document, &node, index)?;
         changed = true;
@@ -7097,21 +8128,41 @@ fn draw_anim_graph_view(
     }
 
     ui.separator();
-    ui.label(RichText::new("Add clip node").strong().size(11.0));
+    ui.label(RichText::new("Add node").strong().size(11.0));
+    if edit.new_node_kind.is_empty() {
+        edit.new_node_kind = "clip_player".to_string();
+    }
+    let source_hint = match edit.new_node_kind.as_str() {
+        "clip_player" => "clip.ranim",
+        "state_machine" => "anim/hero.rasm",
+        _ => "input node",
+    };
     ui.horizontal(|ui| {
         ui.add(
             egui::TextEdit::singleline(&mut edit.new_node.0)
                 .hint_text("node name")
                 .desired_width(96.0),
         );
+        egui::ComboBox::from_id_salt("anim-graph-new-node-kind")
+            .selected_text(graph_node_kind_label(&edit.new_node_kind))
+            .show_ui(ui, |ui| {
+                for (kind, label) in GRAPH_NODE_KINDS {
+                    ui.selectable_value(&mut edit.new_node_kind, kind.to_string(), label);
+                }
+            });
         ui.add(
             egui::TextEdit::singleline(&mut edit.new_node.1)
-                .hint_text("clip.ranim")
+                .hint_text(source_hint)
                 .desired_width(150.0),
         );
     });
-    if ui.button("+ Clip Node").clicked() {
-        prism_editor_core::add_clip_node(document, &edit.new_node.0, &edit.new_node.1)?;
+    if ui.button("+ Node").clicked() {
+        prism_editor_core::add_graph_node(
+            document,
+            &edit.new_node.0,
+            &edit.new_node_kind,
+            &edit.new_node.1,
+        )?;
         edit.new_node.0.clear();
         edit.new_node.1.clear();
         changed = true;
@@ -7167,11 +8218,20 @@ fn draw_state_machine_view(
             .strong()
             .size(11.0),
     );
-    let mut name_edits = Vec::new();
+    ui.label(
+        RichText::new("first state is the initial state — ↑/↓ reorder")
+            .weak()
+            .size(9.0),
+    );
+    let mut move_state = None;
+    let mut state_rename = None;
     let mut clip_edits = Vec::new();
     let mut speed_edits = Vec::new();
     let mut loop_edits = Vec::new();
     let mut duplicate_states = Vec::new();
+    let mut remove_states = Vec::new();
+    let mut add_state_draft = None;
+    let mut cancel_new_state = false;
     for (index, state) in machine.states.iter().enumerate() {
         ui.horizontal(|ui| {
             let mut name_text = edit
@@ -7190,7 +8250,7 @@ fn draw_state_machine_view(
             } else if name_response.lost_focus() {
                 if let Some((slot, text)) = edit.sm_state_name.take() {
                     if slot == index {
-                        name_edits.push((index, text));
+                        state_rename = Some((index, text));
                     }
                 }
             }
@@ -7232,6 +8292,21 @@ fn draw_state_machine_view(
             if ui.checkbox(&mut looped, "loop").changed() {
                 loop_edits.push((index, looped));
             }
+            let last = machine.states.len().saturating_sub(1);
+            ui.add_enabled_ui(index > 0, |ui| {
+                if ui
+                    .small_button("↑")
+                    .on_hover_text("move earlier (closer to the initial state)")
+                    .clicked()
+                {
+                    move_state = Some((index, -1));
+                }
+            });
+            ui.add_enabled_ui(index < last, |ui| {
+                if ui.small_button("↓").on_hover_text("move later").clicked() {
+                    move_state = Some((index, 1));
+                }
+            });
             if ui
                 .small_button("⧉")
                 .on_hover_text("duplicate state")
@@ -7239,11 +8314,23 @@ fn draw_state_machine_view(
             {
                 duplicate_states.push(state.name.clone());
             }
+            ui.add_enabled_ui(machine.states.len() > 1, |ui| {
+                if ui
+                    .small_button("×")
+                    .on_hover_text("remove state and its transitions")
+                    .clicked()
+                {
+                    remove_states.push(state.name.clone());
+                }
+            });
         });
     }
-    for (index, name) in name_edits {
-        prism_editor_core::rename_state(document, index, &name)?;
+    if let Some((index, offset)) = move_state {
+        prism_editor_core::move_state(document, index, offset)?;
         changed = true;
+    }
+    if state_rename.is_some() {
+        edit.sm_state_rename = state_rename;
     }
     for (index, clip) in clip_edits {
         prism_editor_core::set_state_clip(document, index, &clip)?;
@@ -7261,6 +8348,43 @@ fn draw_state_machine_view(
         prism_editor_core::duplicate_state(document, &name)?;
         changed = true;
     }
+    for name in remove_states {
+        prism_editor_core::remove_state(document, &name)?;
+        changed = true;
+    }
+
+    if let Some(draft) = edit.sm_new_state.as_mut() {
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut draft.0)
+                    .hint_text("state")
+                    .desired_width(80.0),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut draft.1)
+                    .hint_text("clip.ranim")
+                    .desired_width(130.0),
+            );
+        });
+        ui.horizontal(|ui| {
+            if ui.button("Add state").clicked() {
+                add_state_draft = Some(draft.clone());
+            }
+            if ui.button("Cancel").clicked() {
+                cancel_new_state = true;
+            }
+        });
+    } else if ui.button("+ State").clicked() {
+        edit.sm_new_state = Some((String::new(), String::new()));
+    }
+    if let Some((name, clip)) = add_state_draft {
+        prism_editor_core::add_state(document, &name, &clip)?;
+        edit.sm_new_state = None;
+        changed = true;
+    }
+    if cancel_new_state {
+        edit.sm_new_state = None;
+    }
 
     ui.separator();
     ui.label(
@@ -7274,8 +8398,11 @@ fn draw_state_machine_view(
             .size(9.0),
     );
     let mut move_transition = None;
+    let mut duplicate_transition = None;
     let mut remove = None;
     let mut timing_edits = Vec::new();
+    let mut kind_edits = Vec::new();
+    let mut condition_name_edits = Vec::new();
     let mut threshold_edits = Vec::new();
     let mut value_edits = Vec::new();
     let mut remove_condition = None;
@@ -7312,6 +8439,13 @@ fn draw_state_machine_view(
                             move_transition = Some((index, 1));
                         }
                     });
+                    if ui
+                        .small_button("⧉ Duplicate")
+                        .on_hover_text("copy this transition and its conditions")
+                        .clicked()
+                    {
+                        duplicate_transition = Some(index);
+                    }
                     if ui.small_button("× Remove transition").clicked() {
                         remove = Some(index);
                     }
@@ -7387,11 +8521,49 @@ fn draw_state_machine_view(
                 }
                 for (condition_index, condition) in transition.conditions.iter().enumerate() {
                     ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(format!("if {}", condition.summary))
-                                .monospace()
-                                .size(10.0),
+                        let mut kind = condition.kind.clone();
+                        egui::ComboBox::from_id_salt((
+                            "anim-sm-condition-kind-edit",
+                            index,
+                            condition_index,
+                        ))
+                        .selected_text(condition_kind_label(&condition.kind))
+                        .show_ui(ui, |ui| {
+                            for (value, label) in STATE_CONDITION_KINDS {
+                                if ui
+                                    .selectable_label(condition.kind.as_str() == value, label)
+                                    .clicked()
+                                {
+                                    kind = value.to_string();
+                                    ui.close();
+                                }
+                            }
+                        });
+                        if kind != condition.kind {
+                            kind_edits.push((index, condition_index, kind));
+                        }
+                        let mut name_text = edit
+                            .sm_condition_name
+                            .as_ref()
+                            .filter(|(transition, slot, _)| {
+                                *transition == index && *slot == condition_index
+                            })
+                            .map(|(_, _, text)| text.clone())
+                            .unwrap_or_else(|| condition.name.clone());
+                        let name_response = ui.add(
+                            egui::TextEdit::singleline(&mut name_text)
+                                .hint_text("parameter")
+                                .desired_width(90.0),
                         );
+                        if name_response.changed() {
+                            edit.sm_condition_name = Some((index, condition_index, name_text));
+                        } else if name_response.lost_focus() {
+                            if let Some((transition, slot, text)) = edit.sm_condition_name.take() {
+                                if transition == index && slot == condition_index {
+                                    condition_name_edits.push((index, condition_index, text));
+                                }
+                            }
+                        }
                         match condition.kind.as_str() {
                             "float_greater" | "float_less" => {
                                 let mut threshold = condition.threshold;
@@ -7473,6 +8645,10 @@ fn draw_state_machine_view(
         prism_editor_core::move_state_transition(document, index, offset)?;
         changed = true;
     }
+    if let Some(index) = duplicate_transition {
+        prism_editor_core::duplicate_state_transition(document, index)?;
+        changed = true;
+    }
     for (index, from, to) in retargets {
         prism_editor_core::set_transition_states(document, index, from.as_deref(), &to)?;
         changed = true;
@@ -7483,6 +8659,14 @@ fn draw_state_machine_view(
     }
     for (index, duration, fraction) in timing_edits {
         prism_editor_core::set_transition_timing(document, index, duration, fraction)?;
+        changed = true;
+    }
+    for (index, condition, kind) in kind_edits {
+        prism_editor_core::set_condition_kind(document, index, condition, &kind)?;
+        changed = true;
+    }
+    for (index, condition, name) in condition_name_edits {
+        prism_editor_core::set_condition_name(document, index, condition, &name)?;
         changed = true;
     }
     for (index, condition, threshold) in threshold_edits {
@@ -10683,6 +11867,7 @@ mod window_smoke_tests {
         let montage = prism_anim::MontageSnapshot {
             slot: "hit".into(),
             clip: Some("hit.anim".into()),
+            section: Some("Impact".into()),
             time: Some(0.25),
             weight: 0.5,
             playing: true,

@@ -464,6 +464,12 @@ pub struct MontageRequest {
     pub speed: f32,
     pub weight: f32,
     pub start_time: f32,
+    /// 从剪辑的哪个 Montage 段开始；空 = 从 `start_time` 开始。
+    pub section: String,
+    /// 起始淡入时长（秒）。
+    pub blend_in: f32,
+    /// 单次 Montage 结束前的淡出时长（秒）。
+    pub blend_out: f32,
 }
 
 impl MontageRequest {
@@ -478,6 +484,9 @@ impl MontageRequest {
             speed: 1.0,
             weight: 1.0,
             start_time: 0.0,
+            section: String::new(),
+            blend_in: 0.0,
+            blend_out: 0.0,
         }
     }
 
@@ -540,6 +549,24 @@ impl MontageRequest {
         self.start_time = start_time;
         self
     }
+
+    /// 从命名 Montage 段开始；段不存在时回退到 `start_time`。
+    pub fn with_section(mut self, section: impl Into<String>) -> Self {
+        self.section = section.into();
+        self
+    }
+
+    /// 起始淡入时长（秒）。
+    pub fn with_blend_in(mut self, seconds: f32) -> Self {
+        self.blend_in = seconds;
+        self
+    }
+
+    /// 单次 Montage 结束前的淡出时长（秒）。
+    pub fn with_blend_out(mut self, seconds: f32) -> Self {
+        self.blend_out = seconds;
+        self
+    }
 }
 
 /// 每帧由项目侧填充、由 [`animator_system`] 消费的 Montage 请求队列。
@@ -568,6 +595,17 @@ impl AnimMontageRequests {
         clip_path: impl Into<String>,
     ) {
         self.push(MontageRequest::enqueue(entity, slot, clip_path));
+    }
+
+    /// 从命名段开始立即播放。
+    pub fn play_section(
+        &mut self,
+        entity: Entity,
+        slot: impl Into<String>,
+        clip_path: impl Into<String>,
+        section: impl Into<String>,
+    ) {
+        self.push(MontageRequest::play(entity, slot, clip_path).with_section(section));
     }
 
     pub fn stop(&mut self, entity: Entity, slot: impl Into<String>) {
@@ -627,11 +665,25 @@ fn apply_montage_requests(
                     log::warn!("animator: montage clip '{path}' is not loaded");
                     continue;
                 };
+                if !request.section.trim().is_empty()
+                    && !clip
+                        .sections
+                        .iter()
+                        .any(|section| section.name == request.section)
+                {
+                    log::warn!(
+                        "animator: montage clip '{path}' has no section '{}'",
+                        request.section
+                    );
+                }
                 let montage = Montage::new(clip)
                     .with_start_time(request.start_time)
+                    .with_start_section(request.section.as_str())
                     .with_looping(request.looped)
                     .with_speed(request.speed)
-                    .with_weight(request.weight);
+                    .with_weight(request.weight)
+                    .with_blend_in(request.blend_in)
+                    .with_blend_out(request.blend_out);
                 if request.action == MontageAction::PlayNow {
                     evaluator.play_montage(slot, montage);
                 } else {

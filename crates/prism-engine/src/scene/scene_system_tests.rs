@@ -147,6 +147,38 @@ fn json_manifest_defaults_enabled_to_true() {
 }
 
 #[test]
+fn json_manifest_preserves_scene_guid() {
+    let manifest = SceneManifest::parse(
+        r#"{"scenes":[{"name":"a","path":"scenes/a.rscn",
+                       "guid":"11111111111111111111111111111111"}]}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        manifest.scenes[0].guid.as_deref(),
+        Some("11111111111111111111111111111111")
+    );
+}
+
+#[test]
+fn manifest_guid_resolves_to_the_source_scene_path() {
+    let temp = tempfile::tempdir().unwrap();
+    let assets = temp.path().join("assets");
+    std::fs::create_dir_all(assets.join("scenes")).unwrap();
+    std::fs::write(assets.join("scenes/renamed.scene.json"), b"{}").unwrap();
+    let meta =
+        prism_asset::AssetMeta::ensure(&assets, "scenes/renamed.scene.json", "SceneImporter")
+            .unwrap();
+
+    let mut manifest = SceneManifest::parse(&format!(
+        r#"{{"scenes":[{{"name":"a","path":"scenes/old.rscn","guid":"{}"}}]}}"#,
+        meta.guid
+    ))
+    .unwrap();
+    resolve_manifest_guids(&mut manifest, &assets);
+    assert_eq!(manifest.scenes[0].path, "scenes/renamed.rscn");
+}
+
+#[test]
 fn falls_back_to_the_legacy_toml_manifest() {
     let manifest = SceneManifest::parse(
         "# hand written\n[[scenes]]\nname = \"intro\"\npath = \"scenes/intro.rscn\"\n\

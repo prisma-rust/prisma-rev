@@ -1715,6 +1715,85 @@ fn an_authored_sync_marker_file_is_merged_into_the_matching_clip() {
 }
 
 #[test]
+fn an_authored_montage_file_is_merged_into_the_matching_clip() {
+    use prism_asset::formats_skinned::decode_ranim;
+
+    let glb = skinned_glb();
+    let dir = std::env::temp_dir().join("prisma_montages_author");
+    std::fs::create_dir_all(dir.join("hero.glb.skinning")).unwrap();
+    let path = dir.join("hero.glb");
+    std::fs::write(&path, &glb).unwrap();
+    std::fs::write(
+        dir.join("hero.glb.skinning/montages.json"),
+        br#"{"clips": {"walk": {"sections": [
+            {"name": "Land", "start": 0.7, "end": 1.0},
+            {"name": "Start", "start": 0.0, "end": 0.3}
+        ]}}}"#,
+    )
+    .unwrap();
+
+    let side = GltfImporter::side_assets(&path, "models/hero.glb").expect("side assets");
+    std::fs::remove_dir_all(&dir).ok();
+
+    let clip_path = side.clip_paths.first().expect("one clip").clone();
+    let bytes = side
+        .assets
+        .iter()
+        .find(|asset| asset.path == clip_path)
+        .expect("cooked clip")
+        .cooked_data
+        .clone();
+    let clip = decode_ranim(&bytes).expect("decode");
+    let names: Vec<&str> = clip
+        .sections
+        .iter()
+        .map(|section| section.name.as_str())
+        .collect();
+    assert_eq!(names, vec!["Start", "Land"], "编码时按 start 排序");
+    assert!((clip.sections[0].end - 0.3).abs() < 1e-6);
+}
+
+#[test]
+fn a_broken_or_out_of_range_montage_file_fails() {
+    let glb = skinned_glb();
+    let dir = std::env::temp_dir().join("prisma_montages_broken");
+    std::fs::create_dir_all(dir.join("hero.glb.skinning")).unwrap();
+    let path = dir.join("hero.glb");
+    std::fs::write(&path, &glb).unwrap();
+
+    std::fs::write(dir.join("hero.glb.skinning/montages.json"), b"{ not json").unwrap();
+    let error = GltfImporter::side_assets(&path, "models/hero.glb").unwrap_err();
+    assert!(
+        format!("{error}").contains("invalid montage file"),
+        "错误要点名 Montage 表: {error}"
+    );
+
+    std::fs::write(
+        dir.join("hero.glb.skinning/montages.json"),
+        br#"{"clips": {"walk": {"sections": [{"name": "TooFar", "start": 0.9, "end": 2.0}]}}}"#,
+    )
+    .unwrap();
+    let error = GltfImporter::side_assets(&path, "models/hero.glb").unwrap_err();
+    assert!(
+        format!("{error}").contains("beyond"),
+        "超出剪辑长度的段要报错: {error}"
+    );
+
+    std::fs::write(
+        dir.join("hero.glb.skinning/montages.json"),
+        br#"{"clips": {"walk": {"sections": [{"name": "Bad", "start": 0.5, "end": 0.2}]}}}"#,
+    )
+    .unwrap();
+    let error = GltfImporter::side_assets(&path, "models/hero.glb").unwrap_err();
+    assert!(
+        format!("{error}").contains("0 <= start <= end"),
+        "倒序时间要报错: {error}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn a_broken_sync_marker_file_fails_instead_of_silently_dropping_markers() {
     let glb = skinned_glb();
     let dir = std::env::temp_dir().join("prisma_sync_markers_broken");

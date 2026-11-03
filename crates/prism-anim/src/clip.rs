@@ -46,6 +46,30 @@ pub struct ClipNotify {
     pub name: String,
 }
 
+/// 一段 Montage 区间（#560 P4）：按名字跳转 / 调试时显示。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClipSection {
+    pub name: String,
+    /// 段起点（秒，剪辑本地时间）。
+    pub start: f32,
+    /// 段终点（秒，剪辑本地时间）；可以等于 `start`。
+    pub end: f32,
+}
+
+impl ClipSection {
+    /// 这个时间点是否落在段内（左闭右开；零长度段命中 `start`）。
+    pub fn contains(&self, time: f32) -> bool {
+        if !time.is_finite() || !self.start.is_finite() || !self.end.is_finite() {
+            return false;
+        }
+        if self.end <= self.start {
+            (time - self.start).abs() <= f32::EPSILON
+        } else {
+            time >= self.start && time < self.end
+        }
+    }
+}
+
 /// 一段动画剪辑。
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Clip {
@@ -59,6 +83,8 @@ pub struct Clip {
     pub notifies: Vec<ClipNotify>,
     /// 同步标记的归一化相位（升序；`from_info` 保证有限、去重）。
     pub sync_markers: Vec<f32>,
+    /// Montage 段（按 `start` 升序；普通剪辑为空）。
+    pub sections: Vec<ClipSection>,
 }
 
 impl Clip {
@@ -123,6 +149,22 @@ impl Clip {
                 .copied()
                 .filter(|phase| phase.is_finite())
                 .map(|phase| phase.rem_euclid(1.0))
+                .collect(),
+            sections: info
+                .sections
+                .iter()
+                .filter(|section| {
+                    !section.name.trim().is_empty()
+                        && section.start.is_finite()
+                        && section.end.is_finite()
+                        && section.start >= 0.0
+                        && section.end >= section.start
+                })
+                .map(|section| ClipSection {
+                    name: section.name.clone(),
+                    start: section.start,
+                    end: section.end,
+                })
                 .collect(),
         }
     }

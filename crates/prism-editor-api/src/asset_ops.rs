@@ -6,10 +6,10 @@
 //! - 重命名/移动先扫描并计划引用改写，再执行文件系统操作，最后写回文档；
 //! - 引用保持作者原来的书写风格（场景目录相对 / 项目根相对），
 //!   因此 `../valley.hdr` 与 `assets/valley.hdr` 都会被改写成等价的新路径；
-//! - 只有 schema 里**确实是资产路径**的字段（[`ASSET_PATH_FIELDS`]）会被改写，
+//! - 只有 schema 里**确实是资产路径**的字段（[`prism_scene::references::ASSET_PATH_FIELDS`]）会被改写，
 //!   实体名、UI 文本等恰好写着同一段路径的字符串保持原样。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
@@ -17,6 +17,8 @@ use serde::Serialize;
 
 use crate::assets::assets_dir;
 use crate::scene::{list_docs, read_doc, write_doc, DocKind};
+use prism_asset::{AssetMeta, GuidIndex};
+use prism_scene::references::{guid_field, is_asset_path_field, ASSET_PATH_FIELDS};
 
 /// 与 [`crate::assets`] 保持一致：构建产物目录不参与编辑。
 const SKIP_DIRS: [&str; 3] = ["cooked", "heightmaps", "target"];
@@ -90,7 +92,8 @@ pub fn rename_asset(project_root: &Path, from: &str, to: &str) -> Result<AssetMu
         new: lexical_abs(project_root, &to_rel),
         is_dir,
     };
-    let plan = plan_rewrites(project_root, &renamer)?;
+    let protected_guids = collect_asset_guids(project_root, &from_rel, is_dir);
+    let plan = plan_rewrites(project_root, &renamer, &protected_guids)?;
 
     std::fs::rename(&src, &dst).map_err(|e| format!("重命名 {from_rel} 失败: {e}"))?;
     // #466：资产身份在 `<path>.rmeta` 里，重命名时 sidecar 跟着走（目录里的
@@ -125,6 +128,7 @@ pub fn asset_reference_documents(
     let path = project_root.join(&rel);
     let is_dir = path.is_dir();
     let target = lexical_abs(project_root, &rel);
+    let target_guids = collect_asset_guids(project_root, &rel, is_dir);
     let mut out = BTreeSet::new();
 
     for entry in all_docs(project_root) {
@@ -138,12 +142,19 @@ pub fn asset_reference_documents(
             continue;
         };
         let scene_dir = path.parent().unwrap_or(project_root);
-        if contains_reference(&value, scene_dir, project_root, &target, is_dir) {
+        if contains_reference(
+            &value,
+            scene_dir,
+            project_root,
+            &target,
+            is_dir,
+            &target_guids,
+        ) {
             out.insert(relative_path_string(project_root, &path));
         }
     }
 
-    if manifest_references(project_root, &target, is_dir)? {
+    if manifest_references(project_root, &target, is_dir, &target_guids)? {
         out.insert(SCENE_MANIFEST.to_string());
     }
 
@@ -230,6 +241,34 @@ fn move_asset_sidecar(src: &Path, dst: &Path) {
             to.display()
         );
     }
+}
+
+/// 重命名前收集被移动资产的稳定 GUID。
+///
+/// 这些 GUID 对应的引用在文档里已经能自解析，重命名时**不**再改写它们的
+/// `*_path`（#466 / #465）。目录会收集整棵子树。
+pub(crate) fn collect_asset_guids(
+    project_root: &Path,
+    relative: &str,
+    is_dir: bool,
+) -> BTreeSet<String> {
+    let mut guids = BTreeSet::new();
+    if is_dir {
+        let index = GuidIndex::scan(&project_root.join(relative));
+        guids.extend(index.guids().map(str::to_ascii_lowercase));
+        return guids;
+    }
+
+    let mut candidates = vec![relative.to_string()];
+    if let Some(stem) = relative.strip_suffix(".rscn") {
+        candidates.push(format!("{stem}.scene.json"));
+    }
+    for candidate in candidates {
+        if let Some(meta) = AssetMeta::read(project_root, &candidate) {
+            guids.insert(meta.guid.to_ascii_lowercase());
+        }
+    }
+    guids
 }
 
 // ---------------------------------------------------------------------------
@@ -354,37 +393,10 @@ impl Renamer {
 /// 只有这些字段的字符串值参与引用改写：`.scene.json` 里其它字符串（`Name`、UI
 /// `Text.content`、材质/标签里恰好写着路径的文本）不是引用，改它们就是数据损坏。
 ///
-/// 新增带路径的组件字段时要同步补进来 —— `asset_path_fields_cover_string_paths_in_schema`
+/// 清单的真源在 `prism-scene::references`（cooker / 引擎 / 编辑器共用），
+/// 新增带路径的组件字段时只改那里；`asset_path_fields_cover_string_paths_in_schema`
 /// 会用 `prism-scene` 的注册表挡住漏加（不覆盖 `env_map` / `volume` / `prefab`
 /// 这类不以 `_path` 结尾的名字，所以别只靠测试）。
-const ASSET_PATH_FIELDS: [&str; 20] = [
-    "mesh_path",           // MeshRenderer
-    "material_path",       // MeshRenderer
-    "material_paths",      // MeshRenderer（Vec<String>，多 submesh 材质）
-    "sprite_path",         // SpriteRenderer
-    "tileset_path",        // Tilemap
-    "hdr_path",            // Skybox
-    "sound_path",          // AudioSource
-    "heightmap",           // Terrain（不以 _path 结尾，必须显式登记）
-    "skeleton_path",       // SkeletonRoot
-    "default_clip_path",   // SkeletonRoot
-    "skinned_mesh_path",   // SkinnedMeshRenderer
-    "clip_path",           // Animator
-    "state_machine_path",  // Animator（.rasm）
-    "blend_clip_paths",    // Animator（Vec<String>，一维混合空间）
-    "blend_2d_clip_paths", // Animator（Vec<String>，二维混合空间）
-    "additive_clip_path",  // Animator（叠加层剪辑）
-    "env_map",             // EnvironmentLighting
-    "volume",              // GiConfig
-    "prefab",              // PrefabInstance
-    "font",                // UI Text（工程自带字体，#583）
-];
-
-/// 作者 JSON 的字段名是否表示资产路径。
-fn is_asset_path_field(name: &str) -> bool {
-    ASSET_PATH_FIELDS.contains(&name)
-}
-
 struct RewritePlan {
     /// `(旧文档绝对路径, 改写后的 JSON)`。
     documents: Vec<(PathBuf, serde_json::Value)>,
@@ -395,7 +407,11 @@ struct RewritePlan {
     references: usize,
 }
 
-fn plan_rewrites(project_root: &Path, renamer: &Renamer) -> Result<RewritePlan, String> {
+fn plan_rewrites(
+    project_root: &Path,
+    renamer: &Renamer,
+    protected_guids: &BTreeSet<String>,
+) -> Result<RewritePlan, String> {
     let mut documents = Vec::new();
     let mut affected = BTreeSet::new();
     let mut references = 0;
@@ -410,9 +426,15 @@ fn plan_rewrites(project_root: &Path, renamer: &Renamer) -> Result<RewritePlan, 
         // 引用解析用旧目录；写给文档的路径用移动后的目录（目录整体重命名时两者不同）。
         let old_dir = old_abs.parent().unwrap_or(project_root);
         let write_dir = mapped_abs.parent().unwrap_or(old_dir);
-        let changed = rewrite_json(&mut value, old_dir, write_dir, project_root, None, &|abs| {
-            renamer.map(abs)
-        });
+        let changed = rewrite_json(
+            &mut value,
+            old_dir,
+            write_dir,
+            project_root,
+            None,
+            &|abs| renamer.map(abs),
+            protected_guids,
+        );
         let old_rel = relative_path_string(project_root, &old_abs);
         let mapped_rel = relative_path_string(project_root, &mapped_abs);
         if changed > 0 || mapped_rel != old_rel {
@@ -424,7 +446,7 @@ fn plan_rewrites(project_root: &Path, renamer: &Renamer) -> Result<RewritePlan, 
         }
     }
 
-    let manifest = rewrite_manifest(project_root, renamer, &mut references)?;
+    let manifest = rewrite_manifest(project_root, renamer, protected_guids, &mut references)?;
     Ok(RewritePlan {
         documents,
         manifest,
@@ -458,6 +480,7 @@ fn rewrite_json(
     project_root: &Path,
     field: Option<&str>,
     map: &dyn Fn(&Path) -> Option<PathBuf>,
+    protected_guids: &BTreeSet<String>,
 ) -> usize {
     match value {
         serde_json::Value::String(text) => {
@@ -489,23 +512,116 @@ fn rewrite_json(
         }
         serde_json::Value::Array(items) => items
             .iter_mut()
-            .map(|item| rewrite_json(item, resolve_dir, write_dir, project_root, field, map))
-            .sum(),
-        serde_json::Value::Object(fields) => fields
-            .iter_mut()
-            .map(|(name, item)| {
+            .map(|item| {
                 rewrite_json(
                     item,
                     resolve_dir,
                     write_dir,
                     project_root,
-                    Some(name.as_str()),
+                    field,
                     map,
+                    protected_guids,
                 )
             })
             .sum(),
+        serde_json::Value::Object(fields) => rewrite_object_fields(
+            fields,
+            resolve_dir,
+            write_dir,
+            project_root,
+            map,
+            protected_guids,
+        ),
         _ => 0,
     }
+}
+
+/// Rewrite one component object's fields, leaving GUID-protected slots alone.
+///
+/// A path slot is protected when its sibling `*_guid` belongs to the asset
+/// being renamed: readers will resolve the GUID to the new location, so the
+/// document does not need to change (#466). Legacy path-only documents still
+/// take the rewrite path.
+fn rewrite_object_fields(
+    fields: &mut serde_json::Map<String, serde_json::Value>,
+    resolve_dir: &Path,
+    write_dir: &Path,
+    project_root: &Path,
+    map: &dyn Fn(&Path) -> Option<PathBuf>,
+    protected_guids: &BTreeSet<String>,
+) -> usize {
+    let mut protected_single: BTreeSet<&str> = BTreeSet::new();
+    let mut protected_slots: BTreeMap<&str, BTreeSet<usize>> = BTreeMap::new();
+
+    if !protected_guids.is_empty() {
+        for &path_field in ASSET_PATH_FIELDS {
+            let Some(guid_field) = guid_field(path_field) else {
+                continue;
+            };
+            match (fields.get(path_field), fields.get(guid_field)) {
+                (Some(serde_json::Value::String(_)), Some(serde_json::Value::String(guid)))
+                    if guid_matches(guid, protected_guids) =>
+                {
+                    protected_single.insert(path_field);
+                }
+                (Some(serde_json::Value::Array(_)), Some(serde_json::Value::Array(guids))) => {
+                    let slots: BTreeSet<usize> = guids
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, guid)| {
+                            guid.as_str()
+                                .filter(|guid| guid_matches(guid, protected_guids))
+                                .map(|_| index)
+                        })
+                        .collect();
+                    if !slots.is_empty() {
+                        protected_slots.insert(path_field, slots);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut changed = 0;
+    for (name, item) in fields.iter_mut() {
+        if protected_single.contains(name.as_str()) {
+            continue;
+        }
+        if let Some(slots) = protected_slots.get(name.as_str()) {
+            if let serde_json::Value::Array(items) = item {
+                for (index, slot) in items.iter_mut().enumerate() {
+                    if slots.contains(&index) {
+                        continue;
+                    }
+                    changed += rewrite_json(
+                        slot,
+                        resolve_dir,
+                        write_dir,
+                        project_root,
+                        Some(name.as_str()),
+                        map,
+                        protected_guids,
+                    );
+                }
+                continue;
+            }
+        }
+        changed += rewrite_json(
+            item,
+            resolve_dir,
+            write_dir,
+            project_root,
+            Some(name.as_str()),
+            map,
+            protected_guids,
+        );
+    }
+    changed
+}
+
+fn guid_matches(guid: &str, protected_guids: &BTreeSet<String>) -> bool {
+    protected_guids.contains(&guid.to_ascii_lowercase())
 }
 
 fn contains_reference(
@@ -514,18 +630,56 @@ fn contains_reference(
     project_root: &Path,
     target: &Path,
     is_dir: bool,
+    target_guids: &BTreeSet<String>,
 ) -> bool {
     let matches = |path: &Path| path == target || (is_dir && path.starts_with(target));
+    if let serde_json::Value::Object(fields) = value {
+        for &path_field in ASSET_PATH_FIELDS {
+            let Some(guid_field) = guid_field(path_field) else {
+                continue;
+            };
+            match (fields.get(path_field), fields.get(guid_field)) {
+                (Some(serde_json::Value::String(_)), Some(serde_json::Value::String(guid)))
+                    if guid_matches(guid, target_guids) =>
+                {
+                    return true;
+                }
+                (Some(serde_json::Value::Array(_)), Some(serde_json::Value::Array(guids)))
+                    if guids
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .any(|guid| guid_matches(guid, target_guids)) =>
+                {
+                    return true;
+                }
+                _ => {}
+            }
+        }
+    }
     match value {
         serde_json::Value::String(text) => {
             matches(&lexical_abs(document_dir, text)) || matches(&lexical_abs(project_root, text))
         }
-        serde_json::Value::Array(items) => items
-            .iter()
-            .any(|item| contains_reference(item, document_dir, project_root, target, is_dir)),
-        serde_json::Value::Object(fields) => fields
-            .values()
-            .any(|item| contains_reference(item, document_dir, project_root, target, is_dir)),
+        serde_json::Value::Array(items) => items.iter().any(|item| {
+            contains_reference(
+                item,
+                document_dir,
+                project_root,
+                target,
+                is_dir,
+                target_guids,
+            )
+        }),
+        serde_json::Value::Object(fields) => fields.values().any(|item| {
+            contains_reference(
+                item,
+                document_dir,
+                project_root,
+                target,
+                is_dir,
+                target_guids,
+            )
+        }),
         _ => false,
     }
 }
@@ -533,6 +687,7 @@ fn contains_reference(
 fn rewrite_manifest(
     project_root: &Path,
     renamer: &Renamer,
+    protected_guids: &BTreeSet<String>,
     references: &mut usize,
 ) -> Result<Option<String>, String> {
     if crate::scene_manifest::existing_manifest(project_root).is_none() {
@@ -543,6 +698,13 @@ fn rewrite_manifest(
     let base = assets_dir(project_root);
     let mut changed = 0;
     for scene in &mut scenes {
+        if scene
+            .guid
+            .as_deref()
+            .is_some_and(|guid| protected_guids.contains(&guid.to_ascii_lowercase()))
+        {
+            continue;
+        }
         let abs = lexical_abs(&base, &scene.path);
         let Some(mapped) = renamer.map_manifest(&abs) else {
             continue;
@@ -562,7 +724,12 @@ fn rewrite_manifest(
     }
 }
 
-fn manifest_references(project_root: &Path, target: &Path, is_dir: bool) -> Result<bool, String> {
+fn manifest_references(
+    project_root: &Path,
+    target: &Path,
+    is_dir: bool,
+    target_guids: &BTreeSet<String>,
+) -> Result<bool, String> {
     if crate::scene_manifest::existing_manifest(project_root).is_none() {
         return Ok(false);
     }
@@ -571,6 +738,13 @@ fn manifest_references(project_root: &Path, target: &Path, is_dir: bool) -> Resu
     };
     let base = assets_dir(project_root);
     Ok(scenes.iter().any(|scene| {
+        if scene
+            .guid
+            .as_deref()
+            .is_some_and(|guid| target_guids.contains(&guid.to_ascii_lowercase()))
+        {
+            return true;
+        }
         let abs = lexical_abs(&base, &scene.path);
         abs == *target || (is_dir && abs.starts_with(target))
     }))
@@ -761,6 +935,7 @@ mod tests {
                 name: (*name).to_string(),
                 path: (*path).to_string(),
                 enabled: true,
+                guid: None,
             })
             .collect();
         crate::scene_manifest::write(root, &scenes).unwrap();
@@ -807,6 +982,179 @@ mod tests {
         let text = std::fs::read_to_string(root.join("assets/scenes/demo.scene.json")).unwrap();
         assert!(text.contains("../textures/sky.hdr"));
         assert!(text.contains("assets/textures/sky.hdr"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// #466: a GUID-backed reference needs no document rewrite; the reader
+    /// resolves it to the asset's new path.
+    #[test]
+    fn rename_skips_documents_whose_reference_has_the_asset_guid() {
+        let root = temp_root("rename_guid_zero_write");
+        fs::create_dir_all(root.join("assets/models")).unwrap();
+        fs::write(root.join("assets/models/old.gltf"), b"x").unwrap();
+        let meta = AssetMeta::ensure(&root, "assets/models/old.gltf", "GltfImporter").unwrap();
+        let doc_path = root.join("assets/scenes/demo.scene.json");
+        let doc = serde_json::json!({
+            "version": 3,
+            "entities": [{
+                "id": 0,
+                "name": "Entity",
+                "parent": null,
+                "transform": {},
+                "components": {
+                    "prism_engine::scene::MeshRenderer": {
+                        "mesh_path": "assets/models/old.gltf",
+                        "mesh_guid": meta.guid
+                    }
+                }
+            }]
+        });
+        write_doc(&doc_path, &doc).unwrap();
+        let before = fs::read_to_string(&doc_path).unwrap();
+
+        let result =
+            rename_asset(&root, "assets/models/old.gltf", "assets/models/new.gltf").unwrap();
+        assert_eq!(
+            result.references_updated, 0,
+            "GUID reference is not rewritten"
+        );
+        assert!(result.affected_documents.is_empty());
+        assert_eq!(
+            fs::read_to_string(&doc_path).unwrap(),
+            before,
+            "the document must not be touched"
+        );
+        assert!(root.join("assets/models/new.gltf.rmeta").is_file());
+
+        // The reader resolves the stale path through the GUID.
+        let resolved = crate::scene::read_doc_in_project(&root, &doc_path).unwrap();
+        assert_eq!(
+            resolved["entities"][0]["components"]["prism_engine::scene::MeshRenderer"]["mesh_path"],
+            "assets/models/new.gltf"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A GUID-only reference must still be visible to deletion / usage tools
+    /// even though the stored path is stale after a zero-rewrite rename.
+    #[test]
+    fn guid_reference_is_listed_and_blocks_delete() {
+        let root = temp_root("guid_reference_usage");
+        fs::create_dir_all(root.join("assets/models")).unwrap();
+        fs::write(root.join("assets/models/old.gltf"), b"x").unwrap();
+        let meta = AssetMeta::ensure(&root, "assets/models/old.gltf", "GltfImporter").unwrap();
+        let doc_path = root.join("assets/scenes/demo.scene.json");
+        let doc = serde_json::json!({
+            "version": 3,
+            "entities": [{
+                "id": 0,
+                "name": "Entity",
+                "parent": null,
+                "transform": {},
+                "components": {
+                    "prism_engine::scene::MeshRenderer": {
+                        "mesh_path": "assets/models/old.gltf",
+                        "mesh_guid": meta.guid
+                    }
+                }
+            }]
+        });
+        write_doc(&doc_path, &doc).unwrap();
+        rename_asset(&root, "assets/models/old.gltf", "assets/models/new.gltf").unwrap();
+
+        let documents = asset_reference_documents(&root, "assets/models/new.gltf").unwrap();
+        assert!(
+            documents.contains(&"assets/scenes/demo.scene.json".to_string()),
+            "GUID reference must be discovered: {documents:?}"
+        );
+        let usage = crate::assets::asset_usage(&root, "assets/models/new.gltf").unwrap();
+        assert!(
+            usage.iter().any(|reference| reference.field == "mesh_path"),
+            "GUID reference must show up in asset usage: {usage:?}"
+        );
+
+        let error = delete_asset(&root, "assets/models/new.gltf", false).unwrap_err();
+        assert!(error.contains("仍被"), "{error}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Legacy path-only slots in the same array are still rewritten.
+    #[test]
+    fn rename_rewrites_only_unprotected_array_slots() {
+        let root = temp_root("rename_guid_array");
+        fs::create_dir_all(root.join("assets/materials")).unwrap();
+        fs::write(root.join("assets/materials/a.mat"), b"x").unwrap();
+        let meta = AssetMeta::ensure(&root, "assets/materials/a.mat", "MaterialImporter").unwrap();
+        let doc_path = root.join("assets/scenes/demo.scene.json");
+        let doc = serde_json::json!({
+            "version": 3,
+            "entities": [{
+                "id": 0,
+                "name": "Entity",
+                "parent": null,
+                "transform": {},
+                "components": {
+                    "prism_engine::scene::MeshRenderer": {
+                        "mesh_path": "assets/models/box.gltf",
+                        "material_paths": [
+                            "assets/materials/a.mat",
+                            "assets/materials/a.mat"
+                        ],
+                        "material_guids": [meta.guid, ""]
+                    }
+                }
+            }]
+        });
+        write_doc(&doc_path, &doc).unwrap();
+
+        let result =
+            rename_asset(&root, "assets/materials/a.mat", "assets/materials/b.mat").unwrap();
+        assert_eq!(
+            result.references_updated, 1,
+            "only the legacy slot is rewritten"
+        );
+
+        let written = crate::scene::read_doc(&doc_path).unwrap();
+        let renderer = &written["entities"][0]["components"]["prism_engine::scene::MeshRenderer"];
+        assert_eq!(renderer["material_paths"][0], "assets/materials/a.mat");
+        assert_eq!(renderer["material_paths"][1], "assets/materials/b.mat");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The manifest is also left alone when its scene entry has the GUID.
+    #[test]
+    fn rename_skips_manifest_entry_with_scene_guid() {
+        let root = temp_root("rename_guid_manifest");
+        let old_scene = root.join("assets/scenes/old.scene.json");
+        write_doc(&old_scene, &crate::scene::empty_scene_doc()).unwrap();
+        let meta =
+            AssetMeta::ensure(&root, "assets/scenes/old.scene.json", "SceneImporter").unwrap();
+        crate::scene_manifest::write(
+            &root,
+            &[crate::scene_manifest::SceneListEntry {
+                name: "old".into(),
+                path: "scenes/old.rscn".into(),
+                enabled: true,
+                guid: Some(meta.guid.clone()),
+            }],
+        )
+        .unwrap();
+        let manifest_before = fs::read_to_string(root.join("assets/scenes.json")).unwrap();
+
+        rename_asset(
+            &root,
+            "assets/scenes/old.scene.json",
+            "assets/scenes/new.scene.json",
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(root.join("assets/scenes.json")).unwrap(),
+            manifest_before,
+            "manifest path is resolved from the GUID, not rewritten"
+        );
+        let scenes = crate::scene_manifest::read(&root).unwrap();
+        assert_eq!(scenes[0].path, "scenes/new.rscn");
         std::fs::remove_dir_all(&root).ok();
     }
 

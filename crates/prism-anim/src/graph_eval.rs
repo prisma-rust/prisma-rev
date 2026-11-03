@@ -168,6 +168,8 @@ pub struct MontageSnapshot {
     pub slot: String,
     /// 活动段的剪辑名；没有活动段时为 `None`。
     pub clip: Option<String>,
+    /// 当前时间所在的 Montage 段名；没有段 / 不在段内时为 `None`。
+    pub section: Option<String>,
     /// 活动段已经播放的时间（秒）。
     pub time: Option<f32>,
     pub weight: f32,
@@ -406,6 +408,7 @@ impl AnimGraphEvaluator {
             .map(|(slot, player)| MontageSnapshot {
                 slot: slot.clone(),
                 clip: player.active_clip().map(|clip| clip.name.clone()),
+                section: player.active_section().map(|section| section.name.clone()),
                 time: player.active_time(),
                 weight: player.active_weight(),
                 playing: player.is_playing(),

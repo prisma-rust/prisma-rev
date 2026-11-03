@@ -7,6 +7,8 @@
 
 use std::path::{Path, PathBuf};
 
+use prism_asset::GuidIndex;
+use prism_scene::references::{sync_document, SyncMode};
 use prism_scene::SceneJson;
 use serde::Serialize;
 
@@ -221,6 +223,88 @@ pub fn read_doc(path: &Path) -> Result<serde_json::Value, String> {
 /// [`read_doc`] 的场景别名。
 pub fn read_scene_doc(path: &Path) -> Result<serde_json::Value, String> {
     read_doc(path)
+}
+
+/// Find the project root containing `path` by walking up to the directory
+/// that has an `assets/` child.
+pub fn project_root_for_doc(path: &Path) -> Option<PathBuf> {
+    let mut dir = if path.is_dir() { path } else { path.parent()? };
+    loop {
+        if dir.join("assets").is_dir() {
+            return Some(dir.to_path_buf());
+        }
+        dir = dir.parent()?;
+    }
+}
+
+fn doc_relative_to_assets(assets_root: &Path, path: &Path) -> String {
+    path.strip_prefix(assets_root)
+        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_string()
+        })
+}
+
+fn sync_doc_with_project(
+    project_root: &Path,
+    path: &Path,
+    doc: &serde_json::Value,
+    mode: SyncMode,
+) -> serde_json::Value {
+    let assets_root = project_root.join("assets");
+    let index = GuidIndex::scan(&assets_root);
+    let doc_rel = doc_relative_to_assets(&assets_root, path);
+    let mut doc = doc.clone();
+    sync_document(
+        &mut doc,
+        &doc_rel,
+        mode,
+        |guid| index.path_for_guid(guid).map(str::to_string),
+        |asset| index.guid_for_path(asset).map(str::to_string),
+    );
+    doc
+}
+
+/// Read an authoring document and resolve its GUID references (GUID wins,
+/// path fallback). Old documents without GUIDs are unchanged.
+pub fn read_doc_in_project(project_root: &Path, path: &Path) -> Result<serde_json::Value, String> {
+    let doc = read_doc(path)?;
+    Ok(sync_doc_with_project(
+        project_root,
+        path,
+        &doc,
+        SyncMode::Load,
+    ))
+}
+
+/// Resolve GUIDs and fill/refresh GUID fields before writing.
+pub fn sync_doc_for_save(
+    project_root: &Path,
+    path: &Path,
+    doc: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    // Run the same migration/normalisation as `write_doc` so GUID syncing sees
+    // the final entity/component shape.
+    let normalized = prism_scene::normalize_scene_doc(doc)?;
+    Ok(sync_doc_with_project(
+        project_root,
+        path,
+        &normalized,
+        SyncMode::Save,
+    ))
+}
+
+/// Write an authoring document with both paths and GUIDs.
+pub fn write_doc_in_project(
+    project_root: &Path,
+    path: &Path,
+    doc: &serde_json::Value,
+) -> Result<(), String> {
+    let synced = sync_doc_for_save(project_root, path, doc)?;
+    write_doc(path, &synced)
 }
 
 /// 校验作者文档：形状 + 结构不变量（父索引越界 / 自父 / 空文档）。
@@ -1717,6 +1801,106 @@ mod tests {
 
         delete_scene(&renamed).unwrap();
         assert!(list_scenes(&root).unwrap().is_empty());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// #466: a scene opened through the project API resolves GUIDs to paths.
+    #[test]
+    fn project_read_prefers_guid_and_save_writes_both() {
+        let root = temp_dir("scene_guid");
+        let models = root.join("assets/models");
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::write(models.join("box.gltf"), b"mesh").unwrap();
+        let meta = prism_asset::AssetMeta::ensure(&root, "assets/models/box.gltf", "GltfImporter")
+            .unwrap();
+
+        let path = scene_path(&root, "arena").unwrap();
+        let doc = json!({
+            "version": prism_scene::SCENE_DOC_VERSION,
+            "entities": [{
+                "id": 0,
+                "name": "Box",
+                "parent": null,
+                "transform": {},
+                "components": {
+                    "prism_engine::scene::MeshRenderer": {
+                        "mesh_path": "../models/renamed.gltf",
+                        "mesh_guid": meta.guid
+                    }
+                }
+            }]
+        });
+        write_doc(&path, &doc).unwrap();
+
+        let opened = read_doc_in_project(&root, &path).unwrap();
+        assert_eq!(
+            opened["entities"][0]["components"]["prism_engine::scene::MeshRenderer"]["mesh_path"],
+            "../models/box.gltf"
+        );
+
+        // Saving the resolved document keeps both fields.
+        let saved = sync_doc_for_save(&root, &path, &opened).unwrap();
+        write_doc(&path, &saved).unwrap();
+        let raw = read_doc(&path).unwrap();
+        let renderer = &raw["entities"][0]["components"]["prism_engine::scene::MeshRenderer"];
+        assert_eq!(renderer["mesh_path"], "../models/box.gltf");
+        assert_eq!(renderer["mesh_guid"], meta.guid);
+
+        // Saving a path-only document adds the sidecar GUID.
+        let path_only = json!({
+            "version": prism_scene::SCENE_DOC_VERSION,
+            "entities": [{
+                "id": 0,
+                "name": "Box",
+                "parent": null,
+                "transform": {},
+                "components": {
+                    "prism_engine::scene::MeshRenderer": {
+                        "mesh_path": "../models/box.gltf"
+                    }
+                }
+            }]
+        });
+        write_doc(&path, &path_only).unwrap();
+        let saved = sync_doc_for_save(&root, &path, &path_only).unwrap();
+        write_doc(&path, &saved).unwrap();
+        let raw = read_doc(&path).unwrap();
+        assert_eq!(
+            raw["entities"][0]["components"]["prism_engine::scene::MeshRenderer"]["mesh_guid"],
+            meta.guid
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A document without GUIDs and without sidecars must be byte-for-byte
+    /// unchanged by a load/save round trip.
+    #[test]
+    fn legacy_scene_without_sidecars_is_unchanged() {
+        let root = temp_dir("scene_legacy");
+        let path = scene_path(&root, "legacy").unwrap();
+        let doc = json!({
+            "version": prism_scene::SCENE_DOC_VERSION,
+            "entities": [{
+                "id": 0,
+                "name": "Box",
+                "parent": null,
+                "transform": {},
+                "components": {
+                    "prism_engine::scene::MeshRenderer": {
+                        "mesh_path": "../models/missing.gltf"
+                    }
+                }
+            }]
+        });
+        write_doc(&path, &doc).unwrap();
+
+        let opened = read_doc_in_project(&root, &path).unwrap();
+        let saved = sync_doc_for_save(&root, &path, &opened).unwrap();
+        let renderer = &saved["entities"][0]["components"]["prism_engine::scene::MeshRenderer"];
+        assert_eq!(renderer["mesh_path"], "../models/missing.gltf");
+        assert!(renderer.get("mesh_guid").is_none());
 
         std::fs::remove_dir_all(&root).ok();
     }

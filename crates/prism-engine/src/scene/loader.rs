@@ -40,9 +40,11 @@
 use std::path::PathBuf;
 
 use prism_asset::runtime::{MeshAsset, ResourceManager};
+use prism_asset::GuidIndex;
 use prism_ecs::{Entity, World};
 use prism_render::managers::GpuMaterial;
 use prism_scene::json::SceneJson;
+use prism_scene::references::{sync_component, SyncMode};
 use prism_scene::rscn;
 
 use super::component_registry::ComponentRegistry;
@@ -393,6 +395,27 @@ pub fn parse_rscn(data: &[u8]) -> Result<ParsedRscn, String> {
 ///
 /// The GPU handle is filled in later by `GpuAssetResolver::apply_results`
 /// (`generation == 0` means "not resolved yet"), mirroring `MeshRef`.
+/// Resolve a scene's `assets/` root and its path relative to that root.
+///
+/// Used by the development JSON loader to build a GUID index without asking
+/// the caller for a project root. Returns `None` for synthetic origins (tests)
+/// and paths that do not live under an `assets/` directory.
+fn assets_root_for_origin(origin: &str) -> Option<(PathBuf, String)> {
+    let path = std::path::Path::new(origin);
+    let mut dir = path.parent()?;
+    loop {
+        if dir.file_name().and_then(|name| name.to_str()) == Some("assets") {
+            let relative = path
+                .strip_prefix(dir)
+                .ok()?
+                .to_string_lossy()
+                .replace('\\', "/");
+            return Some((dir.to_path_buf(), relative));
+        }
+        dir = dir.parent()?;
+    }
+}
+
 fn ensure_sprite_ref(world: &mut World, entity: Entity) {
     if world.get::<SpriteRef>(entity).is_some() {
         return;
@@ -686,8 +709,28 @@ impl SceneLoader {
     ) -> Result<SceneInstance, String> {
         // `SceneJson::parse` migrates older authoring documents (v1
         // `transform.translation`) up to the current schema.
-        let scene = SceneJson::parse(text)
+        let mut scene = SceneJson::parse(text)
             .map_err(|e| format!("Scene JSON parse error in {origin}: {e}"))?;
+
+        // #466: dev scenes load the authoring JSON directly. Resolve stable
+        // GUID references here too so a renamed asset keeps working without
+        // waiting for a cook. Packaged scenes already contain resolved paths.
+        if let Some((assets_root, doc_rel)) = assets_root_for_origin(origin) {
+            let index = GuidIndex::scan(&assets_root);
+            let path_for_guid = |guid: &str| index.path_for_guid(guid).map(str::to_string);
+            let guid_for_path = |path: &str| index.guid_for_path(path).map(str::to_string);
+            for entity in &mut scene.entities {
+                for component in entity.components.values_mut() {
+                    sync_component(
+                        component,
+                        &doc_rel,
+                        SyncMode::Load,
+                        &path_for_guid,
+                        &guid_for_path,
+                    );
+                }
+            }
+        }
 
         let entity_count = scene.entities.len();
         let mut entities: Vec<Entity> = Vec::with_capacity(entity_count);

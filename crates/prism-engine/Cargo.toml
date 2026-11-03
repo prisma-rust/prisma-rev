@@ -67,3 +67,4 @@ log = { workspace = true }
 
 [dev-dependencies]
 jni = "0.22"
+tempfile = "3"

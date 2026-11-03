@@ -5,26 +5,36 @@
 //! 以及跨帧 Notify。采样仍然复用 [`Clip`]，姿态合成由调用方（图 Slot 节点或
 //! 引擎）决定。
 //!
-//! 与 `Animator` 的普通剪辑不同，Montage 自带开始时间 / 循环 / 速度 / 权重，
-//! 播放头只属于这个播放器，不会改写作者场景数据。
+//! 与 `Animator` 的普通剪辑不同，Montage 自带开始时间 / 循环 / 速度 / 权重 /
+//! blend-in / blend-out，播放头只属于这个播放器，不会改写作者场景数据。
 
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use crate::clip::Clip;
+use crate::clip::{Clip, ClipSection};
 use crate::pose::Pose;
 
 /// 队列上限：坏逻辑（每帧 enqueue）不应该无限吃内存。
 pub const MAX_MONTAGE_QUEUE: usize = 32;
+
+/// Montage BranchIn 的 Notify 前缀：`BranchIn.<section>` 会在跨过该事件时跳到
+/// 同名段起点（#560 P4）。段不存在时事件照常发出，但不跳转。
+pub const BRANCH_IN_PREFIX: &str = "BranchIn.";
 
 /// 一段待播放的 Montage。
 #[derive(Debug, Clone)]
 pub struct Montage {
     clip: Arc<Clip>,
     start_time: f32,
+    /// 从剪辑的哪个 Montage 段开始；找不到时回退到 `start_time`。
+    start_section: Option<String>,
     looped: bool,
     speed: f32,
     weight: f32,
+    /// 起始淡入时长（秒）；0 = 立即满权重。
+    blend_in: f32,
+    /// 单次 Montage 结束前的淡出时长（秒）；循环 Montage 不使用。
+    blend_out: f32,
 }
 
 impl Montage {
@@ -33,14 +43,24 @@ impl Montage {
         Self {
             clip,
             start_time: 0.0,
+            start_section: None,
             looped: true,
             speed: 1.0,
             weight: 1.0,
+            blend_in: 0.0,
+            blend_out: 0.0,
         }
     }
 
     pub fn with_start_time(mut self, start_time: f32) -> Self {
         self.start_time = start_time;
+        self
+    }
+
+    /// 从指定 Montage 段开始播放；段不存在时在 `start` 时回退到 `start_time`。
+    pub fn with_start_section(mut self, section: impl Into<String>) -> Self {
+        let section = section.into();
+        self.start_section = (!section.trim().is_empty()).then_some(section);
         self
     }
 
@@ -56,6 +76,18 @@ impl Montage {
 
     pub fn with_weight(mut self, weight: f32) -> Self {
         self.weight = weight;
+        self
+    }
+
+    /// 起始淡入时长（秒）；负数 / 非有限值按 0 处理。
+    pub fn with_blend_in(mut self, seconds: f32) -> Self {
+        self.blend_in = sanitize_duration(seconds);
+        self
+    }
+
+    /// 单次 Montage 结束前的淡出时长（秒）；循环 Montage 不使用。
+    pub fn with_blend_out(mut self, seconds: f32) -> Self {
+        self.blend_out = sanitize_duration(seconds);
         self
     }
 
@@ -78,7 +110,31 @@ pub struct MontageNotify {
 struct ActiveMontage {
     montage: Montage,
     time: f32,
+    /// 这一段已经播放的绝对时长（秒），用于 blend-in；暂停时不推进。
+    elapsed: f32,
+    /// 作者设置的基准权重；实际权重还要乘淡入 / 淡出系数。
     weight: f32,
+}
+
+impl ActiveMontage {
+    /// 这一帧实际用于姿态混合的权重。
+    fn effective_weight(&self) -> f32 {
+        let fade_in = if self.montage.blend_in > 0.0 {
+            (self.elapsed / self.montage.blend_in).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        // 循环 Montage 每圈都会回到结尾，按剩余时间淡出会周期性闪一下；
+        // 因此只在单次 Montage 上应用 blend-out。
+        let fade_out = if !self.montage.looped && self.montage.blend_out > 0.0 {
+            let local = local_time(self.montage.clip.duration, self.montage.looped, self.time);
+            let remaining = (self.montage.clip.duration - local).max(0.0);
+            (remaining / self.montage.blend_out).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        (self.weight * fade_in * fade_out).clamp(0.0, 1.0)
+    }
 }
 
 /// Montage 播放器：一个活动段 + 一个 FIFO 队列。
@@ -153,6 +209,43 @@ impl MontagePlayer {
         self.active.as_ref().map(|active| active.time)
     }
 
+    /// 当前时间所在的 Montage 段；没有活动段 / 不在任何段内时返回 `None`。
+    pub fn active_section(&self) -> Option<&ClipSection> {
+        let active = self.active.as_ref()?;
+        let local = local_time(
+            active.montage.clip.duration,
+            active.montage.looped,
+            active.time,
+        );
+        active
+            .montage
+            .clip
+            .sections
+            .iter()
+            .find(|section| section.contains(local))
+    }
+
+    /// 跳到命名 Montage 段的起点；段不存在或没有活动段时返回 `false`。
+    ///
+    /// 暂停状态保持不变：暂停中跳段后仍停在段首，恢复后才继续推进。
+    pub fn jump_to_section(&mut self, name: &str) -> bool {
+        let Some(active) = self.active.as_mut() else {
+            return false;
+        };
+        let Some(section) = active
+            .montage
+            .clip
+            .sections
+            .iter()
+            .find(|section| section.name == name)
+        else {
+            return false;
+        };
+        active.time = section.start;
+        self.pending_notifies.clear();
+        true
+    }
+
     pub fn is_finished(&self) -> bool {
         self.finished
     }
@@ -165,8 +258,11 @@ impl MontagePlayer {
         self.active.as_ref().map(|active| &active.montage.clip)
     }
 
+    /// 当前实际混合权重（基准权重 × blend-in / blend-out 系数）。
     pub fn active_weight(&self) -> f32 {
-        self.active.as_ref().map_or(0.0, |active| active.weight)
+        self.active
+            .as_ref()
+            .map_or(0.0, ActiveMontage::effective_weight)
     }
 
     pub fn set_active_weight(&mut self, weight: f32) {
@@ -191,13 +287,27 @@ impl MontagePlayer {
         );
         let speed = sanitize_speed(active.montage.speed);
         active.time += dt * speed;
+        // blend-in 是墙钟时长，不随播放倍速缩放；暂停时 tick 提前返回，所以会冻结。
+        active.elapsed += dt;
         let local = local_time(
             active.montage.clip.duration,
             active.montage.looped,
             active.time,
         );
+        let mut branch_target = None;
         if dt > 0.0 && speed >= 0.0 {
             for notify in active.montage.clip.notifies_between(previous_local, local) {
+                if let Some(target_name) = notify.name.strip_prefix(BRANCH_IN_PREFIX) {
+                    if let Some(target) = active
+                        .montage
+                        .clip
+                        .sections
+                        .iter()
+                        .find(|section| section.name == target_name)
+                    {
+                        branch_target = Some(target.start);
+                    }
+                }
                 self.pending_notifies.push(MontageNotify {
                     clip_name: active.montage.clip.name.clone(),
                     name: notify.name.clone(),
@@ -205,7 +315,10 @@ impl MontagePlayer {
                 });
             }
         }
-        if active.montage.looped {
+        if let Some(start) = branch_target {
+            // BranchIn 是显式跳段：不再按循环回绕，也不在同一帧继续扫目标段里的 Notify。
+            active.time = start;
+        } else if active.montage.looped {
             active.time = local;
         }
 
@@ -246,14 +359,28 @@ impl MontagePlayer {
 }
 
 fn start(montage: Montage) -> ActiveMontage {
-    let start_time = if montage.start_time.is_finite() {
-        montage.start_time.max(0.0)
-    } else {
-        0.0
-    };
+    let section_start = montage
+        .start_section
+        .as_deref()
+        .and_then(|name| {
+            montage
+                .clip
+                .sections
+                .iter()
+                .find(|section| section.name == name)
+        })
+        .map(|section| section.start);
+    let start_time = section_start.unwrap_or_else(|| {
+        if montage.start_time.is_finite() {
+            montage.start_time.max(0.0)
+        } else {
+            0.0
+        }
+    });
     ActiveMontage {
         weight: sanitize_weight(montage.weight),
         time: local_time(montage.clip.duration, montage.looped, start_time),
+        elapsed: 0.0,
         montage,
     }
 }
@@ -271,6 +398,14 @@ fn sanitize_speed(speed: f32) -> f32 {
         speed
     } else {
         1.0
+    }
+}
+
+fn sanitize_duration(seconds: f32) -> f32 {
+    if seconds.is_finite() {
+        seconds.max(0.0)
+    } else {
+        0.0
     }
 }
 

@@ -32,6 +32,8 @@ pub struct AnimNodeView {
     pub clips: Vec<String>,
     /// 混合空间的样本坐标；一维节点的 y 恒为 0。
     pub positions: Vec<[f32; 2]>,
+    /// 混合空间每个样本的播放速度；空 = 全部按 1.0。
+    pub speeds: Vec<f32>,
     pub inputs: Vec<AnimInputView>,
     pub state_machine: String,
     pub parameter: String,
@@ -193,6 +195,7 @@ pub fn parse_anim_graph_view(document: &Value) -> Result<AnimGraphView, String> 
                 .to_string(),
             clips,
             positions: parse_positions(node),
+            speeds: parse_speeds(node),
             inputs,
             state_machine: node
                 .get("state_machine")
@@ -232,6 +235,16 @@ fn parse_positions(node: &Value) -> Vec<[f32; 2]> {
             ],
             _ => [0.0, 0.0],
         })
+        .collect()
+}
+
+fn parse_speeds(node: &Value) -> Vec<f32> {
+    node.get("speeds")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|speed| speed.as_f64().map(|speed| speed as f32))
         .collect()
 }
 
@@ -1321,6 +1334,52 @@ pub fn set_blend_space_sample_clip(
     Ok(())
 }
 
+/// 改一个混合空间样本的播放速度（`speeds[index]`）。
+///
+/// 节点还没有 `speeds` 时按剪辑数量补一列 `1.0` 再改；已有数组长度必须与
+/// `clips` 一致（cooker 会拒绝错位），否则让作者先修好数量。
+pub fn set_blend_space_sample_speed(
+    document: &mut Value,
+    name: &str,
+    index: usize,
+    speed: f32,
+) -> Result<(), String> {
+    if !speed.is_finite() || speed < 0.0 {
+        return Err("sample speed must be finite and >= 0".to_string());
+    }
+    let Some(node) = find_node_mut(document, name) else {
+        return Err(format!("unknown node '{name}'"));
+    };
+    if !node.is_object() {
+        return Err(format!("node '{name}' is malformed"));
+    }
+    if blend_space_dims(node).is_none() {
+        return Err(format!("node '{name}' is not a blend space"));
+    }
+    let clip_count = node
+        .get("clips")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    if index >= clip_count {
+        return Err(format!("node '{name}' has no sample #{index}"));
+    }
+    if node.get("speeds").is_none() {
+        node["speeds"] = Value::Array(vec![json!(1.0); clip_count]);
+    }
+    let Some(speeds) = node.get_mut("speeds").and_then(Value::as_array_mut) else {
+        return Err(format!("node '{name}' has an invalid `speeds` array"));
+    };
+    if speeds.len() != clip_count {
+        return Err(format!(
+            "node '{name}' has {clip_count} clips but {} sample speeds; fix the mismatch first",
+            speeds.len()
+        ));
+    }
+    speeds[index] = json!(speed);
+    Ok(())
+}
+
 /// 改节点的播放速度（`0` = 冻结，必须有限且非负）。
 pub fn set_graph_node_speed(document: &mut Value, name: &str, speed: f32) -> Result<(), String> {
     if !speed.is_finite() || speed < 0.0 {
@@ -1383,6 +1442,77 @@ pub fn add_clip_node(document: &mut Value, name: &str, clip: &str) -> Result<(),
         return Err(format!("a node named '{name}' already exists"));
     }
     nodes.push(json!({ "name": name, "type": "clip_player", "clip": clip }));
+    Ok(())
+}
+
+/// 追加一个动画图节点。
+///
+/// 只接受能当场通过 cooker 校验的节点：`clip_player` / `blend_stack` / `slot` /
+/// `layered_blend` / `cached_pose` / `state_machine`。blend space 需要 >=2/3 个剪辑
+/// 与坐标，仍由作者手写或复制现有节点。`source`：
+/// - `clip_player`：剪辑路径；
+/// - `state_machine`：状态机路径；
+/// - 其它：单个上游节点名（cooker 要求 slot / cached pose 恰好一条输入，
+///   blend stack / layered blend 至少一条）。
+pub fn add_graph_node(
+    document: &mut Value,
+    name: &str,
+    kind: &str,
+    source: &str,
+) -> Result<(), String> {
+    let name = name.trim();
+    let source = source.trim();
+    if name.is_empty() {
+        return Err("a node needs a non-empty name".to_string());
+    }
+    let kind = match kind.trim().to_ascii_lowercase().as_str() {
+        "clip" | "clip_player" | "clipplayer" => "clip_player",
+        "blend_stack" | "blendstack" => "blend_stack",
+        "slot" => "slot",
+        "layered_blend" | "layeredblend" => "layered_blend",
+        "cached_pose" | "cachedpose" => "cached_pose",
+        "state_machine" | "statemachine" => "state_machine",
+        other => return Err(format!("unsupported node type '{other}'")),
+    };
+    let Some(nodes) = document.get_mut("nodes").and_then(Value::as_array_mut) else {
+        return Err("animation graph needs a `nodes` array".to_string());
+    };
+    if nodes
+        .iter()
+        .any(|node| node.get("name").and_then(Value::as_str) == Some(name))
+    {
+        return Err(format!("a node named '{name}' already exists"));
+    }
+    match kind {
+        "clip_player" => {
+            if source.is_empty() {
+                return Err("a clip node needs a clip path".to_string());
+            }
+            nodes.push(json!({ "name": name, "type": kind, "clip": source }));
+        }
+        "state_machine" => {
+            if source.is_empty() {
+                return Err("a state machine node needs a machine path".to_string());
+            }
+            nodes.push(json!({ "name": name, "type": kind, "state_machine": source }));
+        }
+        _ => {
+            if source.is_empty() {
+                return Err(format!("a {kind} node needs an input node"));
+            }
+            if !nodes
+                .iter()
+                .any(|node| node.get("name").and_then(Value::as_str) == Some(source))
+            {
+                return Err(format!("unknown input node '{source}'"));
+            }
+            if kind == "blend_stack" {
+                nodes.push(json!({ "name": name, "type": kind, "inputs": [source] }));
+            } else {
+                nodes.push(json!({ "name": name, "type": kind, "input": source }));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1791,6 +1921,44 @@ mod blend_space_tests {
         assert!(set_blend_space_sample_clip(&mut doc, "locomotion", 9, "a.ranim").is_err());
         assert!(set_blend_space_sample_clip(&mut doc, "out", 0, "a.ranim").is_err());
     }
+
+    #[test]
+    fn a_view_reads_per_sample_speeds() {
+        let mut doc = document();
+        assert!(parse_anim_graph_view(&doc).expect("parses").nodes[0]
+            .speeds
+            .is_empty());
+        doc["nodes"][0]["speeds"] = json!([1.0, 2.5]);
+        let view = parse_anim_graph_view(&doc).expect("parses");
+        assert_eq!(view.nodes[0].speeds, [1.0, 2.5]);
+    }
+
+    #[test]
+    fn sample_speeds_can_be_created_and_edited() {
+        let mut doc = document();
+        set_blend_space_sample_speed(&mut doc, "locomotion", 1, 2.0).expect("creates table");
+        assert_eq!(doc["nodes"][0]["speeds"], json!([1.0, 2.0]));
+
+        set_blend_space_sample_speed(&mut doc, "locomotion", 0, 0.5).expect("edits");
+        assert_eq!(doc["nodes"][0]["speeds"], json!([0.5, 2.0]));
+    }
+
+    #[test]
+    fn bad_sample_speeds_are_rejected() {
+        let mut doc = document();
+        assert!(set_blend_space_sample_speed(&mut doc, "locomotion", 0, -1.0).is_err());
+        assert!(set_blend_space_sample_speed(&mut doc, "locomotion", 0, f32::NAN).is_err());
+        assert!(set_blend_space_sample_speed(&mut doc, "locomotion", 9, 1.0).is_err());
+        assert!(set_blend_space_sample_speed(&mut doc, "out", 0, 1.0).is_err());
+        assert!(set_blend_space_sample_speed(&mut doc, "missing", 0, 1.0).is_err());
+
+        let mut mismatched = json!({
+            "nodes": [{ "name": "m", "type": "blend_space_1d",
+                        "clips": ["a.ranim", "b.ranim"], "positions": [0.0, 1.0],
+                        "parameter": "speed", "speeds": [1.0] }]
+        });
+        assert!(set_blend_space_sample_speed(&mut mismatched, "m", 0, 2.0).is_err());
+    }
 }
 
 #[cfg(test)]
@@ -1932,6 +2100,42 @@ mod node_tests {
         assert!(add_clip_node(&mut doc, "  ", "a.ranim").is_err());
         assert!(add_clip_node(&mut doc, "aim", "  ").is_err());
         assert!(add_clip_node(&mut json!({}), "aim", "a.ranim").is_err());
+    }
+
+    #[test]
+    fn simple_nodes_can_be_added_with_required_wiring() {
+        let mut doc = document();
+        add_graph_node(&mut doc, " aim ", "clip_player", " aim.ranim ").expect("adds clip");
+        assert_eq!(doc["nodes"][4]["clip"], "aim.ranim");
+        add_graph_node(&mut doc, "sm", "state_machine", "anim/hero.rasm").expect("adds machine");
+        assert_eq!(doc["nodes"][5]["state_machine"], "anim/hero.rasm");
+        add_graph_node(&mut doc, "stack2", "blend_stack", "a").expect("adds stack");
+        assert_eq!(doc["nodes"][6]["inputs"], json!(["a"]));
+        add_graph_node(&mut doc, "slot", "slot", "a").expect("adds slot");
+        assert_eq!(doc["nodes"][7]["input"], "a");
+        add_graph_node(&mut doc, "layer", "layered_blend", "b").expect("adds layer");
+        assert_eq!(doc["nodes"][8]["input"], "b");
+        add_graph_node(&mut doc, "cached", "cached_pose", "stack").expect("adds cached pose");
+        assert_eq!(doc["nodes"][9]["input"], "stack");
+        let view = parse_anim_graph_view(&doc).expect("still parses");
+        assert_eq!(view.nodes.len(), 10);
+    }
+
+    #[test]
+    fn adding_nodes_validates_names_kinds_and_sources() {
+        let mut doc = document();
+        assert!(add_graph_node(&mut doc, "  ", "clip_player", "a.ranim").is_err());
+        assert!(add_graph_node(&mut doc, "a", "clip_player", "a.ranim").is_err());
+        assert!(add_graph_node(&mut doc, "x", "clip_player", "").is_err());
+        assert!(add_graph_node(&mut doc, "x", "state_machine", "").is_err());
+        assert!(add_graph_node(&mut doc, "x", "blend_space_1d", "a").is_err());
+        assert!(add_graph_node(&mut doc, "x", "blend_stack", "missing").is_err());
+        assert!(add_graph_node(&mut doc, "x", "blend_stack", "").is_err());
+        assert!(add_graph_node(&mut doc, "x", "slot", "").is_err());
+        assert!(add_graph_node(&mut doc, "x", "layered_blend", "").is_err());
+        assert!(add_graph_node(&mut doc, "x", "cached_pose", "").is_err());
+        assert!(add_graph_node(&mut json!({}), "x", "slot", "a").is_err());
+        assert_eq!(doc["nodes"].as_array().unwrap().len(), 4, "失败不改文档");
     }
 
     #[test]
@@ -2136,6 +2340,27 @@ pub fn move_state_transition(
     Ok(target as usize)
 }
 
+/// 复制一条转移并插入到原转移之后，返回新下标。
+///
+/// 允许复制出完全相同的 `(from, to)`：作者通常会紧接着改起点 / 终点或条件。
+/// 运行时按数组顺序取第一条命中的转移，所以改之前重复项不会改变行为。
+pub fn duplicate_state_transition(document: &mut Value, index: usize) -> Result<usize, String> {
+    let transitions = document
+        .get_mut("transitions")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "state machine has no editable `transitions` array".to_string())?;
+    if index >= transitions.len() {
+        return Err(format!("state machine has no transition #{index}"));
+    }
+    if !transitions[index].is_object() {
+        return Err(format!("transition #{index} is malformed"));
+    }
+    let copy = transitions[index].clone();
+    let target = index + 1;
+    transitions.insert(target, copy);
+    Ok(target)
+}
+
 /// 删除状态机 `transitions` 数组里的第 `index` 条转移。
 pub fn remove_state_transition(document: &mut Value, index: usize) -> Result<(), String> {
     let Some(transitions) = document
@@ -2225,6 +2450,119 @@ pub fn duplicate_state(document: &mut Value, name: &str) -> Result<String, Strin
     };
     states.push(copy);
     Ok(candidate)
+}
+
+/// 在 `states` 数组里前后移动一个状态，返回移动后的下标。
+///
+/// 运行时把**第一个状态**当作初始状态（`Animator.state` 为空时落到下标 0），
+/// 所以这个顺序同时决定初始状态。转移按状态名引用，重排不会改转移。
+/// 越界移动返回错误而不是静默夹到端点，面板据此禁用端点上的箭头。
+pub fn move_state(document: &mut Value, index: usize, offset: isize) -> Result<usize, String> {
+    let states = document
+        .get_mut("states")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "state machine needs a `states` array".to_string())?;
+    if index >= states.len() {
+        return Err(format!("state machine has no state #{index}"));
+    }
+    let len = states.len() as isize;
+    let target = index as isize + offset;
+    if target < 0 || target >= len {
+        return Err(format!(
+            "state #{index} cannot move by {offset} (only {len} states)"
+        ));
+    }
+    let state = states.remove(index);
+    states.insert(target as usize, state);
+    Ok(target as usize)
+}
+
+/// 追加一个状态。
+///
+/// 名字与剪辑路径都去空白后必须非空（cooker 会拒绝空剪辑）；名字不能与现有
+/// 状态重复。新状态默认 `speed = 1.0`、`looped = true`，由 cooker 的缺省值补齐。
+pub fn add_state(document: &mut Value, name: &str, clip: &str) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("a state needs a non-empty name".to_string());
+    }
+    let clip = clip.trim();
+    if clip.is_empty() {
+        return Err("a state needs a non-empty clip path".to_string());
+    }
+    let states = document
+        .get_mut("states")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "state machine needs a `states` array".to_string())?;
+    if states.iter().any(|state| {
+        !state.is_object()
+            || state
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .is_none()
+    }) {
+        return Err("state machine has a malformed state entry".to_string());
+    }
+    if states
+        .iter()
+        .any(|state| state.get("name").and_then(Value::as_str) == Some(name))
+    {
+        return Err(format!("a state named '{name}' already exists"));
+    }
+    states.push(json!({ "name": name, "clip": clip }));
+    Ok(())
+}
+
+/// 删除一个状态，并移除所有引用它的转移，返回被一并删除的转移数量。
+///
+/// 状态机至少要保留一个状态（cooker 与运行时都按「第一个状态是初始状态」处理）；
+/// 删除第一个状态后，下一个状态成为初始状态。任意状态（`*` / `any`）的转移不受影响。
+pub fn remove_state(document: &mut Value, name: &str) -> Result<usize, String> {
+    let name = name.trim();
+    let state_index = {
+        let states = document
+            .get("states")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "state machine needs a `states` array".to_string())?;
+        let index = states
+            .iter()
+            .position(|state| state.get("name").and_then(Value::as_str) == Some(name))
+            .ok_or_else(|| format!("unknown state '{name}'"))?;
+        if states.len() <= 1 {
+            return Err("a state machine needs at least one state".to_string());
+        }
+        index
+    };
+    if let Some(value) = document.get("transitions") {
+        if !value.is_array() {
+            return Err("state machine has an invalid `transitions` field".to_string());
+        }
+    }
+    let states = document
+        .get_mut("states")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "state machine needs a `states` array".to_string())?;
+    states.remove(state_index);
+
+    let Some(value) = document.get_mut("transitions") else {
+        return Ok(0);
+    };
+    let transitions = value
+        .as_array_mut()
+        .ok_or_else(|| "state machine has an invalid `transitions` field".to_string())?;
+    let before = transitions.len();
+    transitions.retain(|transition| {
+        let from = transition
+            .get("from")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|from| !from.is_empty() && *from != "*" && !from.eq_ignore_ascii_case("any"));
+        let to = transition.get("to").and_then(Value::as_str).map(str::trim);
+        from != Some(name) && to != Some(name)
+    });
+    Ok(before - transitions.len())
 }
 
 /// 重命名一个状态，并同步改写转移里的 `from` / `to`。
@@ -2448,6 +2786,140 @@ pub fn set_condition_value(
     Ok(())
 }
 
+/// 切换一条条件的类型，并补齐 / 删除该类型需要的载荷。
+///
+/// 保留参数名；`float_greater` / `float_less` 保留已有阈值（没有就补 `0.0`），
+/// `bool_is` 保留已有布尔值（没有就补 `false`），`trigger` 删除 `threshold` /
+/// `value`。切换后如果与同一转移里的另一条 `(type, name)` 重复则拒绝，避免
+/// 写出一条运行时永远走不到的冗余条件。
+pub fn set_condition_kind(
+    document: &mut Value,
+    index: usize,
+    condition: usize,
+    kind: &str,
+) -> Result<(), String> {
+    let kind = match kind.trim() {
+        kind @ ("float_greater" | "float_less" | "bool_is" | "trigger") => kind,
+        other => {
+            return Err(format!(
+                "unknown condition type '{other}' \
+                 (expected float_greater / float_less / bool_is / trigger)"
+            ))
+        }
+    };
+    let transition = find_transition_mut(document, index)?;
+    let Some(conditions) = transition
+        .get_mut("conditions")
+        .and_then(Value::as_array_mut)
+    else {
+        return Err(format!(
+            "transition #{index} has no editable `conditions` array"
+        ));
+    };
+    if condition >= conditions.len() {
+        return Err(format!("transition #{index} has no condition #{condition}"));
+    }
+    if !conditions[condition].is_object() {
+        return Err(format!(
+            "transition #{index} condition #{condition} is malformed"
+        ));
+    }
+    let name = conditions[condition]
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            format!("transition #{index} condition #{condition} needs a non-empty name")
+        })?
+        .to_string();
+    if conditions.iter().enumerate().any(|(other_index, other)| {
+        other_index != condition
+            && other.get("type").and_then(Value::as_str) == Some(kind)
+            && other.get("name").and_then(Value::as_str) == Some(name.as_str())
+    }) {
+        return Err(format!(
+            "transition #{index} already has the condition '{name} ({kind})'"
+        ));
+    }
+    let entry = &mut conditions[condition];
+    entry["type"] = json!(kind);
+    match kind {
+        "float_greater" | "float_less" => {
+            if entry.get("threshold").and_then(Value::as_f64).is_none() {
+                entry["threshold"] = json!(0.0);
+            }
+            if let Some(object) = entry.as_object_mut() {
+                object.remove("value");
+            }
+        }
+        "bool_is" => {
+            if entry.get("value").and_then(Value::as_bool).is_none() {
+                entry["value"] = json!(false);
+            }
+            if let Some(object) = entry.as_object_mut() {
+                object.remove("threshold");
+            }
+        }
+        _ => {
+            if let Some(object) = entry.as_object_mut() {
+                object.remove("threshold");
+                object.remove("value");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 改一条条件的参数名，保留类型与载荷。
+///
+/// 同一转移里 `(type, name)` 不能重复；`float_greater speed` 与
+/// `float_less speed` 是两条不同条件，允许共存。
+pub fn set_condition_name(
+    document: &mut Value,
+    index: usize,
+    condition: usize,
+    name: &str,
+) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("a condition needs a non-empty parameter name".to_string());
+    }
+    let transition = find_transition_mut(document, index)?;
+    let Some(conditions) = transition
+        .get_mut("conditions")
+        .and_then(Value::as_array_mut)
+    else {
+        return Err(format!(
+            "transition #{index} has no editable `conditions` array"
+        ));
+    };
+    if condition >= conditions.len() {
+        return Err(format!("transition #{index} has no condition #{condition}"));
+    }
+    if !conditions[condition].is_object() {
+        return Err(format!(
+            "transition #{index} condition #{condition} is malformed"
+        ));
+    }
+    let kind = conditions[condition]
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("transition #{index} condition #{condition} needs a type"))?
+        .to_string();
+    if conditions.iter().enumerate().any(|(other_index, other)| {
+        other_index != condition
+            && other.get("type").and_then(Value::as_str) == Some(kind.as_str())
+            && other.get("name").and_then(Value::as_str) == Some(name)
+    }) {
+        return Err(format!(
+            "transition #{index} already has the condition '{name} ({kind})'"
+        ));
+    }
+    conditions[condition]["name"] = json!(name);
+    Ok(())
+}
+
 #[cfg(test)]
 mod state_tests {
     use super::*;
@@ -2487,6 +2959,95 @@ mod state_tests {
         assert!(set_state_speed(&mut doc, 9, 1.0).is_err());
         assert!(set_state_looped(&mut doc, 9, true).is_err());
         assert!(set_state_clip(&mut json!({ "states": ["bad"] }), 0, "a.ranim").is_err());
+    }
+
+    #[test]
+    fn states_can_be_reordered_without_touching_transitions() {
+        let mut doc = document();
+        add_state(&mut doc, "Jump", "jump.ranim").expect("adds");
+        let moved = move_state(&mut doc, 2, -2).expect("moves to the front");
+        assert_eq!(moved, 0);
+        assert_eq!(doc["states"][0]["name"], "Jump");
+        assert_eq!(doc["states"][1]["name"], "Idle");
+        assert_eq!(doc["states"][2]["name"], "Run");
+        assert_eq!(doc["transitions"][0]["to"], "Run", "转移按名字引用");
+        assert_eq!(doc["transitions"][1]["from"], "*");
+
+        let moved = move_state(&mut doc, 0, 1).expect("moves back");
+        assert_eq!(moved, 1);
+        assert_eq!(doc["states"][0]["name"], "Idle");
+        assert_eq!(doc["states"][1]["name"], "Jump");
+    }
+
+    #[test]
+    fn moving_states_rejects_out_of_range_indices() {
+        let mut doc = document();
+        assert!(move_state(&mut doc, 0, -1).is_err(), "已在最前");
+        assert!(move_state(&mut doc, 1, 1).is_err(), "已在最后");
+        assert!(move_state(&mut doc, 9, -1).is_err());
+        assert!(move_state(&mut json!({}), 0, 1).is_err());
+        assert!(move_state(&mut json!({ "states": ["bad"] }), 0, 1).is_err());
+        assert_eq!(doc["states"].as_array().unwrap().len(), 2, "失败不改文档");
+    }
+
+    #[test]
+    fn states_can_be_added_with_a_name_and_clip() {
+        let mut doc = document();
+        add_state(&mut doc, " Jump ", " jump.ranim ").expect("adds");
+        assert_eq!(
+            doc["states"][2],
+            json!({ "name": "Jump", "clip": "jump.ranim" })
+        );
+        assert_eq!(
+            doc["transitions"].as_array().unwrap().len(),
+            2,
+            "转移表不变"
+        );
+    }
+
+    #[test]
+    fn adding_states_rejects_blank_duplicate_and_malformed_input() {
+        let mut doc = document();
+        assert!(add_state(&mut doc, " ", "jump.ranim").is_err());
+        assert!(add_state(&mut doc, "Jump", "  ").is_err());
+        assert!(add_state(&mut doc, "Idle", "idle.ranim").is_err());
+        assert!(add_state(&mut json!({}), "Jump", "jump.ranim").is_err());
+        assert!(add_state(&mut json!({ "states": ["bad"] }), "Jump", "jump.ranim").is_err());
+        assert_eq!(doc["states"].as_array().unwrap().len(), 2, "失败不改文档");
+    }
+
+    #[test]
+    fn removing_a_state_drops_transitions_that_reference_it() {
+        let mut doc = document();
+        add_state_transition(&mut doc, Some("Run"), "Idle").expect("adds");
+        let removed = remove_state(&mut doc, "Run").expect("removes");
+        assert_eq!(removed, 2);
+        assert_eq!(doc["states"].as_array().unwrap().len(), 1);
+        assert_eq!(doc["states"][0]["name"], "Idle");
+        assert_eq!(
+            doc["transitions"],
+            json!([{ "from": "*", "to": "Idle", "duration": 0.0 }]),
+            "只保留与 Run 无关的任意状态转移"
+        );
+    }
+
+    #[test]
+    fn removing_states_rejects_unknown_names_the_last_state_and_bad_transitions() {
+        let mut doc = document();
+        assert!(remove_state(&mut doc, "Missing").is_err());
+        remove_state(&mut doc, "Run").expect("removes");
+        assert!(remove_state(&mut doc, "Idle").is_err(), "不能删到零个状态");
+        assert_eq!(doc["states"].as_array().unwrap().len(), 1);
+
+        let mut doc = json!({
+            "states": [
+                { "name": "Idle", "clip": "idle.ranim" },
+                { "name": "Run", "clip": "run.ranim" }
+            ],
+            "transitions": "bad"
+        });
+        assert!(remove_state(&mut doc, "Run").is_err());
+        assert_eq!(doc["states"].as_array().unwrap().len(), 2, "失败不改状态表");
     }
 
     #[test]
@@ -2613,6 +3174,91 @@ mod condition_tests {
         assert!(set_condition_threshold(&mut doc, 0, 9, 0.5).is_err());
         assert!(set_condition_value(&mut doc, 9, 0, true).is_err());
     }
+
+    #[test]
+    fn condition_kinds_can_be_switched_and_payloads_are_normalized() {
+        let mut doc = document();
+        set_condition_kind(&mut doc, 0, 0, "bool_is").expect("switches to bool");
+        assert_eq!(
+            doc["transitions"][0]["conditions"][0],
+            json!({ "type": "bool_is", "name": "speed", "value": false })
+        );
+
+        set_condition_value(&mut doc, 0, 0, true).expect("sets bool");
+        set_condition_kind(&mut doc, 0, 0, "trigger").expect("switches to trigger");
+        assert_eq!(
+            doc["transitions"][0]["conditions"][0],
+            json!({ "type": "trigger", "name": "speed" })
+        );
+
+        set_condition_kind(&mut doc, 0, 0, "float_less").expect("switches back to float");
+        assert_eq!(
+            doc["transitions"][0]["conditions"][0],
+            json!({ "type": "float_less", "name": "speed", "threshold": 0.0 })
+        );
+        set_condition_threshold(&mut doc, 0, 0, 0.5).expect("threshold works again");
+        assert_eq!(doc["transitions"][0]["conditions"][0]["threshold"], 0.5);
+    }
+
+    #[test]
+    fn switching_condition_kind_rejects_duplicates_and_bad_input() {
+        let mut doc = document();
+        add_state_condition(&mut doc, 0, "bool_is", "speed", 0.0, false).expect("adds bool");
+        assert!(
+            set_condition_kind(&mut doc, 0, 0, "bool_is").is_err(),
+            "切换后与已有条件重复"
+        );
+        assert_eq!(
+            doc["transitions"][0]["conditions"][0]["type"], "float_greater",
+            "失败不改文档"
+        );
+
+        assert!(set_condition_kind(&mut doc, 0, 0, "nope").is_err());
+        assert!(set_condition_kind(&mut doc, 9, 0, "trigger").is_err());
+        assert!(set_condition_kind(&mut doc, 0, 9, "trigger").is_err());
+
+        let mut blank = json!({
+            "transitions": [{ "conditions": [{ "type": "trigger", "name": " " }] }]
+        });
+        assert!(set_condition_kind(&mut blank, 0, 0, "bool_is").is_err());
+        let mut malformed = json!({ "transitions": [{ "conditions": ["bad"] }] });
+        assert!(set_condition_kind(&mut malformed, 0, 0, "trigger").is_err());
+    }
+
+    #[test]
+    fn condition_names_can_be_edited_and_keep_type_and_payload() {
+        let mut doc = document();
+        set_condition_name(&mut doc, 0, 0, " velocity ").expect("renames");
+        assert_eq!(
+            doc["transitions"][0]["conditions"][0],
+            json!({ "type": "float_greater", "name": "velocity", "threshold": 1.5 })
+        );
+
+        add_state_condition(&mut doc, 0, "bool_is", "velocity", 0.0, false).expect("adds bool");
+        set_condition_name(&mut doc, 0, 0, "velocity").expect("same name on another type is fine");
+        assert_eq!(doc["transitions"][0]["conditions"][1]["type"], "bool_is");
+        assert_eq!(doc["transitions"][0]["conditions"][1]["name"], "velocity");
+    }
+
+    #[test]
+    fn condition_names_reject_duplicates_and_bad_input() {
+        let mut doc = document();
+        add_state_condition(&mut doc, 0, "float_greater", "speed2", 0.0, false).expect("adds");
+        assert!(
+            set_condition_name(&mut doc, 0, 0, "speed2").is_err(),
+            "同一类型下重名"
+        );
+        assert_eq!(doc["transitions"][0]["conditions"][0]["name"], "speed");
+
+        assert!(set_condition_name(&mut doc, 0, 0, "  ").is_err());
+        assert!(set_condition_name(&mut doc, 9, 0, "speed").is_err());
+        assert!(set_condition_name(&mut doc, 0, 9, "speed").is_err());
+
+        let mut malformed = json!({ "transitions": [{ "conditions": ["bad"] }] });
+        assert!(set_condition_name(&mut malformed, 0, 0, "speed").is_err());
+        let mut without_type = json!({ "transitions": [{ "conditions": [{ "name": "speed" }] }] });
+        assert!(set_condition_name(&mut without_type, 0, 0, "speed").is_err());
+    }
 }
 
 #[cfg(test)]
@@ -2648,6 +3294,33 @@ mod transition_tests {
         remove_state_transition(&mut doc, 0).expect("removes");
         assert_eq!(doc["transitions"].as_array().unwrap().len(), 1);
         assert_eq!(doc["transitions"][0]["to"], "Jump");
+    }
+
+    #[test]
+    fn transitions_can_be_duplicated_with_their_conditions() {
+        let mut doc = document();
+        add_state_transition(&mut doc, Some("Run"), "Jump").expect("adds");
+        add_state_condition(&mut doc, 0, "trigger", "jump", 0.0, false).expect("adds condition");
+        set_transition_timing(&mut doc, 0, 0.3, 0.5).expect("sets timing");
+
+        let new_index = duplicate_state_transition(&mut doc, 0).expect("duplicates");
+        assert_eq!(new_index, 1);
+        assert_eq!(doc["transitions"].as_array().unwrap().len(), 3);
+        assert_eq!(doc["transitions"][0], doc["transitions"][1]);
+        assert_eq!(doc["transitions"][2]["to"], "Jump", "原第二条后移");
+    }
+
+    #[test]
+    fn duplicating_transitions_rejects_bad_indices_and_malformed_input() {
+        let mut doc = document();
+        assert!(duplicate_state_transition(&mut doc, 9).is_err());
+        assert!(duplicate_state_transition(&mut json!({}), 0).is_err());
+        assert!(duplicate_state_transition(&mut json!({ "transitions": ["bad"] }), 0).is_err());
+        assert_eq!(
+            doc["transitions"].as_array().unwrap().len(),
+            1,
+            "失败不改文档"
+        );
     }
 
     #[test]

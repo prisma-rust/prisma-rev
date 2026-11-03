@@ -953,3 +953,55 @@ fn json_dangling_parent_id_keeps_the_entity_as_a_root() {
     assert!(world.get::<Parent>(entity).is_none());
     assert_eq!(inst.root_entities, vec![entity]);
 }
+
+/// #466: the development JSON loader resolves GUID references before the
+/// component reaches the ECS, so a renamed asset still loads.
+#[test]
+fn json_scene_resolves_guid_references() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let assets = root.join("assets");
+    std::fs::create_dir_all(assets.join("models")).unwrap();
+    std::fs::create_dir_all(assets.join("scenes")).unwrap();
+    std::fs::write(assets.join("models/box.gltf"), b"mesh").unwrap();
+    let meta = prism_asset::AssetMeta::ensure(&assets, "models/box.gltf", "GltfImporter").unwrap();
+
+    let json = format!(
+        r#"{{
+            "version": 3,
+            "entities": [{{
+                "id": 1,
+                "name": "Box",
+                "parent": null,
+                "transform": {{}},
+                "components": {{
+                    "prism_engine::scene::MeshRenderer": {{
+                        "mesh_path": "../models/gone.gltf",
+                        "mesh_guid": "{}"
+                    }}
+                }}
+            }}]
+        }}"#,
+        meta.guid
+    );
+    let origin = assets.join("scenes/box.scene.json");
+
+    let mut registry = crate::scene::ComponentRegistry::new();
+    crate::scene::register_builtin_components(&mut registry);
+    let mut world = World::new();
+    SceneLoader::new()
+        .spawn_from_json_text(
+            &mut world,
+            &json,
+            origin.to_str().unwrap(),
+            SceneAssetId::generate(),
+            &registry,
+        )
+        .expect("json scene should load");
+
+    let (_, renderer) = world
+        .query::<MeshRenderer>()
+        .next()
+        .expect("mesh renderer should exist");
+    assert_eq!(renderer.mesh_path, "../models/box.gltf");
+}

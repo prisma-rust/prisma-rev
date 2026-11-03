@@ -8,7 +8,7 @@ use crate::components::ComponentMap;
 use crate::schema::Schema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// 预制体实例链接组件名（编辑器元数据，引擎运行时不查询）。
 pub const PREFAB_LINK_COMPONENT: &str = "prism_engine::scene::PrefabInstance";
@@ -762,10 +762,35 @@ impl SceneDoc {
         from: &str,
         to: &str,
     ) -> ReferenceRewrite {
+        self.rewrite_asset_references_with_guids(doc_dir, from, to, &BTreeSet::new())
+    }
+
+    /// Like [`Self::rewrite_asset_references`], but leaves path slots alone when
+    /// their sibling `*_guid` belongs to the moved asset (#466).
+    ///
+    /// `protected_guids` are lower-case GUIDs collected before the file move;
+    /// readers resolve them to the new path, so rewriting the document would be
+    /// redundant. Legacy path-only references still get rewritten.
+    pub fn rewrite_asset_references_with_guids(
+        &mut self,
+        doc_dir: &str,
+        from: &str,
+        to: &str,
+        protected_guids: &BTreeSet<String>,
+    ) -> ReferenceRewrite {
         let mut out = ReferenceRewrite::default();
         for entity in &mut self.entities {
             for (component, value) in entity.components.iter_mut() {
-                rewrite_references_in(value, "", component, doc_dir, from, to, &mut out);
+                rewrite_references_in(
+                    value,
+                    "",
+                    component,
+                    doc_dir,
+                    from,
+                    to,
+                    &mut out,
+                    protected_guids,
+                );
             }
         }
         out
@@ -812,6 +837,42 @@ impl SceneDoc {
         }
         out
     }
+
+    /// [`Self::field_references`] plus GUID-backed slots whose stored path is
+    /// stale after a zero-rewrite rename (#466).
+    ///
+    /// `target_guids` are the lower-case GUIDs of the asset being looked up.
+    /// Path matches and GUID matches are deduplicated, so a normal reference is
+    /// still reported once.
+    pub fn field_references_with_guids(
+        &self,
+        path: &str,
+        target_guids: &BTreeSet<String>,
+    ) -> Vec<(usize, String, String)> {
+        let mut out = self.field_references(path);
+        if target_guids.is_empty() {
+            return out;
+        }
+        let mut seen: BTreeSet<(usize, String, String)> = out.iter().cloned().collect();
+        for (index, entity) in self.entities.iter().enumerate() {
+            for (component, value) in entity.components.iter() {
+                collect_references_with_guids(
+                    value,
+                    "",
+                    component,
+                    target_guids,
+                    path,
+                    &mut |field, value| {
+                        let hit = (index, format!("{component}.{field}"), value.to_string());
+                        if seen.insert(hit.clone()) {
+                            out.push(hit);
+                        }
+                    },
+                );
+            }
+        }
+        out
+    }
 }
 
 /// 资产重命名 / 移动时改写了多少处引用，以及哪些写法解析不出来。
@@ -835,6 +896,7 @@ fn is_reference_path(component: &str, path: &str) -> bool {
         || matches!(leaf, "materials" | "textures" | "material_paths")
 }
 
+#[allow(clippy::too_many_arguments)]
 fn rewrite_references_in(
     value: &mut Value,
     path: &str,
@@ -843,6 +905,7 @@ fn rewrite_references_in(
     from: &str,
     to: &str,
     out: &mut ReferenceRewrite,
+    protected_guids: &BTreeSet<String>,
 ) {
     match value {
         Value::String(text) => {
@@ -868,21 +931,94 @@ fn rewrite_references_in(
                     from,
                     to,
                     out,
+                    protected_guids,
                 );
             }
         }
         Value::Object(map) => {
+            let mut protected_single: HashSet<String> = HashSet::new();
+            let mut protected_slots: HashMap<String, HashSet<usize>> = HashMap::new();
+            if !protected_guids.is_empty() {
+                for (key, item) in map.iter() {
+                    if !is_reference_path(component, key) {
+                        continue;
+                    }
+                    let Some(guid_field) = crate::assets::guid_field_for_path(component, key)
+                    else {
+                        continue;
+                    };
+                    match (item, map.get(&guid_field)) {
+                        (Value::String(_), Some(Value::String(guid)))
+                            if guid_matches(guid, protected_guids) =>
+                        {
+                            protected_single.insert(key.clone());
+                        }
+                        (Value::Array(_), Some(Value::Array(guids))) => {
+                            let slots: HashSet<usize> = guids
+                                .iter()
+                                .enumerate()
+                                .filter_map(|(index, guid)| {
+                                    guid.as_str()
+                                        .filter(|guid| guid_matches(guid, protected_guids))
+                                        .map(|_| index)
+                                })
+                                .collect();
+                            if !slots.is_empty() {
+                                protected_slots.insert(key.clone(), slots);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
             for (key, item) in map.iter_mut() {
+                if protected_single.contains(key) {
+                    continue;
+                }
                 let next = if path.is_empty() {
                     key.clone()
                 } else {
                     format!("{path}.{key}")
                 };
-                rewrite_references_in(item, &next, component, doc_dir, from, to, out);
+                if let Some(slots) = protected_slots.get(key) {
+                    if let Value::Array(items) = item {
+                        for (index, item) in items.iter_mut().enumerate() {
+                            if slots.contains(&index) {
+                                continue;
+                            }
+                            rewrite_references_in(
+                                item,
+                                &format!("{next}[{index}]"),
+                                component,
+                                doc_dir,
+                                from,
+                                to,
+                                out,
+                                protected_guids,
+                            );
+                        }
+                        continue;
+                    }
+                }
+                rewrite_references_in(
+                    item,
+                    &next,
+                    component,
+                    doc_dir,
+                    from,
+                    to,
+                    out,
+                    protected_guids,
+                );
             }
         }
         _ => {}
     }
+}
+
+fn guid_matches(guid: &str, guids: &BTreeSet<String>) -> bool {
+    guids.contains(&guid.to_ascii_lowercase())
 }
 
 enum RewriteOutcome {
@@ -1050,6 +1186,70 @@ fn collect_references(value: &Value, needle: &str, out: &mut impl FnMut(String, 
         }
     }
     walk(value, needle, "", out);
+}
+
+fn collect_references_with_guids(
+    value: &Value,
+    path: &str,
+    component: &str,
+    target_guids: &BTreeSet<String>,
+    fallback: &str,
+    out: &mut impl FnMut(String, &str),
+) {
+    match value {
+        Value::Object(map) => {
+            for (key, item) in map {
+                let next = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                if is_reference_path(component, key) {
+                    if let Some(guid_field) = crate::assets::guid_field_for_path(component, key) {
+                        match (item, map.get(&guid_field)) {
+                            (Value::String(text), Some(Value::String(guid)))
+                                if guid_matches(guid, target_guids) =>
+                            {
+                                let value = if text.is_empty() { fallback } else { text };
+                                out(next.clone(), value);
+                            }
+                            (Value::Array(paths), Some(Value::Array(guids))) => {
+                                for (index, guid) in guids.iter().enumerate() {
+                                    let Some(guid) = guid.as_str() else {
+                                        continue;
+                                    };
+                                    if !guid_matches(guid, target_guids) {
+                                        continue;
+                                    }
+                                    let text = paths
+                                        .get(index)
+                                        .and_then(Value::as_str)
+                                        .filter(|text| !text.is_empty())
+                                        .unwrap_or(fallback);
+                                    out(format!("{next}[{index}]"), text);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                collect_references_with_guids(item, &next, component, target_guids, fallback, out);
+            }
+        }
+        Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                collect_references_with_guids(
+                    item,
+                    &format!("{path}[{index}]"),
+                    component,
+                    target_guids,
+                    fallback,
+                    out,
+                );
+            }
+        }
+        _ => {}
+    }
 }
 
 fn select_subtree(doc: &SceneDoc, index: usize, out: &mut Vec<usize>) {
@@ -1355,6 +1555,66 @@ mod tests {
         assert_eq!(doc.entities[b].display_name(), "Cube (2)");
         let c = doc.duplicate(first).expect("duplicate root");
         assert_eq!(doc.entities[c].display_name(), "Cube (3)");
+    }
+
+    /// #466: a stale path is still found when the sibling GUID matches.
+    #[test]
+    fn field_references_with_guids_finds_a_stale_path() {
+        let guid = "11111111111111111111111111111111";
+        let mut doc = SceneDoc::default();
+        let index = doc.add_named_child(None, "Mesh");
+        doc.add_component(
+            index,
+            "prism_engine::scene::MeshRenderer",
+            serde_json::json!({
+                "mesh_path": "assets/models/old.gltf",
+                "mesh_guid": guid
+            }),
+        );
+
+        let guids = std::collections::BTreeSet::from([guid.to_string()]);
+        let refs = doc.field_references_with_guids("assets/models/new.gltf", &guids);
+        assert_eq!(refs.len(), 1);
+        assert!(refs[0].1.ends_with("mesh_path"));
+        assert_eq!(
+            doc.field_references("assets/models/new.gltf").len(),
+            0,
+            "path-only lookup cannot see the stale path"
+        );
+    }
+
+    /// Protected GUID slots stay byte-identical; legacy slots still rewrite.
+    #[test]
+    fn guid_backed_rewrites_skip_protected_slots_only() {
+        let guid = "11111111111111111111111111111111";
+        let mut doc = SceneDoc::default();
+        let index = doc.add_named_child(None, "Mesh");
+        doc.add_component(
+            index,
+            "prism_engine::scene::MeshRenderer",
+            serde_json::json!({
+                "mesh_path": "assets/models/old.gltf",
+                "mesh_guid": guid,
+                "material_paths": [
+                    "assets/models/old.gltf",
+                    "assets/models/old.gltf"
+                ],
+                "material_guids": [guid, ""]
+            }),
+        );
+
+        let guids = std::collections::BTreeSet::from([guid.to_string()]);
+        let rewrite = doc.rewrite_asset_references_with_guids(
+            "assets/scenes",
+            "assets/models/old.gltf",
+            "assets/models/new.gltf",
+            &guids,
+        );
+        let renderer = &doc.entities[index].components["prism_engine::scene::MeshRenderer"];
+        assert_eq!(rewrite.rewritten, 1, "only the legacy slot changes");
+        assert_eq!(renderer["mesh_path"], "assets/models/old.gltf");
+        assert_eq!(renderer["material_paths"][0], "assets/models/old.gltf");
+        assert_eq!(renderer["material_paths"][1], "assets/models/new.gltf");
     }
 
     #[test]

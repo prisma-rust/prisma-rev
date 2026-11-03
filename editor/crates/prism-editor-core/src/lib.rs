@@ -20,6 +20,7 @@ pub mod asset_edit;
 pub mod asset_meta;
 pub mod assets;
 pub mod build;
+pub mod clip_view;
 pub mod components;
 pub mod doc;
 pub mod dock;
@@ -30,6 +31,7 @@ pub mod ini;
 pub mod keys;
 pub mod logbuf;
 pub mod manifest;
+pub mod montage_view;
 pub mod notify_view;
 pub mod palette;
 pub mod project;
@@ -38,6 +40,7 @@ pub mod render_graph;
 pub mod schema;
 pub mod settings;
 pub mod state;
+pub mod sync_marker_view;
 pub mod textinput;
 pub mod theme;
 pub mod undo;
@@ -45,18 +48,19 @@ pub mod viewport_math;
 pub mod workspace;
 
 pub use anim_graph_view::{
-    add_blend_space_sample, add_clip_node, add_graph_input, add_parameter, add_state_condition,
-    add_state_transition, blend_space_2d_area, blend_space_2d_degenerate, duplicate_graph_node,
-    duplicate_state, move_state_transition, parse_anim_graph_view, parse_state_machine_view,
+    add_blend_space_sample, add_clip_node, add_graph_input, add_graph_node, add_parameter,
+    add_state, add_state_condition, add_state_transition, blend_space_2d_area,
+    blend_space_2d_degenerate, duplicate_graph_node, duplicate_state, duplicate_state_transition,
+    move_state, move_state_transition, parse_anim_graph_view, parse_state_machine_view,
     remove_blend_space_sample, remove_graph_input, remove_graph_node, remove_parameter,
-    remove_state_condition, remove_state_transition, rename_graph_node, rename_state,
+    remove_state, remove_state_condition, remove_state_transition, rename_graph_node, rename_state,
     set_blend_space_parameter, set_blend_space_position, set_blend_space_sample_clip,
-    set_condition_threshold, set_condition_value, set_graph_input_bone_mask,
-    set_graph_input_weight, set_graph_node_clip, set_graph_node_looped, set_graph_node_speed,
-    set_graph_node_weight, set_parameter_default, set_state_clip, set_state_looped,
-    set_state_speed, set_transition_states, set_transition_timing, AnimConditionView,
-    AnimGraphLayout, AnimGraphView, AnimInputView, AnimNodeView, AnimParameterView,
-    AnimStateMachineView, AnimStateView, AnimTransitionView,
+    set_blend_space_sample_speed, set_condition_kind, set_condition_name, set_condition_threshold,
+    set_condition_value, set_graph_input_bone_mask, set_graph_input_weight, set_graph_node_clip,
+    set_graph_node_looped, set_graph_node_speed, set_graph_node_weight, set_parameter_default,
+    set_state_clip, set_state_looped, set_state_speed, set_transition_states,
+    set_transition_timing, AnimConditionView, AnimGraphLayout, AnimGraphView, AnimInputView,
+    AnimNodeView, AnimParameterView, AnimStateMachineView, AnimStateView, AnimTransitionView,
 };
 pub use asset_edit::{AssetEdit, AssetEditHistory};
 pub use asset_meta::{AssetMeta, META_SUFFIX};
@@ -64,6 +68,7 @@ pub use assets::{
     format_bytes, AssetDetails, AssetInfo, AssetKind, AssetPreview, AssetQuery, AssetTree,
 };
 pub use build::{copy_artifacts, plan_build, ArtifactCopy, BuildPlan, BuildStep};
+pub use clip_view::{root_motion_delta, timeline_time_at, timeline_x};
 pub use components::ComponentMap;
 pub use doc::{EntityJson, SceneDoc, TransformJson};
 pub use dock::{
@@ -77,6 +82,10 @@ pub use keys::{
 };
 pub use logbuf::{LogBuffer, LogFilter, LogLevel, LogLine, LogSource, LOG_ROW_HEIGHT};
 pub use manifest::{doc_relative_path, SceneEntry, SceneManifest};
+pub use montage_view::{
+    add_montage_section, montage_section_at, parse_montages_view, remove_montage_section,
+    set_montage_section, ClipMontageView, MontageSectionView, MontagesView,
+};
 pub use notify_view::{
     add_notify, nearest_notify_index, notify_time_at, notify_timeline_span, parse_notifies_view,
     remove_notify, set_notify, ClipNotifiesView, NotifiesView, NotifyEntryView,
@@ -89,6 +98,10 @@ pub use schema::{
 };
 pub use settings::ProjectSettings;
 pub use state::{EditorState, Preferences};
+pub use sync_marker_view::{
+    add_sync_marker, nearest_sync_marker_index, parse_sync_markers_view, remove_sync_marker,
+    set_sync_marker, sync_marker_phase_at, SyncMarkerClipView, SyncMarkersView,
+};
 pub use textinput::TextInput;
 pub use theme::{Rgba, ThemeColors, ThemePreset, ThemeState, ThemeToken, THEME_PRESETS};
 pub use undo::UndoStack;

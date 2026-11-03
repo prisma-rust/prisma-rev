@@ -287,8 +287,13 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
   sidecar 的资产生成 `<path>.rmeta`（`{ "guid": "<32 hex>", "importer": "..." }`）；
   已有且有效的 GUID 永不重写，损坏的按缺失处理。扫描会跳过 `.rmeta`（它不是可导入
   资产），资产详情里的 GUID 优先显示 sidecar 的值，没有才回落到旧的路径哈希；
-  重命名 / 移动文件时 sidecar 跟着走，删除时一起删。`.scene.json` 里的 `*_guid`
-  字段是下一步，当前文档仍然按路径引用。
+  重命名 / 移动文件时 sidecar 跟着走，删除时一起删。`.scene.json` / `.prefab.json`
+  里现在会同时写路径和 `*_guid`：打开文档时 GUID 优先解析成路径（解析不到则回退
+  路径），保存时按 sidecar 补写 / 刷新 GUID；cooker 与开发期 JSON loader 也走同
+  一套规则，旧文档不需要迁移。重命名时，带 GUID 的引用**不再改写文档**（读取时
+  按 sidecar 解析到新路径）；只有旧的无 GUID 路径引用仍走兼容改写。引用分析 /
+  删除确认 / Find References / Ping / 层级树的断引用标记也按 GUID 匹配，stale path
+  不会漏掉引用，也不会被误报为断链。
 - **纹理导入设置（#514）**：资产检查器选中纹理时多出 `Import Settings`
   （`Max Size` 0 = 不限、`Mips` 开关）。`Apply` 写旁挂文件
   `<asset>.import.json`（如 `assets/sprites/boat.png.import.json`），`Revert` 重新读盘，
@@ -468,7 +473,7 @@ cook 阶段把 glTF 的 `skins` / `JOINTS_0` / `WEIGHTS_0` / `animations` 烘成
 关键帧，鼠标悬停时刻度加粗并显示 `Jump to this keyframe`；点空白处不跳，避免拖时间轴时
 被吸到某个关键帧。
 
-**关键帧事件（Notify，#560 P1）**：`.ranim` v3 在剪辑末尾追加事件表（`time` + 名字）和同步标记表，
+**关键帧事件（Notify，#560 P1）**：`.ranim` v4 在剪辑末尾追加事件表（`time` + 名字）、同步标记表和 Montage 段表，
 引擎每帧把「这一帧跨过的时间点」写进 `AnimEvents` 资源（整体重建，不是累加）：
 
 ```rust
@@ -502,7 +507,13 @@ for event in world.get_resource::<AnimEvents>().map(|e| e.drain()).unwrap_or_def
   一条时间轴：金色圆点是事件，悬停显示「名字 @ 秒数」，左右拖动直接改时间（量化到 0.01s，
   夹在 0..=窗口长度，窗口长度按最晚事件自动取 ≥2s），和 DragValue 共用同一个写回路径。
   在空白处点一下会在该时间打开新增草稿（剪辑名与时间已填好，只差事件名），点已有标记不会新建。
-  保存后由松散资产热重载重新 cook，`.ranim` 里的 v3 事件表随之更新。
+  保存后由松散资产热重载重新 cook，`.ranim` 里的 v4 事件表随之更新。
+
+**剪辑检查器**：在资产面板选中 `.ranim` 后，Animation Graph 面板显示检查器：时长 / fps /
+loop / additive、轨道数与每条轨道的关键帧范围、Notify / 同步标记时间轴、根关节首尾位移与
+偏航角。事件和标记仍通过作者侧侧车编辑，检查器不写二进制剪辑。
+场景里选中带 `Animator` 的实体时，还可以把当前剪辑套到该实体（会清空状态机 / 动画图路径，
+避免它们覆盖剪辑），然后点击时间轴 seek、播放 / 暂停、改倍速和 loop；这些改动走场景撤销栈。
 
 **同步标记（Sync marker）**：走路 / 跑步循环的脚落地相位不同，混合时可以按标记对齐。
 作者写侧车 `assets/<mesh>.skinning/sync_markers.json`，键是 glTF 动画名，值是归一化相位：
@@ -511,9 +522,45 @@ for event in world.get_resource::<AnimEvents>().map(|e| e.drain()).unwrap_or_def
 { "clips": { "walk": [0.0, 0.5], "run": [0.05, 0.55] } }
 ```
 
-cook 时归一化到 `[0, 1)`、排序去重，写进 `.ranim` v3；运行时
+cook 时归一化到 `[0, 1)`、排序去重，写进 `.ranim` v4；运行时
 `Clip::sync_marker_set()` 返回 `SyncMarkerSet`，可以构造 `SyncGroup` 做相位映射。
+
+编辑器可以编辑这张表：在资产面板选中 `assets/<mesh>.skinning/sync_markers.json` 后打开
+Window → General → Animation Graph，按剪辑列出标记。每条有 `phase` DragValue 和 `×`；
+每个剪辑上方的时间轴（0..1）用绿色圆点显示相位，拖动改相位，空白处点一下会在该相位打开
+新增草稿，`+ Marker` 也可以手动输入剪辑名与相位。写入时归一化到 `[0, 1)` 并拒绝重复相位
+（误差 `1e-6`），数组顺序保持作者写入顺序，cook 时再排序去重。保存后由松散资产热重载重新 cook。
 文件不存在 = 没有标记；存在但解析失败会让 build 失败；名字对不上任何动画会 warn。
+
+**Montage 段（#560 P4）**：翻越 / 受击这类一次性动画需要按段跳转（Start → Vault → Land）。
+作者写侧车 `assets/<mesh>.skinning/montages.json`，键是 glTF 动画原名：
+
+```json
+{
+  "clips": {
+    "vault": {
+      "sections": [
+        { "name": "Start", "start": 0.0, "end": 0.3 },
+        { "name": "Vault", "start": 0.3, "end": 0.8 },
+        { "name": "Land", "start": 0.8, "end": 1.0 }
+      ]
+    }
+  }
+}
+```
+
+段名必须非空且同一剪辑内唯一；时间必须有限、`0 <= start <= end`，`end` 不能超过剪辑时长。
+cook 时按 `start` 排序写进 `.ranim` v4，运行时 `Clip.sections` / `MontagePlayer::active_section`
+可直接读；`MontageRequest::play_section(...)` 或 `with_section("Vault")` 会从段首开始，
+`MontagePlayer::jump_to_section` 可在播放中跳段。BranchIn 用 Notify 约定：
+`BranchIn.<section>` 事件跨过时跳到同名段（例如 `BranchIn.Land`），可以直接在 Notify
+侧车里写。文件不存在 = 没有段；存在但解析失败 / 超出剪辑长度会让 build 失败；名字对不上
+任何动画会 warn。
+
+编辑器可以编辑这张表：在资产面板选中 `assets/<mesh>.skinning/montages.json` 后打开
+Window → General → Animation Graph，按剪辑列出段。每个剪辑上方有一条彩色区间条（按时间画
+start..end），下面是名字文本框（失焦写回）、`start` / `end` DragValue 和 `×`；`+ Section`
+给当前剪辑加段，`+ New clip section` 可以给新剪辑键加第一段。保存后由松散资产热重载重新 cook。
 
 ### 状态机
 
@@ -534,11 +581,18 @@ cook 时归一化到 `[0, 1)`、排序去重，写进 `.ranim` v3；运行时
 ```
 
 - 条件种类：`float_greater` / `float_less`（`threshold`）、`bool_is`（`value`）、`trigger`；
+  面板可以切换已有条件的类型，切换时保留参数名并补齐 / 删除该类型需要的载荷；
+  参数名也可以直接编辑，同一转移里 `(type, name)` 重复时拒绝；
 - 缺省：`speed = 1`、`looped = true`、`from = "*"`（任意状态）、`duration = 0`（硬切）、
   `min_state_fraction = 0`；`to` / `from` 写错状态名是**硬错误**（整份资产失败），
   重复状态名、空的 `clip` / `name`、未知条件种类同样报错并指出是哪一条；
 - 求值是**按作者顺序第一条命中**（条件全真 + 当前状态已播到 `min_state_fraction`），
   一帧只走一条转移；`min_state_fraction` 在剪辑时长未知时视为已播完，否则单次剪辑会卡在最后一帧；
+- `states` 的顺序同时决定初始状态：运行时 `Animator.state` 为空时从第一个状态开始。
+  面板用 `↑` / `↓` 重排状态；转移按状态名引用，重排不会改转移。
+- 面板里改状态名会同步场景 / 预制体里 `state_machine_path` 指向同一份状态机的
+  `Animator.state`：打开着的文档就地改并标脏，没打开的文档直接写回磁盘。其它状态机的
+  同名状态不受影响。
 编辑器提供 **Animation Graph** 面板（Window → General）：选中 `.animgraph.json` 或
 `.statemachine.json` 后显示参数、节点 / 连线、输出，以及状态、转移和可读条件。
 面板顶部有 `↶ Undo edit` / `↷ Redo edit`，只针对动画资产（图 / 状态机 / Notify）的
@@ -576,16 +630,18 @@ cook 前会拒绝的形状问题 —— 节点名 / 类型、剪辑与坐标数�
 名字自动加 `_copy` / `_copy2`；复制出的节点接线仍指向原来的上游，输出节点不能复制。
 `clips` 与 `positions` 数量对不上时用橙色提示，cooker 会拒绝这种节点。样本行尾的 `×` 删除样本、
 `+ Sample` 打开草稿表单（剪辑 + x/y），一维至少留 2 个、二维至少留 3 个；节点带每样本 `speeds`
-时增删会同步维护那张表。`+ Clip Node` 追加一个 `clip_player` 节点（必需字段只有剪辑路径，当帧就能通过
-cooker 校验）；`× Remove node` 删除节点，输出节点和仍被引用的节点会被拒绝并说明原因，先断线再删。
-其它节点类型（blend space / 状态机 / blend stack）需要剪辑坐标、机器路径或至少一条输入才合法，
-仍然手写 JSON。状态机视图支持 `+ Transition`（任意状态 / 指定 from → to）和 `× Remove transition`，
+时增删会同步维护那张表。`+ Node` 追加节点：类型下拉 `clip` / `blend stack` / `slot` /
+`layered blend` / `cached pose` / `state machine`；clip 填剪辑路径、state machine 填机器路径，
+其它类型填一个上游节点（自动写成 `input` / `inputs[0]`）。blend space 需要 >=2/3 个
+剪辑与坐标，仍然手写或复制现有节点。`× Remove node` 删除节点，输出节点和仍被引用的节点会被
+拒绝并说明原因，先断线再删。状态机视图支持 `+ Transition`（任意状态 / 指定 from → to）和 `× Remove transition`，
 保存回 `.statemachine.json`。展开一条转移后 `from` / `to` 是下拉框（`from` 可选 `any`），
 重连会拒绝重名状态、自连和与现有转移完全重复的 `(from, to)`；`↑` / `↓` 调整转移顺序，
-顺序就是优先级（运行时取第一条条件命中的转移，列表上也写了这句提示）。状态行末尾的 `⧉` 复制整个状态（剪辑 / speed / looped 原样保留，名字自动 `_copy`），
+顺序就是优先级（运行时取第一条条件命中的转移，列表上也写了这句提示）；`⧉ Duplicate` 复制整条转移
+与条件并插入到原转移之后，作者再改 `from` / `to`。状态行末尾的 `⧉` 复制整个状态（剪辑 / speed / looped 原样保留，名字自动 `_copy`），
 转移表不变，复制出来的状态需要自己接线。状态行的名字与剪辑是文本框（失焦写回）、`speed` 是 DragValue（0..5）、
-`loop` 是复选框；重命名会同步改写转移里的 `from` / `to`，但不会改运行时 `Animator.state`
-或 `.scene.json` 里按旧名字写死的字段，改名后要自己检查场景。每条转移的 `blend` / `min` 是 DragValue（混合时长 / 最小状态占比）；
+`loop` 是复选框；重命名会同步改写转移里的 `from` / `to`，以及场景 / 预制体里指向同一状态机的
+`Animator.state`（其它状态机的同名状态不受影响）。每条转移的 `blend` / `min` 是 DragValue（混合时长 / 最小状态占比）；
 条件行可以直接改 float 阈值或 bool 期望值、`×` 删除，`+ Condition` 打开草稿表单（类型下拉
 `float >` / `float <` / `bool ==` / `trigger`、参数名、阈值或布尔值），点 `Add condition` 才写盘。
 条件只校验形状（名字非空、类型已知、`(type, name)` 不重复），参数是否真在运行时的

@@ -2734,11 +2734,14 @@ impl EditorApp {
         } else {
             self.workspace.active_index()
         };
+        let target_guids = self.workspace.asset_guids(path);
         for index in start..docs {
             let Some(doc) = self.workspace.docs.get(index) else {
                 continue;
             };
-            for (entity, component, field) in doc.doc.field_references(path) {
+            for (entity, component, field) in
+                doc.doc.field_references_with_guids(path, &target_guids)
+            {
                 let name = doc
                     .doc
                     .entities
