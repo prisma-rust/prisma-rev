@@ -5,8 +5,8 @@
 //! 以及跨帧 Notify。采样仍然复用 [`Clip`]，姿态合成由调用方（图 Slot 节点或
 //! 引擎）决定。
 //!
-//! 与 `Animator` 的普通剪辑不同，Montage 自带开始时间 / 循环 / 速度 / 权重，
-//! 播放头只属于这个播放器，不会改写作者场景数据。
+//! 与 `Animator` 的普通剪辑不同，Montage 自带开始时间 / 循环 / 速度 / 权重 /
+//! blend-in / blend-out，播放头只属于这个播放器，不会改写作者场景数据。
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -27,6 +27,10 @@ pub struct Montage {
     looped: bool,
     speed: f32,
     weight: f32,
+    /// 起始淡入时长（秒）；0 = 立即满权重。
+    blend_in: f32,
+    /// 单次 Montage 结束前的淡出时长（秒）；循环 Montage 不使用。
+    blend_out: f32,
 }
 
 impl Montage {
@@ -39,6 +43,8 @@ impl Montage {
             looped: true,
             speed: 1.0,
             weight: 1.0,
+            blend_in: 0.0,
+            blend_out: 0.0,
         }
     }
 
@@ -69,6 +75,18 @@ impl Montage {
         self
     }
 
+    /// 起始淡入时长（秒）；负数 / 非有限值按 0 处理。
+    pub fn with_blend_in(mut self, seconds: f32) -> Self {
+        self.blend_in = sanitize_duration(seconds);
+        self
+    }
+
+    /// 单次 Montage 结束前的淡出时长（秒）；循环 Montage 不使用。
+    pub fn with_blend_out(mut self, seconds: f32) -> Self {
+        self.blend_out = sanitize_duration(seconds);
+        self
+    }
+
     pub fn clip(&self) -> &Arc<Clip> {
         &self.clip
     }
@@ -88,7 +106,31 @@ pub struct MontageNotify {
 struct ActiveMontage {
     montage: Montage,
     time: f32,
+    /// 这一段已经播放的绝对时长（秒），用于 blend-in；暂停时不推进。
+    elapsed: f32,
+    /// 作者设置的基准权重；实际权重还要乘淡入 / 淡出系数。
     weight: f32,
+}
+
+impl ActiveMontage {
+    /// 这一帧实际用于姿态混合的权重。
+    fn effective_weight(&self) -> f32 {
+        let fade_in = if self.montage.blend_in > 0.0 {
+            (self.elapsed / self.montage.blend_in).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        // 循环 Montage 每圈都会回到结尾，按剩余时间淡出会周期性闪一下；
+        // 因此只在单次 Montage 上应用 blend-out。
+        let fade_out = if !self.montage.looped && self.montage.blend_out > 0.0 {
+            let local = local_time(self.montage.clip.duration, self.montage.looped, self.time);
+            let remaining = (self.montage.clip.duration - local).max(0.0);
+            (remaining / self.montage.blend_out).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        (self.weight * fade_in * fade_out).clamp(0.0, 1.0)
+    }
 }
 
 /// Montage 播放器：一个活动段 + 一个 FIFO 队列。
@@ -212,8 +254,11 @@ impl MontagePlayer {
         self.active.as_ref().map(|active| &active.montage.clip)
     }
 
+    /// 当前实际混合权重（基准权重 × blend-in / blend-out 系数）。
     pub fn active_weight(&self) -> f32 {
-        self.active.as_ref().map_or(0.0, |active| active.weight)
+        self.active
+            .as_ref()
+            .map_or(0.0, ActiveMontage::effective_weight)
     }
 
     pub fn set_active_weight(&mut self, weight: f32) {
@@ -238,6 +283,8 @@ impl MontagePlayer {
         );
         let speed = sanitize_speed(active.montage.speed);
         active.time += dt * speed;
+        // blend-in 是墙钟时长，不随播放倍速缩放；暂停时 tick 提前返回，所以会冻结。
+        active.elapsed += dt;
         let local = local_time(
             active.montage.clip.duration,
             active.montage.looped,
@@ -314,6 +361,7 @@ fn start(montage: Montage) -> ActiveMontage {
     ActiveMontage {
         weight: sanitize_weight(montage.weight),
         time: local_time(montage.clip.duration, montage.looped, start_time),
+        elapsed: 0.0,
         montage,
     }
 }
@@ -331,6 +379,14 @@ fn sanitize_speed(speed: f32) -> f32 {
         speed
     } else {
         1.0
+    }
+}
+
+fn sanitize_duration(seconds: f32) -> f32 {
+    if seconds.is_finite() {
+        seconds.max(0.0)
+    } else {
+        0.0
     }
 }
 
