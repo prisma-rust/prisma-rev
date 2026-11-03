@@ -180,6 +180,12 @@ impl GuidIndex {
     pub fn is_empty(&self) -> bool {
         self.by_guid.is_empty()
     }
+
+    /// Every GUID in the index (used to protect a renamed directory's assets
+    /// from path rewrites).
+    pub fn guids(&self) -> impl Iterator<Item = &str> {
+        self.by_guid.keys().map(String::as_str)
+    }
 }
 
 #[cfg(test)]
