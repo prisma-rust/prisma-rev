@@ -31,11 +31,20 @@ pub struct MontageSectionView {
     pub end: f32,
 }
 
-/// 一个剪辑的 Montage 段列表。
+/// 一段 MotionWarping 窗口。
+#[derive(Debug, Clone, PartialEq)]
+pub struct MontageWarpWindowView {
+    pub name: String,
+    pub start: f32,
+    pub end: f32,
+}
+
+/// 一个剪辑的 Montage 段 / warp window 列表。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClipMontageView {
     pub clip: String,
     pub sections: Vec<MontageSectionView>,
+    pub warp_windows: Vec<MontageWarpWindowView>,
 }
 
 /// 整个 Montage 段表，按剪辑名排序。
@@ -45,13 +54,24 @@ pub struct MontagesView {
 }
 
 impl MontagesView {
-    /// 所有段总数（面板标题用）。
+    /// 所有段 + warp window 总数（面板标题用）。
     pub fn len(&self) -> usize {
-        self.clips.iter().map(|clip| clip.sections.len()).sum()
+        self.clips
+            .iter()
+            .map(|clip| clip.sections.len() + clip.warp_windows.len())
+            .sum()
     }
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    pub fn section_count(&self) -> usize {
+        self.clips.iter().map(|clip| clip.sections.len()).sum()
+    }
+
+    pub fn warp_window_count(&self) -> usize {
+        self.clips.iter().map(|clip| clip.warp_windows.len()).sum()
     }
 }
 
@@ -65,7 +85,49 @@ fn validate(name: &str, start: f32, end: f32) -> Result<(), String> {
     Ok(())
 }
 
-/// 解析 Montage 段表；缺 `clips` 当作空表。
+fn parse_ranges(
+    clip: &str,
+    kind: &str,
+    value: Option<&Value>,
+) -> Result<Vec<(String, f32, f32)>, String> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let Some(entries) = value.as_array() else {
+        return Err(format!("clip '{clip}' needs a `{kind}` array"));
+    };
+    let mut ranges = Vec::with_capacity(entries.len());
+    for (index, entry) in entries.iter().enumerate() {
+        let name = entry
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| format!("clip '{clip}' {kind} #{index} needs a name"))?;
+        let start = entry.get("start").and_then(Value::as_f64).unwrap_or(0.0) as f32;
+        let end = entry
+            .get("end")
+            .and_then(Value::as_f64)
+            .unwrap_or(start as f64) as f32;
+        validate(name, start, end)
+            .map_err(|error| format!("clip '{clip}' {kind} #{index}: {error}"))?;
+        if ranges
+            .iter()
+            .any(|existing: &(String, f32, f32)| existing.0 == name)
+        {
+            return Err(format!(
+                "clip '{clip}' has duplicate montage {kind} '{name}'"
+            ));
+        }
+        ranges.push((name.to_string(), start, end));
+    }
+    ranges.sort_by(|a: &(String, f32, f32), b: &(String, f32, f32)| {
+        a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0))
+    });
+    Ok(ranges)
+}
+
+/// 解析 Montage 段 / warp window 表；缺 `clips` 当作空表。
 pub fn parse_montages_view(document: &Value) -> Result<MontagesView, String> {
     let Some(clips) = document.get("clips") else {
         return Ok(MontagesView::default());
@@ -78,53 +140,18 @@ pub fn parse_montages_view(document: &Value) -> Result<MontagesView, String> {
         let Some(entry) = entry.as_object() else {
             return Err(format!("clip '{clip}' needs an object with `sections`"));
         };
-        let Some(sections) = entry.get("sections") else {
-            parsed.push(ClipMontageView {
-                clip: clip.clone(),
-                sections: Vec::new(),
-            });
-            continue;
-        };
-        let Some(sections) = sections.as_array() else {
-            return Err(format!("clip '{clip}' needs a `sections` array"));
-        };
-        let mut view = Vec::with_capacity(sections.len());
-        for (index, section) in sections.iter().enumerate() {
-            let name = section
-                .get("name")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|name| !name.is_empty())
-                .ok_or_else(|| format!("clip '{clip}' section #{index} needs a name"))?;
-            let start = section.get("start").and_then(Value::as_f64).unwrap_or(0.0) as f32;
-            let end = section
-                .get("end")
-                .and_then(Value::as_f64)
-                .unwrap_or(start as f64) as f32;
-            validate(name, start, end)
-                .map_err(|error| format!("clip '{clip}' section #{index}: {error}"))?;
-            if view
-                .iter()
-                .any(|existing: &MontageSectionView| existing.name == name)
-            {
-                return Err(format!(
-                    "clip '{clip}' has duplicate montage section '{name}'"
-                ));
-            }
-            view.push(MontageSectionView {
-                name: name.to_string(),
-                start,
-                end,
-            });
-        }
-        view.sort_by(|a, b| {
-            a.start
-                .total_cmp(&b.start)
-                .then_with(|| a.name.cmp(&b.name))
-        });
+        let sections = parse_ranges(clip, "section", entry.get("sections"))?
+            .into_iter()
+            .map(|(name, start, end)| MontageSectionView { name, start, end })
+            .collect();
+        let warp_windows = parse_ranges(clip, "warp window", entry.get("warp_windows"))?
+            .into_iter()
+            .map(|(name, start, end)| MontageWarpWindowView { name, start, end })
+            .collect();
         parsed.push(ClipMontageView {
             clip: clip.clone(),
-            sections: view,
+            sections,
+            warp_windows,
         });
     }
     parsed.sort_by(|a, b| a.clip.cmp(&b.clip));
@@ -150,12 +177,15 @@ fn ensure_clip<'a>(document: &'a mut Value, clip: &str) -> Result<&'a mut Value,
     };
     let entry = clips
         .entry(clip.to_string())
-        .or_insert_with(|| json!({ "sections": [] }));
+        .or_insert_with(|| json!({ "sections": [], "warp_windows": [] }));
     if !entry.is_object() {
         return Err(format!("clip '{clip}' needs an object with `sections`"));
     }
     if entry.get("sections").is_none() {
         entry["sections"] = json!([]);
+    }
+    if entry.get("warp_windows").is_none() {
+        entry["warp_windows"] = json!([]);
     }
     Ok(entry)
 }
@@ -266,6 +296,112 @@ pub fn montage_section_at(time: f32, sections: &[MontageSectionView]) -> Option<
     })
 }
 
+/// 给某个剪辑追加一个 warp window；剪辑键不存在时自动创建。
+pub fn add_montage_warp_window(
+    document: &mut Value,
+    clip: &str,
+    name: &str,
+    start: f32,
+    end: f32,
+) -> Result<(), String> {
+    let clip = clip.trim();
+    let name = name.trim();
+    if clip.is_empty() {
+        return Err("a montage warp window needs a clip name".to_string());
+    }
+    validate(name, start, end)?;
+    let entry = ensure_clip(document, clip)?;
+    let Some(windows) = entry.get_mut("warp_windows").and_then(Value::as_array_mut) else {
+        return Err(format!("clip '{clip}' needs a `warp_windows` array"));
+    };
+    if windows
+        .iter()
+        .any(|window| window.get("name").and_then(Value::as_str).map(str::trim) == Some(name))
+    {
+        return Err(format!(
+            "clip '{clip}' already has the warp window '{name}'"
+        ));
+    }
+    windows.push(json!({ "name": name, "start": start, "end": end }));
+    Ok(())
+}
+
+/// 删除某个剪辑的第 `index` 个 warp window。
+pub fn remove_montage_warp_window(
+    document: &mut Value,
+    clip: &str,
+    index: usize,
+) -> Result<(), String> {
+    let Some(entry) = find_clip_mut(document, clip)? else {
+        return Err(format!("montage file has no clip '{clip}'"));
+    };
+    let Some(windows) = entry.get_mut("warp_windows").and_then(Value::as_array_mut) else {
+        return Err(format!("clip '{clip}' needs a `warp_windows` array"));
+    };
+    if index >= windows.len() {
+        return Err(format!("clip '{clip}' has no warp window #{index}"));
+    }
+    windows.remove(index);
+    Ok(())
+}
+
+/// 改某个 warp window 的名字 / 时间；同一剪辑内名字不能重复。
+pub fn set_montage_warp_window(
+    document: &mut Value,
+    clip: &str,
+    index: usize,
+    name: &str,
+    start: f32,
+    end: f32,
+) -> Result<(), String> {
+    let name = name.trim();
+    validate(name, start, end)?;
+    let Some(entry) = find_clip_mut(document, clip)? else {
+        return Err(format!("montage file has no clip '{clip}'"));
+    };
+    let Some(windows) = entry.get_mut("warp_windows").and_then(Value::as_array_mut) else {
+        return Err(format!("clip '{clip}' needs a `warp_windows` array"));
+    };
+    if index >= windows.len() {
+        return Err(format!("clip '{clip}' has no warp window #{index}"));
+    }
+    if windows.iter().enumerate().any(|(other_index, window)| {
+        other_index != index
+            && window.get("name").and_then(Value::as_str).map(str::trim) == Some(name)
+    }) {
+        return Err(format!(
+            "clip '{clip}' already has the warp window '{name}'"
+        ));
+    }
+    let Some(window) = windows.get_mut(index) else {
+        return Err(format!("clip '{clip}' has no warp window #{index}"));
+    };
+    if !window.is_object() {
+        return Err(format!("clip '{clip}' warp window #{index} is malformed"));
+    }
+    window["name"] = json!(name);
+    window["start"] = json!(start);
+    window["end"] = json!(end);
+    Ok(())
+}
+
+/// 时间点落在哪个 warp window（左闭右开；零长度窗口命中起点）。
+pub fn montage_warp_window_at(time: f32, windows: &[MontageWarpWindowView]) -> Option<usize> {
+    if !time.is_finite() {
+        return None;
+    }
+    windows.iter().position(|window| {
+        if !window.start.is_finite() || !window.end.is_finite() {
+            return false;
+        }
+        if window.end <= window.start {
+            (time - window.start).abs() <= f32::EPSILON
+        } else {
+            time >= window.start && time < window.end
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -353,5 +489,67 @@ mod tests {
         assert_eq!(montage_section_at(0.8, sections), Some(1));
         assert_eq!(montage_section_at(1.0, sections), None);
         assert_eq!(montage_section_at(f32::NAN, sections), None);
+    }
+
+    #[test]
+    fn warp_windows_parse_sorted_and_are_edited_independently() {
+        let mut doc = json!({
+            "clips": {
+                "vault": {
+                    "sections": [{ "name": "Start", "start": 0.0, "end": 0.3 }],
+                    "warp_windows": [
+                        { "name": "Land", "start": 0.8, "end": 1.0 },
+                        { "name": "Vault", "start": 0.3, "end": 0.8 }
+                    ]
+                }
+            }
+        });
+        let view = parse_montages_view(&doc).expect("parse");
+        assert_eq!(view.section_count(), 1);
+        assert_eq!(view.warp_window_count(), 2);
+        let names: Vec<&str> = view.clips[0]
+            .warp_windows
+            .iter()
+            .map(|window| window.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["Vault", "Land"]);
+
+        assert!(add_montage_warp_window(&mut doc, "vault", "Vault", 0.1, 0.2).is_err());
+        add_montage_warp_window(&mut doc, "vault", "Turn", 0.1, 0.2).expect("add");
+        set_montage_warp_window(&mut doc, "vault", 2, "Turn", 0.0, 0.25).expect("set");
+        assert!(set_montage_warp_window(&mut doc, "vault", 2, "Land", 0.0, 0.25).is_err());
+        remove_montage_warp_window(&mut doc, "vault", 2).expect("remove");
+        assert_eq!(
+            doc["clips"]["vault"]["warp_windows"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(remove_montage_warp_window(&mut doc, "vault", 9).is_err());
+
+        let view = parse_montages_view(&doc).unwrap();
+        let windows = &view.clips[0].warp_windows;
+        assert_eq!(montage_warp_window_at(0.8, windows), Some(1));
+        assert_eq!(montage_warp_window_at(0.2, windows), None);
+    }
+
+    #[test]
+    fn malformed_warp_windows_are_rejected() {
+        assert!(parse_montages_view(&json!({
+            "clips": { "a": { "warp_windows": {} } }
+        }))
+        .is_err());
+        assert!(parse_montages_view(&json!({
+            "clips": { "a": { "warp_windows": [{ "name": "x", "start": 1.0, "end": 0.5 }] } }
+        }))
+        .is_err());
+        assert!(parse_montages_view(&json!({
+            "clips": { "a": { "warp_windows": [
+                { "name": "x", "start": 0.0, "end": 1.0 },
+                { "name": "x", "start": 1.0, "end": 2.0 }
+            ] } }
+        }))
+        .is_err());
     }
 }

@@ -170,6 +170,10 @@ pub struct MontageSnapshot {
     pub clip: Option<String>,
     /// 当前时间所在的 Montage 段名；没有段 / 不在段内时为 `None`。
     pub section: Option<String>,
+    /// 当前时间所在的 MotionWarping 窗口名；不在窗口内时为 `None`。
+    pub warp_window: Option<String>,
+    /// 当前 warp window 内的归一化进度。
+    pub warp_window_progress: Option<f32>,
     /// 活动段已经播放的时间（秒）。
     pub time: Option<f32>,
     pub weight: f32,
@@ -409,6 +413,10 @@ impl AnimGraphEvaluator {
                 slot: slot.clone(),
                 clip: player.active_clip().map(|clip| clip.name.clone()),
                 section: player.active_section().map(|section| section.name.clone()),
+                warp_window: player
+                    .active_warp_window()
+                    .map(|window| window.name.clone()),
+                warp_window_progress: player.warp_window_progress(),
                 time: player.active_time(),
                 weight: player.active_weight(),
                 playing: player.is_playing(),

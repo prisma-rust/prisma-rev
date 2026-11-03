@@ -34,7 +34,10 @@ pub use blend::{
 };
 pub use blend_space2d::{BlendSample2D, BlendSpace2D};
 pub use blend_stack::{BlendLayer, BlendStack, BoneMask};
-pub use clip::{sample_quat, sample_vec3, Clip, ClipNotify, ClipSection, QuatKey, Track, Vec3Key};
+pub use clip::{
+    sample_quat, sample_vec3, Clip, ClipNotify, ClipSection, ClipWarpWindow, QuatKey, Track,
+    Vec3Key,
+};
 pub use graph_eval::{
     AnimGraphEvaluator, AnimGraphSource, GraphEvalError, GraphNodeSnapshot, GraphNotifyEvent,
     MontageSnapshot,
@@ -43,8 +46,8 @@ pub use montage::{Montage, MontageNotify, MontagePlayer, BRANCH_IN_PREFIX, MAX_M
 pub use pose::Pose;
 pub use prism_asset::formats_anim_graph::GraphNodeKind;
 pub use prism_asset::formats_skinned::{
-    decode_ranim, AnimClipInfo, AnimClipSectionInfo, AnimNotifyInfo, AnimTrackInfo, QuatKeyInfo,
-    Vec3KeyInfo,
+    decode_ranim, AnimClipInfo, AnimClipSectionInfo, AnimClipWarpWindowInfo, AnimNotifyInfo,
+    AnimTrackInfo, QuatKeyInfo, Vec3KeyInfo,
 };
 pub use skeleton::{Joint, JointTransform, Skeleton};
 pub use skinning::{palette_to_arrays, skin_matrices, skin_normals, skin_positions};

@@ -306,6 +306,7 @@ fn read_animations(
             notifies: Vec::new(),
             sync_markers: Vec::new(),
             sections: Vec::new(),
+            warp_windows: Vec::new(),
         });
     }
     clips

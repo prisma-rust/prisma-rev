@@ -2106,6 +2106,32 @@ fn a_montage_request_carries_blend_in_and_blend_out() {
 }
 
 #[test]
+fn montage_debug_reports_the_active_warp_window() {
+    let (mut world, entity) = setup_slot_world();
+    let mut clip = montage_clip("MontageStep", 0.5);
+    clip.warp_windows = vec![prism_anim::ClipWarpWindow {
+        name: "VaultWarp".into(),
+        start: 0.3,
+        end: 0.8,
+    }];
+    world
+        .get_resource_mut::<SkeletonLibrary>()
+        .unwrap()
+        .insert_clip("montage.ranim", clip);
+    world.insert_resource(AnimGraphDebug::default());
+    world
+        .get_resource_mut::<AnimMontageRequests>()
+        .unwrap()
+        .push(MontageRequest::play(entity, "slot", "montage.ranim"));
+
+    animator_system(&mut world, 0.5);
+    let debug = world.get_resource::<AnimGraphDebug>().unwrap();
+    let montage = &debug.montages(entity).expect("图实体")[0];
+    assert_eq!(montage.warp_window.as_deref(), Some("VaultWarp"));
+    assert!((montage.warp_window_progress.unwrap() - 0.4).abs() < 1e-5);
+}
+
+#[test]
 fn a_montage_request_can_start_at_a_named_section() {
     let (mut world, entity) = setup_slot_world();
     let mut clip = montage_clip("MontageStep", 0.5);

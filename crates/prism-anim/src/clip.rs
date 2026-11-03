@@ -70,6 +70,39 @@ impl ClipSection {
     }
 }
 
+/// 一段 MotionWarping 窗口（#560 P4）：root motion 只在这个时间区间内允许被
+/// 目标点 / 朝向扭曲。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClipWarpWindow {
+    pub name: String,
+    pub start: f32,
+    pub end: f32,
+}
+
+impl ClipWarpWindow {
+    pub fn contains(&self, time: f32) -> bool {
+        if !time.is_finite() || !self.start.is_finite() || !self.end.is_finite() {
+            return false;
+        }
+        if self.end <= self.start {
+            (time - self.start).abs() <= f32::EPSILON
+        } else {
+            time >= self.start && time < self.end
+        }
+    }
+
+    /// 窗口内的归一化进度；零长度窗口在命中时返回 1。
+    pub fn progress(&self, time: f32) -> Option<f32> {
+        if !self.contains(time) {
+            return None;
+        }
+        if self.end <= self.start {
+            return Some(1.0);
+        }
+        Some(((time - self.start) / (self.end - self.start)).clamp(0.0, 1.0))
+    }
+}
+
 /// 一段动画剪辑。
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Clip {
@@ -85,6 +118,8 @@ pub struct Clip {
     pub sync_markers: Vec<f32>,
     /// Montage 段（按 `start` 升序；普通剪辑为空）。
     pub sections: Vec<ClipSection>,
+    /// MotionWarping 窗口（按 `start` 升序；普通剪辑为空）。
+    pub warp_windows: Vec<ClipWarpWindow>,
 }
 
 impl Clip {
@@ -164,6 +199,22 @@ impl Clip {
                     name: section.name.clone(),
                     start: section.start,
                     end: section.end,
+                })
+                .collect(),
+            warp_windows: info
+                .warp_windows
+                .iter()
+                .filter(|window| {
+                    !window.name.trim().is_empty()
+                        && window.start.is_finite()
+                        && window.end.is_finite()
+                        && window.start >= 0.0
+                        && window.end >= window.start
+                })
+                .map(|window| ClipWarpWindow {
+                    name: window.name.clone(),
+                    start: window.start,
+                    end: window.end,
                 })
                 .collect(),
         }

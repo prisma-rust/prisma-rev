@@ -5687,6 +5687,16 @@ fn runtime_montage_summary(montage: &prism_anim::MontageSnapshot) -> String {
         .as_deref()
         .map(|section| format!(" · {section}"))
         .unwrap_or_default();
+    let warp = montage
+        .warp_window
+        .as_deref()
+        .map(|window| {
+            montage
+                .warp_window_progress
+                .map(|progress| format!(" · warp {window} {progress:.0}%"))
+                .unwrap_or_else(|| format!(" · warp {window}"))
+        })
+        .unwrap_or_default();
     let time = montage
         .time
         .map(|time| format!("{time:.2}s"))
@@ -5702,7 +5712,7 @@ fn runtime_montage_summary(montage: &prism_anim::MontageSnapshot) -> String {
         flags.push_str(&format!(" +{} queued", montage.queued));
     }
     format!(
-        "slot {} · {clip}{section} {time} w={:.2}{flags}",
+        "slot {} · {clip}{section}{warp} {time} w={:.2}{flags}",
         montage.slot, montage.weight
     )
 }
@@ -6454,6 +6464,185 @@ fn draw_montages_asset(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiSta
     }
 }
 
+fn draw_montage_warp_windows(
+    ui: &mut Ui,
+    clip: &prism_editor_core::ClipMontageView,
+    document: &mut Value,
+    edit: &mut AnimGraphEditState,
+    span: f32,
+) -> Result<bool, String> {
+    let mut changed = false;
+    let mut updates: Vec<(usize, String, f32, f32)> = Vec::new();
+    let mut removals: Vec<usize> = Vec::new();
+
+    ui.label(
+        RichText::new(format!("Warp windows ({})", clip.warp_windows.len()))
+            .strong()
+            .size(10.0),
+    );
+    if clip.warp_windows.is_empty() {
+        ui.label(
+            RichText::new("no warp windows — add one below")
+                .weak()
+                .size(9.0),
+        );
+    }
+    let width = ui.available_width().clamp(160.0, 560.0);
+    let (track, painter) = ui.allocate_painter(Vec2::new(width, 22.0), egui::Sense::hover());
+    let rect = track.rect;
+    painter.rect_filled(rect, 3.0, Color32::from_rgb(26, 28, 32));
+    let inset = 6.0;
+    let left = rect.left() + inset;
+    let usable = (rect.width() - inset * 2.0).max(1.0);
+    for window in &clip.warp_windows {
+        let start = prism_editor_core::timeline_x(window.start, span, left, usable);
+        let end = prism_editor_core::timeline_x(window.end, span, left, usable);
+        let bar = egui::Rect::from_min_max(
+            egui::pos2(start, rect.top() + 4.0),
+            egui::pos2(end.max(start + 2.0), rect.bottom() - 4.0),
+        );
+        painter.rect_filled(bar, 2.0, Color32::from_rgb(214, 146, 74));
+        if bar.width() > 28.0 {
+            painter.text(
+                bar.center(),
+                egui::Align2::CENTER_CENTER,
+                &window.name,
+                egui::FontId::monospace(8.0),
+                Color32::from_rgb(24, 20, 14),
+            );
+        }
+    }
+    painter.text(
+        egui::pos2(left + usable, rect.bottom() - 1.0),
+        egui::Align2::RIGHT_BOTTOM,
+        format!("{span:.2}s"),
+        egui::FontId::monospace(8.0),
+        Color32::from_rgb(110, 116, 126),
+    );
+
+    for (index, window) in clip.warp_windows.iter().enumerate() {
+        ui.horizontal(|ui| {
+            let editing = matches!(
+                &edit.montage_warp_name,
+                Some((clip_path, edit_index, _))
+                    if clip_path == &clip.clip && *edit_index == index
+            );
+            let mut name = if editing {
+                edit.montage_warp_name
+                    .as_ref()
+                    .map(|(_, _, name)| name.clone())
+                    .unwrap_or_else(|| window.name.clone())
+            } else {
+                window.name.clone()
+            };
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut name)
+                    .desired_width(96.0)
+                    .hint_text("warp window"),
+            );
+            if response.has_focus() {
+                edit.montage_warp_name = Some((clip.clip.clone(), index, name.clone()));
+            }
+            let mut start = window.start;
+            let mut end = window.end;
+            let start_changed = ui
+                .add(
+                    egui::DragValue::new(&mut start)
+                        .speed(0.01)
+                        .range(0.0..=span)
+                        .prefix("start "),
+                )
+                .changed();
+            let end_changed = ui
+                .add(
+                    egui::DragValue::new(&mut end)
+                        .speed(0.01)
+                        .range(start..=span)
+                        .prefix("end "),
+                )
+                .changed();
+            let name_changed = response.lost_focus() && name.trim() != window.name;
+            if name_changed || start_changed || end_changed {
+                let current_name = edit
+                    .montage_warp_name
+                    .as_ref()
+                    .filter(|(clip_path, edit_index, _)| {
+                        clip_path == &clip.clip && *edit_index == index
+                    })
+                    .map(|(_, _, name)| name.as_str())
+                    .unwrap_or(&window.name);
+                updates.push((index, current_name.to_string(), start, end));
+            }
+            if ui
+                .button("×")
+                .on_hover_text("delete this warp window")
+                .clicked()
+            {
+                removals.push(index);
+            }
+        });
+    }
+
+    let had_updates = !updates.is_empty();
+    for (index, name, start, end) in updates {
+        prism_editor_core::set_montage_warp_window(document, &clip.clip, index, &name, start, end)?;
+        changed = true;
+    }
+    if had_updates {
+        edit.montage_warp_name = None;
+    }
+    for index in removals.into_iter().rev() {
+        prism_editor_core::remove_montage_warp_window(document, &clip.clip, index)?;
+        changed = true;
+    }
+
+    let draft_matches = matches!(
+        &edit.montage_new_warp,
+        Some((clip_path, _, _, _)) if clip_path == &clip.clip
+    );
+    if draft_matches {
+        let mut add = false;
+        let mut cancel = false;
+        {
+            let (_, name, start, end) =
+                edit.montage_new_warp.as_mut().expect("draft checked above");
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(name)
+                        .desired_width(96.0)
+                        .hint_text("new warp window"),
+                );
+                ui.add(
+                    egui::DragValue::new(start)
+                        .speed(0.01)
+                        .range(0.0..=span)
+                        .prefix("start "),
+                );
+                ui.add(
+                    egui::DragValue::new(end)
+                        .speed(0.01)
+                        .range(*start..=span)
+                        .prefix("end "),
+                );
+                add = ui.button("Add").clicked();
+                cancel = ui.button("Cancel").clicked();
+            });
+        }
+        if add {
+            let (_, name, start, end) = edit.montage_new_warp.clone().expect("draft checked above");
+            prism_editor_core::add_montage_warp_window(document, &clip.clip, &name, start, end)?;
+            edit.montage_new_warp = None;
+            changed = true;
+        } else if cancel {
+            edit.montage_new_warp = None;
+        }
+    } else if ui.button("+ Warp").clicked() {
+        edit.montage_new_warp = Some((clip.clip.clone(), String::new(), 0.0, span.min(0.5)));
+    }
+
+    Ok(changed)
+}
+
 fn draw_montages_view(
     ui: &mut Ui,
     view: &prism_editor_core::MontagesView,
@@ -6463,13 +6652,17 @@ fn draw_montages_view(
     let mut changed = false;
     let mut error: Option<String> = None;
     ui.label(
-        RichText::new(format!("Montage sections ({})", view.len()))
-            .strong()
-            .size(11.0),
+        RichText::new(format!(
+            "Montage ranges ({} sections · {} warp windows)",
+            view.section_count(),
+            view.warp_window_count()
+        ))
+        .strong()
+        .size(11.0),
     );
     if view.is_empty() {
         ui.label(
-            RichText::new("no montage sections yet — add one below")
+            RichText::new("no montage ranges yet — add one below")
                 .weak()
                 .size(10.0),
         );
@@ -6488,6 +6681,7 @@ fn draw_montages_view(
             .sections
             .iter()
             .map(|section| section.end)
+            .chain(clip.warp_windows.iter().map(|window| window.end))
             .filter(|end| end.is_finite() && *end > 0.0)
             .fold(1.0_f32, f32::max)
             * 1.1;
@@ -6676,6 +6870,8 @@ fn draw_montages_view(
         } else if ui.button("+ Section").clicked() {
             edit.montage_new_section = Some((clip.clip.clone(), String::new(), 0.0, span.min(0.5)));
         }
+
+        changed |= draw_montage_warp_windows(ui, clip, document, edit, span)?;
     }
 
     // 新剪辑的段：顶部按钮打开草稿后，这里允许填剪辑名（glTF 动画原名）。
@@ -6732,7 +6928,7 @@ fn draw_montages_view(
 
     ui.label(
         RichText::new(
-            "cook merges sections into .ranim v4 · MontageRequest::with_section jumps to them",
+            "cook merges sections + warp windows into .ranim v5 · active_warp_window() queries them",
         )
         .weak()
         .size(9.0),
@@ -7353,6 +7549,10 @@ pub struct AnimGraphEditState {
     pub montage_section_name: Option<(String, usize, String)>,
     /// 新增 Montage 段草稿：(剪辑, 名字, 起点, 终点)。
     pub montage_new_section: Option<(String, String, f32, f32)>,
+    /// 正在编辑的 warp window 名字：(剪辑, 下标, 文本)，失焦才写回。
+    pub montage_warp_name: Option<(String, usize, String)>,
+    /// 新增 warp window 草稿：(剪辑, 名字, 起点, 终点)。
+    pub montage_new_warp: Option<(String, String, f32, f32)>,
     /// 正在拖拽的二维混合空间样本：(节点, 下标)。
     pub graph_sample_drag: Option<(String, usize)>,
 }
@@ -11868,6 +12068,8 @@ mod window_smoke_tests {
             slot: "hit".into(),
             clip: Some("hit.anim".into()),
             section: Some("Impact".into()),
+            warp_window: Some("VaultWarp".into()),
+            warp_window_progress: Some(0.5),
             time: Some(0.25),
             weight: 0.5,
             playing: true,

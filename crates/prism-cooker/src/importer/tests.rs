@@ -1725,10 +1725,16 @@ fn an_authored_montage_file_is_merged_into_the_matching_clip() {
     std::fs::write(&path, &glb).unwrap();
     std::fs::write(
         dir.join("hero.glb.skinning/montages.json"),
-        br#"{"clips": {"walk": {"sections": [
-            {"name": "Land", "start": 0.7, "end": 1.0},
-            {"name": "Start", "start": 0.0, "end": 0.3}
-        ]}}}"#,
+        br#"{"clips": {"walk": {
+            "sections": [
+                {"name": "Land", "start": 0.7, "end": 1.0},
+                {"name": "Start", "start": 0.0, "end": 0.3}
+            ],
+            "warp_windows": [
+                {"name": "LandWarp", "start": 0.7, "end": 1.0},
+                {"name": "StartWarp", "start": 0.0, "end": 0.3}
+            ]
+        }}}"#,
     )
     .unwrap();
 
@@ -1751,6 +1757,12 @@ fn an_authored_montage_file_is_merged_into_the_matching_clip() {
         .collect();
     assert_eq!(names, vec!["Start", "Land"], "编码时按 start 排序");
     assert!((clip.sections[0].end - 0.3).abs() < 1e-6);
+    let windows: Vec<&str> = clip
+        .warp_windows
+        .iter()
+        .map(|window| window.name.as_str())
+        .collect();
+    assert_eq!(windows, vec!["StartWarp", "LandWarp"]);
 }
 
 #[test]
@@ -1788,6 +1800,17 @@ fn a_broken_or_out_of_range_montage_file_fails() {
     assert!(
         format!("{error}").contains("0 <= start <= end"),
         "倒序时间要报错: {error}"
+    );
+
+    std::fs::write(
+        dir.join("hero.glb.skinning/montages.json"),
+        br#"{"clips": {"walk": {"warp_windows": [{"name": "TooFar", "start": 0.9, "end": 2.0}]}}}"#,
+    )
+    .unwrap();
+    let error = GltfImporter::side_assets(&path, "models/hero.glb").unwrap_err();
+    assert!(
+        format!("{error}").contains("beyond"),
+        "超出剪辑长度的 warp window 要报错: {error}"
     );
 
     std::fs::remove_dir_all(&dir).ok();
