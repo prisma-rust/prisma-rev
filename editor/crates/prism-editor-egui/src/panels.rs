@@ -6049,6 +6049,8 @@ pub struct AnimGraphEditState {
     pub graph_node_parameter_y: Option<(String, String)>,
     /// 「+ Sample」草稿：(节点名, 剪辑, x, y)。
     pub graph_sample: Option<(String, String, f32, f32)>,
+    /// 「+ Parameter」草稿：(名字, 类型, 默认值)。
+    pub graph_parameter: Option<(String, String, f32)>,
     /// Notify 编辑：(剪辑, 下标, 文本)，失焦写回。
     pub notify_name: Option<(String, usize, String)>,
     /// 新增 Notify 草稿：(剪辑, time, 名字)。
@@ -6083,20 +6085,102 @@ fn draw_anim_graph_view(
     edit: &mut AnimGraphEditState,
 ) -> Result<bool, String> {
     let mut changed = false;
-    if !graph.parameters.is_empty() {
-        ui.label(RichText::new("Parameters").strong().size(11.0));
-        for parameter in &graph.parameters {
-            ui.label(
-                RichText::new(format!(
-                    "{} · {} = {}",
-                    parameter.name, parameter.kind, parameter.default
-                ))
-                .monospace()
+    ui.label(
+        RichText::new(format!("Parameters ({})", graph.parameters.len()))
+            .strong()
+            .size(11.0),
+    );
+    if graph.parameters.is_empty() {
+        ui.label(
+            RichText::new("no parameters — add one below")
+                .weak()
                 .size(10.0),
-            );
-        }
-        ui.separator();
+        );
     }
+    let mut parameter_default_edits = Vec::new();
+    let mut parameter_removals = Vec::new();
+    for parameter in &graph.parameters {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(format!("{} · {}", parameter.name, parameter.kind))
+                    .monospace()
+                    .size(10.0),
+            );
+            let bool_like = !parameter.kind.eq_ignore_ascii_case("float");
+            let mut value = parameter.default;
+            let drag = egui::DragValue::new(&mut value).speed(0.01);
+            let drag = if bool_like {
+                drag.range(0.0..=1.0).max_decimals(0)
+            } else {
+                drag.range(-1000.0..=1000.0)
+            };
+            if ui.add(drag).changed() {
+                parameter_default_edits.push((parameter.name.clone(), value));
+            }
+            if ui
+                .small_button("×")
+                .on_hover_text("remove parameter")
+                .clicked()
+            {
+                parameter_removals.push(parameter.name.clone());
+            }
+        });
+    }
+    let mut add_parameter = None;
+    let mut cancel_parameter = false;
+    if let Some(draft) = edit.graph_parameter.as_mut() {
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut draft.0)
+                    .hint_text("name")
+                    .desired_width(110.0),
+            );
+            egui::ComboBox::from_id_salt("anim-graph-param-kind")
+                .selected_text(&draft.1)
+                .show_ui(ui, |ui| {
+                    for kind in ["float", "bool", "trigger"] {
+                        if ui.selectable_label(draft.1 == kind, kind).clicked() {
+                            draft.1 = kind.to_string();
+                        }
+                    }
+                });
+            let bool_like = draft.1 != "float";
+            let drag = egui::DragValue::new(&mut draft.2).speed(0.01);
+            let drag = if bool_like {
+                drag.range(0.0..=1.0).max_decimals(0)
+            } else {
+                drag.range(-1000.0..=1000.0)
+            };
+            ui.add(drag);
+        });
+        ui.horizontal(|ui| {
+            if ui.button("Add parameter").clicked() {
+                add_parameter = Some(draft.clone());
+            }
+            if ui.button("Cancel").clicked() {
+                cancel_parameter = true;
+            }
+        });
+    } else if ui.button("+ Parameter").clicked() {
+        edit.graph_parameter = Some((String::new(), "float".to_string(), 0.0));
+    }
+    for (name, value) in parameter_default_edits {
+        prism_editor_core::set_parameter_default(document, &name, value)?;
+        changed = true;
+    }
+    for name in parameter_removals {
+        prism_editor_core::remove_parameter(document, &name)?;
+        changed = true;
+    }
+    if let Some((name, kind, default)) = add_parameter {
+        prism_editor_core::add_parameter(document, &name, &kind, default)?;
+        edit.graph_parameter = None;
+        changed = true;
+    }
+    if cancel_parameter {
+        edit.graph_parameter = None;
+    }
+    ui.separator();
 
     ui.label(
         RichText::new(format!("Nodes ({})", graph.nodes.len()))
