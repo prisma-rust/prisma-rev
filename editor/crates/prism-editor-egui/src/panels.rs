@@ -5913,24 +5913,47 @@ fn draw_anim_graph_view(
                 if let Some(raw) = raw {
                     if let Some(inputs) = raw.get("inputs").and_then(Value::as_array) {
                         let mut remove = None;
+                        let mut weight_edits = Vec::new();
                         for (index, input) in inputs.iter().enumerate() {
-                            let name = match input {
-                                Value::String(name) => name.clone(),
-                                Value::Object(map) => map
-                                    .get("node")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("?")
-                                    .to_string(),
+                            let (name, mut weight) = match input {
+                                Value::String(name) => (name.clone(), 1.0),
+                                Value::Object(map) => (
+                                    map.get("node")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("?")
+                                        .to_string(),
+                                    map.get("weight").and_then(Value::as_f64).unwrap_or(1.0) as f32,
+                                ),
                                 _ => continue,
                             };
                             ui.horizontal(|ui| {
                                 ui.label(
                                     RichText::new(format!("link #{index}: {name}")).size(10.0),
                                 );
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut weight)
+                                            .speed(0.01)
+                                            .range(0.0..=1.0)
+                                            .prefix("w "),
+                                    )
+                                    .changed()
+                                {
+                                    weight_edits.push((index, weight));
+                                }
                                 if ui.small_button("×").clicked() {
                                     remove = Some(index);
                                 }
                             });
+                        }
+                        for (index, weight) in weight_edits {
+                            if prism_editor_core::set_graph_input_weight(
+                                document, &node.name, index, weight,
+                            )
+                            .is_ok()
+                            {
+                                changed = true;
+                            }
                         }
                         if let Some(index) = remove {
                             if prism_editor_core::remove_graph_input(document, &node.name, index)
