@@ -1290,6 +1290,108 @@ fn graph_notifies_reach_the_engine_event_queue() {
     assert!((events.events[0].time - 0.5).abs() < 1e-5);
 }
 
+#[test]
+fn many_graph_entities_evaluate_independently() {
+    let (mut world, first) = world_with_animator("");
+    world.insert_resource(AnimGraphLibrary::new());
+    world
+        .get_resource_mut::<AnimGraphLibrary>()
+        .unwrap()
+        .insert("hero.rag", single_clip_graph("bend.ranim"));
+    let mut entities = vec![first];
+    for _ in 1..6 {
+        let entity = world.spawn();
+        world.insert(
+            entity,
+            SkeletonRoot {
+                skeleton_path: "rig.rskel".into(),
+                default_clip_path: "bend.ranim".into(),
+            },
+        );
+        world.insert(
+            entity,
+            Animator {
+                anim_graph_path: "hero.rag".into(),
+                ..Default::default()
+            },
+        );
+        entities.push(entity);
+    }
+    {
+        let animator = world.get_mut::<Animator>(first).unwrap();
+        animator.anim_graph_path = "hero.rag".into();
+        animator.time = 0.0;
+    }
+
+    assert_eq!(
+        animator_system(&mut world, 0.5),
+        entities.len(),
+        "每个实体都要更新"
+    );
+    let tips: Vec<Vec3> = entities.iter().map(|e| child_tip(&world, *e)).collect();
+    for (entity, tip) in entities.iter().zip(&tips) {
+        let head = world.get::<AnimatorPlayhead>(*entity).expect("playhead");
+        assert_eq!(head.clip_path, ANIM_GRAPH_KEY);
+        assert!(
+            (tip.x - tips[0].x).abs() < 1e-4 && (tip.y - tips[0].y).abs() < 1e-4,
+            "{entity:?} 的姿态与其它实体不一致：{tip:?} vs {:?}",
+            tips[0]
+        );
+    }
+
+    // 求值器跨帧保留：第二帧继续推进到 90°，并行取放没有把状态丢掉。
+    assert_eq!(animator_system(&mut world, 0.5), entities.len());
+    for entity in &entities {
+        let tip = child_tip(&world, *entity);
+        assert!((tip.x - 1.0).abs() < 1e-3, "{entity:?} tip {tip:?}");
+    }
+}
+
+#[test]
+fn graph_and_clip_entities_update_in_the_same_tick() {
+    let (mut world, graph_entity) = world_with_animator("");
+    let clip_entity = world.spawn();
+    world.insert(
+        clip_entity,
+        SkeletonRoot {
+            skeleton_path: "rig.rskel".into(),
+            default_clip_path: "bend.ranim".into(),
+        },
+    );
+    world.insert(
+        clip_entity,
+        Animator {
+            clip_path: "bend.ranim".into(),
+            ..Default::default()
+        },
+    );
+    world.insert_resource(AnimGraphLibrary::new());
+    world
+        .get_resource_mut::<AnimGraphLibrary>()
+        .unwrap()
+        .insert("hero.rag", single_clip_graph("bend.ranim"));
+    world
+        .get_mut::<Animator>(graph_entity)
+        .unwrap()
+        .anim_graph_path = "hero.rag".into();
+
+    assert_eq!(animator_system(&mut world, 0.0), 2);
+    assert_eq!(
+        world
+            .get::<AnimatorPlayhead>(graph_entity)
+            .unwrap()
+            .clip_path,
+        ANIM_GRAPH_KEY
+    );
+    assert_eq!(
+        world
+            .get::<AnimatorPlayhead>(clip_entity)
+            .unwrap()
+            .clip_path,
+        "bend.ranim"
+    );
+}
+
 /// Slot 图：ClipPlayer(base) -> Slot -> Output。
 fn slot_graph(base: &str) -> AnimGraphInfo {
     let base_node = GraphNodeInfo {

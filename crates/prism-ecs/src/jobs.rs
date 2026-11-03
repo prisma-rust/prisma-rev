@@ -150,6 +150,42 @@ fn available_parallelism() -> usize {
         .unwrap_or(1)
 }
 
+/// 用作用域线程把 `items` 按块分给多个线程并行处理。
+///
+/// 与 [`schedule_parallel_for`] 的区别是**独占**语义：每块拿到自己的
+/// `&mut [T]`，不需要 `Arc<Mutex<_>>` 或原子量，也不可能有两个线程同时碰同一个
+/// 元素。适合「每个元素本来就有独立可变状态」的批处理（例如每个角色自己的
+/// 动画求值器）。`max_threads` 是上限，实际线程数还会被可用并行度和
+/// `items` 长度压住；只有一个线程时直接顺序执行，不建线程。
+pub fn scoped_parallel_chunks<T, F>(items: &mut [T], max_threads: usize, work: F)
+where
+    T: Send,
+    F: Fn(&mut T) + Sync,
+{
+    if items.is_empty() {
+        return;
+    }
+    let threads = available_parallelism()
+        .min(max_threads.max(1))
+        .min(items.len());
+    if threads <= 1 {
+        for item in items {
+            work(item);
+        }
+        return;
+    }
+    let chunk = items.len().div_ceil(threads);
+    std::thread::scope(|scope| {
+        for group in items.chunks_mut(chunk) {
+            scope.spawn(|| {
+                for item in group {
+                    work(item);
+                }
+            });
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,5 +264,22 @@ mod tests {
     #[should_panic(expected = "batch_size")]
     fn zero_batch_size_panics() {
         schedule_parallel_for(CollectJob(Arc::new(Mutex::new(Vec::new()))), 0, 0);
+    }
+
+    #[test]
+    fn scoped_chunks_visit_every_item_once() {
+        let mut items: Vec<usize> = (0..37).collect();
+        scoped_parallel_chunks(&mut items, 4, |item| *item *= 2);
+        assert_eq!(items, (0..37).map(|item| item * 2).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn scoped_chunks_handle_empty_and_single_thread_inputs() {
+        let mut empty: Vec<usize> = Vec::new();
+        scoped_parallel_chunks(&mut empty, 4, |_| panic!("must not run"));
+
+        let mut one = vec![1usize, 2, 3];
+        scoped_parallel_chunks(&mut one, 1, |item| *item += 1);
+        assert_eq!(one, [2, 3, 4]);
     }
 }

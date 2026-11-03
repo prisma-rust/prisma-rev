@@ -150,3 +150,9 @@ FIFO 排队、单次播完自动接下一段，`stop` / `stop_after_current` 清
 状态机和剪辑。`animator_system` 为每个实体持久化一个求值器，把项目参数表的
 float/bool/trigger 同步进去，并把图 Notify 合并进现有 `AnimEvents`；图失败时
 回退到普通剪辑路径并记录警告。
+
+多角色并行（#560 P6）：`animator_system` 先**顺序**应用 Montage 请求、同步参数，
+再把每个实体自己的求值器从表里取出，交给 `prism_ecs::jobs::scoped_parallel_chunks`
+按块并行求值（最多 8 个工作线程）；姿态、播放头与事件仍然回到主线程顺序写进 ECS。
+求值器之间不共享状态，所以结果与单线程一致 —— 少于两个图实体或单核设备直接顺序跑，
+不建线程。
