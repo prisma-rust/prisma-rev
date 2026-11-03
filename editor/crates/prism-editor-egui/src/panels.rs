@@ -6394,6 +6394,7 @@ fn draw_anim_graph_view(
             .size(11.0),
     );
     let mut remove_node = None;
+    let mut duplicate_node = None;
     let mut add_link = None;
     let mut remove_link = None;
     let mut weight_edits = Vec::new();
@@ -6417,8 +6418,19 @@ fn draw_anim_graph_view(
         egui::CollapsingHeader::new(RichText::new(title).monospace().size(10.0))
             .id_salt(("anim-graph-node", &node.name))
             .show(ui, |ui| {
-                if !node.is_output() && ui.small_button("× Remove node").clicked() {
-                    remove_node = Some(node.name.clone());
+                if !node.is_output() {
+                    ui.horizontal(|ui| {
+                        if ui
+                            .small_button("⧉ Duplicate")
+                            .on_hover_text("copy this node with a unique name")
+                            .clicked()
+                        {
+                            duplicate_node = Some(node.name.clone());
+                        }
+                        if ui.small_button("× Remove node").clicked() {
+                            remove_node = Some(node.name.clone());
+                        }
+                    });
                 }
                 let editing_name = edit
                     .graph_node_name
@@ -6885,6 +6897,10 @@ fn draw_anim_graph_view(
                     }
                 }
             });
+    }
+    if let Some(node) = duplicate_node {
+        prism_editor_core::duplicate_graph_node(document, &node)?;
+        changed = true;
     }
     if let Some(node) = remove_node {
         prism_editor_core::remove_graph_node(document, &node)?;
