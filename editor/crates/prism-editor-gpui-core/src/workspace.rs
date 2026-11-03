@@ -1346,6 +1346,63 @@ impl Workspace {
         Ok(())
     }
 
+    /// 重命名动画图参数，并同步改写图引用的状态机侧车里的条件名（#560）。
+    ///
+    /// 图节点的 `state_machine` / `machine` 指向 cook 后的 `*.rasm`，这里映射到同名
+    /// `*.statemachine.json`；文件不存在就跳过（可能由外部工具生成 / 还没落盘），
+    /// 存在但写回失败会返回错误。返回被改写的状态机文件（资产相对路径）。
+    pub fn rename_anim_graph_parameter(
+        &mut self,
+        graph_path: &str,
+        old: &str,
+        new: &str,
+    ) -> Result<Vec<String>, String> {
+        let mut graph = self
+            .read_asset_json(graph_path)
+            .map_err(|error| format!("read {graph_path} failed: {error}"))?;
+        crate::anim_graph_view::rename_parameter(&mut graph, old, new)?;
+        let mut machines: Vec<String> = Vec::new();
+        for node in graph
+            .get("nodes")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            let path = node
+                .get("state_machine")
+                .or_else(|| node.get("machine"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or_default();
+            let Some(source) = state_machine_source_path(path) else {
+                continue;
+            };
+            if !machines.contains(&source) {
+                machines.push(source);
+            }
+        }
+
+        let mut updates = Vec::new();
+        for source in machines {
+            let Ok(mut document) = self.read_asset_json(&source) else {
+                continue;
+            };
+            if crate::anim_graph_view::rename_condition_parameter(&mut document, old, new)? {
+                updates.push((source, document));
+            }
+        }
+
+        self.write_asset_json(graph_path, &graph)
+            .map_err(|error| format!("write {graph_path} failed: {error}"))?;
+        let mut written = Vec::new();
+        for (path, document) in updates {
+            self.write_asset_json(&path, &document)
+                .map_err(|error| format!("write {path} failed: {error}"))?;
+            written.push(path);
+        }
+        Ok(written)
+    }
+
     pub fn refresh_assets(&mut self) {
         let Some(root) = self.project_root.clone() else {
             return;
@@ -5324,6 +5381,27 @@ fn overrides_between(
 }
 
 /// 文档所在的目录（`assets/scenes` 这种），没有路径时按 `assets` 处理。
+/// 图节点里的 `*.rasm` → 同名 `*.statemachine.json`；已经是作者路径就原样返回。
+fn state_machine_source_path(machine: &str) -> Option<String> {
+    let machine = machine.trim();
+    if machine.is_empty() {
+        return None;
+    }
+    let source = if let Some(stem) = machine.strip_suffix(".rasm") {
+        format!("{stem}.statemachine.json")
+    } else if machine.ends_with(".statemachine.json") {
+        machine.to_string()
+    } else {
+        return None;
+    };
+    // 图里的路径相对 `assets/`，工作区的资产 API 要项目相对路径。
+    if source.starts_with("assets/") {
+        Some(source)
+    } else {
+        Some(format!("assets/{source}"))
+    }
+}
+
 fn document_dir(path: Option<&str>) -> String {
     path.and_then(|path| path.rsplit_once('/'))
         .map(|(dir, _)| dir.to_string())
@@ -7555,6 +7633,77 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn renaming_a_graph_parameter_rewrites_blend_spaces_and_machine_conditions() {
+        let project = TempProject::new("rename-param");
+        std::fs::create_dir_all(project.root.join("assets/anim")).unwrap();
+        std::fs::write(
+            project.root.join("assets/scenes/main.scene.json"),
+            r#"{"version":3,"entities":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            project.root.join("assets/anim/hero.animgraph.json"),
+            r#"{
+                "parameters": [{ "name": "speed", "type": "float", "default": 0.0 }],
+                "nodes": [
+                    { "name": "locomotion", "type": "blend_space_1d",
+                      "clips": ["anim/a.ranim", "anim/b.ranim"], "positions": [0.0, 1.0],
+                      "parameter": "speed" },
+                    { "name": "sm", "type": "state_machine", "state_machine": "anim/hero.rasm" },
+                    { "name": "out", "type": "output", "input": "locomotion" }
+                ]
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            project.root.join("assets/anim/hero.statemachine.json"),
+            r#"{
+                "states": [
+                    { "name": "Idle", "clip": "anim/idle.ranim" },
+                    { "name": "Run", "clip": "anim/run.ranim" }
+                ],
+                "transitions": [{
+                    "from": "Idle", "to": "Run",
+                    "conditions": [{ "type": "float_greater", "name": "speed", "threshold": 1.0 }]
+                }]
+            }"#,
+        )
+        .unwrap();
+
+        let mut workspace = Workspace::load_fixture(&fixture());
+        workspace.load_project(project.root.clone()).unwrap();
+        let updated = workspace
+            .rename_anim_graph_parameter("assets/anim/hero.animgraph.json", "speed", "velocity")
+            .expect("renames across files");
+        assert_eq!(
+            updated,
+            vec!["assets/anim/hero.statemachine.json".to_string()]
+        );
+
+        let graph: Value = serde_json::from_str(
+            &std::fs::read_to_string(project.root.join("assets/anim/hero.animgraph.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(graph["parameters"][0]["name"], "velocity");
+        assert_eq!(graph["nodes"][0]["parameter"], "velocity");
+        let machine: Value = serde_json::from_str(
+            &std::fs::read_to_string(project.root.join("assets/anim/hero.statemachine.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            machine["transitions"][0]["conditions"][0]["name"],
+            "velocity"
+        );
+        assert!(
+            workspace
+                .rename_anim_graph_parameter("assets/anim/hero.animgraph.json", "velocity", "speed")
+                .is_ok(),
+            "改回原名也走同一条路径"
+        );
     }
 
     #[test]

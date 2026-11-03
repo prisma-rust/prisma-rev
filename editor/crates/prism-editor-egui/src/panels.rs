@@ -5730,15 +5730,37 @@ pub fn anim_graph(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
                     }
                 }
                 ui.separator();
-                match draw_anim_graph_view(ui, &graph, &mut value, &mut state.anim_graph_edit) {
-                    Ok(true) => {
-                        state.status = match workspace.write_asset_json(&path, &value) {
-                            Ok(()) => format!("saved nodes/links in {path}"),
-                            Err(error) => format!("save graph failed: {error}"),
-                        };
+                let result =
+                    draw_anim_graph_view(ui, &graph, &mut value, &mut state.anim_graph_edit);
+                match result {
+                    Ok(changed_now) => {
+                        if changed_now {
+                            state.status = match workspace.write_asset_json(&path, &value) {
+                                Ok(()) => format!("saved nodes/links in {path}"),
+                                Err(error) => format!("save graph failed: {error}"),
+                            };
+                        }
+                        if let Some((old_name, new_name)) =
+                            state.anim_graph_edit.graph_parameter_rename.take()
+                        {
+                            state.status = match workspace
+                                .rename_anim_graph_parameter(&path, &old_name, &new_name)
+                            {
+                                Ok(updated) if updated.is_empty() => {
+                                    format!("renamed parameter '{old_name}' to '{new_name}'")
+                                }
+                                Ok(updated) => format!(
+                                    "renamed parameter '{old_name}' to '{new_name}', updated {}",
+                                    updated.join(", ")
+                                ),
+                                Err(error) => error,
+                            };
+                        }
                     }
-                    Ok(false) => {}
-                    Err(error) => state.status = format!("animation graph: {error}"),
+                    Err(error) => {
+                        state.anim_graph_edit.graph_parameter_rename = None;
+                        state.status = format!("animation graph: {error}");
+                    }
                 }
             }
             Err(error) => {
@@ -6051,6 +6073,10 @@ pub struct AnimGraphEditState {
     pub graph_sample: Option<(String, String, f32, f32)>,
     /// 「+ Parameter」草稿：(名字, 类型, 默认值)。
     pub graph_parameter: Option<(String, String, f32)>,
+    /// 参数改名缓冲：(原名, 新文本)，失焦后写进 `graph_parameter_rename`。
+    pub graph_parameter_name: Option<(String, String)>,
+    /// 待执行的应用级参数改名：(原名, 新名)，面板在画完之后调用工作区。
+    pub graph_parameter_rename: Option<(String, String)>,
     /// Notify 编辑：(剪辑, 下标, 文本)，失焦写回。
     pub notify_name: Option<(String, usize, String)>,
     /// 新增 Notify 草稿：(剪辑, time, 名字)。
@@ -6101,8 +6127,32 @@ fn draw_anim_graph_view(
     let mut parameter_removals = Vec::new();
     for parameter in &graph.parameters {
         ui.horizontal(|ui| {
+            let editing_name = edit
+                .graph_parameter_name
+                .as_ref()
+                .filter(|(owner, _)| owner == &parameter.name);
+            let mut name_text = editing_name
+                .map(|(_, text)| text.clone())
+                .unwrap_or_else(|| parameter.name.clone());
+            let name_response = ui.add(
+                egui::TextEdit::singleline(&mut name_text)
+                    .desired_width(110.0)
+                    .font(egui::TextStyle::Monospace),
+            );
+            if name_response.changed() {
+                edit.graph_parameter_name = Some((parameter.name.clone(), name_text));
+            } else if name_response.lost_focus() {
+                if let Some((owner, text)) = edit.graph_parameter_name.take() {
+                    if owner == parameter.name {
+                        let new_name = text.trim().to_string();
+                        if new_name != parameter.name {
+                            edit.graph_parameter_rename = Some((parameter.name.clone(), new_name));
+                        }
+                    }
+                }
+            }
             ui.label(
-                RichText::new(format!("{} · {}", parameter.name, parameter.kind))
+                RichText::new(format!("· {}", parameter.kind))
                     .monospace()
                     .size(10.0),
             );
