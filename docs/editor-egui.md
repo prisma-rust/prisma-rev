@@ -517,10 +517,12 @@ cook 时归一化到 `[0, 1)`、排序去重，写进 `.ranim` v3；运行时
   一帧只走一条转移；`min_state_fraction` 在剪辑时长未知时视为已播完，否则单次剪辑会卡在最后一帧；
 编辑器提供 **Animation Graph** 面板（Window → General）：选中 `.animgraph.json` 或
 `.statemachine.json` 后显示参数、节点 / 连线、输出，以及状态、转移和可读条件。
-`Parameters` 区可以直接编辑：每行是名字 · 类型 + 默认值 DragValue（bool / trigger 归一成
+`Parameters` 区可以直接编辑：每行是名字文本框 · 类型 + 默认值 DragValue（bool / trigger 归一成
 0 / 1），`×` 删除参数（仍被混合空间节点引用的参数会被拒绝并指出是哪个节点），`+ Parameter`
-打开草稿表单（名字 + 类型下拉 + 默认值）。参数改名还没做：改名要同时改写
-`.statemachine.json` 里的条件，留给后续。
+打开草稿表单（名字 + 类型下拉 + 默认值）。改参数名（失焦）会同时改写混合空间节点的
+`parameter` / `parameter_x` / `parameter_y`，以及图引用的状态机侧车里的条件名：
+节点写 `state_machine: "anim/hero.rasm"` 时自动找 `assets/anim/hero.statemachine.json`
+（文件不存在就跳过，可能还没落盘），状态栏会列出同步了哪些文件。重名会被拒绝。
 图节点可以在画布上拖动，位置保存到 `<graph>.layout.json`（不改图本身）；节点卡片里可以增删
 `inputs` 连线（`+ Link` / `×`），每条连线的 `w` 可以直接拖拽调 0..1 权重，保存后写回 `.animgraph.json`。使用单数 `input` 的链式节点
 仍需手改 JSON。每条连线下面还有一行逗号分隔的 `bone mask`（`spine_02, arm_l`）：失焦时才写回，

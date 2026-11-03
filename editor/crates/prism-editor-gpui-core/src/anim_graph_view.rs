@@ -955,6 +955,85 @@ pub fn set_blend_space_parameter(
     Ok(())
 }
 
+/// 重命名一个参数，并改写图内对它的引用
+/// （混合空间节点的 `parameter` / `parameter_x` / `parameter_y`）。
+///
+/// 只改图本身；图引用的 `.statemachine.json` 里的条件名需要用
+/// [`rename_condition_parameter`]，跨文件版本见 `Workspace::rename_anim_graph_parameter`。
+pub fn rename_parameter(document: &mut Value, old: &str, new: &str) -> Result<(), String> {
+    let old = old.trim();
+    let new = new.trim();
+    if new.is_empty() {
+        return Err("a parameter needs a name".to_string());
+    }
+    if old == new {
+        return Ok(());
+    }
+    let Some(parameters) = document.get_mut("parameters").and_then(Value::as_array_mut) else {
+        return Err(format!("parameter '{old}' does not exist"));
+    };
+    if parameters
+        .iter()
+        .any(|parameter| parameter.get("name").and_then(Value::as_str) == Some(new))
+    {
+        return Err(format!("a parameter named '{new}' already exists"));
+    }
+    let Some(parameter) = parameters
+        .iter_mut()
+        .find(|parameter| parameter.get("name").and_then(Value::as_str) == Some(old))
+    else {
+        return Err(format!("parameter '{old}' does not exist"));
+    };
+    parameter["name"] = json!(new);
+    if let Some(nodes) = document.get_mut("nodes").and_then(Value::as_array_mut) {
+        for node in nodes {
+            for field in ["parameter", "parameter_x", "parameter_y"] {
+                if node.get(field).and_then(Value::as_str) == Some(old) {
+                    node[field] = json!(new);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 把状态机里所有引用 `old` 的条件改名成 `new`；返回是否有改动。
+///
+/// 只改条件名，不动条件类型 / 阈值；状态机里不存在的参数名不会被造出来。
+pub fn rename_condition_parameter(
+    document: &mut Value,
+    old: &str,
+    new: &str,
+) -> Result<bool, String> {
+    let old = old.trim();
+    let new = new.trim();
+    if new.is_empty() {
+        return Err("a parameter needs a name".to_string());
+    }
+    let mut changed = false;
+    let Some(transitions) = document
+        .get_mut("transitions")
+        .and_then(Value::as_array_mut)
+    else {
+        return Ok(false);
+    };
+    for transition in transitions {
+        let Some(conditions) = transition
+            .get_mut("conditions")
+            .and_then(Value::as_array_mut)
+        else {
+            continue;
+        };
+        for condition in conditions {
+            if condition.get("name").and_then(Value::as_str) == Some(old) {
+                condition["name"] = json!(new);
+                changed = true;
+            }
+        }
+    }
+    Ok(changed)
+}
+
 /// 改一个混合空间样本的坐标；一维节点只写 x（`positions` 里是数字）。
 pub fn set_blend_space_position(
     document: &mut Value,
@@ -1287,6 +1366,51 @@ mod parameter_tests {
         let mut empty = json!({ "nodes": [] });
         add_parameter(&mut empty, "trigger", "trigger", 0.0).expect("creates the list");
         assert_eq!(empty["parameters"][0]["name"], "trigger");
+    }
+
+    #[test]
+    fn parameters_can_be_renamed_across_graph_references() {
+        let mut doc = document();
+        rename_parameter(&mut doc, "speed", " velocity ").expect("renames");
+        assert_eq!(doc["parameters"][0]["name"], "velocity");
+        assert_eq!(doc["nodes"][0]["parameter"], "velocity");
+
+        rename_parameter(&mut doc, "velocity", "velocity").expect("same name is a no-op");
+        assert!(rename_parameter(&mut doc, "missing", "other").is_err());
+        assert!(rename_parameter(&mut doc, "velocity", " ").is_err());
+    }
+
+    #[test]
+    fn renaming_rejects_names_that_already_exist() {
+        let mut doc = document();
+        add_parameter(&mut doc, "grounded", "bool", 0.0).expect("adds");
+        let error = rename_parameter(&mut doc, "speed", "grounded").expect_err("duplicate");
+        assert!(error.contains("grounded"), "{error}");
+        assert_eq!(doc["parameters"][0]["name"], "speed", "失败时不能改名");
+    }
+
+    #[test]
+    fn state_machine_conditions_follow_a_parameter_rename() {
+        let mut machine = json!({
+            "states": [
+                { "name": "Idle", "clip": "idle.ranim" },
+                { "name": "Run", "clip": "run.ranim" }
+            ],
+            "transitions": [
+                { "from": "Idle", "to": "Run", "conditions": [
+                    { "type": "float_greater", "name": "speed", "threshold": 1.0 },
+                    { "type": "trigger", "name": "jump" }
+                ] }
+            ]
+        });
+        assert!(rename_condition_parameter(&mut machine, "speed", "velocity").expect("renames"));
+        assert_eq!(
+            machine["transitions"][0]["conditions"][0]["name"],
+            "velocity"
+        );
+        assert_eq!(machine["transitions"][0]["conditions"][1]["name"], "jump");
+        assert!(!rename_condition_parameter(&mut machine, "missing", "other").expect("no-op"));
+        assert!(rename_condition_parameter(&mut machine, "jump", "").is_err());
     }
 
     #[test]
