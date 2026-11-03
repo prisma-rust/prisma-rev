@@ -2361,6 +2361,11 @@ pub struct Animator {
     /// 每次更新推进 `2 * dt` 保持播放速度。非有限 / `<= 0` / 大于 `lod_far`
     /// 时等于 `lod_far`（没有降频档）。
     pub lod_near: f32,
+    /// 动画 LOD 的「骨骼子集」档（#560 P6）：超过 `lod_far` 时只更新根关节和这里
+    /// 列出的骨骼，其余骨骼保持上一帧姿态。空列表 = 不启用（和 `lod_root_only`
+    /// 一样，只有单剪辑实体支持）；名字按骨架解析，找不到的忽略。
+    /// 根关节总是参与更新，不需要写进来。
+    pub lod_bones: Vec<String>,
     /// 动画 LOD 的「仅根骨」档（#560 P6）：超过 `lod_far` 时不整体冻结，而是
     /// 只推进时间并采样根关节（其余骨骼保持上一帧姿态），根运动消费仍然生效。
     /// 只支持单剪辑 / 普通剪辑路径；状态机、混合空间、动画图的实体仍然整体冻结
@@ -2401,6 +2406,7 @@ impl Default for Animator {
             lod_near: 25.0,
             root_motion_consume: false,
             lod_root_only: false,
+            lod_bones: Vec::new(),
         }
     }
 }
