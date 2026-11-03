@@ -2227,6 +2227,94 @@ pub fn duplicate_state(document: &mut Value, name: &str) -> Result<String, Strin
     Ok(candidate)
 }
 
+/// 追加一个状态。
+///
+/// 名字与剪辑路径都去空白后必须非空（cooker 会拒绝空剪辑）；名字不能与现有
+/// 状态重复。新状态默认 `speed = 1.0`、`looped = true`，由 cooker 的缺省值补齐。
+pub fn add_state(document: &mut Value, name: &str, clip: &str) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("a state needs a non-empty name".to_string());
+    }
+    let clip = clip.trim();
+    if clip.is_empty() {
+        return Err("a state needs a non-empty clip path".to_string());
+    }
+    let states = document
+        .get_mut("states")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "state machine needs a `states` array".to_string())?;
+    if states.iter().any(|state| {
+        !state.is_object()
+            || state
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .is_none()
+    }) {
+        return Err("state machine has a malformed state entry".to_string());
+    }
+    if states
+        .iter()
+        .any(|state| state.get("name").and_then(Value::as_str) == Some(name))
+    {
+        return Err(format!("a state named '{name}' already exists"));
+    }
+    states.push(json!({ "name": name, "clip": clip }));
+    Ok(())
+}
+
+/// 删除一个状态，并移除所有引用它的转移，返回被一并删除的转移数量。
+///
+/// 状态机至少要保留一个状态（cooker 与运行时都按「第一个状态是初始状态」处理）；
+/// 删除第一个状态后，下一个状态成为初始状态。任意状态（`*` / `any`）的转移不受影响。
+pub fn remove_state(document: &mut Value, name: &str) -> Result<usize, String> {
+    let name = name.trim();
+    let state_index = {
+        let states = document
+            .get("states")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "state machine needs a `states` array".to_string())?;
+        let index = states
+            .iter()
+            .position(|state| state.get("name").and_then(Value::as_str) == Some(name))
+            .ok_or_else(|| format!("unknown state '{name}'"))?;
+        if states.len() <= 1 {
+            return Err("a state machine needs at least one state".to_string());
+        }
+        index
+    };
+    if let Some(value) = document.get("transitions") {
+        if !value.is_array() {
+            return Err("state machine has an invalid `transitions` field".to_string());
+        }
+    }
+    let states = document
+        .get_mut("states")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "state machine needs a `states` array".to_string())?;
+    states.remove(state_index);
+
+    let Some(value) = document.get_mut("transitions") else {
+        return Ok(0);
+    };
+    let transitions = value
+        .as_array_mut()
+        .ok_or_else(|| "state machine has an invalid `transitions` field".to_string())?;
+    let before = transitions.len();
+    transitions.retain(|transition| {
+        let from = transition
+            .get("from")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|from| !from.is_empty() && *from != "*" && !from.eq_ignore_ascii_case("any"));
+        let to = transition.get("to").and_then(Value::as_str).map(str::trim);
+        from != Some(name) && to != Some(name)
+    });
+    Ok(before - transitions.len())
+}
+
 /// 重命名一个状态，并同步改写转移里的 `from` / `to`。
 ///
 /// 只改状态机文档：运行时 `Animator.state` 和条件里的参数名不在这里，面板会提示
@@ -2487,6 +2575,66 @@ mod state_tests {
         assert!(set_state_speed(&mut doc, 9, 1.0).is_err());
         assert!(set_state_looped(&mut doc, 9, true).is_err());
         assert!(set_state_clip(&mut json!({ "states": ["bad"] }), 0, "a.ranim").is_err());
+    }
+
+    #[test]
+    fn states_can_be_added_with_a_name_and_clip() {
+        let mut doc = document();
+        add_state(&mut doc, " Jump ", " jump.ranim ").expect("adds");
+        assert_eq!(
+            doc["states"][2],
+            json!({ "name": "Jump", "clip": "jump.ranim" })
+        );
+        assert_eq!(
+            doc["transitions"].as_array().unwrap().len(),
+            2,
+            "转移表不变"
+        );
+    }
+
+    #[test]
+    fn adding_states_rejects_blank_duplicate_and_malformed_input() {
+        let mut doc = document();
+        assert!(add_state(&mut doc, " ", "jump.ranim").is_err());
+        assert!(add_state(&mut doc, "Jump", "  ").is_err());
+        assert!(add_state(&mut doc, "Idle", "idle.ranim").is_err());
+        assert!(add_state(&mut json!({}), "Jump", "jump.ranim").is_err());
+        assert!(add_state(&mut json!({ "states": ["bad"] }), "Jump", "jump.ranim").is_err());
+        assert_eq!(doc["states"].as_array().unwrap().len(), 2, "失败不改文档");
+    }
+
+    #[test]
+    fn removing_a_state_drops_transitions_that_reference_it() {
+        let mut doc = document();
+        add_state_transition(&mut doc, Some("Run"), "Idle").expect("adds");
+        let removed = remove_state(&mut doc, "Run").expect("removes");
+        assert_eq!(removed, 2);
+        assert_eq!(doc["states"].as_array().unwrap().len(), 1);
+        assert_eq!(doc["states"][0]["name"], "Idle");
+        assert_eq!(
+            doc["transitions"],
+            json!([{ "from": "*", "to": "Idle", "duration": 0.0 }]),
+            "只保留与 Run 无关的任意状态转移"
+        );
+    }
+
+    #[test]
+    fn removing_states_rejects_unknown_names_the_last_state_and_bad_transitions() {
+        let mut doc = document();
+        assert!(remove_state(&mut doc, "Missing").is_err());
+        remove_state(&mut doc, "Run").expect("removes");
+        assert!(remove_state(&mut doc, "Idle").is_err(), "不能删到零个状态");
+        assert_eq!(doc["states"].as_array().unwrap().len(), 1);
+
+        let mut doc = json!({
+            "states": [
+                { "name": "Idle", "clip": "idle.ranim" },
+                { "name": "Run", "clip": "run.ranim" }
+            ],
+            "transitions": "bad"
+        });
+        assert!(remove_state(&mut doc, "Run").is_err());
+        assert_eq!(doc["states"].as_array().unwrap().len(), 2, "失败不改状态表");
     }
 
     #[test]
