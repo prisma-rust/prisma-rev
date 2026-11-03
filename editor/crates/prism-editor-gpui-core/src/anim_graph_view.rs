@@ -20,6 +20,8 @@ pub struct AnimParameterView {
 pub struct AnimInputView {
     pub node: String,
     pub weight: f32,
+    /// 只影响这些关节（空 = 整条姿态）。
+    pub bone_mask: Vec<String>,
 }
 
 /// 动画图中的一个节点。
@@ -204,6 +206,7 @@ fn parse_input(value: &Value) -> Option<AnimInputView> {
         Value::String(node) if !node.trim().is_empty() => Some(AnimInputView {
             node: node.trim().to_string(),
             weight: 1.0,
+            bone_mask: Vec::new(),
         }),
         Value::Object(map) => {
             let node = map
@@ -218,6 +221,17 @@ fn parse_input(value: &Value) -> Option<AnimInputView> {
                     .and_then(Value::as_f64)
                     .map(|weight| weight as f32)
                     .unwrap_or(1.0),
+                bone_mask: map
+                    .get("bone_mask")
+                    .and_then(Value::as_array)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|joint| !joint.is_empty())
+                    .map(str::to_string)
+                    .collect(),
             })
         }
         _ => None,
@@ -607,6 +621,57 @@ pub fn remove_graph_input(document: &mut Value, target: &str, index: usize) -> R
     }
     inputs.remove(index);
     Ok(())
+}
+
+/// 设置一条连线的骨骼掩码；空列表表示恢复「整条姿态」。
+///
+/// 字符串连线在需要掩码时升级成对象（权重保持 1），已有对象只替换 `bone_mask`，
+/// 保留 `weight` 等字段。关节名去空白、去重、保序；上限与 cooker 一致（1024）。
+pub fn set_graph_input_bone_mask(
+    document: &mut Value,
+    target: &str,
+    index: usize,
+    joints: &[String],
+) -> Result<(), String> {
+    const MAX_MASK: usize = 1024;
+    let mut mask: Vec<&str> = Vec::new();
+    for joint in joints {
+        let joint = joint.trim();
+        if !joint.is_empty() && !mask.contains(&joint) {
+            mask.push(joint);
+        }
+    }
+    if mask.len() > MAX_MASK {
+        return Err(format!("a bone mask can hold at most {MAX_MASK} joints"));
+    }
+    let Some(node) = find_node_mut(document, target) else {
+        return Err(format!("unknown target node '{target}'"));
+    };
+    let Some(inputs) = node.get_mut("inputs").and_then(Value::as_array_mut) else {
+        return Err(format!("node '{target}' has no editable `inputs` array"));
+    };
+    let Some(input) = inputs.get_mut(index) else {
+        return Err(format!("node '{target}' has no input #{index}"));
+    };
+    match input {
+        Value::String(name) => {
+            if mask.is_empty() {
+                return Ok(());
+            }
+            let name = name.clone();
+            *input = json!({ "node": name, "weight": 1.0, "bone_mask": mask });
+            Ok(())
+        }
+        Value::Object(map) => {
+            if mask.is_empty() {
+                map.remove("bone_mask");
+            } else {
+                map.insert("bone_mask".to_string(), json!(mask));
+            }
+            Ok(())
+        }
+        _ => Err(format!("node '{target}' input #{index} is malformed")),
+    }
 }
 
 /// 追加一个剪辑节点（`clip_player`，单剪辑）。
@@ -1220,5 +1285,71 @@ mod weight_tests {
         assert!(set_graph_input_weight(&mut doc, "stack", 0, f32::NAN).is_err());
         assert!(set_graph_input_weight(&mut doc, "stack", 9, 0.5).is_err());
         assert!(set_graph_input_weight(&mut doc, "missing", 0, 0.5).is_err());
+    }
+
+    #[test]
+    fn a_string_link_gains_a_mask_and_upgrades_to_an_object() {
+        let mut doc = document();
+        set_graph_input_bone_mask(&mut doc, "stack", 0, &[" spine ".to_string()]).expect("sets");
+        assert_eq!(
+            doc["nodes"][2]["inputs"][0],
+            json!({ "node": "a", "weight": 1.0, "bone_mask": ["spine"] })
+        );
+    }
+
+    #[test]
+    fn an_object_link_keeps_its_weight_and_the_mask_is_deduplicated() {
+        let mut doc = document();
+        let mask = vec![
+            "spine".to_string(),
+            " arm ".to_string(),
+            "spine".to_string(),
+            String::new(),
+        ];
+        set_graph_input_bone_mask(&mut doc, "stack", 1, &mask).expect("sets");
+        assert_eq!(doc["nodes"][2]["inputs"][1]["weight"], 0.5);
+        assert_eq!(
+            doc["nodes"][2]["inputs"][1]["bone_mask"],
+            json!(["spine", "arm"])
+        );
+    }
+
+    #[test]
+    fn an_empty_mask_clears_the_field() {
+        let mut doc = document();
+        set_graph_input_bone_mask(&mut doc, "stack", 1, &[]).expect("clears");
+        assert!(doc["nodes"][2]["inputs"][1].get("bone_mask").is_none());
+        assert_eq!(doc["nodes"][2]["inputs"][1]["weight"], 0.5);
+        // 字符串连线本来就没有掩码，清空是无操作。
+        set_graph_input_bone_mask(&mut doc, "stack", 0, &[]).expect("no-op");
+        assert_eq!(doc["nodes"][2]["inputs"][0], json!("a"));
+    }
+
+    #[test]
+    fn masks_are_read_back_into_the_view() {
+        let doc = json!({
+            "nodes": [
+                { "name": "a", "type": "clip_player", "clip": "a.ranim" },
+                { "name": "stack", "type": "layered_blend",
+                  "inputs": [{ "node": "a", "weight": 0.5, "bone_mask": ["spine", "arm"] }] }
+            ]
+        });
+        let view = parse_anim_graph_view(&doc).expect("parses");
+        assert_eq!(view.nodes[1].inputs[0].bone_mask, ["spine", "arm"]);
+    }
+
+    #[test]
+    fn bad_mask_targets_are_rejected() {
+        let mut doc = document();
+        assert!(set_graph_input_bone_mask(&mut doc, "missing", 0, &["spine".to_string()]).is_err());
+        assert!(set_graph_input_bone_mask(&mut doc, "stack", 9, &["spine".to_string()]).is_err());
+        assert!(set_graph_input_bone_mask(&mut doc, "out", 0, &["spine".to_string()]).is_err());
+        assert!(set_graph_input_bone_mask(
+            &mut json!({ "nodes": [{ "name": "a", "inputs": [42] }] }),
+            "a",
+            0,
+            &["spine".to_string()]
+        )
+        .is_err());
     }
 }
