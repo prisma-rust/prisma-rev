@@ -290,7 +290,9 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
   重命名 / 移动文件时 sidecar 跟着走，删除时一起删。`.scene.json` / `.prefab.json`
   里现在会同时写路径和 `*_guid`：打开文档时 GUID 优先解析成路径（解析不到则回退
   路径），保存时按 sidecar 补写 / 刷新 GUID；cooker 与开发期 JSON loader 也走同
-  一套规则，旧文档不需要迁移。
+  一套规则，旧文档不需要迁移。重命名时，带 GUID 的引用**不再改写文档**（读取时
+  按 sidecar 解析到新路径）；只有旧的无 GUID 路径引用仍走兼容改写。引用分析 /
+  删除确认也按 GUID 匹配，stale path 不会漏掉引用。
 - **纹理导入设置（#514）**：资产检查器选中纹理时多出 `Import Settings`
   （`Max Size` 0 = 不限、`Mips` 开关）。`Apply` 写旁挂文件
   `<asset>.import.json`（如 `assets/sprites/boat.png.import.json`），`Revert` 重新读盘，

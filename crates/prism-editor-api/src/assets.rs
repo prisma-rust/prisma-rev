@@ -3,12 +3,14 @@
 //! 只做文件名/大小枚举与 `.scene.json` 里的字符串扫描，不解析 `.pak`，
 //! 因此不需要链接运行时资产层。
 
+use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
 use crate::asset_ops::normalize_asset_path;
+use prism_scene::references::{guid_field, ASSET_PATH_FIELDS};
 
 /// 单次返回的最大条目数（避免超大资源目录拖垮 UI）。
 pub const MAX_ASSETS: usize = 4000;
@@ -313,6 +315,13 @@ pub fn asset_usage(project_root: &Path, target: &str) -> Result<Vec<AssetRef>, S
     if target_abs.is_empty() {
         return Err("目标资产路径为空".into());
     }
+    let target_guids = normalize_asset_path(target)
+        .ok()
+        .map(|relative| {
+            let is_dir = project_root.join(&relative).is_dir();
+            crate::asset_ops::collect_asset_guids(project_root, &relative, is_dir)
+        })
+        .unwrap_or_default();
     let mut refs = Vec::new();
 
     // 场景与预制体共用同一套文档形状，都要扫；预制体在 `assets/` 下是递归枚举的。
@@ -347,6 +356,7 @@ pub fn asset_usage(project_root: &Path, target: &str) -> Result<Vec<AssetRef>, S
                 .to_path_buf();
 
             for (component, payload) in components {
+                let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
                 let mut found = Vec::new();
                 collect_strings(payload, "", &mut found);
                 for (field, value) in found {
@@ -355,7 +365,7 @@ pub fn asset_usage(project_root: &Path, target: &str) -> Result<Vec<AssetRef>, S
                     }
                     let referenced = resolve(&scene_dir, &value) == target_abs
                         || resolve(project_root, &value) == target_abs;
-                    if referenced {
+                    if referenced && seen.insert((field.clone(), value.clone())) {
                         refs.push(AssetRef {
                             kind: "field".into(),
                             scene: entry.name.clone(),
@@ -367,6 +377,22 @@ pub fn asset_usage(project_root: &Path, target: &str) -> Result<Vec<AssetRef>, S
                             value,
                         });
                     }
+                }
+
+                for (field, value) in collect_guid_refs(payload, &target_guids, target) {
+                    if !seen.insert((field.clone(), value.clone())) {
+                        continue;
+                    }
+                    refs.push(AssetRef {
+                        kind: "field".into(),
+                        scene: entry.name.clone(),
+                        scene_path: entry.path.clone(),
+                        entity: entity_name.clone(),
+                        entity_index: index,
+                        component: component.clone(),
+                        field,
+                        value,
+                    });
                 }
             }
         }
@@ -447,6 +473,55 @@ fn resolve(base: &Path, value: &str) -> String {
 }
 
 /// 递归收集 JSON 里的字符串，字段路径形如 `a.b[0].c`。
+/// GUID-backed path slots that point at `target_guids` (the stored path may be
+/// stale after a zero-rewrite rename).
+fn collect_guid_refs(
+    payload: &serde_json::Value,
+    target_guids: &BTreeSet<String>,
+    fallback: &str,
+) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    if target_guids.is_empty() {
+        return out;
+    }
+    let Some(fields) = payload.as_object() else {
+        return out;
+    };
+    let matches = |guid: &str| target_guids.contains(&guid.to_ascii_lowercase());
+    for &path_field in ASSET_PATH_FIELDS {
+        let Some(guid_field) = guid_field(path_field) else {
+            continue;
+        };
+        match (fields.get(path_field), fields.get(guid_field)) {
+            (Some(serde_json::Value::String(path)), Some(serde_json::Value::String(guid)))
+                if matches(guid) =>
+            {
+                let value = if path.is_empty() {
+                    fallback
+                } else {
+                    path.as_str()
+                };
+                out.push((path_field.to_string(), value.to_string()));
+            }
+            (Some(serde_json::Value::Array(paths)), Some(serde_json::Value::Array(guids))) => {
+                for (index, guid) in guids.iter().enumerate() {
+                    let Some(guid) = guid.as_str() else {
+                        continue;
+                    };
+                    if !matches(guid) {
+                        continue;
+                    }
+                    let path = paths.get(index).and_then(serde_json::Value::as_str);
+                    let value = path.filter(|path| !path.is_empty()).unwrap_or(fallback);
+                    out.push((format!("{path_field}[{index}]"), value.to_string()));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 fn collect_strings(value: &serde_json::Value, prefix: &str, out: &mut Vec<(String, String)>) {
     match value {
         serde_json::Value::String(text) => out.push((prefix.to_string(), text.clone())),
