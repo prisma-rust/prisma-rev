@@ -105,6 +105,8 @@ struct NodeRuntime {
     blend: Option<StateBlend>,
     stamp: u64,
     cached: Pose,
+    /// 每样本独立播放头的归一化相位（仅配置了速度的 BlendSpace 节点使用）。
+    sample_times: Vec<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -148,6 +150,8 @@ pub struct AnimGraphEvaluator {
     blend_space_notify: BlendSpaceNotifyPolicy,
     /// 状态转移帧的事件策略。
     state_transition_notify: StateTransitionNotifyPolicy,
+    /// 按节点名覆盖 BlendSpace 每样本播放速度（空 = 共享 phase）。
+    blend_space_speeds: HashMap<String, Vec<f32>>,
 }
 
 impl AnimGraphEvaluator {
@@ -175,6 +179,7 @@ impl AnimGraphEvaluator {
             montages: HashMap::new(),
             blend_space_notify: BlendSpaceNotifyPolicy::default(),
             state_transition_notify: StateTransitionNotifyPolicy::default(),
+            blend_space_speeds: HashMap::new(),
         }
     }
 
@@ -240,6 +245,22 @@ impl AnimGraphEvaluator {
 
     pub fn state_transition_notify_policy(&self) -> StateTransitionNotifyPolicy {
         self.state_transition_notify
+    }
+
+    /// 给 BlendSpace 节点配置每样本播放速度（按 `node.clips` 顺序）。
+    ///
+    /// 配置后该节点为每个样本维护独立播放头，不再共用全局 phase，也不再做
+    /// SyncGroup 映射；空列表 / 全为 1 等价于默认共享 phase。
+    pub fn set_blend_space_speeds(&mut self, node: &str, speeds: Vec<f32>) {
+        if speeds.is_empty() || speeds.iter().all(|speed| (*speed - 1.0).abs() < 1e-6) {
+            self.blend_space_speeds.remove(node);
+        } else {
+            self.blend_space_speeds.insert(node.to_string(), speeds);
+        }
+    }
+
+    pub fn blend_space_speeds(&self, node: &str) -> Option<&[f32]> {
+        self.blend_space_speeds.get(node).map(Vec::as_slice)
     }
 
     /// 当前状态机节点的状态下标（调试面板 / 测试用）；不是状态机节点时返回 `None`。
@@ -436,6 +457,27 @@ impl AnimGraphEvaluator {
             0.0
         };
 
+        // 每样本速度：给这个节点维护独立播放头，相位数组按 node.clips 顺序。
+        let speeds = self.blend_space_speeds.get(&node.name).cloned();
+        let (previous_sample_phases, sample_phases) = if let Some(speeds) = speeds {
+            let runtime = &mut self.runtime[index];
+            if runtime.sample_times.len() != node.clips.len() {
+                runtime.sample_times = vec![0.0; node.clips.len()];
+            }
+            let previous = runtime.sample_times.clone();
+            for (sample, time) in runtime.sample_times.iter_mut().enumerate() {
+                let speed = speeds
+                    .get(sample)
+                    .copied()
+                    .filter(|speed| speed.is_finite())
+                    .unwrap_or(1.0);
+                *time = (*time + dt * speed).rem_euclid(1.0);
+            }
+            (Some(previous), Some(runtime.sample_times.clone()))
+        } else {
+            (None, None)
+        };
+
         let mut pose = reference.clone();
         if node.kind == GraphNodeKind::BlendSpace1D {
             let samples = node
@@ -460,18 +502,40 @@ impl AnimGraphEvaluator {
                 .collect::<Result<Vec<_>, GraphEvalError>>()?;
             let parameter = self.parameters.float(&node.parameter_x).unwrap_or(0.0);
             let mut space = BlendSpace1D::new(samples, reference.clone());
-            if !space.evaluate_into(parameter, phase, &mut pose) {
+            let clips: Vec<Arc<Clip>> = space
+                .samples()
+                .iter()
+                .map(|sample| sample.clip.clone())
+                .collect();
+            let ordered = sample_phases
+                .as_ref()
+                .map(|phases| self.phases_in_space_order(&clips, node, source, phases));
+            let ordered_previous = previous_sample_phases
+                .as_ref()
+                .map(|phases| self.phases_in_space_order(&clips, node, source, phases));
+            let evaluated = match ordered.as_ref() {
+                Some(phases) => space.evaluate_into_with_phases(parameter, phases, &mut pose),
+                None => space.evaluate_into(parameter, phase, &mut pose),
+            };
+            if !evaluated {
                 return Err(GraphEvalError::EmptyBlendSpace {
                     node: node.name.clone(),
                 });
             }
+            let dominant_index = space.dominant_sample(parameter);
             let dominant = if self.blend_space_notify == BlendSpaceNotifyPolicy::Dominant {
-                space
-                    .dominant_sample(parameter)
+                dominant_index
                     .and_then(|sample| space.samples().get(sample))
                     .map(|sample| sample.clip.clone())
             } else {
                 None
+            };
+            let (previous_phase, phase) = match (&ordered_previous, &ordered, dominant_index) {
+                (Some(previous), Some(current), Some(index)) => (
+                    previous.get(index).copied().unwrap_or(previous_phase),
+                    current.get(index).copied().unwrap_or(phase),
+                ),
+                _ => (previous_phase, phase),
             };
             self.record_blend_space_notifies(
                 &node.name,
@@ -505,18 +569,40 @@ impl AnimGraphEvaluator {
                 self.parameters.float(&node.parameter_y).unwrap_or(0.0),
             ];
             let mut space = BlendSpace2D::new(samples, reference.clone());
-            if !space.evaluate_into(at, phase, &mut pose) {
+            let clips: Vec<Arc<Clip>> = space
+                .samples()
+                .iter()
+                .map(|sample| sample.clip.clone())
+                .collect();
+            let ordered = sample_phases
+                .as_ref()
+                .map(|phases| self.phases_in_space_order(&clips, node, source, phases));
+            let ordered_previous = previous_sample_phases
+                .as_ref()
+                .map(|phases| self.phases_in_space_order(&clips, node, source, phases));
+            let evaluated = match ordered.as_ref() {
+                Some(phases) => space.evaluate_into_with_phases(at, phases, &mut pose),
+                None => space.evaluate_into(at, phase, &mut pose),
+            };
+            if !evaluated {
                 return Err(GraphEvalError::EmptyBlendSpace {
                     node: node.name.clone(),
                 });
             }
+            let dominant_index = space.dominant_sample(at);
             let dominant = if self.blend_space_notify == BlendSpaceNotifyPolicy::Dominant {
-                space
-                    .dominant_sample(at)
+                dominant_index
                     .and_then(|sample| space.samples().get(sample))
                     .map(|sample| sample.clip.clone())
             } else {
                 None
+            };
+            let (previous_phase, phase) = match (&ordered_previous, &ordered, dominant_index) {
+                (Some(previous), Some(current), Some(index)) => (
+                    previous.get(index).copied().unwrap_or(previous_phase),
+                    current.get(index).copied().unwrap_or(phase),
+                ),
+                _ => (previous_phase, phase),
             };
             self.record_blend_space_notifies(
                 &node.name,
@@ -559,6 +645,31 @@ impl AnimGraphEvaluator {
         let from = previous_phase * clip.duration;
         let to = phase * clip.duration;
         self.record_notifies(node_name, path, &clip, from, to);
+    }
+
+    /// 把按 `node.clips` 顺序的相位重排成 BlendSpace 内部样本顺序。
+    fn phases_in_space_order(
+        &self,
+        samples: &[Arc<Clip>],
+        node: &GraphNodeInfo,
+        source: &impl AnimGraphSource,
+        phases: &[f32],
+    ) -> Vec<f32> {
+        samples
+            .iter()
+            .map(|clip| {
+                node.clips
+                    .iter()
+                    .position(|path| {
+                        source
+                            .clip(path)
+                            .is_some_and(|candidate| Arc::ptr_eq(&candidate, clip))
+                    })
+                    .and_then(|index| phases.get(index))
+                    .copied()
+                    .unwrap_or(0.0)
+            })
+            .collect()
     }
 
     #[allow(clippy::too_many_arguments)]

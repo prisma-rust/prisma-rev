@@ -127,6 +127,8 @@ FIFO 排队、单次播完自动接下一段，`stop` / `stop_after_current` 清
 `SyncMarkerSet`；资产侧来自 `*.skinning/sync_markers.json`。`BlendSpace1D/2D`
 在所有样本都有同结构标记时自动建 `SyncGroup`，以**当前权重最大的样本**为领跑剪辑把
 相位映射到其余样本（参数切换时 leader 跟着换）；标记缺失或数量不一致时退回共用归一化相位。
+求值器可用 `set_blend_space_speeds(node, speeds)` 给样本配置独立播放头（按 `node.clips` 顺序），
+此时每个样本按自己的速度推进、跳过 SyncGroup 映射；空配置恢复共享相位。
 
 编辑器面板：`Window → General → Animation Graph` 选中 `.animgraph.json` / `.statemachine.json`
 后显示结构化只读视图（参数、节点、连线、状态、转移条件）。

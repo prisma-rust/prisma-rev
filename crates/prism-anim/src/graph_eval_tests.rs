@@ -765,3 +765,62 @@ fn slot_montage_notifies_reach_graph_events() {
     assert_eq!(events[0].node, "slot");
     assert_eq!(events[0].clip_path, "montage");
 }
+
+fn ramp_clip(name: &str, end_x: f32) -> Clip {
+    Clip {
+        name: name.into(),
+        duration: 1.0,
+        fps: 30.0,
+        looped: true,
+        additive: false,
+        tracks: vec![Track {
+            joint: 0,
+            translation: vec![
+                Vec3Key {
+                    time: 0.0,
+                    value: glam::Vec3::ZERO,
+                },
+                Vec3Key {
+                    time: 1.0,
+                    value: glam::Vec3::new(end_x, 0.0, 0.0),
+                },
+            ],
+            rotation: Vec::new(),
+            scale: Vec::new(),
+        }],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn blend_space_per_sample_speeds_drive_independent_playheads() {
+    let mut space = node("locomotion", GraphNodeKind::BlendSpace1D);
+    space.clips = vec!["idle.ranim".into(), "run.ranim".into()];
+    space.positions = vec![[0.0, 0.0], [10.0, 0.0]];
+    space.parameter_x = "speed".into();
+    let mut graph = graph(vec![space, output(0)], 1);
+    graph.parameters.push(GraphParameterInfo {
+        name: "speed".into(),
+        kind: GraphParameterKind::Float,
+        default: 10.0,
+    });
+    let mut evaluator = AnimGraphEvaluator::new(graph);
+    evaluator.set_blend_space_speeds("locomotion", vec![1.0, 2.0]);
+    let source = Source::new(&[
+        ("idle.ranim", ramp_clip("idle", 10.0)),
+        ("run.ranim", ramp_clip("run", 20.0)),
+    ]);
+    let skeleton = skeleton();
+
+    // run 的播放头速度是 2：0.25s 后到相位 0.5，线性轨道 x = 10。
+    let pose = evaluator.evaluate(&source, &skeleton, 0.25).expect("first");
+    assert!((x(&pose) - 10.0).abs() < 1e-4, "x={}", x(&pose));
+
+    // 再来 0.25s 正好回到 0。
+    let pose = evaluator.evaluate(&source, &skeleton, 0.25).expect("wrap");
+    assert!(x(&pose).abs() < 1e-4, "x={}", x(&pose));
+
+    // 清空配置后回到共享 phase。
+    evaluator.set_blend_space_speeds("locomotion", Vec::new());
+    assert!(evaluator.blend_space_speeds("locomotion").is_none());
+}
