@@ -6965,8 +6965,10 @@ fn draw_anim_graph_layout(
 /// Animation Graph 面板的输入缓冲（跨帧保留正在编辑的文本）。
 #[derive(Debug, Default)]
 pub struct AnimGraphEditState {
-    /// 「新增剪辑节点」：(节点名, 剪辑路径)。
+    /// 「新增节点」：(节点名, 剪辑 / 状态机路径或可选上游节点)。
     pub new_node: (String, String),
+    /// 「新增节点」类型；空串按 `clip_player` 处理。
+    pub new_node_kind: String,
     /// 正在编辑的连线骨骼掩码：(节点名, 连线下标, 文本)。
     ///
     /// 失焦时才写回：边打字边规范化会把还没打完的逗号吃掉。
@@ -7007,6 +7009,24 @@ pub struct AnimGraphEditState {
     pub sync_marker_draft: Option<(String, f32)>,
     /// 正在拖拽的二维混合空间样本：(节点, 下标)。
     pub graph_sample_drag: Option<(String, usize)>,
+}
+
+/// 「Add node」下拉框里能用缺省字段构成合法形状的节点类型。
+const GRAPH_NODE_KINDS: [(&str, &str); 6] = [
+    ("clip_player", "clip"),
+    ("blend_stack", "blend stack"),
+    ("slot", "slot"),
+    ("layered_blend", "layered blend"),
+    ("cached_pose", "cached pose"),
+    ("state_machine", "state machine"),
+];
+
+fn graph_node_kind_label(kind: &str) -> &str {
+    GRAPH_NODE_KINDS
+        .iter()
+        .find(|(value, _)| *value == kind)
+        .map(|(_, label)| *label)
+        .unwrap_or(kind)
 }
 
 fn is_clip_player(kind: &str) -> bool {
@@ -7762,21 +7782,41 @@ fn draw_anim_graph_view(
     }
 
     ui.separator();
-    ui.label(RichText::new("Add clip node").strong().size(11.0));
+    ui.label(RichText::new("Add node").strong().size(11.0));
+    if edit.new_node_kind.is_empty() {
+        edit.new_node_kind = "clip_player".to_string();
+    }
+    let source_hint = match edit.new_node_kind.as_str() {
+        "clip_player" => "clip.ranim",
+        "state_machine" => "anim/hero.rasm",
+        _ => "input node",
+    };
     ui.horizontal(|ui| {
         ui.add(
             egui::TextEdit::singleline(&mut edit.new_node.0)
                 .hint_text("node name")
                 .desired_width(96.0),
         );
+        egui::ComboBox::from_id_salt("anim-graph-new-node-kind")
+            .selected_text(graph_node_kind_label(&edit.new_node_kind))
+            .show_ui(ui, |ui| {
+                for (kind, label) in GRAPH_NODE_KINDS {
+                    ui.selectable_value(&mut edit.new_node_kind, kind.to_string(), label);
+                }
+            });
         ui.add(
             egui::TextEdit::singleline(&mut edit.new_node.1)
-                .hint_text("clip.ranim")
+                .hint_text(source_hint)
                 .desired_width(150.0),
         );
     });
-    if ui.button("+ Clip Node").clicked() {
-        prism_editor_core::add_clip_node(document, &edit.new_node.0, &edit.new_node.1)?;
+    if ui.button("+ Node").clicked() {
+        prism_editor_core::add_graph_node(
+            document,
+            &edit.new_node.0,
+            &edit.new_node_kind,
+            &edit.new_node.1,
+        )?;
         edit.new_node.0.clear();
         edit.new_node.1.clear();
         changed = true;
