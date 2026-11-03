@@ -50,9 +50,9 @@ pub use anim_graph_view::{
     set_blend_space_position, set_blend_space_sample_clip, set_condition_threshold,
     set_condition_value, set_graph_input_bone_mask, set_graph_input_weight, set_graph_node_clip,
     set_graph_node_looped, set_graph_node_speed, set_graph_node_weight, set_state_clip,
-    set_state_looped, set_state_speed, set_transition_timing, AnimConditionView, AnimGraphLayout,
-    AnimGraphView, AnimInputView, AnimNodeView, AnimParameterView, AnimStateMachineView,
-    AnimStateView, AnimTransitionView,
+    set_state_looped, set_state_speed, set_transition_states, set_transition_timing,
+    AnimConditionView, AnimGraphLayout, AnimGraphView, AnimInputView, AnimNodeView,
+    AnimParameterView, AnimStateMachineView, AnimStateView, AnimTransitionView,
 };
 pub use asset_meta::{AssetMeta, META_SUFFIX};
 pub use assets::{

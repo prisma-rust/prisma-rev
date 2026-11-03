@@ -6707,6 +6707,7 @@ fn draw_state_machine_view(
     let mut add_condition = None;
     let mut cancel_draft = false;
     let mut add_transition = None;
+    let mut retargets = Vec::new();
     for (index, transition) in machine.transitions.iter().enumerate() {
         let from = transition.from.as_deref().unwrap_or("*");
         let title = format!(
@@ -6719,6 +6720,49 @@ fn draw_state_machine_view(
                 if ui.small_button("× Remove transition").clicked() {
                     remove = Some(index);
                 }
+
+                ui.horizontal(|ui| {
+                    ui.label("from");
+                    egui::ComboBox::from_id_salt(("anim-sm-from", index))
+                        .selected_text(from)
+                        .show_ui(ui, |ui| {
+                            if ui
+                                .selectable_label(transition.from.is_none(), "any")
+                                .clicked()
+                            {
+                                retargets.push((index, None, transition.to.clone()));
+                                ui.close();
+                            }
+                            for state in &machine.states {
+                                let selected =
+                                    transition.from.as_deref() == Some(state.name.as_str());
+                                if ui.selectable_label(selected, &state.name).clicked() {
+                                    retargets.push((
+                                        index,
+                                        Some(state.name.clone()),
+                                        transition.to.clone(),
+                                    ));
+                                    ui.close();
+                                }
+                            }
+                        });
+                    ui.label("to");
+                    egui::ComboBox::from_id_salt(("anim-sm-to", index))
+                        .selected_text(&transition.to)
+                        .show_ui(ui, |ui| {
+                            for state in &machine.states {
+                                let selected = transition.to == state.name;
+                                if ui.selectable_label(selected, &state.name).clicked() {
+                                    retargets.push((
+                                        index,
+                                        transition.from.clone(),
+                                        state.name.clone(),
+                                    ));
+                                    ui.close();
+                                }
+                            }
+                        });
+                });
 
                 let mut duration = transition.duration;
                 let mut fraction = transition.min_state_fraction;
@@ -6828,6 +6872,10 @@ fn draw_state_machine_view(
                     });
                 }
             });
+    }
+    for (index, from, to) in retargets {
+        prism_editor_core::set_transition_states(document, index, from.as_deref(), &to)?;
+        changed = true;
     }
     if let Some(index) = remove {
         prism_editor_core::remove_state_transition(document, index)?;
