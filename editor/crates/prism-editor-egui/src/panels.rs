@@ -364,8 +364,8 @@ pub struct UiState {
     pub asset_details_at: Option<std::time::Instant>,
     /// Animation Graph 面板的节点布局缓存：(图路径, 布局)。
     pub anim_graph_layout: Option<(String, prism_editor_core::AnimGraphLayout)>,
-    /// Animation Graph 面板「新增剪辑节点」的输入缓冲：(节点名, 剪辑路径)。
-    pub anim_graph_new_node: (String, String),
+    /// Animation Graph 面板的跨帧输入缓冲（新增节点 / 正在编辑的骨骼掩码）。
+    pub anim_graph_edit: AnimGraphEditState,
     /// 状态机面板「+ Condition」正在填的条件草稿（None = 表单关闭）。
     pub anim_sm_condition: Option<StateConditionDraft>,
     pub asset_selection: Vec<String>,
@@ -5725,7 +5725,7 @@ pub fn anim_graph(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
                     }
                 }
                 ui.separator();
-                match draw_anim_graph_view(ui, &graph, &mut value, &mut state.anim_graph_new_node) {
+                match draw_anim_graph_view(ui, &graph, &mut value, &mut state.anim_graph_edit) {
                     Ok(true) => {
                         state.status = match workspace.write_asset_json(&path, &value) {
                             Ok(()) => format!("saved nodes/links in {path}"),
@@ -5850,11 +5850,22 @@ fn draw_anim_graph_layout(
     changed
 }
 
+/// Animation Graph 面板的输入缓冲（跨帧保留正在编辑的文本）。
+#[derive(Debug, Default)]
+pub struct AnimGraphEditState {
+    /// 「新增剪辑节点」：(节点名, 剪辑路径)。
+    pub new_node: (String, String),
+    /// 正在编辑的连线骨骼掩码：(节点名, 连线下标, 文本)。
+    ///
+    /// 失焦时才写回：边打字边规范化会把还没打完的逗号吃掉。
+    pub mask: Option<(String, usize, String)>,
+}
+
 fn draw_anim_graph_view(
     ui: &mut Ui,
     graph: &prism_editor_core::AnimGraphView,
     document: &mut Value,
-    new_node: &mut (String, String),
+    edit: &mut AnimGraphEditState,
 ) -> Result<bool, String> {
     let mut changed = false;
     if !graph.parameters.is_empty() {
@@ -5878,6 +5889,10 @@ fn draw_anim_graph_view(
             .size(11.0),
     );
     let mut remove_node = None;
+    let mut add_link = None;
+    let mut remove_link = None;
+    let mut weight_edits = Vec::new();
+    let mut mask_edits = Vec::new();
     for node in &graph.nodes {
         let title = if node.is_output() {
             format!("{} · {} (output)", node.name, node.kind)
@@ -5931,16 +5946,23 @@ fn draw_anim_graph_view(
                 if let Some(raw) = raw {
                     if let Some(inputs) = raw.get("inputs").and_then(Value::as_array) {
                         let mut remove = None;
-                        let mut weight_edits = Vec::new();
                         for (index, input) in inputs.iter().enumerate() {
-                            let (name, mut weight) = match input {
-                                Value::String(name) => (name.clone(), 1.0),
+                            let (name, mut weight, mask) = match input {
+                                Value::String(name) => (name.clone(), 1.0, Vec::new()),
                                 Value::Object(map) => (
                                     map.get("node")
                                         .and_then(Value::as_str)
                                         .unwrap_or("?")
                                         .to_string(),
                                     map.get("weight").and_then(Value::as_f64).unwrap_or(1.0) as f32,
+                                    map.get("bone_mask")
+                                        .and_then(Value::as_array)
+                                        .map(Vec::as_slice)
+                                        .unwrap_or_default()
+                                        .iter()
+                                        .filter_map(Value::as_str)
+                                        .map(str::to_string)
+                                        .collect::<Vec<_>>(),
                                 ),
                                 _ => continue,
                             };
@@ -5957,28 +5979,46 @@ fn draw_anim_graph_view(
                                     )
                                     .changed()
                                 {
-                                    weight_edits.push((index, weight));
+                                    weight_edits.push((node.name.clone(), index, weight));
                                 }
                                 if ui.small_button("×").clicked() {
                                     remove = Some(index);
                                 }
                             });
-                        }
-                        for (index, weight) in weight_edits {
-                            if prism_editor_core::set_graph_input_weight(
-                                document, &node.name, index, weight,
-                            )
-                            .is_ok()
-                            {
-                                changed = true;
+
+                            // 骨骼掩码：逗号分隔的关节名；空串清空 = 整条姿态。
+                            let editing_mask =
+                                edit.mask.as_ref().is_some_and(|(owner, slot, _)| {
+                                    owner == &node.name && *slot == index
+                                });
+                            let mut text = if editing_mask {
+                                edit.mask
+                                    .as_ref()
+                                    .map(|(_, _, text)| text.clone())
+                                    .unwrap_or_default()
+                            } else {
+                                mask.join(", ")
+                            };
+                            let response = ui.add(
+                                egui::TextEdit::singleline(&mut text)
+                                    .hint_text("bone mask: spine_02, arm_l")
+                                    .desired_width(220.0),
+                            );
+                            if response.changed() {
+                                edit.mask = Some((node.name.clone(), index, text));
+                            } else if response.lost_focus() {
+                                if let Some((_, _, text)) = edit.mask.take() {
+                                    let joints = text
+                                        .split(',')
+                                        .map(|joint| joint.trim().to_string())
+                                        .filter(|joint| !joint.is_empty())
+                                        .collect::<Vec<_>>();
+                                    mask_edits.push((node.name.clone(), index, joints));
+                                }
                             }
                         }
                         if let Some(index) = remove {
-                            if prism_editor_core::remove_graph_input(document, &node.name, index)
-                                .is_ok()
-                            {
-                                changed = true;
-                            }
+                            remove_link = Some((node.name.clone(), index));
                         }
                         ui.menu_button("+ Link", |ui| {
                             for other in &graph.nodes {
@@ -5988,15 +6028,7 @@ fn draw_anim_graph_view(
                                     continue;
                                 }
                                 if ui.button(&other.name).clicked() {
-                                    if prism_editor_core::add_graph_input(
-                                        document,
-                                        &node.name,
-                                        &other.name,
-                                    )
-                                    .is_ok()
-                                    {
-                                        changed = true;
-                                    }
+                                    add_link = Some((node.name.clone(), other.name.clone()));
                                     ui.close();
                                 }
                             }
@@ -6015,25 +6047,41 @@ fn draw_anim_graph_view(
         prism_editor_core::remove_graph_node(document, &node)?;
         changed = true;
     }
+    if let Some((target, source)) = add_link {
+        prism_editor_core::add_graph_input(document, &target, &source)?;
+        changed = true;
+    }
+    for (target, index, weight) in weight_edits {
+        prism_editor_core::set_graph_input_weight(document, &target, index, weight)?;
+        changed = true;
+    }
+    for (target, index, joints) in mask_edits {
+        prism_editor_core::set_graph_input_bone_mask(document, &target, index, &joints)?;
+        changed = true;
+    }
+    if let Some((target, index)) = remove_link {
+        prism_editor_core::remove_graph_input(document, &target, index)?;
+        changed = true;
+    }
 
     ui.separator();
     ui.label(RichText::new("Add clip node").strong().size(11.0));
     ui.horizontal(|ui| {
         ui.add(
-            egui::TextEdit::singleline(&mut new_node.0)
+            egui::TextEdit::singleline(&mut edit.new_node.0)
                 .hint_text("node name")
                 .desired_width(96.0),
         );
         ui.add(
-            egui::TextEdit::singleline(&mut new_node.1)
+            egui::TextEdit::singleline(&mut edit.new_node.1)
                 .hint_text("clip.ranim")
                 .desired_width(150.0),
         );
     });
     if ui.button("+ Clip Node").clicked() {
-        prism_editor_core::add_clip_node(document, &new_node.0, &new_node.1)?;
-        new_node.0.clear();
-        new_node.1.clear();
+        prism_editor_core::add_clip_node(document, &edit.new_node.0, &edit.new_node.1)?;
+        edit.new_node.0.clear();
+        edit.new_node.1.clear();
         changed = true;
     }
 
