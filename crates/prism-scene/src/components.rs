@@ -2346,6 +2346,13 @@ pub struct Animator {
     ///
     /// 这些层在交叉淡入之后求值，不参与基础剪辑之间的过渡。
     pub layers: Vec<AnimLayer>,
+    /// 动画 LOD（#560 P6）：开启后，实体离相机超过 [`Self::lod_far`] 米时
+    /// **停止推进**（冻结在当前姿态），回到范围内继续播放。
+    ///
+    /// 默认关闭，避免没有相机 / 编辑器预览时行为突变。降频与骨骼子集是后续档位。
+    pub lod_enabled: bool,
+    /// 动画 LOD 的冻结距离（米）。非有限值或 `<= 0` 时按 50m 处理。
+    pub lod_far: f32,
 }
 
 impl Default for Animator {
@@ -2370,6 +2377,8 @@ impl Default for Animator {
             // 0.2s ≈ UE 的默认混合时间：短到不拖沓，又能盖住大部分姿势差。
             blend_duration: 0.2,
             layers: Vec::new(),
+            lod_enabled: false,
+            lod_far: 50.0,
         }
     }
 }
