@@ -18,9 +18,9 @@ use crate::project::{self, ProjectFile};
 use crate::schema::{component_value_with_overrides, EntityPreset, Schema, TypeSchema};
 use crate::theme::{ThemeColors, ThemeState, ThemeToken};
 use crate::viewport_math::{
-    basis_from_quat, parent_world_rotation, quat_axis_angle, quat_conjugate, quat_mul,
-    quat_normalize, quat_rotate, world_bounds, world_position, world_rotation, world_scale,
-    GizmoSpace,
+    authored_local_bounds, basis_from_quat, parent_world_rotation, quat_axis_angle, quat_conjugate,
+    quat_mul, quat_normalize, quat_rotate, world_bounds_with, world_position, world_rotation,
+    world_scale, GizmoSpace, PickBounds,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -515,6 +515,8 @@ pub struct ComponentPreset {
 pub struct Workspace {
     pub docs: Vec<Document>,
     active: usize,
+    /// 取景用的局部包围盒（编辑器注入，索引 = 实体下标；空 = 只用文档能算的部分）。
+    object_bounds: Vec<Option<PickBounds>>,
     pub schema: Schema,
     pub presets: Vec<EntityPreset>,
     /// 组件预设（#418）。
@@ -661,6 +663,7 @@ impl Workspace {
         let mut workspace = Self {
             docs: vec![Document::new(DocKind::Scene, None, doc)],
             active: 0,
+            object_bounds: Vec::new(),
             schema: Schema::default(),
             presets: Vec::new(),
             component_presets: Vec::new(),
@@ -4936,7 +4939,19 @@ impl Workspace {
     /// 框住整个文档：用世界包围盒（父链 + 缩放），不再只看局部 `position`。
     pub fn frame_all(&mut self) {
         let indices: Vec<usize> = (0..self.document().doc.entities.len()).collect();
-        let bounds = world_bounds(&self.document().doc, &indices);
+        let bounds = world_bounds_with(&self.document().doc, &indices, |index| {
+            self.local_bounds(index)
+        });
+        if let Some((center, radius)) = bounds {
+            self.camera.focus(center, radius);
+        }
+    }
+
+    /// 同 [`Self::frame_all`]，但用调用方给的局部包围盒（编辑器进程能拿到
+    /// 引擎解析出的贴图尺寸，数据层拿不到）。
+    pub fn frame_all_with(&mut self, bounds_for: impl Fn(usize) -> Option<PickBounds>) {
+        let indices: Vec<usize> = (0..self.document().doc.entities.len()).collect();
+        let bounds = world_bounds_with(&self.document().doc, &indices, bounds_for);
         if let Some((center, radius)) = bounds {
             self.camera.focus(center, radius);
         }
@@ -4953,9 +4968,49 @@ impl Workspace {
         self.camera.focus(center, radius);
     }
 
+    /// 同 [`Self::frame_selection`]，但用调用方给的局部包围盒。
+    pub fn frame_selection_with(&mut self, bounds_for: impl Fn(usize) -> Option<PickBounds>) {
+        let selection = self.selection.clone();
+        let Some((center, radius)) =
+            world_bounds_with(&self.document().doc, &selection, bounds_for)
+        else {
+            return;
+        };
+        self.camera.focus(center, radius);
+    }
+
     /// 选中集合的世界包围球 `(center, radius)`；空选返回 `None`。
     pub fn selection_world_bounds(&self) -> Option<([f32; 3], f32)> {
-        world_bounds(&self.document().doc, &self.selection)
+        world_bounds_with(&self.document().doc, &self.selection, |index| {
+            self.local_bounds(index)
+        })
+    }
+
+    /// 取景用的局部包围盒：先看编辑器注入的表（引擎解出的贴图尺寸只在那边），
+    /// 再退回文档自己能算的部分（`frame_size` / 碰撞体）。
+    fn local_bounds(&self, index: usize) -> Option<PickBounds> {
+        self.object_bounds
+            .get(index)
+            .copied()
+            .flatten()
+            .or_else(|| authored_local_bounds(&self.document().doc, index))
+    }
+
+    /// 编辑器注入「带纹理尺寸的局部包围盒」（索引 = 实体下标）。
+    ///
+    /// 数据层读不到贴图的实际像素尺寸（`frame_size` 常常不写），取景就只能按
+    /// 单位立方体算，2D 精灵会被框到贴脸上（#991）。编辑器每帧把引擎解出的
+    /// bounds 灌进来，`Frame Selection` / `Frame All` 就都准了。
+    pub fn set_object_bounds(&mut self, bounds: Vec<Option<PickBounds>>) {
+        self.object_bounds = bounds;
+    }
+
+    /// 同 [`Self::selection_world_bounds`]，但用调用方给的局部包围盒。
+    pub fn selection_world_bounds_with(
+        &self,
+        bounds_for: impl Fn(usize) -> Option<PickBounds>,
+    ) -> Option<([f32; 3], f32)> {
+        world_bounds_with(&self.document().doc, &self.selection, bounds_for)
     }
 
     /// gizmo 的落点（#416）：Center = 选择集中心；Pivot = 活动对象的轴心。
@@ -9865,6 +9920,32 @@ mod tests {
         assert!((workspace.camera.target[1] - 0.5).abs() < 1e-4);
         assert!((workspace.camera.target[2]).abs() < 1e-4);
         assert!(workspace.camera.distance > 0.0);
+    }
+
+    /// #991：编辑器灌进来的包围盒（带贴图尺寸）要真的改变取景距离。
+    #[test]
+    fn frame_selection_uses_the_injected_object_bounds() {
+        let mut workspace = Workspace::load_fixture(&scene_fixture(json!([
+            { "id": 1, "name": "Boat", "parent": null,
+              "transform": {"position":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
+              "components": {} }
+        ])));
+        workspace.select(0, false);
+        workspace.frame_selection();
+        let unit_distance = workspace.camera.distance;
+
+        // 引擎报回「这张图 64×16 像素」
+        workspace.set_object_bounds(vec![Some(PickBounds {
+            min: [-32.0, -8.0, -0.05],
+            max: [32.0, 8.0, 0.05],
+        })]);
+        workspace.frame_selection();
+        let sprite_distance = workspace.camera.distance;
+
+        assert!(
+            sprite_distance > unit_distance * 10.0,
+            "64 单位宽的精灵要退到比单位立方体远得多（{unit_distance} → {sprite_distance}）"
+        );
     }
 
     #[test]
