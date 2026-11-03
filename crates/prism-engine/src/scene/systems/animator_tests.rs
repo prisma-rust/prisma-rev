@@ -1599,6 +1599,37 @@ fn an_animator_uses_its_graph_instead_of_the_clip_path() {
 }
 
 #[test]
+fn graph_debug_snapshots_are_opt_in_and_track_node_time() {
+    let (mut world, entity) = world_with_animator("bend.ranim");
+    world.insert_resource(AnimGraphLibrary::new());
+    world
+        .get_resource_mut::<AnimGraphLibrary>()
+        .unwrap()
+        .insert("hero.rag", single_clip_graph("bend.ranim"));
+    world.get_mut::<Animator>(entity).unwrap().anim_graph_path = "hero.rag".into();
+
+    animator_system(&mut world, 0.25);
+    assert!(
+        world.get_resource::<AnimGraphDebug>().is_none(),
+        "默认不维护快照"
+    );
+
+    world.insert_resource(AnimGraphDebug::default());
+    animator_system(&mut world, 0.25);
+    let debug = world.get_resource::<AnimGraphDebug>().unwrap();
+    let states = debug.states(entity).expect("图实体有快照");
+    assert_eq!(states.len(), 2);
+    assert_eq!(states[0].name, "clip");
+    assert_eq!(states[0].kind, GraphNodeKind::ClipPlayer);
+    assert!(
+        (states[0].time - 0.5).abs() < 1e-4,
+        "time {}",
+        states[0].time
+    );
+    assert_eq!(states[1].kind, GraphNodeKind::Output);
+}
+
+#[test]
 fn a_frozen_graph_animator_keeps_its_evaluator_and_resumes() {
     let (mut world, entity) = world_with_animator("bend.ranim");
     world.insert_resource(AnimGraphLibrary::new());

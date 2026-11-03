@@ -136,6 +136,23 @@ pub enum StateTransitionNotifyPolicy {
     SuppressOnTransition,
 }
 
+/// 一个节点在这一帧的运行时摘要（[`AnimGraphEvaluator::node_snapshots`]）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct GraphNodeSnapshot {
+    pub name: String,
+    pub kind: GraphNodeKind,
+    /// 节点本地时间（秒）；状态机节点是当前状态自己的时间。
+    pub time: f32,
+    /// 状态机节点的当前状态下标；其他节点为 0。
+    pub state: usize,
+    /// 状态机是否正在交叉淡入。
+    pub blending: bool,
+    /// 交叉淡入权重 `0..=1`（没有过渡时为 1）。
+    pub blend_weight: f32,
+    /// `cached_pose` 节点是否已经有缓存姿态。
+    pub cached: bool,
+}
+
 /// 一个动画图求值器实例，对应一个角色。
 #[derive(Debug, Clone)]
 pub struct AnimGraphEvaluator {
@@ -261,6 +278,38 @@ impl AnimGraphEvaluator {
 
     pub fn blend_space_speeds(&self, node: &str) -> Option<&[f32]> {
         self.blend_space_speeds.get(node).map(Vec::as_slice)
+    }
+
+    /// 每个节点这一帧的运行时摘要（调试面板 / 叠加层用）。
+    ///
+    /// 返回顺序与图里的节点顺序一致；`kind` 让调用方决定怎么显示，`time` 是节点
+    /// 自己的本地时间（状态机节点是当前状态的时间），`blending` / `blend_weight`
+    /// 反映状态机是否正在交叉淡入。只拷贝标量，不动求值器状态。
+    pub fn node_snapshots(&self) -> Vec<GraphNodeSnapshot> {
+        self.graph
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| {
+                let runtime = &self.runtime[index];
+                let (blending, blend_weight) = match &runtime.blend {
+                    Some(blend) if blend.total > 0.0 => {
+                        (true, (blend.elapsed / blend.total).clamp(0.0, 1.0))
+                    }
+                    Some(_) => (true, 1.0),
+                    None => (false, 1.0),
+                };
+                GraphNodeSnapshot {
+                    name: node.name.clone(),
+                    kind: node.kind,
+                    time: runtime.time,
+                    state: runtime.state,
+                    blending,
+                    blend_weight,
+                    cached: !runtime.cached.is_empty(),
+                }
+            })
+            .collect()
     }
 
     /// 当前状态机节点的状态下标（调试面板 / 测试用）；不是状态机节点时返回 `None`。

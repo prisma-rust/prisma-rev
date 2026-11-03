@@ -348,6 +348,58 @@ fn a_state_machine_transitions_on_a_trigger() {
     assert_eq!(evaluator.state_machine_state("sm"), Some(1));
 }
 
+#[test]
+fn node_snapshots_report_time_state_and_blend() {
+    let mut machine_node = node("sm", GraphNodeKind::StateMachine);
+    machine_node.state_machine_path = "hero.rasm".into();
+    let mut graph = graph(vec![machine_node, output(0)], 1);
+    graph.parameters.push(GraphParameterInfo {
+        name: "go".into(),
+        kind: GraphParameterKind::Trigger,
+        default: 0.0,
+    });
+    let mut evaluator = AnimGraphEvaluator::new(graph);
+    let skeleton = skeleton();
+    let machine = StateMachine::new(
+        vec![
+            AnimState::new("idle", "idle.ranim"),
+            AnimState::new("walk", "walk.ranim"),
+        ],
+        vec![AnimTransition::new(0, 1)
+            .with_conditions(vec![TransitionCondition::Trigger { name: "go".into() }])
+            .with_duration(0.2)],
+    );
+    let source = Source::new(&[
+        ("idle.ranim", translation_clip("idle", 0.0)),
+        ("walk.ranim", translation_clip("walk", 5.0)),
+    ])
+    .with_machine("hero.rasm", machine);
+
+    evaluator.evaluate(&source, &skeleton, 0.1).expect("idle");
+    let snapshots = evaluator.node_snapshots();
+    assert_eq!(snapshots.len(), 2);
+    assert_eq!(snapshots[0].name, "sm");
+    assert_eq!(snapshots[0].kind, GraphNodeKind::StateMachine);
+    assert_eq!(snapshots[0].state, 0);
+    assert!(!snapshots[0].blending);
+    assert!((snapshots[0].time - 0.1).abs() < 1e-5);
+    assert_eq!(snapshots[1].kind, GraphNodeKind::Output);
+
+    evaluator.parameters_mut().set_trigger("go");
+    evaluator.evaluate(&source, &skeleton, 0.05).expect("walk");
+    let snapshot = &evaluator.node_snapshots()[0];
+    assert_eq!(snapshot.state, 1);
+    assert!(snapshot.blending, "转移中");
+    assert!(
+        snapshot.blend_weight > 0.0 && snapshot.blend_weight < 1.0,
+        "weight {}",
+        snapshot.blend_weight
+    );
+
+    evaluator.evaluate(&source, &skeleton, 0.2).expect("blend");
+    assert!(!evaluator.node_snapshots()[0].blending);
+}
+
 fn transition_machine() -> StateMachine {
     StateMachine::new(
         vec![
