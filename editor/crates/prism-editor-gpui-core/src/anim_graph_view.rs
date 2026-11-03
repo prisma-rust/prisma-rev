@@ -876,6 +876,156 @@ pub fn set_blend_space_position(
     Ok(())
 }
 
+/// 给混合空间追加一个样本（`clips` / `positions` 同步增长）。
+///
+/// 节点带每样本 `speeds`（v2）时也补一个 `1.0`，否则 cooker 会因为
+/// 「剪辑数与速度数不一致」拒绝整张图。`clip` 与 `clips` 同时存在的节点先报错，
+/// 因为样例顺序会变得有歧义。
+pub fn add_blend_space_sample(
+    document: &mut Value,
+    name: &str,
+    clip: &str,
+    position: [f32; 2],
+) -> Result<(), String> {
+    let clip = clip.trim();
+    if clip.is_empty() {
+        return Err("a blend space sample needs a clip path".to_string());
+    }
+    if !position[0].is_finite() || !position[1].is_finite() {
+        return Err("a blend space position must be finite".to_string());
+    }
+    let Some(node) = find_node_mut(document, name) else {
+        return Err(format!("unknown node '{name}'"));
+    };
+    if !node.is_object() {
+        return Err(format!("node '{name}' is malformed"));
+    }
+    let Some(dims) = blend_space_dims(node) else {
+        return Err(format!("node '{name}' is not a blend space"));
+    };
+    if node.get("clip").is_some() {
+        return Err(format!(
+            "node '{name}' uses a single `clip`; move it into `clips` first"
+        ));
+    }
+    if node.get("clips").is_none() {
+        node["clips"] = json!([]);
+    }
+    if node.get("positions").is_none() {
+        node["positions"] = json!([]);
+    }
+    let clip_count = node
+        .get("clips")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+    let position_count = node
+        .get("positions")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or_default();
+    if clip_count != position_count {
+        return Err(format!(
+            "node '{name}' has {clip_count} clips but {position_count} positions; fix the mismatch first"
+        ));
+    }
+    if let Some(speeds) = node.get("speeds").and_then(Value::as_array) {
+        if speeds.len() != clip_count {
+            return Err(format!(
+                "node '{name}' has {clip_count} clips but {} sample speeds; fix the mismatch first",
+                speeds.len()
+            ));
+        }
+    }
+    let Some(clips) = node.get_mut("clips").and_then(Value::as_array_mut) else {
+        return Err(format!("node '{name}' has an invalid `clips` field"));
+    };
+    clips.push(json!(clip));
+    let Some(positions) = node.get_mut("positions").and_then(Value::as_array_mut) else {
+        return Err(format!("node '{name}' has an invalid `positions` field"));
+    };
+    positions.push(if dims == 1 {
+        json!(position[0])
+    } else {
+        json!([position[0], position[1]])
+    });
+    if let Some(speeds) = node.get_mut("speeds").and_then(Value::as_array_mut) {
+        speeds.push(json!(1.0));
+    }
+    Ok(())
+}
+
+/// 删除混合空间的一个样本；一维至少留 2 个、二维至少留 3 个，否则 cooker 拒绝。
+pub fn remove_blend_space_sample(
+    document: &mut Value,
+    name: &str,
+    index: usize,
+) -> Result<(), String> {
+    let Some(node) = find_node_mut(document, name) else {
+        return Err(format!("unknown node '{name}'"));
+    };
+    if !node.is_object() {
+        return Err(format!("node '{name}' is malformed"));
+    }
+    let Some(dims) = blend_space_dims(node) else {
+        return Err(format!("node '{name}' is not a blend space"));
+    };
+    let Some(clips) = node.get_mut("clips").and_then(Value::as_array_mut) else {
+        return Err(format!("node '{name}' has no editable `clips` array"));
+    };
+    if index >= clips.len() {
+        return Err(format!("node '{name}' has no sample #{index}"));
+    }
+    let minimum = if dims == 1 { 2 } else { 3 };
+    if clips.len() <= minimum {
+        return Err(format!(
+            "a {dims}D blend space needs at least {minimum} samples"
+        ));
+    }
+    clips.remove(index);
+    if let Some(positions) = node.get_mut("positions").and_then(Value::as_array_mut) {
+        if index < positions.len() {
+            positions.remove(index);
+        }
+    }
+    if let Some(speeds) = node.get_mut("speeds").and_then(Value::as_array_mut) {
+        if index < speeds.len() {
+            speeds.remove(index);
+        }
+    }
+    Ok(())
+}
+
+/// 改一个混合空间样本的剪辑路径（`clips[index]`）。
+pub fn set_blend_space_sample_clip(
+    document: &mut Value,
+    name: &str,
+    index: usize,
+    clip: &str,
+) -> Result<(), String> {
+    let clip = clip.trim();
+    if clip.is_empty() {
+        return Err("a blend space sample needs a clip path".to_string());
+    }
+    let Some(node) = find_node_mut(document, name) else {
+        return Err(format!("unknown node '{name}'"));
+    };
+    if !node.is_object() {
+        return Err(format!("node '{name}' is malformed"));
+    };
+    if blend_space_dims(node).is_none() {
+        return Err(format!("node '{name}' is not a blend space"));
+    }
+    let Some(clips) = node.get_mut("clips").and_then(Value::as_array_mut) else {
+        return Err(format!("node '{name}' has no editable `clips` array"));
+    };
+    let Some(entry) = clips.get_mut(index) else {
+        return Err(format!("node '{name}' has no sample #{index}"));
+    };
+    *entry = json!(clip);
+    Ok(())
+}
+
 /// 改节点的播放速度（`0` = 冻结，必须有限且非负）。
 pub fn set_graph_node_speed(document: &mut Value, name: &str, speed: f32) -> Result<(), String> {
     if !speed.is_finite() || speed < 0.0 {
@@ -1069,6 +1219,86 @@ mod blend_space_tests {
             "nodes": [{ "name": "space", "type": "blend_space_1d", "parameter": "speed" }]
         });
         assert!(set_blend_space_position(&mut without, "space", 0, [0.0, 0.0]).is_err());
+    }
+
+    #[test]
+    fn samples_can_be_added_to_1d_and_2d_spaces() {
+        let mut doc = document();
+        add_blend_space_sample(&mut doc, "locomotion", " sprint.ranim ", [9.0, 1.0]).expect("1d");
+        assert_eq!(
+            doc["nodes"][0]["clips"],
+            json!(["idle.ranim", "run.ranim", "sprint.ranim"])
+        );
+        assert_eq!(doc["nodes"][0]["positions"], json!([0.0, 5.0, 9.0]));
+
+        add_blend_space_sample(&mut doc, "strafe", "r.ranim", [1.0, 1.0]).expect("2d");
+        assert_eq!(doc["nodes"][1]["clips"].as_array().unwrap().len(), 4);
+        assert_eq!(doc["nodes"][1]["positions"][3], json!([1.0, 1.0]));
+    }
+
+    #[test]
+    fn adding_a_sample_keeps_the_speed_table_in_sync() {
+        let mut doc = json!({
+            "nodes": [{ "name": "space", "type": "blend_space_1d",
+                        "clips": ["a.ranim", "b.ranim"], "positions": [0.0, 1.0],
+                        "parameter": "speed", "speeds": [1.0, 2.0] }]
+        });
+        add_blend_space_sample(&mut doc, "space", "c.ranim", [2.0, 0.0]).expect("adds");
+        assert_eq!(doc["nodes"][0]["speeds"], json!([1.0, 2.0, 1.0]));
+        remove_blend_space_sample(&mut doc, "space", 1).expect("removes");
+        assert_eq!(doc["nodes"][0]["speeds"], json!([1.0, 1.0]));
+        assert_eq!(doc["nodes"][0]["positions"], json!([0.0, 2.0]));
+    }
+
+    #[test]
+    fn removing_keeps_the_minimum_sample_count() {
+        let mut doc = document();
+        assert!(remove_blend_space_sample(&mut doc, "locomotion", 0).is_err());
+        assert!(remove_blend_space_sample(&mut doc, "strafe", 0).is_err());
+        assert!(remove_blend_space_sample(&mut doc, "locomotion", 5).is_err());
+        assert!(remove_blend_space_sample(&mut doc, "missing", 0).is_err());
+        assert!(remove_blend_space_sample(&mut doc, "out", 0).is_err());
+    }
+
+    #[test]
+    fn adding_samples_validates_clips_positions_and_speeds() {
+        let mut doc = document();
+        assert!(add_blend_space_sample(&mut doc, "locomotion", "  ", [0.0, 0.0]).is_err());
+        assert!(
+            add_blend_space_sample(&mut doc, "locomotion", "x.ranim", [f32::NAN, 0.0]).is_err()
+        );
+        assert!(add_blend_space_sample(&mut doc, "out", "x.ranim", [0.0, 0.0]).is_err());
+        assert!(add_blend_space_sample(&mut doc, "missing", "x.ranim", [0.0, 0.0]).is_err());
+
+        let mut single = json!({
+            "nodes": [{ "name": "s", "type": "blend_space_1d", "clip": "a.ranim",
+                        "clips": ["a.ranim"], "positions": [0.0], "parameter": "speed" }]
+        });
+        assert!(add_blend_space_sample(&mut single, "s", "b.ranim", [1.0, 0.0]).is_err());
+
+        let mut mismatched = json!({
+            "nodes": [{ "name": "m", "type": "blend_space_1d",
+                        "clips": ["a.ranim", "b.ranim"], "positions": [0.0],
+                        "parameter": "speed" }]
+        });
+        assert!(add_blend_space_sample(&mut mismatched, "m", "c.ranim", [2.0, 0.0]).is_err());
+
+        let mut bad_speeds = json!({
+            "nodes": [{ "name": "v", "type": "blend_space_1d",
+                        "clips": ["a.ranim", "b.ranim"], "positions": [0.0, 1.0],
+                        "parameter": "speed", "speeds": [1.0] }]
+        });
+        assert!(add_blend_space_sample(&mut bad_speeds, "v", "c.ranim", [2.0, 0.0]).is_err());
+    }
+
+    #[test]
+    fn sample_clips_can_be_replaced() {
+        let mut doc = document();
+        set_blend_space_sample_clip(&mut doc, "locomotion", 1, " jog.ranim ").expect("sets");
+        assert_eq!(doc["nodes"][0]["clips"][1], "jog.ranim");
+        assert!(set_blend_space_sample_clip(&mut doc, "locomotion", 0, "  ").is_err());
+        assert!(set_blend_space_sample_clip(&mut doc, "locomotion", 9, "a.ranim").is_err());
+        assert!(set_blend_space_sample_clip(&mut doc, "out", 0, "a.ranim").is_err());
     }
 }
 
