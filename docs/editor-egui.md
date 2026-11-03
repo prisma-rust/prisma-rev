@@ -517,6 +517,10 @@ cook 时归一化到 `[0, 1)`、排序去重，写进 `.ranim` v3；运行时
   一帧只走一条转移；`min_state_fraction` 在剪辑时长未知时视为已播完，否则单次剪辑会卡在最后一帧；
 编辑器提供 **Animation Graph** 面板（Window → General）：选中 `.animgraph.json` 或
 `.statemachine.json` 后显示参数、节点 / 连线、输出，以及状态、转移和可读条件。
+`Parameters` 区可以直接编辑：每行是名字 · 类型 + 默认值 DragValue（bool / trigger 归一成
+0 / 1），`×` 删除参数（仍被混合空间节点引用的参数会被拒绝并指出是哪个节点），`+ Parameter`
+打开草稿表单（名字 + 类型下拉 + 默认值）。参数改名还没做：改名要同时改写
+`.statemachine.json` 里的条件，留给后续。
 图节点可以在画布上拖动，位置保存到 `<graph>.layout.json`（不改图本身）；节点卡片里可以增删
 `inputs` 连线（`+ Link` / `×`），每条连线的 `w` 可以直接拖拽调 0..1 权重，保存后写回 `.animgraph.json`。使用单数 `input` 的链式节点
 仍需手改 JSON。每条连线下面还有一行逗号分隔的 `bone mask`（`spine_02, arm_l`）：失焦时才写回，
@@ -539,8 +543,7 @@ cooker 校验）；`× Remove node` 删除节点，输出节点和仍被引用�
 条件行可以直接改 float 阈值或 bool 期望值、`×` 删除，`+ Condition` 打开草稿表单（类型下拉
 `float >` / `float <` / `bool ==` / `trigger`、参数名、阈值或布尔值），点 `Add condition` 才写盘。
 条件只校验形状（名字非空、类型已知、`(type, name)` 不重复），参数是否真在运行时的
-`AnimParameters` 里仍由运行期决定。视口里直接拖关节做 IK（P2 的 IK 另立）、Notify 的编写界面
-也还没做。
+`AnimParameters` 里仍由运行期决定。视口里直接拖关节做 IK（P2 的 IK 另立）还没做。
 
 运行时（#560 P1）：`Animator.state_machine_path` 指向 `.rasm`、`state` 是当前状态名（引擎每帧
 写回，可在检查器里预置起始状态）。状态机生效时：

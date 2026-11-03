@@ -808,6 +808,118 @@ fn blend_space_dims(node: &Value) -> Option<usize> {
     }
 }
 
+fn normalize_parameter_kind(kind: &str) -> Result<&'static str, String> {
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "float" => Ok("float"),
+        "bool" => Ok("bool"),
+        "trigger" => Ok("trigger"),
+        other => Err(format!(
+            "unknown parameter type '{other}' (expected float / bool / trigger)"
+        )),
+    }
+}
+
+/// bool / trigger 的默认值只有 0 / 1 两种，其他数字按非零归一。
+fn parameter_default_for(kind: &str, default: f32) -> f32 {
+    if kind == "float" {
+        default
+    } else if default >= 0.5 {
+        1.0
+    } else {
+        0.0
+    }
+}
+
+/// 新加一个参数。
+pub fn add_parameter(
+    document: &mut Value,
+    name: &str,
+    kind: &str,
+    default: f32,
+) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("a parameter needs a name".to_string());
+    }
+    if !default.is_finite() {
+        return Err("a parameter default must be finite".to_string());
+    }
+    let kind = normalize_parameter_kind(kind)?;
+    if !document.get("parameters").is_some_and(Value::is_array) {
+        document["parameters"] = json!([]);
+    }
+    let parameters = document
+        .get_mut("parameters")
+        .and_then(Value::as_array_mut)
+        .expect("created above");
+    if parameters
+        .iter()
+        .any(|parameter| parameter.get("name").and_then(Value::as_str) == Some(name))
+    {
+        return Err(format!("a parameter named '{name}' already exists"));
+    }
+    parameters.push(json!({
+        "name": name,
+        "type": kind,
+        "default": parameter_default_for(kind, default),
+    }));
+    Ok(())
+}
+
+/// 删除一个参数；被节点引用的参数不允许删（会静默改变混合空间的行为）。
+pub fn remove_parameter(document: &mut Value, name: &str) -> Result<(), String> {
+    if let Some(nodes) = document.get("nodes").and_then(Value::as_array) {
+        for (index, node) in nodes.iter().enumerate() {
+            for field in ["parameter", "parameter_x", "parameter_y"] {
+                if node.get(field).and_then(Value::as_str) == Some(name) {
+                    let node_name = node
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("<unnamed>");
+                    return Err(format!(
+                        "parameter '{name}' is used by node '{node_name}' (#{index}) as `{field}`"
+                    ));
+                }
+            }
+        }
+    }
+    let parameters = document
+        .get_mut("parameters")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| format!("parameter '{name}' does not exist"))?;
+    let Some(index) = parameters
+        .iter()
+        .position(|parameter| parameter.get("name").and_then(Value::as_str) == Some(name))
+    else {
+        return Err(format!("parameter '{name}' does not exist"));
+    };
+    parameters.remove(index);
+    Ok(())
+}
+
+/// 改一个参数的默认值；bool / trigger 归一成 0 / 1。
+pub fn set_parameter_default(document: &mut Value, name: &str, default: f32) -> Result<(), String> {
+    if !default.is_finite() {
+        return Err("a parameter default must be finite".to_string());
+    }
+    let Some(parameters) = document.get_mut("parameters").and_then(Value::as_array_mut) else {
+        return Err(format!("parameter '{name}' does not exist"));
+    };
+    let Some(parameter) = parameters
+        .iter_mut()
+        .find(|parameter| parameter.get("name").and_then(Value::as_str) == Some(name))
+    else {
+        return Err(format!("parameter '{name}' does not exist"));
+    };
+    let kind = parameter
+        .get("type")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| "float".to_string());
+    parameter["default"] = json!(parameter_default_for(kind.trim(), default));
+    Ok(())
+}
+
 /// 改混合空间的参数名：一维只写 `parameter`，二维同时写 `parameter_y`。
 pub fn set_blend_space_parameter(
     document: &mut Value,
@@ -1141,6 +1253,69 @@ pub fn remove_graph_node(document: &mut Value, name: &str) -> Result<(), String>
     };
     nodes.remove(index);
     Ok(())
+}
+
+#[cfg(test)]
+mod parameter_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn document() -> Value {
+        json!({
+            "parameters": [{ "name": "speed", "type": "float", "default": 1.5 }],
+            "nodes": [
+                { "name": "locomotion", "type": "blend_space_1d",
+                  "clips": ["idle.ranim", "run.ranim"], "parameter": "speed" },
+                { "name": "out", "type": "output", "input": "locomotion" }
+            ]
+        })
+    }
+
+    #[test]
+    fn parameters_can_be_added_and_defaults_edited() {
+        let mut doc = document();
+        add_parameter(&mut doc, " grounded ", "Bool", 3.0).expect("adds");
+        assert_eq!(doc["parameters"][1]["name"], "grounded");
+        assert_eq!(doc["parameters"][1]["type"], "bool");
+        assert_eq!(doc["parameters"][1]["default"].as_f64(), Some(1.0));
+
+        set_parameter_default(&mut doc, "speed", 2.5).expect("float keeps value");
+        assert_eq!(doc["parameters"][0]["default"].as_f64(), Some(2.5));
+        set_parameter_default(&mut doc, "grounded", 0.2).expect("bool normalizes");
+        assert_eq!(doc["parameters"][1]["default"].as_f64(), Some(0.0));
+
+        let mut empty = json!({ "nodes": [] });
+        add_parameter(&mut empty, "trigger", "trigger", 0.0).expect("creates the list");
+        assert_eq!(empty["parameters"][0]["name"], "trigger");
+    }
+
+    #[test]
+    fn referenced_parameters_cannot_be_removed() {
+        let mut doc = document();
+        let error = remove_parameter(&mut doc, "speed").expect_err("referenced");
+        assert!(error.contains("locomotion"), "{error}");
+        add_parameter(&mut doc, "extra", "float", 0.0).expect("adds");
+        remove_parameter(&mut doc, "extra").expect("unreferenced removal");
+        assert!(remove_parameter(&mut doc, "extra").is_err(), "already gone");
+    }
+
+    #[test]
+    fn invalid_parameters_are_rejected() {
+        let mut doc = document();
+        assert!(add_parameter(&mut doc, "  ", "float", 0.0).is_err());
+        assert!(
+            add_parameter(&mut doc, "speed", "float", 0.0).is_err(),
+            "duplicate"
+        );
+        assert!(
+            add_parameter(&mut doc, "ok", "int", 0.0).is_err(),
+            "unknown type"
+        );
+        assert!(add_parameter(&mut doc, "ok", "float", f32::NAN).is_err());
+        assert!(set_parameter_default(&mut doc, "missing", 0.0).is_err());
+        assert!(set_parameter_default(&mut doc, "speed", f32::INFINITY).is_err());
+        assert!(remove_parameter(&mut doc, "missing").is_err());
+    }
 }
 
 #[cfg(test)]
