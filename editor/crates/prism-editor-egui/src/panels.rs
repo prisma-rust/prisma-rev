@@ -5668,13 +5668,10 @@ pub fn anim_graph(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
         );
         return;
     };
-    if is_notify_sidecar(&path) {
-        draw_notifies_asset(ui, workspace, state, &path);
-        return;
-    }
+    let notify_asset = is_notify_sidecar(&path);
     let graph_asset = path.ends_with(".animgraph.json");
     let machine_asset = path.ends_with(".statemachine.json");
-    if !graph_asset && !machine_asset {
+    if !notify_asset && !graph_asset && !machine_asset {
         ui.label(
             RichText::new("select an .animgraph.json / .statemachine.json asset")
                 .weak()
@@ -5689,7 +5686,13 @@ pub fn anim_graph(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
             .size(13.0),
     );
     ui.label(RichText::new(&path).weak().size(10.0));
+    draw_asset_edit_buttons(ui, workspace, state);
     ui.separator();
+
+    if notify_asset {
+        draw_notifies_asset(ui, workspace, state, &path);
+        return;
+    }
 
     let mut value = match workspace.read_asset_json(&path) {
         Ok(value) => value,
@@ -5730,20 +5733,24 @@ pub fn anim_graph(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
                     }
                 }
                 ui.separator();
+                let before = value.clone();
                 let result =
                     draw_anim_graph_view(ui, &graph, &mut value, &mut state.anim_graph_edit);
                 match result {
                     Ok(changed_now) => {
                         if changed_now {
                             state.status = match workspace.write_asset_json(&path, &value) {
-                                Ok(()) => format!("saved nodes/links in {path}"),
+                                Ok(()) => {
+                                    workspace.record_asset_edit(&path, &before, &value);
+                                    format!("saved nodes/links in {path}")
+                                }
                                 Err(error) => format!("save graph failed: {error}"),
                             };
                         }
                         if let Some((old_name, new_name)) =
                             state.anim_graph_edit.graph_parameter_rename.take()
                         {
-                            state.status = match workspace
+                            let status = match workspace
                                 .rename_anim_graph_parameter(&path, &old_name, &new_name)
                             {
                                 Ok(updated) if updated.is_empty() => {
@@ -5755,6 +5762,10 @@ pub fn anim_graph(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
                                 ),
                                 Err(error) => error,
                             };
+                            if let Ok(after) = workspace.read_asset_json(&path) {
+                                workspace.record_asset_edit(&path, &before, &after);
+                            }
+                            state.status = status;
                         }
                     }
                     Err(error) => {
@@ -5769,27 +5780,67 @@ pub fn anim_graph(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
         }
     } else {
         match prism_editor_core::parse_state_machine_view(&value) {
-            Ok(machine) => match draw_state_machine_view(
-                ui,
-                &machine,
-                &mut value,
-                &mut state.anim_graph_edit,
-                &mut state.anim_sm_condition,
-            ) {
-                Ok(true) => {
-                    state.status = match workspace.write_asset_json(&path, &value) {
-                        Ok(()) => format!("saved transitions in {path}"),
-                        Err(error) => format!("save transitions failed: {error}"),
-                    };
+            Ok(machine) => {
+                let before = value.clone();
+                match draw_state_machine_view(
+                    ui,
+                    &machine,
+                    &mut value,
+                    &mut state.anim_graph_edit,
+                    &mut state.anim_sm_condition,
+                ) {
+                    Ok(true) => {
+                        state.status = match workspace.write_asset_json(&path, &value) {
+                            Ok(()) => {
+                                workspace.record_asset_edit(&path, &before, &value);
+                                format!("saved transitions in {path}")
+                            }
+                            Err(error) => format!("save transitions failed: {error}"),
+                        };
+                    }
+                    Ok(false) => {}
+                    Err(error) => state.status = format!("state machine: {error}"),
                 }
-                Ok(false) => {}
-                Err(error) => state.status = format!("state machine: {error}"),
-            },
+            }
             Err(error) => {
                 ui.label(RichText::new(error).color(Color32::from_rgb(232, 96, 96)));
             }
         }
     }
+}
+
+/// 资产编辑的撤销 / 重做按钮；撤销后本帧继续按磁盘内容重画。
+fn draw_asset_edit_buttons(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(
+                workspace.can_undo_asset_edit(),
+                egui::Button::new("↶ Undo edit"),
+            )
+            .on_hover_text("undo the last edit in this asset")
+            .clicked()
+        {
+            state.status = match workspace.undo_asset_edit() {
+                Ok(Some(path)) => format!("undid edit in {path}"),
+                Ok(None) => "nothing to undo".to_string(),
+                Err(error) => error,
+            };
+        }
+        if ui
+            .add_enabled(
+                workspace.can_redo_asset_edit(),
+                egui::Button::new("↷ Redo edit"),
+            )
+            .on_hover_text("redo the last undone edit")
+            .clicked()
+        {
+            state.status = match workspace.redo_asset_edit() {
+                Ok(Some(path)) => format!("redid edit in {path}"),
+                Ok(None) => "nothing to redo".to_string(),
+                Err(error) => error,
+            };
+        }
+    });
 }
 
 fn is_notify_sidecar(path: &str) -> bool {
@@ -5824,10 +5875,14 @@ fn draw_notifies_asset(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiSta
             return;
         }
     };
+    let before = value.clone();
     match draw_notifies_view(ui, &view, &mut value, &mut state.anim_graph_edit) {
         Ok(true) => {
             state.status = match workspace.write_asset_json(path, &value) {
-                Ok(()) => format!("saved notifies in {path}"),
+                Ok(()) => {
+                    workspace.record_asset_edit(path, &before, &value);
+                    format!("saved notifies in {path}")
+                }
                 Err(error) => format!("save notifies failed: {error}"),
             };
         }

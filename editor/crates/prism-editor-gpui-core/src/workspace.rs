@@ -594,6 +594,8 @@ pub struct Workspace {
     pub project_files: Vec<ProjectFile>,
     /// `assets/scenes.json` 的场景清单（顺序 = 构建 / 启动顺序）。
     pub scene_manifest: SceneManifest,
+    /// 资产 JSON 编辑历史（图 / 状态机 / Notify 面板，#560）。
+    pub asset_edits: crate::asset_edit::AssetEditHistory,
     /// 进入 Play 时的编辑态快照；`None` = 不在播放/没有快照（#500）。
     play_snapshot: Option<PlaySnapshot>,
 }
@@ -701,6 +703,7 @@ impl Workspace {
             project_root: None,
             project_files: Vec::new(),
             scene_manifest: SceneManifest::default(),
+            asset_edits: crate::asset_edit::AssetEditHistory::new(),
             play_snapshot: None,
         };
         workspace.log(
@@ -1344,6 +1347,39 @@ impl Workspace {
             format!("已保存材质 {path}"),
         );
         Ok(())
+    }
+
+    /// 记一步资产 JSON 编辑（面板在写盘成功后调用）。
+    pub fn record_asset_edit(&mut self, path: &str, before: &Value, after: &Value) {
+        self.asset_edits.record(path, before, after);
+    }
+
+    pub fn can_undo_asset_edit(&self) -> bool {
+        self.asset_edits.can_undo()
+    }
+
+    pub fn can_redo_asset_edit(&self) -> bool {
+        self.asset_edits.can_redo()
+    }
+
+    /// 撤销一步资产编辑；返回被写回的文件（没有可撤销步骤时 `Ok(None)`）。
+    pub fn undo_asset_edit(&mut self) -> Result<Option<String>, String> {
+        let Some(edit) = self.asset_edits.undo() else {
+            return Ok(None);
+        };
+        self.write_asset_json(&edit.path, &edit.before)
+            .map_err(|error| format!("write {} failed: {error}", edit.path))?;
+        Ok(Some(edit.path))
+    }
+
+    /// 重做一步资产编辑；返回被写回的文件。
+    pub fn redo_asset_edit(&mut self) -> Result<Option<String>, String> {
+        let Some(edit) = self.asset_edits.redo() else {
+            return Ok(None);
+        };
+        self.write_asset_json(&edit.path, &edit.after)
+            .map_err(|error| format!("write {} failed: {error}", edit.path))?;
+        Ok(Some(edit.path))
     }
 
     /// 重命名动画图参数，并同步改写图引用的状态机侧车里的条件名（#560）。
@@ -7633,6 +7669,40 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn asset_edit_undo_and_redo_write_the_previous_json_back_to_disk() {
+        let project = TempProject::new("asset-undo");
+        std::fs::create_dir_all(project.root.join("assets/hero.skinning")).unwrap();
+        std::fs::write(
+            project.root.join("assets/hero.skinning/notifies.json"),
+            r#"{"clips": {}}"#,
+        )
+        .unwrap();
+        let mut workspace = Workspace::load_fixture(&fixture());
+        workspace.load_project(project.root.clone()).unwrap();
+
+        let path = "assets/hero.skinning/notifies.json";
+        let before = json!({ "clips": {} });
+        let after = json!({ "clips": { "walk": [{ "time": 0.2, "name": "Step.L" }] } });
+        workspace.write_asset_json(path, &after).unwrap();
+        workspace.record_asset_edit(path, &before, &after);
+        assert!(workspace.can_undo_asset_edit());
+        assert!(!workspace.can_redo_asset_edit());
+
+        assert_eq!(workspace.undo_asset_edit().unwrap(), Some(path.to_string()));
+        let on_disk: Value =
+            serde_json::from_str(&std::fs::read_to_string(project.root.join(path)).unwrap())
+                .unwrap();
+        assert_eq!(on_disk, before);
+        assert!(workspace.can_redo_asset_edit());
+
+        assert_eq!(workspace.redo_asset_edit().unwrap(), Some(path.to_string()));
+        let on_disk: Value =
+            serde_json::from_str(&std::fs::read_to_string(project.root.join(path)).unwrap())
+                .unwrap();
+        assert_eq!(on_disk, after);
     }
 
     #[test]

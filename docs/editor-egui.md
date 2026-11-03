@@ -517,6 +517,9 @@ cook 时归一化到 `[0, 1)`、排序去重，写进 `.ranim` v3；运行时
   一帧只走一条转移；`min_state_fraction` 在剪辑时长未知时视为已播完，否则单次剪辑会卡在最后一帧；
 编辑器提供 **Animation Graph** 面板（Window → General）：选中 `.animgraph.json` 或
 `.statemachine.json` 后显示参数、节点 / 连线、输出，以及状态、转移和可读条件。
+面板顶部有 `↶ Undo edit` / `↷ Redo edit`，只针对动画资产（图 / 状态机 / Notify）的
+JSON 改动，和场景的 Ctrl+Z 是两条独立历史：每步存整份文件快照，连续拖拽（DragValue /
+时间轴）在 800ms 内合并成一步，撤销后写回磁盘、下一次重绘直接用磁盘内容。
 `Parameters` 区可以直接编辑：每行是名字文本框 · 类型 + 默认值 DragValue（bool / trigger 归一成
 0 / 1），`×` 删除参数（仍被混合空间节点引用的参数会被拒绝并指出是哪个节点），`+ Parameter`
 打开草稿表单（名字 + 类型下拉 + 默认值）。改参数名（失焦）会同时改写混合空间节点的
