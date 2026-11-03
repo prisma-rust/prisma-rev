@@ -78,15 +78,8 @@ pub(crate) fn game_manifest_path(root: &Path) -> PathBuf {
 }
 
 fn pipeline_manifest_path(root: &Path) -> Option<PathBuf> {
-    let mut current = Some(root);
-    while let Some(dir) = current {
-        let manifest = dir.join("crates/prism-build-pipeline/Cargo.toml");
-        if manifest.is_file() {
-            return Some(dir.join("Cargo.toml"));
-        }
-        current = dir.parent();
-    }
-    None
+    // 只有一份实现（数据层），玩家构建与 ScenePack 都从这里取。
+    prism_editor_core::build::pipeline_manifest_path(root)
 }
 
 /// 读 `[build]` 设置并生成玩家构建计划；设置文件坏了就用默认值（debug + `build/`）。
@@ -607,6 +600,10 @@ mod tests {
             ),
         )
         .unwrap();
+        // 真实工程里 cook 过一轮就有这些产物；产物清单按存在与否展开，测试也要有这个前提。
+        for name in ["scenes.pak", "scenes.pak.meta.json", "scenes.json"] {
+            std::fs::write(root.join("assets").join(name), b"{}").unwrap();
+        }
         root
     }
 

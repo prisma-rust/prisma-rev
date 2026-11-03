@@ -98,6 +98,87 @@ pub fn game_binary_name(manifest: &Path) -> String {
     }
 }
 
+/// 运行时需要的 `assets/` 产物：`.pak` 包、路径清单、场景清单、`settings.ini`
+/// 以及工程自己在运行时读的顶层数据文件（`lake_layers.json` 这类）。
+///
+/// 只拷**产物**，不拷作者文档（`*.scene.json` / `*.prefab.json`）与散装资产：
+/// 场景内容已经在 `.pak` 里，散装资产由 cook 决定，拷目录会带走一堆源文件。
+///
+/// `.pak.meta.json` 是运行时解析 `AssetId` 的路径清单，缺了它所有贴图都会被判成
+/// `broken asset reference`；`scenes.json` 是启动场景清单，缺了它一个场景都不加载
+/// （两者都是「静默失败」，见 #989）。
+fn asset_artifacts(root: &Path, output_dir: &Path) -> Vec<ArtifactCopy> {
+    let assets = root.join("assets");
+    let Ok(entries) = std::fs::read_dir(&assets) else {
+        return Vec::new();
+    };
+    let mut copies: Vec<ArtifactCopy> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let name = name.to_ascii_lowercase();
+        let wanted = name.ends_with(".pak")
+            || name.ends_with(".pak.meta.json")
+            || name == "settings.ini"
+            || (name.ends_with(".json")
+                && !name.ends_with(".scene.json")
+                && !name.ends_with(".prefab.json"));
+        if !wanted {
+            continue;
+        }
+        let to = match path.file_name() {
+            Some(file) => output_dir.join("assets").join(file),
+            None => continue,
+        };
+        copies.push(ArtifactCopy { from: path, to });
+    }
+    // 计划要可复现：按文件名排序，别让 `read_dir` 的顺序影响构建产物的顺序。
+    copies.sort_by(|a, b| a.from.cmp(&b.from));
+    copies
+}
+
+/// 找含 `crates/prism-build-pipeline` 的 workspace 根（从项目根向上找）。
+///
+/// 用户工程通常是**独立 workspace**（`projects/fishing/Cargo.toml` 里没有管线 crate），
+/// 直接在项目根 `cargo run -p prism-build-pipeline` 会报
+/// `package(s) prism-build-pipeline not found in workspace`。cook 又必须在项目根跑
+/// （它按 cwd 找 `assets/`），所以要用 `--manifest-path` 指回引擎仓库。
+pub fn pipeline_manifest_path(root: &Path) -> Option<PathBuf> {
+    let mut current = Some(root);
+    while let Some(dir) = current {
+        if dir.join("crates/prism-build-pipeline/Cargo.toml").is_file() {
+            return Some(dir.join("Cargo.toml"));
+        }
+        current = dir.parent();
+    }
+    None
+}
+
+fn cook_step(root: &Path) -> BuildStep {
+    let mut args: Vec<String> = vec!["run".into()];
+    if let Some(manifest) = pipeline_manifest_path(root) {
+        args.push("--manifest-path".into());
+        args.push(manifest.to_string_lossy().into_owned());
+    }
+    args.extend(
+        ["-p", "prism-build-pipeline", "--", "build-scenes"]
+            .into_iter()
+            .map(str::to_string),
+    );
+    BuildStep {
+        label: "build-scenes（cook 场景包）".into(),
+        program: "cargo".into(),
+        args,
+        // cwd 必须是项目根：`build-scenes` 按 cwd 找 `assets/scenes.json`。
+        cwd: root.to_path_buf(),
+    }
+}
+
 /// 按项目根 + `[build]` 设置生成构建计划。
 pub fn plan_build(root: &Path, settings: &ProjectSettings) -> BuildPlan {
     let manifest = game_manifest_path(root);
@@ -138,20 +219,11 @@ pub fn plan_build(root: &Path, settings: &ProjectSettings) -> BuildPlan {
     // 资源放在 `output_dir/assets/`（和 Web 编辑器、以及游戏目录的打包布局一致）。
     let binary = game_binary_name(&manifest);
     let exe = output_dir.join(&binary);
-    let copies = vec![
-        ArtifactCopy {
-            from: game_target.join(&binary),
-            to: exe.clone(),
-        },
-        ArtifactCopy {
-            from: root.join("assets/scenes.pak"),
-            to: output_dir.join("assets/scenes.pak"),
-        },
-        ArtifactCopy {
-            from: root.join("assets/settings.ini"),
-            to: output_dir.join("assets/settings.ini"),
-        },
-    ];
+    let mut copies = vec![ArtifactCopy {
+        from: game_target.join(&binary),
+        to: exe.clone(),
+    }];
+    copies.extend(asset_artifacts(root, &output_dir));
 
     BuildPlan {
         steps: vec![
@@ -161,18 +233,7 @@ pub fn plan_build(root: &Path, settings: &ProjectSettings) -> BuildPlan {
                 args: build_args,
                 cwd: root.to_path_buf(),
             },
-            BuildStep {
-                label: "build-scenes（cook 场景包）".into(),
-                program: "cargo".into(),
-                args: vec![
-                    "run".into(),
-                    "-p".into(),
-                    "prism-build-pipeline".into(),
-                    "--".into(),
-                    "build-scenes".into(),
-                ],
-                cwd: root.to_path_buf(),
-            },
+            cook_step(root),
         ],
         copies,
         output_dir,
@@ -242,6 +303,39 @@ mod tests {
         assert_eq!(game_manifest_path(&root), root.join("Cargo.toml"));
     }
 
+    /// 用户工程是独立 workspace 时，cook 步要用 `--manifest-path` 指回引擎仓库，
+    /// 否则 `cargo run -p prism-build-pipeline` 在工程根直接报
+    /// "package(s) `prism-build-pipeline` not found in workspace"。
+    #[test]
+    fn cook_step_points_back_at_the_engine_workspace() {
+        let root = temp_dir("cook-standalone");
+        let project = root.join("projects/fishing");
+        std::fs::create_dir_all(&project).unwrap();
+        let plan = plan_build(&project, &settings("debug", "build/windows"));
+        assert_eq!(plan.steps[1].cwd, project);
+        assert!(
+            !plan.steps[1]
+                .args
+                .iter()
+                .any(|arg| arg == "--manifest-path"),
+            "没有引擎仓库时不应凭空编一个 manifest: {:?}",
+            plan.steps[1].args
+        );
+
+        std::fs::create_dir_all(root.join("crates/prism-build-pipeline")).unwrap();
+        std::fs::write(root.join("crates/prism-build-pipeline/Cargo.toml"), "").unwrap();
+        let plan = plan_build(&project, &settings("debug", "build/windows"));
+        let args = &plan.steps[1].args;
+        let index = args
+            .iter()
+            .position(|arg| arg == "--manifest-path")
+            .expect("引擎仓库在上层时应该带上 --manifest-path");
+        assert_eq!(args[index + 1], root.join("Cargo.toml").to_string_lossy());
+        // cook 仍然在项目根跑，否则会 cook 到仓库根自己的 assets/。
+        assert_eq!(plan.steps[1].cwd, project);
+        assert_eq!(args.last().map(String::as_str), Some("build-scenes"));
+    }
+
     #[test]
     fn debug_plan_has_build_and_cook_steps() {
         let root = temp_dir("plan-debug");
@@ -256,7 +350,8 @@ mod tests {
         );
         assert_eq!(plan.steps[0].cwd, root);
         assert_eq!(plan.output_dir, root.join("build/windows"));
-        assert_eq!(plan.copies.len(), 3);
+        // 临时目录里没有 `assets/`，所以只有 exe 一个拷贝项。
+        assert_eq!(plan.copies.len(), 1);
         assert_eq!(
             plan.copies[0].from,
             root.join("target/debug").join(exe_name())
@@ -269,11 +364,42 @@ mod tests {
     #[test]
     fn assets_are_staged_into_an_assets_subdirectory() {
         let root = temp_dir("layout");
+        let assets = root.join("assets");
+        std::fs::create_dir_all(assets.join("scenes")).unwrap();
+        for name in [
+            "scenes.pak",
+            "scenes.pak.meta.json",
+            "settings.ini",
+            "scenes.json",
+            "lake_layers.json",
+        ] {
+            std::fs::write(assets.join(name), b"x").unwrap();
+        }
+        // 作者文档与散装资产不该被拷进发布目录。
+        std::fs::write(assets.join("scenes/lake.scene.json"), b"{}").unwrap();
+        std::fs::write(assets.join("boat.png"), b"png").unwrap();
+
         let plan = plan_build(&root, &settings("debug", "build/windows"));
         let out = root.join("build/windows");
         assert_eq!(plan.copies[0].to, out.join(exe_name()));
-        assert_eq!(plan.copies[1].to, out.join("assets/scenes.pak"));
-        assert_eq!(plan.copies[2].to, out.join("assets/settings.ini"));
+        let staged: Vec<String> = plan.copies[1..]
+            .iter()
+            .map(|copy| copy.to.display().to_string())
+            .collect();
+        for name in [
+            "scenes.pak",
+            "scenes.pak.meta.json",
+            "settings.ini",
+            "scenes.json",
+            "lake_layers.json",
+        ] {
+            assert!(
+                staged.contains(&out.join("assets").join(name).display().to_string()),
+                "{name} 没有进发布目录：{staged:?}"
+            );
+        }
+        assert!(!staged.iter().any(|path| path.ends_with(".scene.json")));
+        assert!(!staged.iter().any(|path| path.ends_with(".png")));
     }
 
     #[test]
