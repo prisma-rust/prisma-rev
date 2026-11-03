@@ -94,6 +94,25 @@ pub fn is_asset_path_field(component: &str, field: &str) -> bool {
         || (component.ends_with("PrefabInstance") && leaf == "prefab")
 }
 
+/// The sibling `*_guid` field for an asset-path field (#466).
+///
+/// Follows the same naming as `prism_scene::references`: `*_path` → `*_guid`,
+/// `*_paths` → `*_guids`, and the non-`_path` references get a `_guid` suffix.
+pub fn guid_field_for_path(component: &str, field: &str) -> Option<String> {
+    let leaf = field.rsplit('.').next().unwrap_or(field);
+    let leaf = leaf.split('[').next().unwrap_or(leaf);
+    if !is_asset_path_field(component, leaf) && leaf != "material_paths" {
+        return None;
+    }
+    if let Some(base) = leaf.strip_suffix("_paths") {
+        Some(format!("{base}_guids"))
+    } else if let Some(base) = leaf.strip_suffix("_path") {
+        Some(format!("{base}_guid"))
+    } else {
+        Some(format!("{leaf}_guid"))
+    }
+}
+
 /// 把文档里的一条引用解析成资产表里的路径。
 ///
 /// 项目里的引用有三种合法写法（见 #465），都要能验证：
