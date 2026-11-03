@@ -1407,6 +1407,97 @@ impl Workspace {
         Ok(Some(written))
     }
 
+    /// 重命名状态机里的一个状态，并同步场景 / 预制体里的 `Animator.state` 引用。
+    ///
+    /// 只改写 `state_machine_path` 指向同一份状态机（cooked `*.rasm`）的 Animator。
+    /// 打开着的文档就地改并标脏；磁盘上没打开的文档读-改-写回。状态机本身的改动
+    /// 进入资产编辑撤销栈；文档改动沿用资产重命名的约定（标脏后由用户保存）。
+    /// 返回被改写的文档路径。
+    pub fn rename_state_machine_state(
+        &mut self,
+        machine_path: &str,
+        index: usize,
+        new_name: &str,
+    ) -> Result<Vec<String>, String> {
+        let new_name = new_name.trim();
+        if new_name.is_empty() {
+            return Err("a state needs a non-empty name".to_string());
+        }
+        let before = self
+            .read_asset_json(machine_path)
+            .map_err(|error| format!("read {machine_path} failed: {error}"))?;
+        let view = crate::anim_graph_view::parse_state_machine_view(&before)?;
+        let old_name = view
+            .states
+            .get(index)
+            .ok_or_else(|| format!("state machine has no state #{index}"))?
+            .name
+            .clone();
+        if old_name == new_name {
+            return Ok(Vec::new());
+        }
+        let mut machine = before.clone();
+        crate::anim_graph_view::rename_state(&mut machine, index, new_name)?;
+        let updated = self.rewrite_animator_state_references(machine_path, &old_name, new_name)?;
+        self.write_asset_json(machine_path, &machine)
+            .map_err(|error| format!("write {machine_path} failed: {error}"))?;
+        self.record_asset_edit(machine_path, &before, &machine);
+        Ok(updated)
+    }
+
+    fn rewrite_animator_state_references(
+        &mut self,
+        machine_path: &str,
+        old: &str,
+        new: &str,
+    ) -> Result<Vec<String>, String> {
+        let Some(root) = self.project_root.clone() else {
+            return Ok(Vec::new());
+        };
+        let paths = state_machine_runtime_paths(machine_path);
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut affected = Vec::new();
+        let mut open_paths = Vec::new();
+        for document in &mut self.docs {
+            if rewrite_animator_state(&mut document.doc, &paths, old, new) > 0 {
+                document.dirty = true;
+                affected.push(document.path.clone().unwrap_or_else(|| document.title()));
+            }
+            if let Some(path) = document.path.clone() {
+                open_paths.push(path);
+            }
+        }
+        let closed: Vec<String> = self
+            .project_files
+            .iter()
+            .filter(|file| matches!(file.kind, DocKind::Scene | DocKind::Prefab))
+            .map(|file| file.path.clone())
+            .filter(|path| !open_paths.contains(path))
+            .collect();
+        for path in closed {
+            let mut doc = match project::read_document(&root, &path) {
+                Ok(doc) => doc,
+                Err(error) => {
+                    log::warn!("state rename: cannot read {path}: {error}");
+                    continue;
+                }
+            };
+            if rewrite_animator_state(&mut doc, &paths, old, new) == 0 {
+                continue;
+            }
+            let doc = self.pruned_doc(doc);
+            match project::write_document(&root, &path, &doc) {
+                Ok(()) => affected.push(path),
+                Err(error) => log::warn!("state rename: cannot write {path}: {error}"),
+            }
+        }
+        affected.sort();
+        affected.dedup();
+        Ok(affected)
+    }
+
     /// 重做一步资产编辑；返回被写回的文件。
     pub fn redo_asset_edit(&mut self) -> Result<Option<Vec<String>>, String> {
         let Some(edits) = self.asset_edits.redo() else {
@@ -5487,6 +5578,60 @@ fn overrides_between(
     out
 }
 
+/// 作者侧状态机路径 → 场景 / 预制体里可能写的运行时路径。
+///
+/// 同时接受 `assets/anim/hero.statemachine.json`、`anim/hero.statemachine.json`
+/// 和 cooked 的 `anim/hero.rasm`，避免作者手写路径时漏改。
+fn state_machine_runtime_paths(source: &str) -> Vec<String> {
+    let source = source.trim();
+    if source.is_empty() {
+        return Vec::new();
+    }
+    let mut paths = vec![source.to_string()];
+    if let Some(relative) = source.strip_prefix("assets/") {
+        paths.push(relative.to_string());
+    }
+    if let Some(stem) = source.strip_suffix(".statemachine.json") {
+        let stem = stem.strip_prefix("assets/").unwrap_or(stem);
+        paths.push(format!("{stem}.rasm"));
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+/// 把指向同一份状态机的 `Animator.state` 从 `old` 改成 `new`，返回改动处数。
+fn rewrite_animator_state(
+    doc: &mut SceneDoc,
+    machine_paths: &[String],
+    old: &str,
+    new: &str,
+) -> usize {
+    let mut rewritten = 0;
+    for entity in &mut doc.entities {
+        let Some(animator) = entity
+            .components
+            .get_mut("prism_engine::scene::Animator")
+            .and_then(Value::as_object_mut)
+        else {
+            continue;
+        };
+        let machine = animator
+            .get("state_machine_path")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if !machine_paths.iter().any(|path| path == machine) {
+            continue;
+        }
+        if animator.get("state").and_then(Value::as_str) == Some(old) {
+            animator.insert("state".to_string(), Value::String(new.to_string()));
+            rewritten += 1;
+        }
+    }
+    rewritten
+}
+
 /// 文档所在的目录（`assets/scenes` 这种），没有路径时按 `assets` 处理。
 /// 图节点里的 `*.rasm` → 同名 `*.statemachine.json`；已经是作者路径就原样返回。
 fn state_machine_source_path(machine: &str) -> Option<String> {
@@ -7947,6 +8092,194 @@ mod tests {
             machine["transitions"][0]["conditions"][0]["name"],
             "velocity"
         );
+    }
+
+    #[test]
+    fn renaming_a_state_machine_state_rewrites_animator_references() {
+        let project = TempProject::new("rename-state-refs");
+        std::fs::create_dir_all(project.root.join("assets/anim")).unwrap();
+        std::fs::write(
+            project.root.join("assets/anim/hero.statemachine.json"),
+            r#"{
+                "states": [
+                    { "name": "Idle", "clip": "anim/idle.ranim" },
+                    { "name": "Run", "clip": "anim/run.ranim" }
+                ],
+                "transitions": [{ "from": "Idle", "to": "Run", "duration": 0.2 }]
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            project.root.join("assets/scenes/main.scene.json"),
+            r#"{
+                "version": 3,
+                "entities": [
+                    { "id": 1, "name": "Hero", "components": {
+                        "prism_engine::scene::Animator": {
+                            "state_machine_path": "anim/hero.rasm", "state": "Idle"
+                        } } },
+                    { "id": 2, "name": "Other", "components": {
+                        "prism_engine::scene::Animator": {
+                            "state_machine_path": "anim/other.rasm", "state": "Idle"
+                        } } }
+                ]
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            project.root.join("assets/prefabs/hero.prefab.json"),
+            r#"{
+                "version": 3,
+                "entities": [
+                    { "id": 1, "name": "HeroPrefab", "components": {
+                        "prism_engine::scene::Animator": {
+                            "state_machine_path": "anim/hero.rasm", "state": "Idle"
+                        } } }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let mut workspace = Workspace::load_fixture(&fixture());
+        workspace.load_project(project.root.clone()).unwrap();
+        let prefab = workspace
+            .docs
+            .iter()
+            .position(|document| {
+                document.path.as_deref() == Some("assets/prefabs/hero.prefab.json")
+            })
+            .expect("prefab is open");
+        workspace.close_document(prefab);
+
+        let updated = workspace
+            .rename_state_machine_state("assets/anim/hero.statemachine.json", 0, "Stand")
+            .expect("renames state and references");
+        assert_eq!(
+            updated,
+            vec![
+                "assets/prefabs/hero.prefab.json".to_string(),
+                "assets/scenes/main.scene.json".to_string(),
+            ]
+        );
+
+        let scene = workspace
+            .docs
+            .iter()
+            .find(|document| document.path.as_deref() == Some("assets/scenes/main.scene.json"))
+            .expect("scene is open");
+        assert!(scene.dirty, "打开着的场景要标脏");
+        let hero = scene
+            .doc
+            .entities
+            .iter()
+            .find(|entity| entity.name.as_deref() == Some("Hero"))
+            .expect("Hero entity");
+        assert_eq!(
+            hero.components["prism_engine::scene::Animator"]["state"],
+            "Stand"
+        );
+        let other = scene
+            .doc
+            .entities
+            .iter()
+            .find(|entity| entity.name.as_deref() == Some("Other"))
+            .expect("Other entity");
+        assert_eq!(
+            other.components["prism_engine::scene::Animator"]["state"], "Idle",
+            "其它状态机的引用不受影响"
+        );
+
+        let prefab: Value = serde_json::from_str(
+            &std::fs::read_to_string(project.root.join("assets/prefabs/hero.prefab.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            prefab["entities"][0]["components"]["prism_engine::scene::Animator"]["state"], "Stand",
+            "没打开的预制体直接写回磁盘"
+        );
+
+        let machine: Value = serde_json::from_str(
+            &std::fs::read_to_string(project.root.join("assets/anim/hero.statemachine.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(machine["states"][0]["name"], "Stand");
+        assert_eq!(machine["transitions"][0]["from"], "Stand");
+
+        let undone = workspace.undo_asset_edit().unwrap().expect("one step");
+        assert_eq!(
+            undone,
+            vec!["assets/anim/hero.statemachine.json".to_string()]
+        );
+        let machine: Value = serde_json::from_str(
+            &std::fs::read_to_string(project.root.join("assets/anim/hero.statemachine.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(machine["states"][0]["name"], "Idle");
+        assert_eq!(machine["transitions"][0]["from"], "Idle");
+    }
+
+    #[test]
+    fn renaming_a_state_machine_state_rejects_bad_input_without_touching_documents() {
+        let project = TempProject::new("rename-state-bad");
+        std::fs::create_dir_all(project.root.join("assets/anim")).unwrap();
+        std::fs::write(
+            project.root.join("assets/anim/hero.statemachine.json"),
+            r#"{
+                "states": [
+                    { "name": "Idle", "clip": "anim/idle.ranim" },
+                    { "name": "Run", "clip": "anim/run.ranim" }
+                ]
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            project.root.join("assets/scenes/main.scene.json"),
+            r#"{
+                "version": 3,
+                "entities": [{ "id": 1, "name": "Hero", "components": {
+                    "prism_engine::scene::Animator": {
+                        "state_machine_path": "anim/hero.rasm", "state": "Idle"
+                    } } }]
+            }"#,
+        )
+        .unwrap();
+        let mut workspace = Workspace::load_fixture(&fixture());
+        workspace.load_project(project.root.clone()).unwrap();
+
+        assert!(workspace
+            .rename_state_machine_state("assets/anim/hero.statemachine.json", 9, "Stand")
+            .is_err());
+        assert!(
+            workspace
+                .rename_state_machine_state("assets/anim/hero.statemachine.json", 0, "Run")
+                .is_err(),
+            "重名"
+        );
+        assert!(
+            workspace
+                .rename_state_machine_state("assets/anim/hero.statemachine.json", 0, "  ")
+                .is_err(),
+            "空名"
+        );
+
+        let scene = workspace
+            .docs
+            .iter()
+            .find(|document| document.path.as_deref() == Some("assets/scenes/main.scene.json"))
+            .expect("scene is open");
+        assert!(!scene.dirty);
+        assert_eq!(
+            scene.doc.entities[0].components["prism_engine::scene::Animator"]["state"],
+            "Idle"
+        );
+        let machine: Value = serde_json::from_str(
+            &std::fs::read_to_string(project.root.join("assets/anim/hero.statemachine.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(machine["states"][0]["name"], "Idle");
     }
 
     #[test]
