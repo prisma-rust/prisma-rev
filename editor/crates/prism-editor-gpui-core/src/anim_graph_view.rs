@@ -919,6 +919,89 @@ pub fn remove_state_transition(document: &mut Value, index: usize) -> Result<(),
     Ok(())
 }
 
+fn find_state_mut(document: &mut Value, index: usize) -> Result<&mut Value, String> {
+    let state = document
+        .get_mut("states")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "state machine needs a `states` array".to_string())?
+        .get_mut(index)
+        .ok_or_else(|| format!("state machine has no state #{index}"))?;
+    if !state.is_object() {
+        return Err(format!("state #{index} is malformed"));
+    }
+    Ok(state)
+}
+
+/// 改一个状态的剪辑路径（去空白后必须非空）。
+pub fn set_state_clip(document: &mut Value, index: usize, clip: &str) -> Result<(), String> {
+    let clip = clip.trim();
+    if clip.is_empty() {
+        return Err("a state needs a non-empty clip path".to_string());
+    }
+    find_state_mut(document, index)?["clip"] = json!(clip);
+    Ok(())
+}
+
+/// 改一个状态的播放速度倍率（`0` = 冻结，必须有限且非负）。
+pub fn set_state_speed(document: &mut Value, index: usize, speed: f32) -> Result<(), String> {
+    if !speed.is_finite() || speed < 0.0 {
+        return Err("state speed must be finite and >= 0".to_string());
+    }
+    find_state_mut(document, index)?["speed"] = json!(speed);
+    Ok(())
+}
+
+/// 改一个状态是否循环。
+pub fn set_state_looped(document: &mut Value, index: usize, looped: bool) -> Result<(), String> {
+    find_state_mut(document, index)?["looped"] = json!(looped);
+    Ok(())
+}
+
+/// 重命名一个状态，并同步改写转移里的 `from` / `to`。
+///
+/// 只改状态机文档：运行时 `Animator.state` 和条件里的参数名不在这里，面板会提示
+/// 作者自己确认 `.scene.json` 有没有按旧名字写死。名字去空白后必须非空、不能与
+/// 其它状态重名。
+pub fn rename_state(document: &mut Value, index: usize, new_name: &str) -> Result<(), String> {
+    let new_name = new_name.trim();
+    if new_name.is_empty() {
+        return Err("a state needs a non-empty name".to_string());
+    }
+    let old_name = find_state_mut(document, index)?
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if old_name == new_name {
+        return Ok(());
+    }
+    let states = document
+        .get("states")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    if states
+        .iter()
+        .any(|state| state.get("name").and_then(Value::as_str) == Some(new_name))
+    {
+        return Err(format!("a state named '{new_name}' already exists"));
+    }
+    find_state_mut(document, index)?["name"] = json!(new_name);
+    if let Some(transitions) = document
+        .get_mut("transitions")
+        .and_then(Value::as_array_mut)
+    {
+        for transition in transitions.iter_mut() {
+            for key in ["from", "to"] {
+                if transition.get(key).and_then(Value::as_str) == Some(old_name.as_str()) {
+                    transition[key] = json!(new_name);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn find_transition_mut(document: &mut Value, index: usize) -> Result<&mut Value, String> {
     let transition = document
         .get_mut("transitions")
@@ -1093,6 +1176,69 @@ pub fn set_condition_value(
     }
     entry["value"] = json!(value);
     Ok(())
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn document() -> Value {
+        json!({
+            "states": [
+                { "name": "Idle", "clip": "idle.ranim" },
+                { "name": "Run", "clip": "run.ranim", "speed": 1.2, "looped": true }
+            ],
+            "transitions": [
+                { "from": "Idle", "to": "Run", "duration": 0.2 },
+                { "from": "*", "to": "Idle", "duration": 0.0 }
+            ]
+        })
+    }
+
+    #[test]
+    fn a_state_clip_speed_and_loop_flag_can_be_edited() {
+        let mut doc = document();
+        set_state_clip(&mut doc, 0, " idle_alt.ranim ").expect("sets clip");
+        set_state_speed(&mut doc, 0, 0.75).expect("sets speed");
+        set_state_looped(&mut doc, 1, false).expect("sets loop");
+        assert_eq!(doc["states"][0]["clip"], "idle_alt.ranim");
+        assert_eq!(doc["states"][0]["speed"].as_f64(), Some(0.75f32 as f64));
+        assert_eq!(doc["states"][1]["looped"], false);
+    }
+
+    #[test]
+    fn bad_state_values_and_indices_are_rejected() {
+        let mut doc = document();
+        assert!(set_state_clip(&mut doc, 0, "  ").is_err());
+        assert!(set_state_clip(&mut doc, 9, "a.ranim").is_err());
+        assert!(set_state_speed(&mut doc, 0, -1.0).is_err());
+        assert!(set_state_speed(&mut doc, 0, f32::NAN).is_err());
+        assert!(set_state_speed(&mut doc, 9, 1.0).is_err());
+        assert!(set_state_looped(&mut doc, 9, true).is_err());
+        assert!(set_state_clip(&mut json!({ "states": ["bad"] }), 0, "a.ranim").is_err());
+    }
+
+    #[test]
+    fn renaming_a_state_rewrites_transition_ends() {
+        let mut doc = document();
+        rename_state(&mut doc, 1, " Sprint ").expect("renames");
+        assert_eq!(doc["states"][1]["name"], "Sprint");
+        assert_eq!(doc["transitions"][0]["to"], "Sprint");
+        // 任意状态（`*`）不受影响，也不误伤其它状态。
+        assert_eq!(doc["transitions"][1]["from"], "*");
+        assert_eq!(doc["transitions"][1]["to"], "Idle");
+    }
+
+    #[test]
+    fn renaming_rejects_duplicates_blanks_and_unknown_indices() {
+        let mut doc = document();
+        assert!(rename_state(&mut doc, 0, "Run").is_err());
+        assert!(rename_state(&mut doc, 0, " ").is_err());
+        assert!(rename_state(&mut doc, 9, "Jump").is_err());
+        rename_state(&mut doc, 0, "Idle").expect("same name is a no-op");
+        assert_eq!(doc["states"][0]["name"], "Idle");
+    }
 }
 
 #[cfg(test)]
