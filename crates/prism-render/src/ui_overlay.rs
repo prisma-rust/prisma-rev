@@ -49,7 +49,7 @@ pub enum UiOverlayDraw {
     Text(u32),
 }
 
-/// Per‑frame 输入 from the engine.
+/// Per‑frame input from the engine.
 #[derive(Clone, Default)]
 pub struct UiOverlayInput {
     pub quads: Vec<UiQuad>,

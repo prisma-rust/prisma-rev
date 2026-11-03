@@ -1,43 +1,47 @@
-//! 跨 crate 共享的渲染状态数据（渲染状态枚举）。
+//! Render-state data (enums) shared across crates.
 //!
-//! 这些类型同时被两侧使用：
-//! - `prism-scene`：作者格式（`.scene.json`）、反射 schema、RSCN 编码；
-//! - `prism-render`：翻译成 Vulkan 管线/清屏状态。
+//! Both sides consume these types:
+//! - `prism-scene`: the authoring format (`.scene.json`), reflection schema and
+//!   RSCN encoding;
+//! - `prism-render`: translation into Vulkan pipeline and clear state.
 //!
-//! 所以它们住在两者都能依赖的中立 crate 里，而不是任何一侧。这里有两条硬约束：
+//! They therefore live in a neutral crate both can depend on rather than in
+//! either side. Two hard constraints apply:
 //!
-//! 1. **纯数据**：不依赖 ash/Vulkan、不依赖 ECS，把语义翻译成管线状态是
-//!    `prism-render` 的职责（例如 `cull_flags()` / 混合因子映射）。
-//! 2. 反射编码固定为小整数（`U8` 枚举 / `RenderQueue` 用 `I32`），
-//!    这样 RSCN 与远端工具不需要额外的类型表条目。
+//! 1. **Pure data**: no ash/Vulkan and no ECS dependency. Translating the
+//!    semantics into pipeline state is `prism-render`'s job (for example
+//!    `cull_flags()` and the blend-factor mapping).
+//! 2. Reflection encodes them as small integers (a `U8` enum, `I32` for
+//!    `RenderQueue`) so RSCN and remote tools need no extra type-table entries.
 //!
-//! `prism-scene::render_enums` 只是本 crate 的 re-export，历史路径
-//! （`prism_scene::CullMode`、`prism_scene::render_enums::*`）保持不变。
+//! `prism-scene::render_enums` is only a re-export of this crate; the legacy
+//! paths (`prism_scene::CullMode`, `prism_scene::render_enums::*`) stay valid.
 
 use prism_reflect::{FieldType, ReflectError, ReflectType, Value};
 use serde::{Deserialize, Serialize};
 
-/// 相机清屏方式。
+/// How the camera clears the framebuffer.
 ///
-/// 数值固定：`(int)Skybox == 1` … `(int)Nothing == 4`（引擎的 `0` 是
-/// 未设置的非法值，这里用 [`Default`] 代替）。序列化形式是变体名
-/// （`"Skybox"` / `"SolidColor"` / `"Depth"` / `"Nothing"`），与 `.scene.json` 里
-/// 其它枚举（`TextAlign`）一致。
+/// The numeric values are fixed: `(int)Skybox == 1` … `(int)Nothing == 4`.
+/// Zero is reserved by the engine as an unset/invalid value, so [`Default`]
+/// stands in for it. Serde uses the variant names (`"Skybox"` /
+/// `"SolidColor"` / `"Depth"` / `"Nothing"`), matching the other enums in
+/// `.scene.json` such as `TextAlign`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CameraClearFlags {
-    /// 用天空盒填充背景。
+    /// Fill the background with the skybox.
     #[default]
     Skybox,
-    /// 用纯色填充背景（见 `Camera::background_color`）。
+    /// Fill the background with a solid color (see `Camera::background_color`).
     SolidColor,
-    /// 只清深度，保留已有颜色（叠加相机用）。
+    /// Clear depth only, keeping existing color (used by overlay cameras).
     Depth,
-    /// 颜色与深度都不清。
+    /// Clear neither color nor depth.
     Nothing,
 }
 
 impl CameraClearFlags {
-    /// 引擎的枚举数值。
+    /// The engine's ordinal value.
     pub const fn ordinal_value(self) -> u32 {
         match self {
             Self::Skybox => 1,
@@ -47,7 +51,7 @@ impl CameraClearFlags {
         }
     }
 
-    /// 从枚举数值还原；未知值返回 `None`。
+    /// Reconstructs from the engine's ordinal value; returns `None` if unknown.
     pub const fn from_ordinal_value(value: u32) -> Option<Self> {
         match value {
             1 => Some(Self::Skybox),
@@ -58,21 +62,23 @@ impl CameraClearFlags {
         }
     }
 
-    /// 是否清颜色缓冲（`Skybox` / `SolidColor`）。
+    /// Whether this clears the color buffer (`Skybox` / `SolidColor`).
     pub const fn clears_color(self) -> bool {
         matches!(self, Self::Skybox | Self::SolidColor)
     }
 
-    /// 是否清深度缓冲（除 `Nothing` 之外都清）。
+    /// Whether this clears the depth buffer (everything except `Nothing`).
     pub const fn clears_depth(self) -> bool {
         !matches!(self, Self::Nothing)
     }
 
-    /// 是否绘制天空盒背景。
+    /// Whether the skybox background is drawn.
     ///
-    /// 只有 [`Skybox`](Self::Skybox) 会在背景填充天空盒材质；其余清屏方式
-    /// （纯色 / 仅清深度 / 不清）即使场景里挂着启用的 `Skybox` 实体也不应绘制。
-    /// 纯色填充与多相机按 `depth` 叠加由 `prism-render` 的 forward pass 实现（#461）。
+    /// Only [`Skybox`](Self::Skybox) fills the background with the skybox
+    /// material; the other clear modes (solid color, depth-only, neither) draw
+    /// nothing even when the scene has an enabled `Skybox` entity. The forward
+    /// pass in `prism-render` implements the solid-color fill and the
+    /// multi-camera depth compositing (#461).
     pub const fn draws_skybox(self) -> bool {
         matches!(self, Self::Skybox)
     }
@@ -84,7 +90,7 @@ impl ReflectType for CameraClearFlags {
     }
 
     fn enum_variants() -> Option<&'static [&'static str]> {
-        // 顺序与声明一致；这些字符串就是 `.scene.json` 里的取值。
+        // Same order as the declaration; these strings are the values used in `.scene.json`.
         Some(&["Skybox", "SolidColor", "Depth", "Nothing"])
     }
 
@@ -102,34 +108,36 @@ impl ReflectType for CameraClearFlags {
     }
 }
 
-/// 光源类型（取值固定）。
+/// Light type (fixed values).
 ///
-/// 引擎的 Inspector 只让选运行时支持的类型；这里保留完整枚举以便**无损**对照与
-/// 迁移，但渲染器目前只实现 [`Spot`](Self::Spot) / [`Directional`](Self::Directional) /
-/// [`Point`](Self::Point)（见 [`LightType::is_rendered`]）。
+/// The engine's inspector only offers the types the runtime supports; the full
+/// enum is kept here so authoring data round-trips without loss and can be
+/// migrated, but the renderer currently implements only
+/// [`Spot`](Self::Spot) / [`Directional`](Self::Directional) /
+/// [`Point`](Self::Point) (see [`LightType::is_rendered`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LightType {
-    /// 聚光（锥形）。
+    /// Spot light (cone).
     Spot,
-    /// 平行光（无限远，方向由实体变换决定）。
+    /// Directional light (infinitely far; direction comes from the entity transform).
     Directional,
-    /// 点光源（全向）。
+    /// Point light (omnidirectional).
     #[default]
     Point,
-    /// 矩形面光源 = `LightType.Rectangle`（`Area` 的新名字）。
+    /// Rectangular area light = `LightType.Rectangle` (the new name for `Area`).
     Rectangle,
-    /// 圆形面光源。
+    /// Disc-shaped area light.
     Disc,
-    /// 金字塔形聚光。
+    /// Pyramid-shaped spot light.
     Pyramid,
-    /// 盒形聚光。
+    /// Box-shaped spot light.
     Box,
-    /// 管状光源。
+    /// Tube light.
     Tube,
 }
 
 impl LightType {
-    /// 引擎的枚举数值。
+    /// The engine's ordinal value.
     pub const fn ordinal_value(self) -> u32 {
         match self {
             Self::Spot => 0,
@@ -143,7 +151,7 @@ impl LightType {
         }
     }
 
-    /// 从枚举数值还原；未知值返回 `None`。
+    /// Reconstructs from the engine's ordinal value; returns `None` if unknown.
     pub const fn from_ordinal_value(value: u32) -> Option<Self> {
         match value {
             0 => Some(Self::Spot),
@@ -158,10 +166,11 @@ impl LightType {
         }
     }
 
-    /// 当前渲染器是否真的会绘制该类型。
+    /// Whether the current renderer actually draws this type.
     ///
-    /// 面光源 / 盒形 / 管状只是 schema 对齐，`collect_lights` 会跳过它们
-    /// （里这类光源也只用于烘焙或需要额外管线支持）。
+    /// Area, box and tube lights are schema alignment only and `collect_lights`
+    /// skips them; they are reserved for baking or would need extra pipeline
+    /// support.
     pub const fn is_rendered(self) -> bool {
         matches!(self, Self::Spot | Self::Directional | Self::Point)
     }
@@ -198,20 +207,20 @@ impl ReflectType for LightType {
     }
 }
 
-/// 阴影模式。
+/// Shadow mode.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LightShadows {
-    /// 不投阴影。
+    /// Casts no shadows.
     #[default]
     None,
-    /// 硬阴影（单次采样）。
+    /// Hard shadows (single sample).
     Hard,
-    /// 软阴影（PCF）。
+    /// Soft shadows (PCF).
     Soft,
 }
 
 impl LightShadows {
-    /// 引擎的枚举数值。
+    /// The engine's ordinal value.
     pub const fn ordinal_value(self) -> u32 {
         match self {
             Self::None => 0,
@@ -220,7 +229,7 @@ impl LightShadows {
         }
     }
 
-    /// 从枚举数值还原；未知值返回 `None`。
+    /// Reconstructs from the engine's ordinal value; returns `None` if unknown.
     pub const fn from_ordinal_value(value: u32) -> Option<Self> {
         match value {
             0 => Some(Self::None),
@@ -230,7 +239,7 @@ impl LightShadows {
         }
     }
 
-    /// 是否投阴影（`Hard` / `Soft`）。
+    /// Whether this casts shadows (`Hard` / `Soft`).
     pub const fn casts_shadows(self) -> bool {
         !matches!(self, Self::None)
     }
@@ -259,20 +268,20 @@ impl ReflectType for LightShadows {
     }
 }
 
-/// 光源渲染模式。
+/// Light render mode.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LightRenderMode {
-    /// 由渲染器决定（逐像素还是逐顶点）。
+    /// Decided by the renderer (per-pixel or per-vertex).
     #[default]
     Auto,
-    /// 强制逐像素。
+    /// Force per-pixel.
     ForcePixel,
-    /// 强制逐顶点。
+    /// Force per-vertex.
     ForceVertex,
 }
 
 impl LightRenderMode {
-    /// 引擎的枚举数值。
+    /// The engine's ordinal value.
     pub const fn ordinal_value(self) -> u32 {
         match self {
             Self::Auto => 0,
@@ -281,7 +290,7 @@ impl LightRenderMode {
         }
     }
 
-    /// 从枚举数值还原；未知值返回 `None`。
+    /// Reconstructs from the engine's ordinal value; returns `None` if unknown.
     pub const fn from_ordinal_value(value: u32) -> Option<Self> {
         match value {
             0 => Some(Self::Auto),
@@ -315,29 +324,32 @@ impl ReflectType for LightRenderMode {
     }
 }
 
-/// 阴影投射模式。
+/// Shadow casting mode.
 ///
-/// 挂在渲染器上（见 `prism_scene::components::MeshRenderer::shadow_casting_mode`），
-/// 决定该物体**主通道是否可见**以及**是否写阴影贴图**。
+/// Set on the renderer (see
+/// `prism_scene::components::MeshRenderer::shadow_casting_mode`); it decides
+/// whether the object is **visible in the main pass** and whether it **writes
+/// the shadow map**.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ShadowCastingMode {
-    /// 不投影、正常渲染。
+    /// Casts nothing and renders normally.
     Off,
-    /// 正常渲染 + 投影（默认，等价于引擎的 `On`）。
+    /// Renders normally and casts shadows (default).
     #[default]
     On,
-    /// 双面投影 + 正常渲染。
+    /// Two-sided shadow casting plus normal rendering.
     ///
-    /// 对应 `ShadowCastingMode.TwoSided`：阴影渲染时**关闭背面剔除**
-    /// （即使材质本身开启了背面剔除），因此单面几何体也会从两面投射阴影
-    /// （见 [`casts_two_sided_shadows`](Self::casts_two_sided_shadows)）。
+    /// Corresponds to `ShadowCastingMode.TwoSided`: back-face culling is
+    /// **disabled while shadows are rendered** (even when the material itself
+    /// enables it), so single-sided geometry casts from both sides (see
+    /// [`casts_two_sided_shadows`](Self::casts_two_sided_shadows)).
     TwoSided,
-    /// 只投影，主通道不可见。
+    /// Casts shadows only; invisible in the main pass.
     ShadowsOnly,
 }
 
 impl ShadowCastingMode {
-    /// 引擎的枚举数值。
+    /// The engine's ordinal value.
     pub const fn ordinal_value(self) -> u32 {
         match self {
             Self::Off => 0,
@@ -347,7 +359,7 @@ impl ShadowCastingMode {
         }
     }
 
-    /// 从枚举数值还原；未知值返回 `None`。
+    /// Reconstructs from the engine's ordinal value; returns `None` if unknown.
     pub const fn from_ordinal_value(value: u32) -> Option<Self> {
         match value {
             0 => Some(Self::Off),
@@ -358,22 +370,24 @@ impl ShadowCastingMode {
         }
     }
 
-    /// 是否写阴影贴图（`On` / `TwoSided` / `ShadowsOnly`）。
+    /// Whether this writes the shadow map (`On` / `TwoSided` / `ShadowsOnly`).
     pub const fn casts_shadows(self) -> bool {
         !matches!(self, Self::Off)
     }
 
-    /// 是否出现在相机主通道（`Off` / `On` / `TwoSided`）。
+    /// Whether this appears in the camera's main pass (`Off` / `On` / `TwoSided`).
     pub const fn visible_in_main_pass(self) -> bool {
         !matches!(self, Self::ShadowsOnly)
     }
 
-    /// 阴影渲染是否关闭背面剔除（`ShadowCastingMode.TwoSided`）。
+    /// Whether shadow rendering disables back-face culling
+    /// (`ShadowCastingMode.TwoSided`).
     ///
-    /// 文档：`TwoSided` 会在**阴影渲染时关闭背面剔除**，即使物体材质
-    /// 本身开了背面剔除。因此 `Off` / `On` / `ShadowsOnly` 走背面剔除
-    /// （`false`），只有 `TwoSided` 双面投射（`true`）。只影响阴影通道，
-    /// 不影响 [`visible_in_main_pass`](Self::visible_in_main_pass)。
+    /// `TwoSided` disables back-face culling **while shadows are rendered**,
+    /// even when the object's material enables it. `Off` / `On` /
+    /// `ShadowsOnly` keep back-face culling (`false`); only `TwoSided` casts
+    /// from both sides (`true`). This affects the shadow pass only, not
+    /// [`visible_in_main_pass`](Self::visible_in_main_pass).
     pub const fn casts_two_sided_shadows(self) -> bool {
         matches!(self, Self::TwoSided)
     }
@@ -402,23 +416,24 @@ impl ReflectType for ShadowCastingMode {
     }
 }
 
-/// 剔除模式（取值固定）。
+/// Cull mode (fixed values).
 ///
-/// 默认 [`Back`](Self::Back)，与 `prism-render` 现有图形管线的
-/// `vk::CullModeFlags::BACK` 一致。真正翻译成 Vulkan 状态的是 `prism-render`。
+/// Defaults to [`Back`](Self::Back), matching the existing `prism-render`
+/// graphics pipeline's `vk::CullModeFlags::BACK`. `prism-render` performs the
+/// actual translation into Vulkan state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CullMode {
-    /// 不剔除（双面可见）。
+    /// No culling (both sides visible).
     Off,
-    /// 剔除正面，只保留背面。
+    /// Cull front faces, keeping only back faces.
     Front,
-    /// 剔除背面（默认）。
+    /// Cull back faces (default).
     #[default]
     Back,
 }
 
 impl CullMode {
-    /// 引擎的枚举数值。
+    /// The engine's ordinal value.
     pub const fn ordinal_value(self) -> u32 {
         match self {
             Self::Off => 0,
@@ -427,7 +442,7 @@ impl CullMode {
         }
     }
 
-    /// 从枚举数值还原；未知值返回 `None`。
+    /// Reconstructs from the engine's ordinal value; returns `None` if unknown.
     pub const fn from_ordinal_value(value: u32) -> Option<Self> {
         match value {
             0 => Some(Self::Off),
@@ -437,7 +452,7 @@ impl CullMode {
         }
     }
 
-    /// 是否剔除某个面（`Front` / `Back`）。
+    /// Whether this culls a face (`Front` / `Back`).
     pub const fn culls(self) -> bool {
         !matches!(self, Self::Off)
     }
@@ -465,37 +480,38 @@ impl ReflectType for CullMode {
     }
 }
 
-/// 深度/模板比较函数（取值固定）。
+/// Depth/stencil compare function (fixed values).
 ///
-/// 默认 [`LessEqual`](Self::LessEqual)：着色器里 `ZTest` 的默认值。
-/// [`Disabled`](Self::Disabled) 对应引擎的“关闭深度测试”，Vulkan 没有对应的
-/// `vk::CompareOp`，由 `prism-render` 用它自己的深度测试开关
-/// （`depth_test_enable(false)`，即 `VK_FALSE`）表达，而不是拿某个比较运算去反转。
+/// Defaults to [`LessEqual`](Self::LessEqual), the shader's default `ZTest`
+/// value. [`Disabled`](Self::Disabled) means the engine's "depth test off";
+/// Vulkan has no matching `vk::CompareOp`, so `prism-render` expresses it with
+/// its own depth-test flag (`depth_test_enable(false)`, i.e. `VK_FALSE`)
+/// instead of inverting a comparison.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CompareFunction {
-    /// 关闭比较（等价于不测试）。
+    /// No comparison (equivalent to no test).
     Disabled,
-    /// 永不通过。
+    /// Never passes.
     Never,
-    /// 小于。
+    /// Less than.
     Less,
-    /// 等于。
+    /// Equal to.
     Equal,
-    /// 小于等于（默认）。
+    /// Less than or equal to (default).
     #[default]
     LessEqual,
-    /// 大于。
+    /// Greater than.
     Greater,
-    /// 不等于。
+    /// Not equal to.
     NotEqual,
-    /// 大于等于。
+    /// Greater than or equal to.
     GreaterEqual,
-    /// 永远通过。
+    /// Always passes.
     Always,
 }
 
 impl CompareFunction {
-    /// 引擎的枚举数值。
+    /// The engine's ordinal value.
     pub const fn ordinal_value(self) -> u32 {
         match self {
             Self::Disabled => 0,
@@ -510,7 +526,7 @@ impl CompareFunction {
         }
     }
 
-    /// 从枚举数值还原；未知值返回 `None`。
+    /// Reconstructs from the engine's ordinal value; returns `None` if unknown.
     pub const fn from_ordinal_value(value: u32) -> Option<Self> {
         match value {
             0 => Some(Self::Disabled),
@@ -526,7 +542,7 @@ impl CompareFunction {
         }
     }
 
-    /// 是否真的做比较（除 [`Disabled`](Self::Disabled) 之外都做）。
+    /// Whether a comparison is actually performed (everything except [`Disabled`](Self::Disabled)).
     pub const fn is_enabled(self) -> bool {
         !matches!(self, Self::Disabled)
     }
@@ -565,39 +581,39 @@ impl ReflectType for CompareFunction {
     }
 }
 
-/// 混合因子（取值固定）。
+/// Blend factor (fixed values).
 ///
-/// 引擎的混合状态是「源因子 × 目标因子 + 混合运算」，这个枚举描述
-/// **因子**；混合运算见 [`BlendOp`]。
+/// The engine's blend state is "source factor × target factor, combined by a
+/// blend op". This enum describes the **factors**; see [`BlendOp`] for the op.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BlendMode {
-    /// `0`。
+    /// `0`.
     Zero,
-    /// `1`（默认源因子；与 [`Zero`](Self::Zero) 组成不透明混合）。
+    /// `1` (default source factor; with [`Zero`](Self::Zero) it produces opaque blending).
     #[default]
     One,
-    /// 目标颜色。
+    /// Destination color.
     DstColor,
-    /// 源颜色。
+    /// Source color.
     SrcColor,
-    /// `1 - dst`。
+    /// `1 - dst`.
     OneMinusDstColor,
-    /// 源 alpha。
+    /// Source alpha.
     SrcAlpha,
-    /// `1 - src`。
+    /// `1 - src`.
     OneMinusSrcColor,
-    /// 目标 alpha。
+    /// Destination alpha.
     DstAlpha,
-    /// `1 - dst.a`。
+    /// `1 - dst.a`.
     OneMinusDstAlpha,
-    /// `min(src.a, 1 - dst.a)`。
+    /// `min(src.a, 1 - dst.a)`.
     SrcAlphaSaturate,
-    /// `1 - src.a`（标准 alpha 混合的源因子）。
+    /// `1 - src.a` (the source factor for standard alpha blending).
     OneMinusSrcAlpha,
 }
 
 impl BlendMode {
-    /// 引擎的枚举数值。
+    /// The engine's ordinal value.
     pub const fn ordinal_value(self) -> u32 {
         match self {
             Self::Zero => 0,
@@ -614,7 +630,7 @@ impl BlendMode {
         }
     }
 
-    /// 从枚举数值还原；未知值返回 `None`。
+    /// Reconstructs from the engine's ordinal value; returns `None` if unknown.
     pub const fn from_ordinal_value(value: u32) -> Option<Self> {
         match value {
             0 => Some(Self::Zero),
@@ -667,27 +683,27 @@ impl ReflectType for BlendMode {
     }
 }
 
-/// 混合运算。
+/// Blend operation.
 ///
-/// 与 [`BlendMode`] 一起构成 材质的混合状态：
-/// `结果 = srcFactor × src op dstFactor × dst`。
+/// Together with [`BlendMode`] this forms a material's blend state:
+/// `result = srcFactor × src op dstFactor × dst`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BlendOp {
-    /// `src + dst`（默认）。
+    /// `src + dst` (default).
     #[default]
     Add,
-    /// `src - dst`。
+    /// `src - dst`.
     Subtract,
-    /// `dst - src`。
+    /// `dst - src`.
     ReverseSubtract,
-    /// `min(src, dst)`。
+    /// `min(src, dst)`.
     Min,
-    /// `max(src, dst)`。
+    /// `max(src, dst)`.
     Max,
 }
 
 impl BlendOp {
-    /// 引擎的枚举数值。
+    /// The engine's ordinal value.
     pub const fn ordinal_value(self) -> u32 {
         match self {
             Self::Add => 0,
@@ -698,7 +714,7 @@ impl BlendOp {
         }
     }
 
-    /// 从枚举数值还原；未知值返回 `None`。
+    /// Reconstructs from the engine's ordinal value; returns `None` if unknown.
     pub const fn from_ordinal_value(value: u32) -> Option<Self> {
         match value {
             0 => Some(Self::Add),
@@ -733,47 +749,49 @@ impl ReflectType for BlendOp {
     }
 }
 
-/// 渲染队列。
+/// Render queue.
 ///
-/// **形状差异**：引擎的 `RenderQueue` 是包裹一个 `int` 的 struct（不是枚举），
-/// 具名队列只是 `static readonly int` 常量。这里保持同样的形状：i32 newtype +
-/// 关联常量，这样作者数据里的任意队列值都能无损读写。
+/// **Shape note**: the engine's `RenderQueue` is a struct wrapping an `int`,
+/// not an enum, and its named queues are just `static readonly int` constants.
+/// This mirrors that shape as an `i32` newtype plus associated constants, so
+/// any queue value in authoring data round-trips without loss.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct RenderQueue(i32);
 
 impl RenderQueue {
-    /// 背景（最先绘制）。
+    /// Background (drawn first).
     pub const BACKGROUND: i32 = 1000;
-    /// 不透明几何（默认队列）。
+    /// Opaque geometry (the default queue).
     pub const GEOMETRY: i32 = 2000;
-    /// Alpha 测试之后、不透明几何结束之前。
+    /// After alpha testing, before the end of opaque geometry.
     pub const ALPHA_TEST: i32 = 2450;
-    /// 不透明区间的上界。
+    /// Upper bound of the opaque range.
     pub const GEOMETRY_LAST: i32 = 2500;
-    /// 透明物体。
+    /// Transparent objects.
     pub const TRANSPARENT: i32 = 3000;
-    /// 叠加层（最后绘制）。
+    /// Overlay (drawn last).
     pub const OVERLAY: i32 = 4000;
 
-    /// 用任意队列值构造。
+    /// Constructs from an arbitrary queue value.
     pub const fn new(value: i32) -> Self {
         Self(value)
     }
 
-    /// 队列数值（里的 `RenderQueue.value`）。
+    /// The queue value (the engine's `RenderQueue.value`).
     pub const fn value(self) -> i32 {
         self.0
     }
 
-    /// 是否属于不透明区间（`[0, GeometryLast]`）。
+    /// Whether this falls in the opaque range (`[0, GeometryLast]`).
     ///
-    /// 负数虽然允许存在（存档里可以无损保存任意队列值），但不在引擎的不透明
-    /// 区间内，所以下界必须是 0。
+    /// Negative values are allowed (saved data can preserve any queue value
+    /// losslessly) but are outside the engine's opaque range, so the lower
+    /// bound must be 0.
     pub const fn is_opaque(self) -> bool {
         self.0 >= 0 && self.0 <= Self::GEOMETRY_LAST
     }
 
-    /// 是否属于透明区间（`> GeometryLast`）。
+    /// Whether this falls in the transparent range (`> GeometryLast`).
     pub const fn is_transparent(self) -> bool {
         self.0 > Self::GEOMETRY_LAST
     }
@@ -802,12 +820,15 @@ impl ReflectType for RenderQueue {
     }
 }
 
-/// 色温（开尔文）→ 线性 RGB，对应 `Mathf.CorrelatedColorTemperatureToRGB`。
+/// Converts a color temperature (Kelvin) to linear RGB, matching
+/// `Mathf.CorrelatedColorTemperatureToRGB`.
 ///
-/// 引擎的实现是 native 的；这里用常用的黑体辐射近似（Tanner Helland 的分段
-/// 拟合），先按 sRGB 得到 0–1 分量、再转成线性空间，并裁到 `[1000, 40000]` K
-/// （与 Inspector 的取值范围一致）。结果**不**做归一化：6500 K 接近
-/// `(1, 1, 1)`，色温只是乘到 `Light.color` 上的滤色片。
+/// The engine's version is native; this uses the common black-body
+/// approximation (Tanner Helland's piecewise fit): compute the 0–1 sRGB
+/// components, convert to linear, and clamp to `[1000, 40000]` K (the
+/// inspector's range). The result is **not** normalized: 6500 K is close to
+/// `(1, 1, 1)`, and the temperature just acts as a color filter multiplied
+/// into `Light.color`.
 pub fn correlated_color_temperature_to_rgb(kelvin: f32) -> glam::Vec3 {
     let kelvin = if kelvin.is_finite() {
         kelvin.clamp(1000.0, 40000.0)
@@ -818,7 +839,7 @@ pub fn correlated_color_temperature_to_rgb(kelvin: f32) -> glam::Vec3 {
 
     let srgb = |c: f32| {
         let c = c.clamp(0.0, 255.0) / 255.0;
-        // sRGB → 线性：引擎的灯颜色在渲染里是线性空间。
+        // sRGB → linear: the engine's light colors are linear in the renderer.
         if c <= 0.04045 {
             c / 12.92
         } else {
@@ -888,7 +909,7 @@ mod tests {
         assert!(CameraClearFlags::Depth.clears_depth());
         assert!(!CameraClearFlags::Nothing.clears_depth());
 
-        // 只有 Skybox 会绘制天空盒背景（`Camera.clearFlags` 语义）。
+        // Only Skybox draws the skybox background (`Camera.clearFlags` semantics).
         assert!(CameraClearFlags::Skybox.draws_skybox());
         assert!(!CameraClearFlags::SolidColor.draws_skybox());
         assert!(!CameraClearFlags::Depth.draws_skybox());
@@ -925,8 +946,8 @@ mod tests {
 
     #[test]
     fn light_type_ordinals() {
-        // : Spot=0, Directional=1, Point=2, Rectangle(Area)=3, Disc=4,
-        // Pyramid=5, Box=6, Tube=7。
+        // Ordinals: Spot=0, Directional=1, Point=2, Rectangle(Area)=3, Disc=4,
+        // Pyramid=5, Box=6, Tube=7.
         assert_eq!(LightType::Spot.ordinal_value(), 0);
         assert_eq!(LightType::Directional.ordinal_value(), 1);
         assert_eq!(LightType::Point.ordinal_value(), 2);
@@ -1004,7 +1025,8 @@ mod tests {
 
     #[test]
     fn light_enums_reflect_round_trip_uses_u8() {
-        // 反射用 u8 编码（与 `CameraClearFlags` 一致），这样不需要额外的类型表条目。
+        // Reflection uses u8 encoding (like `CameraClearFlags`) so no extra
+        // type-table entries are needed.
         for ty in [LightType::Spot, LightType::Directional, LightType::Point] {
             assert_eq!(ty.to_value(), Value::U64(u64::from(ty.ordinal_value())));
             assert_eq!(LightType::from_value(ty.to_value()).unwrap(), ty);
@@ -1038,7 +1060,7 @@ mod tests {
         assert!(ShadowCastingMode::TwoSided.visible_in_main_pass());
         assert!(!ShadowCastingMode::ShadowsOnly.visible_in_main_pass());
 
-        // ：只有 `TwoSided` 在阴影通道关闭背面剔除。
+        // Only `TwoSided` disables back-face culling in the shadow pass.
         assert!(!ShadowCastingMode::Off.casts_two_sided_shadows());
         assert!(!ShadowCastingMode::On.casts_two_sided_shadows());
         assert!(ShadowCastingMode::TwoSided.casts_two_sided_shadows());
@@ -1059,7 +1081,7 @@ mod tests {
 
     #[test]
     fn color_temperature_goes_warm_to_cool() {
-        // 低色温偏红、高色温偏蓝，6500 K 接近中性白。
+        // Low temperatures are warm/red, high temperatures cool/blue; 6500 K is near neutral white.
         let warm = correlated_color_temperature_to_rgb(2000.0);
         assert!(warm.x > warm.z, "2000K 应偏暖: {warm:?}");
 
@@ -1078,14 +1100,14 @@ mod tests {
         assert_eq!(lowest, correlated_color_temperature_to_rgb(1000.0));
         let highest = correlated_color_temperature_to_rgb(1.0e9);
         assert_eq!(highest, correlated_color_temperature_to_rgb(40000.0));
-        // 非有限值退化为 6500 K，而不是产生 NaN。
+        // Non-finite input falls back to 6500 K instead of producing NaN.
         let nan = correlated_color_temperature_to_rgb(f32::NAN);
         assert!(nan.is_finite());
     }
 
     #[test]
     fn cull_mode_ordinals() {
-        // : Off=0, Front=1, Back=2。
+        // Ordinals: Off=0, Front=1, Back=2.
         assert_eq!(CullMode::Off.ordinal_value(), 0);
         assert_eq!(CullMode::Front.ordinal_value(), 1);
         assert_eq!(CullMode::Back.ordinal_value(), 2);
@@ -1112,7 +1134,7 @@ mod tests {
 
     #[test]
     fn compare_function_ordinals() {
-        // : Disabled=0 … Always=8。
+        // Ordinals: Disabled=0 … Always=8.
         let all = [
             (CompareFunction::Disabled, 0),
             (CompareFunction::Never, 1),
@@ -1130,7 +1152,7 @@ mod tests {
             assert_eq!(CompareFunction::from_value(func.to_value()).unwrap(), func);
         }
         assert_eq!(CompareFunction::from_ordinal_value(9), None);
-        // 着色器里 `ZTest` 的默认值是 LessEqual。
+        // The shader's default `ZTest` value is LessEqual.
         assert_eq!(CompareFunction::default(), CompareFunction::LessEqual);
         assert!(!CompareFunction::Disabled.is_enabled());
         assert!(CompareFunction::LessEqual.is_enabled());
@@ -1172,7 +1194,7 @@ mod tests {
             assert_eq!(BlendMode::from_value(mode.to_value()).unwrap(), mode);
         }
         assert_eq!(BlendMode::from_ordinal_value(11), None);
-        // 不透明混合 = One / Zero。
+        // Opaque blending = One / Zero.
         assert_eq!(BlendMode::default(), BlendMode::One);
         assert_eq!(BlendMode::enum_variants().unwrap().len(), 11);
         assert_eq!(BlendMode::enum_variants().unwrap()[10], "OneMinusSrcAlpha");
@@ -1215,19 +1237,20 @@ mod tests {
         assert_eq!(RenderQueue::default(), RenderQueue::new(2000));
         assert_eq!(RenderQueue::default().value(), 2000);
 
-        // 区间以 GeometryLast 为界；任意值都能无损保留。
+        // The ranges are bounded by GeometryLast; any value is preserved losslessly.
         assert!(RenderQueue::new(1000).is_opaque());
         assert!(RenderQueue::new(2500).is_opaque());
         assert!(!RenderQueue::new(2501).is_opaque());
         assert!(RenderQueue::new(2501).is_transparent());
         assert!(RenderQueue::new(3000).is_transparent());
-        // 负数可以无损保存，但不属于引擎的不透明区间 `[0, GeometryLast]`。
+        // Negative values are preserved losslessly but are outside the engine's
+        // opaque range `[0, GeometryLast]`.
         assert!(!RenderQueue::new(-1).is_opaque());
         assert!(!RenderQueue::new(-1).is_transparent());
         assert!(!RenderQueue::new(-1000).is_opaque());
         assert_eq!(RenderQueue::new(4242).value(), 4242);
 
-        // 反射按 i32 编码（不是 u8 枚举），负值也保留。
+        // Reflection uses i32 encoding (not a u8 enum) so negative values survive.
         assert_eq!(RenderQueue::field_type(), FieldType::I32);
         for value in [-5, 0, 2000, 4000] {
             let queue = RenderQueue::new(value);

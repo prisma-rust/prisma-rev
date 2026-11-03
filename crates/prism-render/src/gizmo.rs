@@ -25,7 +25,7 @@ pub struct GizmoInstance {
 const GIZMO_VERT_SPV: &[u8] = include_bytes!("../../../assets/shaders/gizmo.vert.spv");
 const GIZMO_FRAG_SPV: &[u8] = include_bytes!("../../../assets/shaders/gizmo.frag.spv");
 
-/// Per-vertex data for the gizmo: object-space position + 颜色
+/// Per-vertex data for the gizmo: object-space position + color.
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct GizmoVertex {
@@ -71,11 +71,11 @@ pub struct Gizmo {
 }
 
 impl Gizmo {
-    /// 构建 the gizmo geometry + 管线 for `render_pass`.
+    /// Build the gizmo geometry + pipeline for `render_pass`.
     pub fn new(context: &VulkanContext, render_pass: vk::RenderPass) -> anyhow::Result<Self> {
         let device = context.device.clone();
 
-        // --- 静态 geometry (generated once on the CPU) ---
+        // --- Static geometry (generated once on the CPU) ---
         let (verts, translate_count, (rotate_first, rotate_count), (scale_first, scale_count)) =
             generate_all_gizmos();
         let vertex_count = verts.len() as u32;
@@ -130,7 +130,7 @@ impl Gizmo {
         let layout = unsafe { device.create_pipeline_layout(&layout_info, None) }
             .context("create gizmo pipeline layout")?;
 
-        // --- Fixed-function 状态 ---
+        // --- Fixed-function state ---
         let binding_desc = [GizmoVertex::binding_description()];
         let attr_descs = GizmoVertex::attribute_descriptions();
         let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default()
@@ -156,7 +156,7 @@ impl Gizmo {
         let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
             .sample_shading_enable(false)
             .rasterization_samples(vk::SampleCountFlags::TYPE_1);
-        // 深度 OFF → always drawn on 顶部 of the scene.
+        // Depth OFF → always drawn on top of the scene.
         let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
             .depth_test_enable(false)
             .depth_write_enable(false);
@@ -164,10 +164,10 @@ impl Gizmo {
             .color_write_mask(vk::ColorComponentFlags::RGBA)
             .blend_enable(false);
         // The gizmo draws inside ForwardPass's 渲染 pass which now has 2
-        // 颜色 attachments 颜色 + view-normal MRT). Every 管线 bound in
-        // that 渲染 pass must declare a matching attachmentCount, so we 列表
-        // 2 混合 states: 附件 0 颜色 writes RGBA 附件 1
-        // 法线 has an 空 写入 遮罩 so the cleared value is preserved.
+        // color attachments (color + view-normal MRT). Every pipeline bound in
+        // that render pass must declare a matching attachmentCount, so we list
+        // 2 blend states: attachment 0 (color) writes RGBA, attachment 1
+        // (normal) has an empty write mask so the cleared value is preserved.
         let blend_attachments = [
             color_blend_attachment,
             vk::PipelineColorBlendAttachmentState::default()
@@ -475,7 +475,7 @@ fn push_tri(v: &mut Vec<GizmoVertex>, a: [f32; 3], b: [f32; 3], c: [f32; 3], col
 }
 
 /// Geometry common to both shaft and cone: axis direction, two perpendicular
-/// vectors, 长度 and 颜色 Extracted as a 结构体 to avoid passing 6+
+/// vectors, length, and color. Extracted as a struct to avoid passing 6+
 /// positional arguments.
 struct AxisGeometry {
     dir: [f32; 3],
@@ -485,7 +485,7 @@ struct AxisGeometry {
     color: [f32; 3],
 }
 
-/// 推送 a thin axis-aligned 盒 from the origin to `dir * len`.
+/// Push a thin axis-aligned box from the origin to `dir * len`.
 fn push_shaft(v: &mut Vec<GizmoVertex>, geo: &AxisGeometry, t: f32) {
     let dir = geo.dir;
     let p1 = geo.p1;
@@ -528,7 +528,7 @@ fn push_shaft(v: &mut Vec<GizmoVertex>, geo: &AxisGeometry, t: f32) {
     push_tri(v, c010, c111, c110, color);
 }
 
-/// 推送 a cone (side + base cap) at the tip of the axis.
+/// Push a cone (side + base cap) at the tip of the axis.
 fn push_cone(v: &mut Vec<GizmoVertex>, geo: &AxisGeometry, head_len: f32, head_r: f32, segs: u32) {
     let dir = geo.dir;
     let p1 = geo.p1;

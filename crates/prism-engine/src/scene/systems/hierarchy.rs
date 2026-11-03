@@ -3,7 +3,7 @@
 //! Walks the scene 树 from root entities in DFS order, accumulating parent
 //! transforms: `world_child = world_parent × local_child`.
 //!
-//! Run once per 帧 **after** any local-transform or reparenting changes.
+//! Run once per frame **after** any local-transform or reparenting changes.
 //!
 //! 树形不一致时按 统一语义兜底（见 `#48`）：
 //! - 没有 `LocalTransform` 的中间节点**不阻断传播**：它自己保持无
@@ -25,8 +25,8 @@ use crate::scene::components::*;
 ///   no longer block their children (the accumulated parent matrix is passed
 ///   through).
 ///
-/// This 函数 is intended to be called once per 帧 after all 局部
-/// 变换 changes have been applied.
+/// This function is intended to be called once per frame, after all local
+/// transform changes have been applied.
 pub fn hierarchy_system(world: &mut World) {
     let roots: Vec<Entity> = candidate_entities(world)
         .into_iter()
@@ -73,7 +73,7 @@ fn has_live_parent(world: &World, entity: Entity) -> bool {
             .is_some_and(|children| children.0.contains(&entity))
 }
 
-/// Recursively visit children, 计算 and 存储 their 世界 变换
+/// Recursively visit children, compute and store their world transform.
 fn visit_children(
     world: &mut World,
     parent: Entity,

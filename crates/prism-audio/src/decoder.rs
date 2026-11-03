@@ -1,6 +1,6 @@
-//! 音频 file decoding.
+//! Audio file decoding.
 //!
-//! Decodes common 音频 formats into raw f32 samples for playback,
+//! Decodes common audio formats into raw f32 samples for playback,
 //! using the high-level `symphonium` API.
 
 use std::path::Path;
@@ -11,7 +11,7 @@ use symphonium::{DecodeConfig, DecodedAudioF32};
 use crate::error::AudioError;
 use crate::AudioData;
 
-/// Supported 音频 formats.
+/// Supported audio formats.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudioFormat {
     Wav,
@@ -21,7 +21,7 @@ pub enum AudioFormat {
 }
 
 impl AudioFormat {
-    /// Infer 格式 from a file 扩展
+    /// Infer format from a file extension.
     pub fn from_extension(path: &Path) -> Option<Self> {
         let ext = path.extension()?.to_str()?.to_lowercase();
         match ext.as_str() {
@@ -43,9 +43,9 @@ impl AudioFormat {
     }
 }
 
-/// 解码 an 音频 file from raw 字节
+/// Decode an audio file from raw bytes.
 ///
-/// Uses auto-detection of the 格式 Falls 后 to [`AudioFormat`]
+/// Uses auto-detection of the format. Falls back to [`AudioFormat`]
 /// if provided as a hint when auto-detection might be ambiguous.
 pub fn decode_bytes(bytes: &[u8], format: AudioFormat) -> Result<AudioData, AudioError> {
     let mut hint = symphonia::core::formats::probe::Hint::new();
@@ -58,7 +58,7 @@ pub fn decode_bytes(bytes: &[u8], format: AudioFormat) -> Result<AudioData, Audi
     decode_probed(probed)
 }
 
-/// 解码 an 音频 file, auto-detecting the 格式 from content.
+/// Decode an audio file, auto-detecting the format from content.
 pub fn decode_auto(bytes: &[u8]) -> Result<AudioData, AudioError> {
     let cursor = Box::new(std::io::Cursor::new(bytes.to_vec()));
     let probed = symphonium::probe_from_source(cursor, None, None)
@@ -67,7 +67,7 @@ pub fn decode_auto(bytes: &[u8]) -> Result<AudioData, AudioError> {
     decode_probed(probed)
 }
 
-/// 解码 a file on disk.
+/// Decode a file on disk.
 pub fn decode_file(path: impl AsRef<Path>) -> Result<AudioData, AudioError> {
     let path = path.as_ref();
     let probed = symphonium::probe_from_file(path, None)
@@ -75,9 +75,6 @@ pub fn decode_file(path: impl AsRef<Path>) -> Result<AudioData, AudioError> {
 
     decode_probed(probed)
 }
-
-// ---------------------------------------------------------------------------
-// Shared helper: 解码 a probed 源 → AudioData
 
 fn decode_probed(probed: symphonium::ProbedAudioSource) -> Result<AudioData, AudioError> {
     let config = DecodeConfig::default();
@@ -92,7 +89,7 @@ fn decode_probed(probed: symphonium::ProbedAudioSource) -> Result<AudioData, Aud
     let num_frames = decoded.frames();
     let sample_rate = decoded.sample_rate.get();
 
-    // 转换 planar → interleaved (L,R,L,R,...)
+    // Convert planar → interleaved (L,R,L,R,...)
     let mut samples = Vec::with_capacity(channels * num_frames);
     for frame in 0..num_frames {
         #[allow(clippy::needless_range_loop)]

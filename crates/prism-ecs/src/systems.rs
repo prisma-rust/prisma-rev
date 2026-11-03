@@ -1,50 +1,55 @@
-//! 数据导向 ECS风格的系统与系统组。
+//! DOTS-style systems and system groups.
 //!
-//! 对齐 `ISystem` / `SystemBase` / `ComponentSystemGroup`：
+//! Aligns with `ISystem` / `SystemBase` / `ComponentSystemGroup`:
 //!
-//! - [`ISystem`]：完整生命周期钩子（Rust snake_case，括号内为 DOTS 原名）：
-//!   [`on_create`](ISystem::on_create)（`OnCreate`）、
-//!   [`on_start_running`](ISystem::on_start_running)（`OnStartRunning`）、
-//!   [`on_stop_running`](ISystem::on_stop_running)（`OnStopRunning`）、
-//!   [`on_update`](ISystem::on_update)（`OnUpdate`）、
-//!   [`on_destroy`](ISystem::on_destroy)（`OnDestroy`）。
-//! - [`SystemBase`]：闭包式系统的包装（对齐 DOTS `SystemBase` 的“托管基类”角色）。
-//! - [`SystemGroup`] / [`ComponentSystemGroup`]：DOTS 的三类顶层系统组
-//!   （Initialization / Simulation / Presentation）。
+//! - [`ISystem`]: full lifecycle hooks (Rust snake_case; the DOTS name is in
+//!   parentheses): [`on_create`](ISystem::on_create) (`OnCreate`),
+//!   [`on_start_running`](ISystem::on_start_running) (`OnStartRunning`),
+//!   [`on_stop_running`](ISystem::on_stop_running) (`OnStopRunning`),
+//!   [`on_update`](ISystem::on_update) (`OnUpdate`),
+//!   [`on_destroy`](ISystem::on_destroy) (`OnDestroy`).
+//! - [`SystemBase`]: wrapper for closure-style systems (the managed base-class
+//!   role in DOTS `SystemBase`).
+//! - [`SystemGroup`] / [`ComponentSystemGroup`]: the three top-level DOTS
+//!   groups (Initialization / Simulation / Presentation).
 //!
-//! 这是**加法式对齐层**：不改变引擎现有的 [`crate::World`] 与调度，只是把 DOTS 的
-//! 系统形状显式化，供新代码采用。
+//! This is an **additive alignment layer**: it does not change the engine's
+//! existing [`crate::World`] or scheduling; it only makes the DOTS system shape
+//! explicit for new code to adopt.
 
 use crate::World;
 
-/// 系统组名字常量（对齐 DOTS 顶层组）。
+/// System group name constants (aligned with the DOTS top-level groups).
 pub const INITIALIZATION_SYSTEM_GROUP: &str = "InitializationSystemGroup";
-/// 见 [`INITIALIZATION_SYSTEM_GROUP`]。
+/// See [`INITIALIZATION_SYSTEM_GROUP`].
 pub const SIMULATION_SYSTEM_GROUP: &str = "SimulationSystemGroup";
-/// 见 [`INITIALIZATION_SYSTEM_GROUP`]。
+/// See [`INITIALIZATION_SYSTEM_GROUP`].
 pub const PRESENTATION_SYSTEM_GROUP: &str = "PresentationSystemGroup";
 
-/// DOTS `.Entities.ISystem` 形状的系统接口。
+/// DOTS `.Entities.ISystem`-shaped system interface.
 ///
-/// 只有 [`on_update`](ISystem::on_update) 是必需的；其余生命周期钩子默认空实现。
+/// Only [`on_update`](ISystem::on_update) is required; the other lifecycle
+/// hooks default to no-ops.
 pub trait ISystem: Send + Sync + 'static {
-    /// 系统首次实例化时调用（DOTS：`OnCreate`）。
+    /// Called when the system is first instantiated (DOTS: `OnCreate`).
     fn on_create(&mut self, _world: &mut World) {}
 
-    /// 系统开始运行、或从“停止”恢复时调用（DOTS：`OnStartRunning`）。
+    /// Called when the system starts running or resumes from stopped (DOTS:
+    /// `OnStartRunning`).
     fn on_start_running(&mut self, _world: &mut World) {}
 
-    /// 系统即将停止运行时调用（DOTS：`OnStopRunning`）。
+    /// Called just before the system stops running (DOTS: `OnStopRunning`).
     fn on_stop_running(&mut self, _world: &mut World) {}
 
-    /// 每次更新（DOTS：`OnUpdate`）。
+    /// Runs every update (DOTS: `OnUpdate`).
     fn on_update(&mut self, world: &mut World);
 
-    /// 系统销毁时调用（DOTS：`OnDestroy`）。
+    /// Called when the system is destroyed (DOTS: `OnDestroy`).
     fn on_destroy(&mut self, _world: &mut World) {}
 }
 
-/// 把普通闭包当作系统使用（DOTS：`SystemBase` 的轻量替代）。
+/// Use an ordinary closure as a system (a lightweight alternative to DOTS
+/// `SystemBase`).
 impl<F> ISystem for F
 where
     F: FnMut(&mut World) + Send + Sync + 'static,
@@ -54,7 +59,8 @@ where
     }
 }
 
-/// 闭包式系统的命名包装（对齐 DOTS `SystemBase`：托管、无需手写 trait 实现）。
+/// Named wrapper for a closure-style system (aligns with DOTS `SystemBase`:
+/// managed, no hand-written trait impl).
 pub struct SystemBase<F>
 where
     F: FnMut(&mut World) + Send + Sync + 'static,
@@ -66,7 +72,7 @@ impl<F> SystemBase<F>
 where
     F: FnMut(&mut World) + Send + Sync + 'static,
 {
-    /// 用闭包构造一个系统。
+    /// Constructs a system from a closure.
     pub fn new(func: F) -> Self {
         Self { func }
     }
@@ -81,16 +87,18 @@ where
     }
 }
 
-/// 组里的一个子系统槽位：记录生命周期钩子是否已经触发过。
+/// One subsystem slot inside a group; records whether its lifecycle hooks have
+/// fired.
 struct Slot {
     system: Box<dyn ISystem>,
-    /// `on_create` 已触发（第一次拿到 `&mut World` 时补）。
+    /// `on_create` has fired (filled in on the first `&mut World`).
     created: bool,
-    /// `on_start_running` 已触发且尚未 `on_stop_running`。
+    /// `on_start_running` has fired and `on_stop_running` has not.
     started: bool,
 }
 
-/// DOTS `ComponentSystemGroup` 形状的系统组：按注册顺序更新其子系统的容器。
+/// DOTS `ComponentSystemGroup`-shaped system group: a container that updates
+/// its subsystems in registration order.
 pub struct SystemGroup {
     name: String,
     systems: Vec<Slot>,
@@ -98,7 +106,7 @@ pub struct SystemGroup {
 }
 
 impl SystemGroup {
-    /// 具名系统组。
+    /// Named system group.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -107,31 +115,32 @@ impl SystemGroup {
         }
     }
 
-    /// `InitializationSystemGroup`（DOTS 顶层组）。
+    /// `InitializationSystemGroup` (DOTS top-level group).
     pub fn initialization() -> Self {
         Self::new(INITIALIZATION_SYSTEM_GROUP)
     }
 
-    /// `SimulationSystemGroup`（DOTS 顶层组）。
+    /// `SimulationSystemGroup` (DOTS top-level group).
     pub fn simulation() -> Self {
         Self::new(SIMULATION_SYSTEM_GROUP)
     }
 
-    /// `PresentationSystemGroup`（DOTS 顶层组）。
+    /// `PresentationSystemGroup` (DOTS top-level group).
     pub fn presentation() -> Self {
         Self::new(PRESENTATION_SYSTEM_GROUP)
     }
 
-    /// 组名。
+    /// Group name.
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    /// 追加一个子系统（DOTS：`AddSystemToUpdateList`）。
+    /// Appends a subsystem (DOTS: `AddSystemToUpdateList`).
     ///
-    /// 注册时还没有 `&mut World`，所以 `on_create` 延迟到该组第一次 `update`
-    /// （最早能拿到世界的时机）补触发；组已经在运行时，新系统也会在下一次
-    /// `update` 收到 `on_start_running`。
+    /// There is no `&mut World` at registration time, so `on_create` is
+    /// deferred until this group's first `update` (the earliest point a world
+    /// is available); if the group is already running, the new system also
+    /// receives `on_start_running` on the next `update`.
     pub fn add_system(&mut self, system: impl ISystem) -> &mut Self {
         self.systems.push(Slot {
             system: Box::new(system),
@@ -141,25 +150,26 @@ impl SystemGroup {
         self
     }
 
-    /// 子系统数量。
+    /// Number of subsystems.
     pub fn len(&self) -> usize {
         self.systems.len()
     }
 
-    /// 是否没有子系统。
+    /// Whether there are no subsystems.
     pub fn is_empty(&self) -> bool {
         self.systems.is_empty()
     }
 
-    /// 组是否处于运行中（已触发过 `on_start_running`）。
+    /// Whether the group is running (has fired `on_start_running`).
     pub fn is_running(&self) -> bool {
         self.running
     }
 
-    /// 更新整个组：按顺序更新每个子系统，并维护 start/stop-running 状态迁移
-    /// （DOTS：`ComponentSystemGroup.Update`）。
+    /// Updates the whole group: every subsystem in order, maintaining the
+    /// start/stop-running state transitions (DOTS: `ComponentSystemGroup.Update`).
     pub fn update(&mut self, world: &mut World) {
-        // 1. 首次拿到世界时补 `on_create`（DOTS：OnCreate 早于 OnStartRunning）。
+        // 1. Fill in `on_create` on the first world access
+        //    (DOTS: OnCreate precedes OnStartRunning).
         for slot in &mut self.systems {
             if !slot.created {
                 slot.system.on_create(world);
@@ -167,8 +177,9 @@ impl SystemGroup {
             }
         }
 
-        // 2. 开始运行：整组启动时全部补；已运行则只补热加进来的系统。
-        //    （空组也要翻转 `running`，否则 `is_running()` 永远为 false。）
+        // 2. Start running: all systems when the group starts; only newly
+        //    added ones when already running. (An empty group must still flip
+        //    `running`, or `is_running()` would stay false forever.)
         for slot in &mut self.systems {
             if !slot.started {
                 slot.system.on_start_running(world);
@@ -177,13 +188,13 @@ impl SystemGroup {
         }
         self.running = true;
 
-        // 3. 按注册顺序更新。
+        // 3. Update in registration order.
         for slot in &mut self.systems {
             slot.system.on_update(world);
         }
     }
 
-    /// 停止运行本组（触发 `on_stop_running`）。
+    /// Stops the group (fires `on_stop_running`).
     pub fn stop_running(&mut self, world: &mut World) {
         if self.running {
             for slot in &mut self.systems {
@@ -196,7 +207,7 @@ impl SystemGroup {
         }
     }
 
-    /// 销毁本组全部子系统（触发 `on_destroy`）。
+    /// Destroys every subsystem in the group (fires `on_destroy`).
     pub fn destroy(&mut self, world: &mut World) {
         self.stop_running(world);
         for slot in &mut self.systems {
@@ -206,7 +217,7 @@ impl SystemGroup {
     }
 }
 
-/// DOTS 名称 [`SystemGroup`] 的别名（`ComponentSystemGroup`）。
+/// Alias for [`SystemGroup`] under the DOTS name (`ComponentSystemGroup`).
 pub type ComponentSystemGroup = SystemGroup;
 
 impl std::fmt::Debug for SystemGroup {
@@ -265,7 +276,8 @@ mod tests {
         assert_eq!(HITS.load(Ordering::SeqCst), 1);
     }
 
-    /// 把生命周期钩子按顺序记进共享日志，用来断言调用次数与顺序。
+    /// Records lifecycle hooks in order into a shared log, for asserting call
+    /// counts and ordering.
     struct Recorder {
         log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
         tag: &'static str,
@@ -329,7 +341,7 @@ mod tests {
         group.add_system(Recorder::new(&log, "a"));
         group.update(&mut world);
 
-        // 运行中热加的系统此前完全没收到任何钩子。
+        // A system hot-added while running has received no hooks before.
         group.add_system(Recorder::new(&log, "b"));
         group.update(&mut world);
 
@@ -350,7 +362,8 @@ mod tests {
 
         group.add_system(Recorder::new(&log, "b"));
         group.stop_running(&mut world);
-        // `a` 已在运行，所以它确实收到 stop；`b` 从未 start，不该收到。
+        // `a` was running, so it does receive stop; `b` never started, so it
+        // should not.
         assert_eq!(
             log.lock().unwrap().as_slice(),
             ["a:create", "a:start", "a:update", "a:stop"]

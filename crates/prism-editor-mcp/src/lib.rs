@@ -9,7 +9,8 @@ pub mod tools;
 
 use std::path::PathBuf;
 
-/// `--project <path>` → `PRISMREV_PROJECT` → 从 cwd 向上找 `assets/`。
+/// Resolves the project root from `--project <path>`, then `PRISMREV_PROJECT`,
+/// then by walking up from the cwd looking for `assets/`.
 pub fn resolve_root() -> Result<PathBuf, String> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {

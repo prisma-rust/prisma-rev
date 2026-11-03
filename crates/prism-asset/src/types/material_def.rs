@@ -6,23 +6,23 @@ use serde::{Deserialize, Serialize};
 // MaterialDef
 // ---------------------------------------------------------------------------
 
-/// PBR 材质 定义 — a ScriptableObject-style 资源 类型
+/// PBR material definition — a ScriptableObject-style asset type.
 ///
-/// `MaterialDef` is the **editable source** of a PBR 材质 It is
-/// serialised as JSON/RON in the 资源 库 and cooked into the 运行时
-/// [`GpuMaterial`] 布局 by the 管线
+/// `MaterialDef` is the **editable source** of a PBR material. It is
+/// serialised as JSON/RON in the asset library and cooked into the runtime
+/// [`GpuMaterial`] layout by the pipeline.
 ///
 /// # Cross-references
 ///
-/// 纹理 references use [`AssetHandle<TextureDef>`] — typed, GUID-based
-/// handles that survive file renames. The 编辑器 resolves these to 纹理
+/// Texture references use [`AssetHandle<TextureDef>`] — typed, GUID-based
+/// handles that survive file renames. The editor resolves these to texture
 /// data during cooking.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct MaterialDef {
     // --- identity ---
-    /// 稳定 GUID — 集合 once when the 资源 is 第一个 created.
+    /// Stable GUID — set once when the asset is first created.
     pub guid: AssetGuid,
-    /// Human-readable 标签 (not path-based — survives moves).
+    /// Human-readable label (not path-based — survives moves).
     pub label: String,
 
     // --- PBR parameters ---
@@ -33,14 +33,14 @@ pub struct MaterialDef {
     pub normal_scale: f32,
     pub occlusion_strength: f32,
 
-    // --- 纹理 references ---
+    // --- Texture references ---
     pub albedo_map: Option<AssetHandle<TextureDef>>,
     pub normal_map: Option<AssetHandle<TextureDef>>,
     pub metallic_roughness_map: Option<AssetHandle<TextureDef>>,
     pub emissive_map: Option<AssetHandle<TextureDef>>,
     pub occlusion_map: Option<AssetHandle<TextureDef>>,
 
-    // --- IBL 引用 ---
+    // --- IBL reference ---
     /// Cubemap for IBL environment lighting.
     pub env_map: Option<AssetHandle<CubeDef>>,
 
@@ -92,7 +92,7 @@ impl_asset_data!(MaterialDef, "material", "PBR Material");
 pub struct TextureDef {
     pub guid: AssetGuid,
     pub label: String,
-    /// 源 图像 槽 — e.g. "albedo", 法线 "orm".
+    /// Source image slot — e.g. "albedo", "normal", "orm".
     pub slot: String,
 }
 

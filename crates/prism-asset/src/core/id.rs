@@ -14,16 +14,16 @@ static NEXT_SERIAL: AtomicU64 = AtomicU64::new(1);
 
 /// 一个全局唯一的 64 位资源标识符。
 ///
-/// The high 32 bits 编码 a **generation** (monotonically increasing 纪元
-/// the low 32 bits 编码 a **serial** within that generation.
+/// The high 32 bits encode a **generation** (monotonically increasing epoch),
+/// the low 32 bits encode a **serial** within that generation.
 ///
-/// `tombstone` values use generation `u32::MAX` — they 比较 higher than
+/// `tombstone` values use generation `u32::MAX` — they compare higher than
 /// any live ID and can be used as deletion sentinels.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct AssetId(pub u64);
 
 impl AssetId {
-    /// Serial 遮罩 the low 32 bits.
+    /// Serial mask: the low 32 bits.
     const SERIAL_MASK: u64 = 0x0000_0000_FFFF_FFFF;
     /// Shift for the generation field.
     const GENERATION_SHIFT: u64 = 32;
@@ -32,12 +32,12 @@ impl AssetId {
     // Construction
     // ------------------------------------------------------------------
 
-    /// 创建 a new `AssetId` from its raw u64 representation.
+    /// Create a new `AssetId` from its raw u64 representation.
     pub const fn from_raw(raw: u64) -> Self {
         Self(raw)
     }
 
-    /// Extract the raw u64. Useful for 存储 / checksums.
+    /// Extract the raw u64. Useful for storage / checksums.
     pub const fn into_raw(self) -> u64 {
         self.0
     }
@@ -48,8 +48,8 @@ impl AssetId {
     /// the persisted cooker/database namespace (generation >= 1) so that
     /// `AssetId::generate()` can never collide with `AssetIdGenerator::new(1, ..)`.
     ///
-    /// This is **not** persisted across restarts. 编辑器 代码 should
-    /// 调用 [`AssetIdGenerator::next`] if it has 访问 to the database
+    /// This is **not** persisted across restarts. Editor code should
+    /// call [`AssetIdGenerator::next`] if it has access to the database
     /// sequence.
     pub fn generate() -> Self {
         let serial = NEXT_SERIAL.fetch_add(1, Ordering::Relaxed);
@@ -60,9 +60,9 @@ impl AssetId {
         Self(serial)
     }
 
-    /// 构建 a tombstone sentinel for the given serial.
-    /// Tombstones are IDs with generation = `u32::MAX` — they 排序 after
-    /// every live ID and can never collide with a future `generate()` 调用
+    /// Build a tombstone sentinel for the given serial.
+    /// Tombstones are IDs with generation = `u32::MAX` — they sort after
+    /// every live ID and can never collide with a future `generate()` call.
     pub fn tombstone(serial: u64) -> Self {
         let serial = serial & Self::SERIAL_MASK;
         Self((u64::from(u32::MAX) << Self::GENERATION_SHIFT) | serial)
@@ -88,19 +88,19 @@ impl AssetId {
         Self::from_raw((1u64 << Self::GENERATION_SHIFT) | u64::from(path_serial(path).max(1)))
     }
 
-    /// Extract the generation 分量
+    /// Extract the generation component.
     pub fn generation(self) -> u32 {
         (self.0 >> Self::GENERATION_SHIFT) as u32
     }
 
-    /// Extract the serial 分量
+    /// Extract the serial component.
     pub fn serial(self) -> u32 {
         (self.0 & Self::SERIAL_MASK) as u32
     }
 }
 
 // ---------------------------------------------------------------------------
-// Display / 调试
+// Display / Debug
 // ---------------------------------------------------------------------------
 
 impl fmt::Display for AssetId {
@@ -138,17 +138,17 @@ impl<'de> serde::Deserialize<'de> for AssetId {
 }
 
 // ---------------------------------------------------------------------------
-// Persistent ID 生成器 编辑器
+// Persistent ID generator (editor)
 // ---------------------------------------------------------------------------
 
-/// A persisted asset-ID 生成器 that tracks the 下一个 serial in a file.
+/// A persisted asset-ID generator that tracks the next serial in a file.
 pub struct AssetIdGenerator {
     next_serial: u64,
     generation: u32,
 }
 
 impl AssetIdGenerator {
-    /// 创建 a fresh 生成器 The initial serial is loaded from
+    /// Create a fresh generator. The initial serial is loaded from
     /// `current_max` (0 = start from serial 1).
     pub fn new(generation: u32, current_max: u64) -> Self {
         Self {
@@ -157,7 +157,7 @@ impl AssetIdGenerator {
         }
     }
 
-    /// Allocate the 下一个 资源 ID (monotonically increasing).
+    /// Allocate the next asset ID (monotonically increasing).
     ///
     /// Panics after 2^32 allocations instead of silently truncating the serial
     /// and reusing IDs.
@@ -173,12 +173,12 @@ impl AssetIdGenerator {
         AssetId((u64::from(self.generation) << AssetId::GENERATION_SHIFT) | serial)
     }
 
-    /// 当前 serial value 下一个 to be assigned).
+    /// Current serial value (next to be assigned).
     pub fn current_serial(&self) -> u64 {
         self.next_serial
     }
 
-    /// Generation 纪元
+    /// Generation epoch.
     pub fn generation(&self) -> u32 {
         self.generation
     }

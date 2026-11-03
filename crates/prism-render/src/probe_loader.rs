@@ -18,40 +18,40 @@
 //! | 112 | 4 | 全局命中率 `f32`（每个探测器的均值；-1 = 未知） |
 //! | 116 | N | 系数字段：`dims.x*dims.y*dims.z*9*3` 个 f32 值（每个系数 RGB） |
 //!
-//! Header = 116 字节 Body = `probe_count * 9 * 3 * 4` 字节 (f32).
+//! Header = 116 bytes. Body = `probe_count * 9 * 3 * 4` bytes (f32).
 
 use std::io;
 use std::path::Path;
 
-/// Baked 全局光照 probe 音量 in CPU 内存
+/// Baked GI probe volume in CPU memory.
 ///
-/// `coeffs` 长度 = `dims[0] * dims[1] * dims[2] * 9`, indexed as
+/// `coeffs` length = `dims[0] * dims[1] * dims[2] * 9`, indexed as
 /// `coeffs[(probe_idx * 9 + coeff_idx)]` where probe_idx is row-major
 /// `(x + y*dims[0] + z*dims[0]*dims[1])`.
 #[derive(Clone, Debug)]
 pub struct ProbeVolumeData {
-    /// 世界 position of probe `(0,0,0)`.
+    /// World position of probe `(0,0,0)`.
     pub origin: [f32; 3],
-    /// 世界 距离 between adjacent probes (per axis).
+    /// World distance between adjacent probes (per axis).
     pub spacing: [f32; 3],
     /// Probe count per axis (each >= 1).
     pub dims: [u32; 3],
     /// SH coefficients: `dims.x * dims.y * dims.z * 9` RGB triplets.
     pub coeffs: Vec<[f32; 3]>,
     /// Name of the scene this 音量 was baked for (from the scene manifest).
-    /// Used at 运行时 to reject a `.bin` baked for a different scene
-    /// (prevents silent wrong-scene 全局光照 空 for v1 files / unknown scenes
-    /// -> the 运行时 skips the 绑定 check.
+    /// Used at runtime to reject a `.bin` baked for a different scene
+    /// (prevents silent wrong-scene GI). Empty for v1 files / unknown scenes
+    /// -> the runtime skips the binding check.
     pub scene_name: String,
-    /// Mean per-probe hit 比率 across all probes (fraction of rays that hit
-    /// geometry). `-1.0` = unknown (v1 file). At 运行时 a value in
-    /// `[0, 0.05)` signals an all-miss (broken) bake, so the 渲染器 can
+    /// Mean per-probe hit ratio across all probes (fraction of rays that hit
+    /// geometry). `-1.0` = unknown (v1 file). At runtime a value in
+    /// `[0, 0.05)` signals an all-miss (broken) bake, so the renderer can
     /// reject it and keep the synthetic field instead of showing flat sky.
     pub global_hit_ratio: f32,
 }
 
 impl ProbeVolumeData {
-    /// 总计 number of probes in the 网格
+    /// Total number of probes in the grid.
     pub fn probe_count(&self) -> usize {
         self.dims[0] as usize * self.dims[1] as usize * self.dims[2] as usize
     }
@@ -61,35 +61,35 @@ impl ProbeVolumeData {
         self.probe_count() * 9
     }
 
-    /// Validate 内部 consistency (coeffs 长度 matches dims).
+    /// Validate internal consistency (coeffs length matches dims).
     pub fn is_valid(&self) -> bool {
         self.coeffs.len() == self.expected_coeff_count() && self.dims.iter().all(|&d| d >= 1)
     }
 }
 
-/// Magic 字节 identifying a PrismaRev probe-volume file.
+/// Magic bytes identifying a PrismaRev probe-volume file.
 pub const MAGIC: &[u8; 4] = b"PRPV";
-/// 当前 (and only supported) file 格式 version.
+/// Current (and only supported) file format version.
 pub const VERSION: u32 = 2;
-/// Header 大小 in 字节 (magic + version + origin + spacing + dims + 格式 +
+/// Header size in bytes (magic + version + origin + spacing + dims + format +
 /// scene_name + global_hit_ratio).
 pub const HEADER_SIZE: usize = 116;
-/// Fixed 宽度 of the null-padded scene-name field.
+/// Fixed width of the null-padded scene-name field.
 pub const SCENE_NAME_LEN: usize = 64;
 
-/// Coeff 格式 32-bit 浮点数 per 分量
+/// Coeff format: 32-bit float per component.
 const FORMAT_F32: u32 = 0;
 
-/// Sentinel for an unknown 全局 hit 比率
+/// Sentinel for an unknown global hit ratio.
 pub const HIT_RATIO_UNKNOWN: f32 = -1.0;
 
-/// 加载 a probe 音量 from a 二进制 `.bin` file.
+/// Load a probe volume from a binary `.bin` file.
 pub fn load_probe_volume(path: &Path) -> io::Result<ProbeVolumeData> {
     let bytes = std::fs::read(path)?;
     load_probe_volume_from_bytes(&bytes)
 }
 
-/// 加载 a probe 音量 from an in-memory byte 切片
+/// Load a probe volume from an in-memory byte slice.
 pub fn load_probe_volume_from_bytes(bytes: &[u8]) -> io::Result<ProbeVolumeData> {
     if bytes.len() < HEADER_SIZE {
         return Err(io::Error::new(
@@ -149,7 +149,7 @@ pub fn load_probe_volume_from_bytes(bytes: &[u8]) -> io::Result<ProbeVolumeData>
         ));
     }
 
-    // Scene name (64 null-padded 字节 + 全局 hit 比率
+    // Scene name (64 null-padded bytes) + global hit ratio.
     let scene_name = read_scene_name(&bytes[48..48 + SCENE_NAME_LEN]);
     let global_hit_ratio = read_f32(&bytes[112..116]);
 
@@ -191,13 +191,13 @@ pub fn load_probe_volume_from_bytes(bytes: &[u8]) -> io::Result<ProbeVolumeData>
     })
 }
 
-/// 保存 a probe 音量 to a 二进制 `.bin` file.
+/// Save a probe volume to a binary `.bin` file.
 pub fn save_probe_volume(path: &Path, data: &ProbeVolumeData) -> io::Result<()> {
     let bytes = save_probe_volume_to_bytes(data)?;
     std::fs::write(path, bytes)
 }
 
-/// 序列化 a probe 音量 to an in-memory byte 向量
+/// Serialize a probe volume to an in-memory byte vector.
 pub fn save_probe_volume_to_bytes(data: &ProbeVolumeData) -> io::Result<Vec<u8>> {
     if !data.is_valid() {
         return Err(io::Error::new(
@@ -228,7 +228,7 @@ pub fn save_probe_volume_to_bytes(data: &ProbeVolumeData) -> io::Result<Vec<u8>>
     write_u32(&mut buf, data.dims[1]);
     write_u32(&mut buf, data.dims[2]);
     write_u32(&mut buf, FORMAT_F32);
-    // Scene name (64 null-padded 字节 + 全局 hit 比率
+    // Scene name (64 null-padded bytes) + global hit ratio.
     write_scene_name(&mut buf, &data.scene_name);
     write_f32(&mut buf, data.global_hit_ratio);
 
@@ -262,17 +262,17 @@ fn write_f32(buf: &mut Vec<u8>, v: f32) {
     buf.extend_from_slice(&v.to_le_bytes());
 }
 
-/// 解码 a 64-byte null-padded scene-name field into a UTF-8 字符串
+/// Decode a 64-byte null-padded scene-name field into a UTF-8 `String`.
 fn read_scene_name(bytes: &[u8]) -> String {
     let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
     String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
-/// 编码 a scene name into a 64-byte null-padded field (truncated to 63
-/// 字节 so at least one trailing NUL remains).
+/// Encode a scene name into a 64-byte null-padded field (truncated to 63
+/// bytes so at least one trailing NUL remains).
 fn write_scene_name(buf: &mut Vec<u8>, name: &str) {
     let mut name_bytes = name.as_bytes();
-    // Keep at most SCENE_NAME_LEN - 1 字节 so the field is always NUL-terminated.
+    // Keep at most SCENE_NAME_LEN - 1 bytes so the field is always NUL-terminated.
     if name_bytes.len() >= SCENE_NAME_LEN {
         name_bytes = &name_bytes[..SCENE_NAME_LEN - 1];
     }

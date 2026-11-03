@@ -25,14 +25,20 @@ deviating from those conventions is a bug. (`README.md` is the human-facing over
   再提 issue（`needs/triage` + `area/*`）；不要塞进当前 PR。
 - **接手 issue 先认领再调查**：评论 `🤖 Agent: claiming` + 加 `agent/working`，之后才去读代码 / 复现 /
   翻日志；完成、阻塞或放弃都切换标签（[`docs/ai-workflow.md`](docs/ai-workflow.md) §6）。
+- **代码注释只用英文**，删掉复述代码的注释；规范见 [`docs/code-style.md`](docs/code-style.md)。
+  注释-only PR 必须跑 `python scripts/check_comment_only.py --base origin/master`，不要夹带逻辑改动。
 - **不猜**：改公开 API、存档格式（RSCN / RTTIBin / `.pak`）、坐标约定、workspace 分层，或要加依赖
   → 先改文档或先问人，再写代码。
 - **并行 agent 各用独立 worktree**；禁止未经确认的 `reset --hard` / `checkout -- .` / 覆盖他人未提交改动。
 - **推送前先拉主干、本地解冲突**：`git fetch origin && git rebase origin/master`，冲突在本分支内解决
   并重新跑 `pr_ready.py` 再 push。**不要把「PR 冲突了」留给维护者或下一个 agent**——
   别人的时间不该花在解你引入的冲突上。rebase 后必须 `--force-with-lease`，只推自己的分支。
-- 只读侦察交给 subagent，写操作留在主会话；交接时写清已完成 / 未完成 / 风险 / 验证命令。
-  侦察 issue 也算调查 —— 派 subagent 之前先认领。
+- **subagent 只做只读侦察**（搜索、读文件、定位实现）；所有写操作（编辑、格式化、批量注释 / 翻译、
+  提交）留在主会话。不要把批量文件改写拆给 subagent：多个写入者会互相覆盖，集中并发也容易触发
+  provider 限流（HTTP 429）。
+- 并行只读侦察同样要限量：同一时间最多 3 个 subagent，按互不重叠的文件 / 目录分批，先跑一小批
+  确认结果再扩大。subagent 的输出必须由主会话复核（`git diff` + 检查脚本）后才能提交。
+- 交接时写清已完成 / 未完成 / 风险 / 验证命令。侦察 issue 也算调查 —— 派 subagent 之前先认领。
 
 ## Termux / aarch64 ARM 验证例外（用户已明确授权）
 

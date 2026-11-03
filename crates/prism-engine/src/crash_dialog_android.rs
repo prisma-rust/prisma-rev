@@ -2,8 +2,8 @@
 //!
 //! The 渲染 线程 (== winit event-loop / main 线程 on Android) holds
 //! pointers to the JVM (`JavaVM*`) and the `Activity` jobject (registered by
-//! [`super::register_android_app`]). We attach the 当前 线程 to the JVM
-//! and, on the Activity's UI 线程 构建 and show an `AlertDialog` with a
+//! [`super::register_android_app`]). We attach the current thread to the JVM
+//! and, on the Activity's UI thread, build and show an `AlertDialog` with a
 //! single OK 按钮 The 对话框 is modal from the user's 透视: we
 //! poll until the 对话框 is dismissed (or activity finishes) and 块 the
 //! calling 线程 with a condvar.
@@ -22,7 +22,7 @@ use jni::JavaVM;
 use super::{CrashChoice, ANDROID_APP};
 
 pub fn show(title: &str, message: &str) -> CrashChoice {
-    // 完整 错误 already logged by `show_crash_dialog`; also 表面 title.
+    // Full error already logged by `show_crash_dialog`; also surface title.
     log::error!("Crash dialog: {title}");
 
     let handles = match ANDROID_APP.read() {
@@ -39,26 +39,26 @@ pub fn show(title: &str, message: &str) -> CrashChoice {
         }
     };
 
-    // 安全性 the pointers were obtained from `AndroidApp::vm_as_ptr()` and
-    // `activity_as_ptr()` and remain 有效 for the 进程 生命周期 We only
-    // 触摸 them from the main 线程 which is the 线程 that registered.
+    // SAFETY: the pointers were obtained from `AndroidApp::vm_as_ptr()` and
+    // `activity_as_ptr()` and remain valid for the process lifetime. We only
+    // touch them from the main thread, which is the thread that registered.
     let vm = unsafe { JavaVM::from_raw(handles.vm_ptr as *mut _) };
 
-    // 同步 块 this 线程 until the dialog's OK 按钮 fires.
+    // Synchronization: block this thread until the dialog's OK button fires.
     let done: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
     let done_clone = Arc::clone(&done);
 
-    // The 对话框 must be created + shown on the UI 线程 We 调用
+    // The dialog must be created + shown on the UI thread. We call
     // `Activity.runOnUiThread(Runnable)`. Building the Runnable requires
     // implementing `java.lang.Runnable.run()`; we can't easily do that from
     // JNI without a registered native class. Instead, use the simpler approach
     // of `AlertDialog` via the `android.app.AlertDialog.Builder` class, shown
-    // directly from the 当前 线程 — Android permits calling
-    // `Builder.create().show()` from any 线程 that has a Looper, but the
-    // main 线程 is the one with a Looper. The winit 事件 循环 on Android
-    // runs on the main 线程 so this is 精细
+    // directly from the current thread — Android permits calling
+    // `Builder.create().show()` from any thread that has a Looper, but the
+    // main thread is the one with a Looper. The winit event loop on Android
+    // runs on the main thread, so this is fine.
     //
-    // We catch any 异常 and fall 后 to plain exit.
+    // We catch any exception and fall back to plain exit.
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         vm.attach_current_thread(|env| {
@@ -90,8 +90,8 @@ pub fn show(title: &str, message: &str) -> CrashChoice {
     CrashChoice::CopyAndExit
 }
 
-/// 构建 and show an `AlertDialog` with a single OK 按钮 When OK is tapped
-/// we 调用 后 into Rust through a registered native 方法 that signals
+/// Build and show an `AlertDialog` with a single OK button. When OK is tapped
+/// we call back into Rust through a registered native method that signals
 /// `done`.
 fn show_alert_dialog(
     env: &mut jni::Env<'_>,
@@ -100,19 +100,19 @@ fn show_alert_dialog(
     message: &JString,
     done: &Arc<(Mutex<bool>, Condvar)>,
 ) -> jni::errors::Result<()> {
-    // We need a way for the OK 按钮 点击 to 信号 Rust. The cleanest
-    // approach without registering a native 方法 on a Java class is to
+    // We need a way for the OK button click to signal Rust. The cleanest
+    // approach without registering a native method on a Java class is to
     // subclass `OnClickListener` — but JNI can't subclass Java classes
     // directly. Instead we use `android.content.DialogInterface.OnClickListener`
-    // via a 动力学 代理 内置 with `java.lang.reflect.Proxy`.
+    // via a dynamic proxy built with `java.lang.reflect.Proxy`.
     //
     // That requires a class loader + InvocationHandler, which is also heavy.
-    // Given the goal (show the 错误 then exit), we instead show the 对话框
-    // and *don't* 块 on the 按钮 the user reads the 消息 taps OK,
-    // and the OS terminates the 进程 when the Activity finishes. We 集合
-    // `done` immediately so the 调用者 proceeds to exit the 事件 循环
+    // Given the goal (show the error, then exit), we instead show the dialog
+    // and *don't* block on the button: the user reads the message, taps OK,
+    // and the OS terminates the process when the Activity finishes. We set
+    // `done` immediately so the caller proceeds to exit the event loop.
     //
-    // This keeps the 实现 robust on every Android version without
+    // This keeps the implementation robust on every Android version without
     // fragile reflection.
 
     let builder_class = env.find_class(jni_str!("android/app/AlertDialog$Builder"))?;
@@ -144,9 +144,9 @@ fn show_alert_dialog(
         &[JValue::Bool(false)],
     )?;
 
-    // 构建 a 正 ("OK") 按钮 We pass a null 监听器 — tapping the
-    // 按钮 will auto-dismiss the 对话框 we don't need a 回调 because
-    // we exit the 进程 regardless.
+    // Build a positive ("OK") button. We pass a null listener — tapping the
+    // button will auto-dismiss the dialog; we don't need a callback because
+    // we exit the process regardless.
     let null_listener = JObject::null();
     let ok_label = env.new_string("OK")?;
     env.call_method(
@@ -156,7 +156,7 @@ fn show_alert_dialog(
         &[JValue::Object(&ok_label), JValue::Object(&null_listener)],
     )?;
 
-    // 创建 -> AlertDialog
+    // create() -> AlertDialog
     let dialog = env.call_method(
         &builder,
         jni_str!("create"),
@@ -168,7 +168,7 @@ fn show_alert_dialog(
     // show()
     env.call_method(&dialog_obj, jni_str!("show"), jni_sig!("()V"), &[])?;
 
-    // Keep a 全局 ref so the 对话框 isn't GC'd before the user dismisses it.
+    // Keep a global ref so the dialog isn't GC'd before the user dismisses it.
     let global_dialog = env.new_global_ref(dialog_obj)?;
 
     // Poll until the 对话框 is dismissed (e.g. user tapped OK) or the activity finishes.
@@ -195,7 +195,7 @@ fn show_alert_dialog(
     *guard = true;
     cvar.notify_one();
 
-    // Suppress "unused" — the JNI return 代码 of show() is void.
+    // Suppress "unused" — the JNI return code of show() is void.
     let _: jint = JNI_OK;
     Ok(())
 }

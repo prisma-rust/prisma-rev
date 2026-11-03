@@ -1,4 +1,4 @@
-//! Hot-reload support for the 资源 管线
+//! Hot-reload support for the resource pipeline.
 //!
 //! Uses a simple polling approach (checks file metadata at intervals) so it
 //! works on all platforms including Android/Termux without requiring inotify
@@ -35,28 +35,28 @@ pub enum HotReloadError {
 pub enum HotReloadEvent {
     /// A `.pak` file was modified — assets inside should be reloaded.
     PakModified(PathBuf),
-    /// An unexpected watch 错误 occurred.
+    /// An unexpected watch error occurred.
     WatchError(String),
 }
 
 // ---------------------------------------------------------------------------
-// 热 Reload Watcher
+// Hot Reload Watcher
 // ---------------------------------------------------------------------------
 
-/// Polls one or more `.pak` files for changes at a 可配置 间隔
+/// Polls one or more `.pak` files for changes at a configurable interval.
 ///
-/// When a file's modification 时间 changes, a [`HotReloadEvent::PakModified`]
-/// 事件 is emitted on the receiver 通道
+/// When a file's modification time changes, a [`HotReloadEvent::PakModified`]
+/// event is emitted on the receiver channel.
 ///
-/// ## 用法
+/// ## Usage
 ///
 /// ```ignore
 /// let watcher = HotReloadWatcher::watch_file("game.pak", Duration::from_secs(1))?;
 /// let mut rm = ResourceManager::new();
 ///
-/// // In your game 循环
-/// for 事件 in watcher.receiver().try_iter() {
-/// if let HotReloadEvent::PakModified(path) = 事件 {
+/// // In your game loop:
+/// for event in watcher.receiver().try_iter() {
+///     if let HotReloadEvent::PakModified(path) = event {
 ///         rm.on_pak_changed(&path)?;
 ///     }
 /// }
@@ -93,17 +93,17 @@ fn stamp_changed(old: Stamp, new: Stamp) -> bool {
 }
 
 pub struct HotReloadWatcher {
-    /// 通道 receiver for polling events.
+    /// Channel receiver for polling events.
     rx: mpsc::Receiver<HotReloadEvent>,
-    /// Join handle for the polling 线程 (kept alive).
+    /// Join handle for the polling thread (kept alive).
     #[allow(dead_code)]
     handle: thread::JoinHandle<()>,
-    /// Shared stop 信号
+    /// Shared stop signal.
     stop: Arc<Mutex<bool>>,
 }
 
 impl HotReloadWatcher {
-    /// 创建 a new polling watcher for a single `.pak` file.
+    /// Create a new polling watcher for a single `.pak` file.
     pub fn watch_file(
         path: impl Into<PathBuf>,
         interval: Duration,
@@ -113,14 +113,14 @@ impl HotReloadWatcher {
         Self::watch_files(paths, interval)
     }
 
-    /// 创建 a new polling watcher for multiple `.pak` files.
+    /// Create a new polling watcher for multiple `.pak` files.
     pub fn watch_files(paths: Vec<PathBuf>, interval: Duration) -> Result<Self, HotReloadError> {
         let (tx, rx) = mpsc::channel::<HotReloadEvent>();
         let tx_clone = tx.clone();
         let stop = Arc::new(Mutex::new(false));
         let stop_clone = stop.clone();
 
-        // 快照 of modification times at start.
+        // Snapshot of modification times at start.
         let mut mtimes: HashMap<PathBuf, Stamp> = HashMap::new();
         for p in &paths {
             if let Some(stamp) = stamp_of(p) {
@@ -164,12 +164,12 @@ impl HotReloadWatcher {
         Ok(Self { rx, handle, stop })
     }
 
-    /// Get a 引用 to the 事件 receiver.
+    /// Get a reference to the event receiver.
     pub fn receiver(&self) -> &mpsc::Receiver<HotReloadEvent> {
         &self.rx
     }
 
-    /// Stop the polling 线程 The watcher is no longer usable after this.
+    /// Stop the polling thread. The watcher is no longer usable after this.
     pub fn stop(&mut self) {
         if let Ok(mut flag) = self.stop.lock() {
             *flag = true;

@@ -139,7 +139,7 @@ struct PendingRequest {
     skinned_path: Option<String>,
 }
 
-/// On-demand 资源 loader + GPU uploader + cache.
+/// On-demand asset loader + GPU uploader + cache.
 ///
 /// 每帧调用 [`prepare_requests`] 收集待处理实体并产出上传请求（CPU 段）；
 /// GPU 上传由渲染线程异步完成。
@@ -422,12 +422,12 @@ impl GpuAssetResolver {
     }
 
     // -----------------------------------------------------------------------
-    // 包 loading
+    // Package loading
     // -----------------------------------------------------------------------
 
-    /// Attempt to 加载 the `.pak` 资源 包 and its path manifest.
+    /// Attempt to load the `.pak` resource package and its path manifest.
     ///
-    /// Both files are optional — when absent (no CLI 构建 run yet) the
+    /// Both files are optional — when absent (no CLI `build` run yet) the
     /// engine continues with only procedural geometry.
     ///
     /// Paths are resolved through [`crate::asset_paths`] instead of the process

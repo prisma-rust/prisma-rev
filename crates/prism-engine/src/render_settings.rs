@@ -1,8 +1,8 @@
-//! Render-settings bundle passed into [`render_system`] each 帧
+//! Render-settings bundle passed into [`render_system`] each frame.
 //!
-//! Consolidates all per-frame render-state knobs 调试 色调映射 path tracing)
-//! into a single 结构体 so [`render_system`] has a clean, 可扩展 参数
-//! instead of a growing 列表 of 标量 arguments.
+//! Consolidates all per-frame render-state knobs (debug, tonemap, path tracing)
+//! into a single struct so [`render_system`] has a clean, extensible parameter
+//! instead of a growing list of scalar arguments.
 
 pub use prism_render::{InternalScaleMode, RenderMode};
 
@@ -47,13 +47,13 @@ pub fn pbr_flag_label(flags: u32) -> &'static str {
 /// 默认阴影覆盖距离（米）：2048² 阴影贴图下单 texel ≈ 2.9 cm（#526）。
 pub const DEFAULT_SHADOW_DISTANCE: f32 = 60.0;
 
-/// Aggregate of all per-frame 渲染 knobs.
+/// Aggregate of all per-frame render knobs.
 ///
-/// `App` owns one 实例 mutates it in response to keyboard/UI 输入 and
-/// passes `&self` to [`crate::render_system::render_system`] each 帧
+/// `App` owns one instance, mutates it in response to keyboard/UI input, and
+/// passes `&self` to [`crate::render_system::render_system`] each frame.
 ///
-/// Extend this 结构体 when adding new 渲染器 knobs — do **not** add more
-/// 标量 parameters to `render_system`.
+/// Extend this struct when adding new renderer knobs — do **not** add more
+/// scalar parameters to `render_system`.
 #[derive(Clone, Debug)]
 pub struct RenderSettings {
     /// Debug flag mask (16 bits, see `scene_frag.slang` `PBR_FLAG_*`).
@@ -69,21 +69,21 @@ pub struct RenderSettings {
     /// 不依赖 MSAA / resolve 目标，交换链与编辑器离屏视口共用同一条路径；
     /// 调试图（`debug_rt != 0`）会自动忽略它。
     pub aa_mode: u32,
-    /// PostPass 调试 render-target viewer (Tab cycles). 0 = 法线 tonemapped
-    /// 高动态范围 1 = linearized 深度 2 = view-space 法线
+    /// PostPass debug render-target viewer (Tab cycles). 0 = normal tonemapped
+    /// HDR, 1 = linearized depth, 2 = view-space normal.
     pub debug_rt: u32,
     /// 前向管线用 `POLYGON_MODE_LINE` 画网格（#431）。设备不支持时为 no-op。
     pub wireframe: bool,
     /// 正常填充渲染 + 线框叠加（#431）。设备不支持 `fillModeNonSolid` 时为 no-op；
     /// `wireframe == true` 时它被纯线框覆盖。
     pub shaded_wireframe: bool,
-    /// 当前 渲染 众数 光栅化 (PBR) or PathTrace (real-time PT).
+    /// Current render mode: Raster (PBR) or PathTrace (real-time PT).
     pub render_mode: RenderMode,
-    /// 最大 path 深度 (bounces) for path tracing.
+    /// Maximum path depth (bounces) for path tracing.
     pub pt_max_bounces: u32,
-    /// 最大值 world-space 长度 of PT primary + shadow rays.
+    /// Max world-space length of PT primary + shadow rays.
     pub pt_ray_max_distance: f32,
-    /// 最大 iterations (samples per 像素 0 = accumulate forever.
+    /// Maximum iterations (samples per pixel). 0 = accumulate forever.
     pub pt_max_iterations: u32,
     /// 是否在场景视图中渲染地面基准网格 (Y = 0)。
     pub show_grid: bool,
@@ -167,7 +167,7 @@ pub struct RenderSettings {
     pub shadow_cascade_count: u32,
 }
 
-/// 默认 PBR 众数 法线 full-PBR 渲染 Reinhard 色调映射 光栅化
+/// Default PBR mode: normal full-PBR render, Reinhard tonemap, Raster.
 impl RenderSettings {
     pub fn post_grade(&self) -> prism_render::PostGrade {
         prism_render::PostGrade {

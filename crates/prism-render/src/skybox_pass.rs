@@ -36,34 +36,34 @@ pub struct SkyboxSettings {
 /// scene.
 ///
 /// Reuses the env cubemap already produced by [`crate::ibl::IblResources`] from
-/// the user-supplied 高动态范围 (e.g. `kloppenheim_05_4k.hdr`) — there is no
-/// separate loader: the skybox is just that env 映射表 rendered at the 远 平面
+/// the user-supplied `.hdr` (e.g. `kloppenheim_05_4k.hdr`) — there is no
+/// separate loader: the skybox is just that env map rendered at the far plane.
 ///
-/// The cube is generated in the 顶点 着色器 from `SV_VertexID` (no 顶点
-/// 缓冲区 is bound). The 顶点 阶段 strips the 相机 平移 (by
-/// rotating the corner with the inverse-view 旋转 w=0) so the 盒 stays
-/// at 无穷 then places it at NDC z=1 远 平面 The 管线 disables
-/// 深度 writes and uses `LESS_OR_EQUAL` 深度 test, so the sky only shows
+/// The cube is generated in the vertex shader from `SV_VertexID` (no vertex
+/// buffer is bound). The vertex stage strips the camera translation (by
+/// rotating the corner with the inverse-view rotation, w=0) so the box stays
+/// at infinity, then places it at NDC z=1 (far plane). The pipeline disables
+/// depth writes and uses `LESS_OR_EQUAL` depth test, so the sky only shows
 /// where no scene geometry has drawn.
 ///
-/// 描述符 集合 布局 (mirrors `skybox.slang`):
-/// 集合 2, 绑定 0 - IBL environment cubemap (SamplerCube, combined)
+/// Descriptor set layout (mirrors `skybox.slang`):
+///   set 2, binding 0 - IBL environment cubemap (SamplerCube, combined)
 #[cfg(feature = "skybox")]
 pub struct SkyboxPass {
-    /// IBL env cubemap 描述符 集合 集合 0 绑定 0). Borrowed from
+    /// IBL env cubemap descriptor set (set 0 binding 0). Borrowed from
     /// `IblResources`; not owned by `SkyboxPass`.
     ibl_descriptor_set: vk::DescriptorSet,
-    /// IBL 描述符 集合 布局 (borrowed from `IblResources`). 包含
-    /// bindings 0=envCube, 1=irradiance, 2=prefiltered; the skybox 着色器
-    /// only reads 绑定 0 (envCube).
+    /// IBL descriptor set layout (borrowed from `IblResources`). Contains
+    /// bindings 0=envCube, 1=irradiance, 2=prefiltered; the skybox shader
+    /// only reads binding 0 (envCube).
     ibl_layout: vk::DescriptorSetLayout,
-    /// Owned 管线 + 布局 (created lazily on 第一个 执行
+    /// Owned pipeline + layout (created lazily on first `execute`).
     pipeline: Option<GraphicsPipeline>,
-    /// 渲染 pass the 当前 管线 was 内置 against (to detect when a
-    /// rebuild is needed, e.g. after a 交换链 recreate rebuilds the
+    /// Render pass the current `pipeline` was built against (to detect when a
+    /// rebuild is needed, e.g. after a swapchain recreate rebuilds the
     /// ForwardPass 渲染 pass
     built_for_render_pass: Option<vk::RenderPass>,
-    /// Cached 设备 handle for 放置
+    /// Cached device handle for Drop.
     device: Option<ash::Device>,
 }
 
@@ -85,26 +85,26 @@ impl SkyboxPass {
         self.ibl_descriptor_set = set;
     }
 
-    /// 构建 (once) the skybox 管线
+    /// Build (once) the skybox pipeline.
     fn ensure_pipeline(&mut self, device: &ash::Device) -> Result<()> {
         if self.pipeline.is_some() {
             return Ok(());
         }
         self.device = Some(device.clone());
 
-        // The 渲染 pass + color/depth formats are provided at 绘制 时间 via
-        // `execute_with` because the skybox must 渲染 into the *same*
+        // The render pass + color/depth formats are provided at draw time via
+        // `execute_with` because the skybox must render into the *same*
         // 帧缓冲 the ForwardPass uses. We can't 构建 a fixed 管线
-        // here without that 渲染 pass so the 管线 is created lazily
-        // inside `execute_with` (which has the 渲染 pass
+        // here without that render pass, so the pipeline is created lazily
+        // inside `execute_with` (which has the render pass).
         Ok(())
     }
 
-    /// 绘制 the skybox into the currently-bound 渲染 pass (begun by the
+    /// Draw the skybox into the currently-bound render pass (begun by the
     /// 调用者 `ForwardPass`). `render_pass` + `extent` are needed to lazily
-    /// 创建 the 管线 `inv_view_rot` is the inverse 视图 旋转
-    /// 世界 <- 视图 used to 旋转 the view-space look direction into
-    /// 世界 空间 for cubemap sampling.
+    /// create the pipeline. `inv_view_rot` is the inverse view rotation
+    /// (world <- view), used to rotate the view-space look direction into
+    /// world space for cubemap sampling.
     pub fn draw(
         &mut self,
         device: &ash::Device,
@@ -116,12 +116,12 @@ impl SkyboxPass {
     ) -> Result<()> {
         self.ensure_pipeline(device)?;
 
-        // Lazily (re)build the 管线 if the 渲染 pass differs (e.g. after
+        // Lazily (re)build the pipeline if the render pass differs (e.g. after
         // a 交换链 recreate that rebuilt ForwardPass' 渲染 pass
         let rebuild = self.built_for_render_pass != Some(render_pass);
         if rebuild {
-            // 放置 the old 管线 via GraphicsPipeline::Drop (which destroys
-            // the 管线 + 布局 Do NOT 调用 destroy_pipeline manually -
+            // Drop the old pipeline via GraphicsPipeline::Drop (which destroys
+            // the pipeline + layout). Do NOT call destroy_pipeline manually -
             // that double-frees.
             self.pipeline = None;
 
@@ -146,7 +146,7 @@ impl SkyboxPass {
             );
             let shader_stages = [vert_stage, frag_stage];
 
-            // No 顶点 缓冲区 positions come from SV_VertexID in the 着色器
+            // No vertex buffer: positions come from SV_VertexID in the shader.
             let binding_descs: [vk::VertexInputBindingDescription; 0] = [];
             let attr_descs: [vk::VertexInputAttributeDescription; 0] = [];
 
@@ -157,10 +157,10 @@ impl SkyboxPass {
                 .size(bindings::PUSH_CONSTANT_SIZE)];
 
             // MRT 混合 状态 ForwardPass's 渲染 pass now has 2 颜色
-            // attachments 颜色 + view-normal). Every 管线 bound inside
-            // that 渲染 pass must declare a matching attachmentCount, so the
-            // skybox 管线 lists 2 混合 states even though it only writes
-            // SV_Target0. 附件 1's 写入 遮罩 is 0 so the 法线 目标
+            // attachments (color + view-normal). Every pipeline bound inside
+            // that render pass must declare a matching attachmentCount, so the
+            // skybox pipeline lists 2 blend states even though it only writes
+            // SV_Target0. attachment 1's write mask is 0 so the normal target
             // is untouched (the cleared value remains for sky pixels).
             let blend_attachments = [
                 vk::PipelineColorBlendAttachmentState::default()
@@ -187,8 +187,8 @@ impl SkyboxPass {
                 depth_bias_enable: None,
                 depth_bias_constant_factor: None,
                 depth_bias_slope_factor: None,
-                // Disable 深度 写入 so the sky never occludes scene geometry;
-                // 深度 test LEQUAL lets it 绘制 where 深度 == 1.0 (cleared).
+                // Disable depth write so the sky never occludes scene geometry;
+                // depth test LEQUAL lets it draw where depth == 1.0 (cleared).
                 depth_write_enable: Some(false),
                 depth_test_enable: None,
                 color_attachment_count: None,
@@ -210,9 +210,9 @@ impl SkyboxPass {
 
         unsafe {
             device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline.pipeline);
-            // Bind the IBL 集合 at 集合 0. The IBL 布局 has bindings
-            // 0=envCube, 1=irradiance, 2=prefiltered; the skybox 着色器
-            // only reads 绑定 0 (envCube).
+            // Bind the IBL set at set 0. The IBL layout has bindings
+            // 0=envCube, 1=irradiance, 2=prefiltered; the skybox shader
+            // only reads binding 0 (envCube).
             device.cmd_bind_descriptor_sets(
                 cmd,
                 vk::PipelineBindPoint::GRAPHICS,
@@ -246,14 +246,14 @@ impl SkyboxPass {
         Ok(())
     }
 
-    /// Tear 下 GPU resources.
+    /// Tear down GPU resources.
     ///
     /// `GraphicsPipeline` owns its own Vulkan handles and destroys them in its
-    /// 放置 impl, so we just 放置 the 选项 here -- do NOT 调用
-    /// `destroy_pipeline` manually (that double-frees, since 放置 would then
-    /// 销毁 the same handle again).
+    /// `Drop` impl, so we just drop the `Option` here -- do NOT call
+    /// `destroy_pipeline` manually (that double-frees, since `Drop` would then
+    /// destroy the same handle again).
     pub fn destroy(&mut self, _device: &ash::Device) {
-        // Dropping 管线 runs `GraphicsPipeline::drop`, which calls
+        // Dropping `pipeline` runs `GraphicsPipeline::drop`, which calls
         // `destroy_pipeline` + `destroy_pipeline_layout`.
         self.pipeline = None;
         self.device = None;
@@ -264,8 +264,8 @@ impl SkyboxPass {
 impl Drop for SkyboxPass {
     fn drop(&mut self) {
         // `GraphicsPipeline::drop` handles destroy_pipeline + destroy_layout,
-        // so just 放置 the 选项 We gate on `self.device` so that an
-        // un-initialized `SkyboxPass` (device=None) doesn't 放置 a 管线
+        // so just drop the Option. We gate on `self.device` so that an
+        // un-initialized `SkyboxPass` (device=None) doesn't drop a pipeline
         // that was never created.
         if self.device.take().is_some() {
             self.pipeline = None;

@@ -15,11 +15,11 @@ pub struct ComputePipeline {
 }
 
 impl ComputePipeline {
-    /// 创建 a 计算 管线 from a SPIR-V 着色器 模块
+    /// Create a compute pipeline from a SPIR-V shader module.
     ///
-    /// * `entry_point` — 着色器 entry name (e.g. `"bakeMain"`).
-    /// * `set_layouts` — 描述符 集合 layouts the 着色器 expects.
-    /// * `push_ranges` — optional 推送 常量 ranges.
+    /// * `entry_point` — shader entry name (e.g. `"bakeMain"`).
+    /// * `set_layouts` — descriptor set layouts the shader expects.
+    /// * `push_ranges` — optional push constant ranges.
     pub fn new(
         device: &ash::Device,
         shader_module: vk::ShaderModule,

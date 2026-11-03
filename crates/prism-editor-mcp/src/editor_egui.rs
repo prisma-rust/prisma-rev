@@ -1,19 +1,19 @@
-//! `editor_*` 工具：驱动**正在运行的** egui 编辑器（`editor/`）。
+//! `editor_*` tools that drive a **running** egui editor (`editor/`).
 //!
-//! 编辑器在 `127.0.0.1:<port>` 上开一个本地控制通道，端口写在
-//! `<项目根>/target/editor/control.port`。这个模块只做 TCP + JSON，
-//! 不链接 engine / render，也不开 Vulkan。
+//! The editor opens a local control channel on `127.0.0.1:<port>` and writes
+//! the port to `<project root>/target/editor/control.port`. This module only
+//! does TCP + JSON; it does not link engine / render and does not open Vulkan.
 //!
-//! | 工具 | 作用 |
+//! | Tool | Purpose |
 //! |---|---|
-//! | `editor_launch` | 起 `prism-editor-egui`（debug 构建），等控制通道就绪 |
-//! | `editor_status` | 帧数 / 当前场景 / 选中 / Play 状态 |
-//! | `editor_capture` | 抓整窗或某个视口的 PNG（`target` = `window` / `scene` / `game`） |
-//! | `editor_quit` | 让编辑器退出 |
-//! | `editor_ui` | UI 节点树快照 / 按节点点击 / 按节点设值（类似浏览器 MCP 的 DOM 操作） |
-//! | `editor_play` | Play / Stop / Pause（Play 会编译并加载工程模块） |
-//! | `editor_logs` | 读 Console 缓冲（含工程模块日志与 panic 调用栈） |
-//! | `editor_input` | 给 Play 注入键鼠（每帧一个事件），自动化才能真的玩游戏 |
+//! | `editor_launch` | Starts `prism-editor-egui` (debug build) and waits for the control channel |
+//! | `editor_status` | Frame count, current scene, selection, Play state |
+//! | `editor_capture` | Captures window/viewport PNG (`target` = `window`/`scene`/`game`) |
+//! | `editor_quit` | Asks the editor to exit |
+//! | `editor_ui` | UI node-tree snapshot, click/set by node (like DOM operations in browser MCP) |
+//! | `editor_play` | Play / Stop / Pause (Play compiles and loads the project module) |
+//! | `editor_logs` | Reads the Console buffer (project-module logs and panic backtraces) |
+//! | `editor_input` | Injects keyboard/mouse into Play (one event per frame) for automation |
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -26,7 +26,7 @@ use serde_json::{json, Value};
 
 use prism_editor_mcp::protocol::ToolDef;
 
-/// 由 `editor_launch` 启动的进程。
+/// The process started by `editor_launch`.
 #[derive(Default)]
 pub struct EditorHost {
     child: Mutex<Option<Child>>,
@@ -62,7 +62,8 @@ impl EditorHost {
                 _ => *guard = None,
             }
         }
-        // 端口文件是「这一进程」的凭证：先删掉，等到它重新出现才算起好。
+        // The port file identifies *this* process: delete it first and wait for
+        // it to reappear before considering the editor ready.
         let port_file = port_file(root);
         let _ = std::fs::remove_file(&port_file);
 
@@ -88,8 +89,10 @@ impl EditorHost {
         let deadline = Instant::now() + Duration::from_millis(wait);
         while Instant::now() < deadline {
             if port_file.exists() && control_port(root).is_ok() {
-                // 端口一出现就返回会让第一条 `editor_ui` 拿到空 dock（首帧还没画面板），
-                // 所以等到真正画出几帧再交还控制权。
+                // Returning as soon as the port appears would let the first
+                // `editor_ui` see an empty dock (panels are not drawn on the
+                // first frame), so wait until a few frames have actually been
+                // drawn before handing back control.
                 let ready = request(root, json!({ "cmd": "status" }))
                     .ok()
                     .and_then(|status| status.get("frames").and_then(Value::as_u64))
@@ -254,7 +257,8 @@ fn input(root: &Path, args: &Value) -> Result<String, String> {
     Ok(reply.to_string())
 }
 
-/// `editor_ui` 的指针参数：只转发调用方真正给出的键，避免把 `null` 塞给控制通道。
+/// Pointer arguments for `editor_ui`: forward only the keys the caller actually
+/// provided, so `null` is not sent to the control channel.
 fn pointer_args(args: &Value) -> Value {
     let mut body = serde_json::Map::new();
     for key in [
@@ -362,7 +366,8 @@ fn capture(root: &Path, args: &Value) -> Result<String, String> {
 }
 
 fn quit(host: &EditorHost) -> Result<String, String> {
-    // 控件通道按 `--project` 找不到项目根时也能用：直接用已知端口文件。
+    // The control channel also works when `--project` cannot find a project
+    // root: use the known port file directly.
     let root = prism_editor_mcp::resolve_root().map_err(|err| err.to_string())?;
     let response = request(&root, json!({ "cmd": "quit" }))?;
     let mut guard = host
@@ -375,7 +380,8 @@ fn quit(host: &EditorHost) -> Result<String, String> {
     Ok(response.to_string())
 }
 
-/// 编辑器把端口写到这个文件（`PRISMREV_EDITOR_CONTROL` 可覆盖成端口号）。
+/// File the editor writes its port to (`PRISMREV_EDITOR_CONTROL` can override it
+/// with a port number).
 fn port_file(root: &Path) -> PathBuf {
     match std::env::var_os("PRISMREV_EDITOR_CONTROL") {
         Some(value) => PathBuf::from(value),
@@ -432,7 +438,8 @@ fn default_command(root: &Path) -> String {
             return with_exe.display().to_string();
         }
     }
-    // 没构建过就退回 cargo（会编译，慢但可用）。
+    // Fall back to cargo if the editor has never been built (it compiles
+    // first: slow but usable).
     format!(
         "cargo run -p prism-editor-egui --manifest-path {}",
         editor_root.join("editor/Cargo.toml").display()
@@ -450,7 +457,8 @@ fn find_editor_root(root: &Path) -> Option<PathBuf> {
     None
 }
 
-/// 端口文件存在但编辑器已经死了 → 清掉陈旧文件（`editor_launch` 前用）。
+/// The port file exists but the editor is dead: remove the stale file (used
+/// before `editor_launch`).
 #[allow(dead_code)]
 pub fn stale_port_file(root: &Path) -> bool {
     let file = port_file(root);

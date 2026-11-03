@@ -1,27 +1,27 @@
-//! 渲染 pass 帧缓冲 and 深度 图像 management.
+//! Render pass, framebuffer, and depth image management.
 //!
-//! Owns the [`RenderPass`] 颜色 + 深度 attachments, 清空 → STORE/DONT_CARE),
-//! a 集合 of [`Framebuffers`]—one per 交换链 图像 view—and [`DepthImage`]
-//! instances for hardware 深度 测试
+//! Owns the [`RenderPass`] (color + depth attachments, CLEAR → STORE/DONT_CARE),
+//! a set of [`Framebuffers`]—one per swapchain image view—and [`DepthImage`]
+//! instances for hardware depth testing.
 
 use anyhow::Context as _;
 use ash::vk;
 
 use crate::context::VulkanContext;
 
-/// A single-subpass 渲染 pass with one 颜色 附件 + depth/stencil.
+/// A single-subpass render pass with one color attachment + depth/stencil.
 ///
-/// 布局 transitions:
-/// - 颜色 UNDEFINED → COLOR_ATTACHMENT_OPTIMAL → PRESENT_SRC_KHR
-/// - 深度 UNDEFINED → DEPTH_STENCIL_ATTACHMENT_OPTIMAL (→ stays there)
+/// Layout transitions:
+/// - Color:  UNDEFINED → COLOR_ATTACHMENT_OPTIMAL → PRESENT_SRC_KHR
+/// - Depth:  UNDEFINED → DEPTH_STENCIL_ATTACHMENT_OPTIMAL (→ stays there)
 pub struct RenderPass {
     pub handle: vk::RenderPass,
-    /// Cloned 设备 handle kept so 放置 can free the 渲染 pass (RAII).
+    /// Cloned device handle kept so [`Drop`] can free the render pass (RAII).
     device: ash::Device,
 }
 
 impl RenderPass {
-    /// 创建 the 渲染 pass for the given 交换链 图像 and 深度 formats.
+    /// Create the render pass for the given swapchain image and depth formats.
     pub fn new(
         device: &ash::Device,
         format: vk::Format,
@@ -62,7 +62,7 @@ impl RenderPass {
 
         let attachments = [color_attachment, depth_attachment];
 
-        // Dependency: wait for acquire 信号量 before writing 颜色 + 深度
+        // Dependency: wait for acquire semaphore before writing color + depth.
         let dependency = vk::SubpassDependency::default()
             .src_subpass(vk::SUBPASS_EXTERNAL)
             .dst_subpass(0)
@@ -101,7 +101,7 @@ impl Drop for RenderPass {
     }
 }
 
-/// A 深度 图像 + 视图 for one 交换链 图像
+/// A depth image + view for one swapchain image.
 pub struct DepthImage {
     pub image: vk::Image,
     pub memory: vk::DeviceMemory,
@@ -109,7 +109,7 @@ pub struct DepthImage {
 }
 
 impl DepthImage {
-    /// 创建 a D32_SFLOAT 深度 图像 for the given extent.
+    /// Create a D32_SFLOAT depth image for the given extent.
     pub fn new(context: &VulkanContext, extent: vk::Extent2D) -> anyhow::Result<Self> {
         let device = &context.device;
 
@@ -125,9 +125,9 @@ impl DepthImage {
             .array_layers(1)
             .samples(vk::SampleCountFlags::TYPE_1)
             .tiling(vk::ImageTiling::OPTIMAL)
-            // DEPTH_STENCIL_ATTACHMENT for the scene 渲染 pass + SAMPLED so
+            // DEPTH_STENCIL_ATTACHMENT for the scene render pass + SAMPLED so
             // the GTAO pass can 读取 it 后 as a 纹理 after ForwardPass
-            // stores 深度
+            // stores depth.
             .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED)
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
@@ -173,11 +173,11 @@ impl DepthImage {
         })
     }
 
-    /// 销毁 the 深度 图像 its 内存 and its 视图
+    /// Destroy the depth image, its memory, and its view.
     ///
-    /// # 安全性
+    /// # Safety
     ///
-    /// 设备 must be a 有效 `ash::Device` that created these resources.
+    /// `device` must be a valid `ash::Device` that created these resources.
     pub unsafe fn destroy(&mut self, device: &ash::Device) {
         unsafe { device.destroy_image_view(self.view, None) };
         unsafe { device.free_memory(self.memory, None) };
@@ -185,7 +185,7 @@ impl DepthImage {
     }
 }
 
-/// 查找 a 内存 类型 索引 matching the given 类型 滤波器 and 属性 flags.
+/// Find a memory type index matching the given type filter and property flags.
 pub fn find_memory_type(
     mem_props: &vk::PhysicalDeviceMemoryProperties,
     type_filter: u32,
@@ -202,10 +202,10 @@ pub fn find_memory_type(
     None
 }
 
-/// A 颜色 图像 + 视图 used as an MRT 附件 (e.g. the view-space 法线
+/// A color image + view used as an MRT attachment (e.g. the view-space normal
 /// 目标 written by `ForwardPass` and sampled by the GTAO pass Mirrors
-/// [`DepthImage`] but for a `COLOR_ATTACHMENT | SAMPLED` 图像 with a
-/// caller-supplied 格式
+/// [`DepthImage`] but for a `COLOR_ATTACHMENT | SAMPLED` image with a
+/// caller-supplied format.
 pub struct NormalImage {
     pub image: vk::Image,
     pub memory: vk::DeviceMemory,
@@ -213,8 +213,8 @@ pub struct NormalImage {
 }
 
 impl NormalImage {
-    /// 创建 a 颜色 图像 for the given extent + 格式 用法 is
-    /// `COLOR_ATTACHMENT | SAMPLED` so the GTAO pass can 读取 it 后 as a
+    /// Create a color image for the given extent + format. Usage is
+    /// `COLOR_ATTACHMENT | SAMPLED` so the GTAO pass can read it back as a
     /// 纹理 after the ForwardPass stores it.
     pub fn new(
         context: &VulkanContext,
@@ -281,11 +281,11 @@ impl NormalImage {
         })
     }
 
-    /// 销毁 the 图像 its 内存 and its 视图
+    /// Destroy the image, its memory, and its view.
     ///
-    /// # 安全性
+    /// # Safety
     ///
-    /// 设备 must be a 有效 `ash::Device` that created these resources.
+    /// `device` must be a valid `ash::Device` that created these resources.
     pub unsafe fn destroy(&mut self, device: &ash::Device) {
         unsafe { device.destroy_image_view(self.view, None) };
         unsafe { device.free_memory(self.memory, None) };
@@ -293,14 +293,14 @@ impl NormalImage {
     }
 }
 
-/// 集合 of framebuffers, one per 交换链 图像 视图
+/// Collection of framebuffers, one per swapchain image view.
 pub struct Framebuffers {
     pub handles: Vec<vk::Framebuffer>,
     extent: vk::Extent2D,
 }
 
 impl Framebuffers {
-    /// 创建 framebuffers for each color/depth 视图 pair.
+    /// Create framebuffers for each color/depth view pair.
     pub fn new(
         device: &ash::Device,
         render_pass: &RenderPass,
@@ -332,16 +332,16 @@ impl Framebuffers {
         self.extent
     }
 
-    /// Get the 帧缓冲 for a given 交换链 图像 索引
+    /// Get the framebuffer for a given swapchain image index.
     pub fn get(&self, image_index: usize) -> vk::Framebuffer {
         self.handles[image_index]
     }
 
-    /// 销毁 all framebuffers.
+    /// Destroy all framebuffers.
     ///
-    /// # 安全性
+    /// # Safety
     ///
-    /// 设备 must be a 有效 `ash::Device` that created these framebuffers.
+    /// `device` must be a valid `ash::Device` that created these framebuffers.
     pub unsafe fn destroy(&mut self, device: &ash::Device) {
         for &fb in &self.handles {
             unsafe { device.destroy_framebuffer(fb, None) };

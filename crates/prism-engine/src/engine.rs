@@ -58,7 +58,7 @@ pub struct Engine {
     world: World,
     /// 场景系统——拥有「当前场景」状态并负责场景加载。
     scene: crate::scene::SceneManager,
-    /// 有序 ECS 系统 调度 — runs on every [`update`](Self::update).
+    /// Ordered ECS system schedule — runs on every [`update`](Self::update).
     schedule: Schedule,
     /// 主线程定时器服务（每帧 tick）。
     timer: crate::util::timer::TimerService,
@@ -279,7 +279,7 @@ impl Engine {
     /// 若无相机实体则生成回退相机，并向 [`Schedule`](crate::ecs::schedule::Schedule)
     /// 注册默认 ECS 系统与资源。
     pub fn runtime_initialize(&mut self) {
-        // ── 回退 相机 ──────────────────────────────────────────
+        // ── fallback camera ──────────────────────────────────────────
         let has_camera = self
             .world
             .query::<crate::scene::components::Camera>()
@@ -289,16 +289,16 @@ impl Engine {
             Self::spawn_default_camera(&mut self.world);
         }
 
-        // ── 默认 调度 ─────────────────────────────────────────
+        // ── default schedule ─────────────────────────────────────────
         // 默认系统（UI 基础设施）**合并**进现有调度而非整体替换：
         // 用户在 `runtime_initialize` 之前注册的 system 不会被冲掉。
         self.schedule.merge_if_absent(default_schedule());
     }
 
-    /// 生成 a demo cube 实体 into the 世界
+    /// Spawn a demo cube entity into the world.
     ///
-    /// Uploads the procedural cube 网格 and a 默认 材质 to the
-    /// 渲染器 then spawns an 实体 with `MeshRef`+`MaterialRef` (the
+    /// Uploads the procedural cube mesh and a default material to the
+    /// renderer, then spawns an entity with `MeshRef`+`MaterialRef` (the
     /// existing extraction path) plus `MeshRenderer` (the future authoring
     /// 路径）。从 [`LegacyApp::on_resumed`] 在渲染器创建后调用。
     /// created.
@@ -411,10 +411,10 @@ impl Engine {
     }
 
     // ======================================================================
-    // 帧 tick phases
+    // Frame tick phases
     // ======================================================================
 
-    /// Fixed‑timestep 更新 physics, 确定性 simulation.
+    /// Fixed‑timestep update: physics, deterministic simulation.
     ///
     /// `FixedUpdate()` · UE sub‑stepped tick.
     pub fn fixed_update(&mut self, fixed_dt: f32, input_manager: &InputManager) {
@@ -423,7 +423,7 @@ impl Engine {
         let _ = (fixed_dt, input_manager);
     }
 
-    /// Variable‑timestep per‑frame 更新 game 逻辑 相机 输入
+    /// Variable‑timestep per‑frame update: game logic, camera, input.
     ///
     /// 更新 · UE `Tick()`.
     pub fn update(&mut self, dt: f32, input_manager: &InputManager) {
@@ -457,7 +457,7 @@ impl Engine {
         self.world
             .insert_resource(crate::input::input_snapshot(input_manager, screen));
 
-        // Run the ECS 系统 调度 (user‑registered + built‑in systems).
+        // Run the ECS system schedule (user‑registered + built‑in systems).
         self.schedule.run(&mut self.world, dt);
 
         // ── 世界矩阵传播（模拟步末尾）────────────────────────────
@@ -476,11 +476,11 @@ impl Engine {
         // 必须在 `hierarchy_system` 之后，提取阶段才能看到当前帧的距离。
         crate::scene::systems::lod::lod_system(&mut self.world);
 
-        // Tick the main‑thread timer 分发 expired callbacks).
+        // Tick the main‑thread timer (dispatch expired callbacks).
         self.timer.tick();
     }
 
-    /// Late 更新 音频 sync, 反向动力学 camera‑relative effects.
+    /// Late update: audio sync, IK, camera‑relative effects.
     ///
     /// `LateUpdate()`.
     pub fn late_update(&mut self) {}
@@ -489,7 +489,7 @@ impl Engine {
     // Shutdown
     // ======================================================================
 
-    /// Pre‑shutdown: 保存 状态 刷新 pending 功
+    /// Pre‑shutdown: save state, flush pending work.
     ///
     /// 平台资源（窗口、渲染/音频线程、音频引擎）由 `prism-app` 的 `App` 持有，
     /// 关停顺序由 `App::about_to_wait` 编排；引擎只做逻辑侧收尾（当前无状态）。
@@ -502,10 +502,10 @@ impl Engine {
     // Suspend / resume (platform lifecycle)
     // ======================================================================
 
-    /// Called when the platform 表面 is suspended (e.g. Android onPause).
+    /// Called when the platform surface is suspended (e.g. Android onPause).
     pub fn on_suspend(&mut self) {}
 
-    /// Called when the platform 表面 is resumed (e.g. Android onResume).
+    /// Called when the platform surface is resumed (e.g. Android onResume).
     pub fn on_resume(&mut self) {}
 
     // ======================================================================
@@ -563,15 +563,15 @@ impl Engine {
         Ok(())
     }
 
-    /// Mutable 访问 to the ECS 系统 调度
+    /// Mutable access to the ECS system schedule.
     pub fn schedule_mut(&mut self) -> &mut Schedule {
         &mut self.schedule
     }
 
-    // ── 默认 相机 生成 ───────────────────────────────────────
+    // ── default camera spawn ───────────────────────────────────────
 
-    /// 生成 a 回退 相机 + controller + 变换 实体
-    /// Called automatically when no 相机 实体 存在 at 运行时 init.
+    /// Spawn a fallback camera + controller + transform entity.
+    /// Called automatically when no Camera entity exists at runtime init.
     fn spawn_default_camera(world: &mut World) {
         use crate::scene::components::{Camera, FlyCameraController, LocalToWorld, LocalTransform};
 
@@ -608,10 +608,10 @@ impl Engine {
     }
 }
 
-/// 构建 the 默认 系统 调度
+/// Build the default system schedule.
 ///
 /// Registered systems run in order on every [`Engine::update`] tick.
-/// Consumers can extend or 替换 the 调度 via
+/// Consumers can extend or replace the schedule via
 /// [`Engine::schedule_mut`].
 ///
 /// 只含引擎基础设施（UI 布局/输入/渲染）；演示内容（如
@@ -661,17 +661,17 @@ fn default_schedule() -> Schedule {
         crate::scene::systems::particles2d::particle_emitter_2d_system(world, dt);
     });
 
-    // ── UI 布局 ─────────────────────────────────────────────
+    // ── UI Layout ─────────────────────────────────────────────
     // 每帧重新计算所有 UI 元素的屏幕空间矩形。
     s.add_system("ui::layout", |world, _dt| {
         crate::ui::ui_layout_system(world)
     });
 
-    // ── UI 输入 ──────────────────────────────────────────────
+    // ── UI Input ──────────────────────────────────────────────
     // 命中测试，更新 Interaction 组件（需 layout 之后）。
     s.add_system("ui::input", |world, _dt| crate::ui::ui_input_system(world));
 
-    // ── UI 渲染 ─────────────────────────────────────────────
+    // ── UI Render ─────────────────────────────────────────────
     // 收集 UI 绘制命令为 UiDrawList resource。
     s.add_system("ui::render", |world, _dt| {
         crate::ui::ui_render_system(world)

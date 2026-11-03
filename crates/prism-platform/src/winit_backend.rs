@@ -1,7 +1,8 @@
-//! winit 后端：窗口创建 + winit 事件 → 中立事件（[`PlatformEvent`]）转换。
+//! winit backend: window creation plus winit event → neutral event
+//! ([`PlatformEvent`]) translation.
 //!
-//! 只有启用 `winit-backend` 时才编译；`win32-native` 独占构建里本模块
-//! 整个不参与，winit 也就不会被链接进产物。
+//! Only compiled when `winit-backend` is enabled; in a `win32-native`-only build
+//! this module is left out entirely, so winit is never linked into the artifact.
 
 use std::time::Instant;
 
@@ -13,7 +14,7 @@ use crate::config::WindowConfig;
 use crate::event::{Key, Modifiers, PlatformEvent, TouchPhase};
 use crate::window::PlatformWindow;
 
-/// 在**主线程**创建 winit 窗口（快速，不触碰 Vulkan / GPU）。
+/// Creates the winit window on the **main thread** (fast, no Vulkan / GPU work).
 pub(crate) fn create_window(
     event_loop: &ActiveEventLoop,
     window_cfg: &WindowConfig,
@@ -53,15 +54,16 @@ pub(crate) fn create_window(
         (Instant::now() - t_start).as_millis(),
     );
 
-    // winit 的 `Window` 本身就是窗口所有者；渲染线程只拿原始句柄，
-    // 不再需要 `Window` 本身。
+    // winit's `Window` is the window owner itself; the render thread only takes raw
+    // handles, so the `Window` is no longer needed.
     PlatformWindow::from_winit(window)
 }
 
 impl Key {
-    /// winit 物理键码 → 中立键。
+    /// Maps a winit physical key code to a neutral key.
     ///
-    /// 未列出的键退化为 [`Key::Other`]（载荷是 winit 判别值），避免静默丢弃。
+    /// Unlisted keys degrade to [`Key::Other`] (payload is the winit discriminant)
+    /// instead of being silently dropped.
     pub fn from_winit(code: winit::keyboard::KeyCode) -> Self {
         use winit::keyboard::KeyCode as Wk;
         match code {
@@ -113,7 +115,7 @@ impl Key {
     }
 }
 
-/// 将 winit 事件转换成平台无关事件。
+/// Converts a winit event into a platform-independent event.
 pub fn to_platform_event(event: &WindowEvent) -> PlatformEvent {
     match event {
         WindowEvent::CloseRequested => PlatformEvent::CloseRequested,
@@ -271,7 +273,7 @@ mod tests {
         use winit::event::MouseScrollDelta as W;
         assert_eq!(wheel_lines(W::LineDelta(0.0, 1.0)), 1.0);
         assert_eq!(wheel_lines(W::LineDelta(0.0, -2.0)), -2.0);
-        // 高精度滚轮会报小数行，直接透传。
+        // A high-precision wheel reports fractional lines, passed through directly.
         assert_eq!(wheel_lines(W::LineDelta(0.0, 0.25)), 0.25);
     }
 
@@ -293,8 +295,8 @@ mod tests {
         );
     }
 
-    /// 键盘映射是手工表：抽查移动/修饰/功能/数字键，防止 winit 侧改动后
-    /// 两边悄悄错位。
+    /// The key map is hand-written: spot-check movement / modifier / function / digit
+    /// keys so a winit-side change cannot silently misalign the two.
     #[test]
     fn winit_keycodes_map_to_native_keys() {
         use winit::keyboard::KeyCode as Wk;
@@ -314,7 +316,7 @@ mod tests {
         ] {
             assert_eq!(Key::from_winit(winit), expected, "{winit:?}");
         }
-        // 未列出的键不能丢：退化为 winit 判别值。
+        // Unlisted keys must not be dropped: they degrade to the winit discriminant.
         assert_eq!(Key::from_winit(Wk::KeyZ), Key::Other(Wk::KeyZ as u32));
     }
 }

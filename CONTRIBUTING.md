@@ -44,6 +44,14 @@ cargo test -p prism-asset -p prism-scene -p prism-cooker
 cargo test --manifest-path editor/Cargo.toml   # 编辑器数据层 + 壳
 ```
 
+## 代码注释
+
+- 代码注释（`//` / `///` / `//!`）一律英文；`docs/`、README、commit / PR 文本继续中文。
+- 删掉复述代码的注释；保留不变量、单位、Vulkan / 格式 / 线程等非显然信息。
+- `TODO` 必须带 issue：`// TODO(#123): ...`。
+- 注释-only PR 跑 `python scripts/check_comment_only.py --base origin/master`，不要夹带逻辑改动。
+- 完整规则见 [`docs/code-style.md`](docs/code-style.md)。
+
 ## 提交前自检
 
 ```bash

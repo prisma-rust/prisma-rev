@@ -1,11 +1,13 @@
-//! glam 数学类型的反射实现（`Vec2` / `Vec3` / `Vec4` / `Quat`）。
+//! Reflection impls for glam math types (`Vec2`, `Vec3`, `Vec4`, `Quat`).
 //!
-//! 手工实现而非 derive：glam 类型在外部 crate，无法附加派生宏；同时这些
-//! 类型应当以固定名字（`glam::Vec3`）出现在 schema 里，不能随 `module_path!()`
-//! 漂移。
+//! Hand-written instead of derived: glam types live in an external crate, so
+//! no derive macro can be attached to them, and they must appear in the
+//! schema under fixed names (`glam::Vec3`) rather than drifting with
+//! `module_path!()`.
 //!
-//! 注意：glam 在 aarch64 上把 `Vec4`/`Quat` 实现为 SIMD newtype，字段不可直接
-//! 访问，因此统一走 `x()` 访问器 + `to_array`/`from_array` 重建。
+//! Note: on aarch64 glam implements `Vec4`/`Quat` as a SIMD newtype whose
+//! fields cannot be accessed directly, so these impls uniformly go through
+//! the `x()` accessors and rebuild with `to_array`/`from_array`.
 
 use std::sync::OnceLock;
 
@@ -30,7 +32,7 @@ macro_rules! impl_glam_reflect {
                     fields: vec![
                         $(FieldDesc {
                             name: stringify!($field),
-                            // SIMD newtype 没有可用的字段偏移；按标量数组布局给出。
+                            // A SIMD newtype has no usable field offsets; use scalar-array layout.
                             offset: $index * core::mem::size_of::<f32>(),
                             ty: FieldType::F32,
                             read_only: false,

@@ -3,7 +3,7 @@
 //!
 //! Provides per-instance geometry flattening, combined vertex/index buffers,
 //! BLAS/TLAS building, and emissive-triangle extraction.  Scene loading
-//! (RSCN / glTF) is handled exclusively by the engine crate; this 模块
+//! (RSCN / glTF) is handled exclusively by the engine crate; this module
 //! only consumes the resulting [`PtGeometryInstance`] arrays.
 
 use anyhow::{Context, Result};
@@ -17,27 +17,27 @@ use crate::mesh::Vertex;
 // Per-instance PT geometry types
 // -------------------------------------------------------------------
 
-/// One ray-traceable scene 实例 its own world-space vertex/index data
-/// and the 材质 SSBO 槽 the path tracer looks 上 via the TLAS
-/// `instanceCustomIndex` at hit 时间
+/// One ray-traceable scene instance: its own world-space vertex/index data
+/// and the material SSBO slot the path tracer looks up via the TLAS
+/// `instanceCustomIndex` at hit time.
 ///
 /// Used by `PathTracePass::set_geometry`, which builds a per-instance BLAS and
-/// a single TLAS carrying the 实例 索引 as the 自定义 索引 (which then
-/// looks 上 `material_slot`). Keeping the 材质 identity separate is what
-/// lets the path tracer 样本 the correct albedo 纹理 per 表面 (Sponza
-/// has many materials). 顶点 are already in 世界 空间 (the 实例
-/// 变换 is baked in), so the TLAS 变换 is identity.
+/// a single TLAS carrying the instance index as the custom index (which then
+/// looks up `material_slot`). Keeping the material identity separate is what
+/// lets the path tracer sample the correct albedo texture per surface (Sponza
+/// has many materials). Vertices are already in world space (the instance
+/// transform is baked in), so the TLAS transform is identity.
 #[derive(Clone)]
 pub struct PtGeometryInstance {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
-    /// 索引 into the `GpuMaterial[]` SSBO (`RenderMaterialManager`).
+    /// Index into the `GpuMaterial[]` SSBO (`RenderMaterialManager`).
     pub material_slot: u32,
 }
 
 /// Per-instance metadata mirroring `PtInstanceMeta` in `pt_pass.rs` /
-/// `path_integrator.slang` (16 字节 repr(C)). Written into the
-/// `instance_meta` SSBO and looked 上 in the 着色器 by
+/// `path_integrator.slang` (16 bytes, repr(C)). Written into the
+/// `instance_meta` SSBO and looked up in the shader by
 /// `q.CommittedInstanceID()`.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -51,8 +51,8 @@ pub struct PtInstanceMeta {
 /// A fully-built ray-traceable scene: combined vertex/index buffers,
 /// per-instance metadata + materials SSBOs, per-instance BLAS, and one TLAS.
 ///
-/// 内置 by [`build_pt_scene`] from a 列表 of [`PtGeometryInstance`] + a
-/// materials SSBO byte 缓冲区 Owns all GPU resources; drops them on 放置
+/// Built by [`build_pt_scene`] from a list of [`PtGeometryInstance`] + a
+/// materials SSBO byte buffer. Owns all GPU resources; drops them on drop.
 /// Both `PathTracePass::set_geometry` and the offline bakers consume this so
 /// the per-instance BLAS/TLAS/meta/materials setup stays in one place.
 pub struct PtScene {
@@ -72,7 +72,7 @@ pub struct PtScene {
 }
 
 impl PtScene {
-    /// 销毁 all GPU resources. Safe to 调用 once; 放置 is a no-op after.
+    /// Destroy all GPU resources. Safe to call once; `Drop` is a no-op after.
     pub fn destroy(&mut self, device: &ash::Device) {
         unsafe {
             device.destroy_buffer(self.vertex_buffer, None);
@@ -102,16 +102,16 @@ impl Drop for PtScene {
 // Emissive triangle extraction
 // -------------------------------------------------------------------
 
-/// Extract emissive triangles from scene instances + materials 字节
+/// Extract emissive triangles from scene instances + materials bytes.
 ///
-/// Iterates over all instances, checks each instance's 材质 for emissive
-/// radiance > 0, and collects the world-space triangles into a flat 数组
+/// Iterates over all instances, checks each instance's material for emissive
+/// radiance > 0, and collects the world-space triangles into a flat array
 /// suitable for a `StructuredBuffer<PtEmissiveTri>`.
 ///
 /// `materials_bytes` is the raw `GpuMaterial[]` from `build_pt_scene`'s
-/// 调用者 Each `GpuMaterial` is 96 字节 the emissive radiance is at
-/// byte 偏移 24 (z of `metallic_roughness_emissive`) and strength at
-/// 偏移 28 (w). Radiance = emissive * strength.
+/// caller. Each `GpuMaterial` is 96 bytes; the emissive radiance is at
+/// byte offset 24 (z of `metallic_roughness_emissive`) and strength at
+/// offset 28 (w). Radiance = emissive * strength.
 pub fn build_emissive_triangles(
     instances: &[PtGeometryInstance],
     materials_bytes: &[u8],
@@ -161,13 +161,13 @@ pub fn build_emissive_triangles(
     out
 }
 
-/// 创建 a device-local 存储 缓冲区 containing [`PtEmissiveTri`] entries for
+/// Create a device-local storage buffer containing [`PtEmissiveTri`] entries for
 /// all emissive triangles in the given instances/materials. Returns
-/// 缓冲区 内存 count)` — all zero/null if no emissive geometry.
+/// `(buffer, memory, count)` — all zero/null if no emissive geometry.
 ///
 /// This is separate from `build_pt_scene` because the real-time PT pass builds
-/// its BLAS/TLAS with placeholder materials (before the 材质 管理器 is
-/// ready), but can 调用 this later once actual 材质 字节 are available.
+/// its BLAS/TLAS with placeholder materials (before the material manager is
+/// ready), but can call this later once actual material bytes are available.
 pub fn create_emissive_buffer(
     context: &VulkanContext,
     instances: &[PtGeometryInstance],
@@ -197,13 +197,13 @@ pub fn create_emissive_buffer(
 }
 
 // -------------------------------------------------------------------
-// BLAS / TLAS 构建
+// BLAS / TLAS build
 // -------------------------------------------------------------------
 
-/// 构建 a [`PtScene`] from per-instance geometry + a materials SSBO byte
-/// 缓冲区 Creates a combined vertex/index 缓冲区 one BLAS per 实例
-/// (pointing at its 切片 of the combined buffers), a TLAS whose
-/// `instanceCustomIndex` carries the 实例 索引 and the
+/// Build a [`PtScene`] from per-instance geometry + a materials SSBO byte
+/// buffer. Creates a combined vertex/index buffer, one BLAS per instance
+/// (pointing at its slice of the combined buffers), a TLAS whose
+/// `instanceCustomIndex` carries the instance index, and the
 /// `instance_meta` + `materials` SSBOs.
 pub fn build_pt_scene(
     context: &VulkanContext,
@@ -218,7 +218,7 @@ pub fn build_pt_scene(
         anyhow::bail!("build_pt_scene: no instances");
     }
 
-    // ---- 1. Concatenate all instances into one combined vertex/index 缓冲区
+    // ---- 1. Concatenate all instances into one combined vertex/index buffer.
     let mut all_verts: Vec<Vertex> = Vec::new();
     let mut all_indices: Vec<u32> = Vec::new();
     let mut meta: Vec<PtInstanceMeta> = Vec::with_capacity(instances.len());
@@ -258,7 +258,7 @@ pub fn build_pt_scene(
     let (matbuf, matmem) = create_storage_buffer(context, materials_bytes)
         .context("build_pt_scene: materials buffer")?;
 
-    // ---- 2. 构建 all BLAS in one batch (single submit + wait).
+    // ---- 2. Build all BLAS in one batch (single submit + wait).
     let index_stride = 4u32 as vk::DeviceAddress;
     let total_verts = all_verts.len() as u32;
 
@@ -324,7 +324,7 @@ pub fn build_pt_scene(
 }
 
 // -------------------------------------------------------------------
-// 缓冲区 upload helpers
+// Buffer upload helpers
 // -------------------------------------------------------------------
 
 pub fn vertex_bytes(vertices: &[Vertex]) -> &[u8] {
@@ -340,7 +340,7 @@ pub fn index_bytes(indices: &[u32]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(indices.as_ptr() as *const u8, indices.len() * 4) }
 }
 
-/// Host-visible 存储 缓冲区 (also usable as a BLAS 构建 输入 initialized
+/// Host-visible storage buffer (also usable as a BLAS build input), initialized
 /// with `data`.
 pub fn create_storage_buffer(
     context: &VulkanContext,

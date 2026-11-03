@@ -10,6 +10,7 @@
 它根据分支相对 --base 的改动（含未提交、未跟踪文件）决定要跑什么：
 
   * 只对**改动过的 .rs 文件**跑 rustfmt（仓库既有 fmt 漂移不算在每个 PR 头上）；
+  * 对改动的 .rs 检查注释规范（迁移期只告警，见 `docs/code-style.md`）；
   * 改动到的根 workspace crate：clippy --all-targets -D warnings + cargo test；
   * 改到 shader/reflection/bindings：在临时目录重跑 shader-bindgen，比对是否漂移；
   * 改到 editor/：cargo test（独立 workspace，含数据层与 egui 壳）；
@@ -427,6 +428,47 @@ def format_check(files: list[str], verbose: bool) -> Check:
     return check
 
 
+def comment_check(base: str) -> Check:
+    """注释规范检查（`scripts/check_comments.py`）。
+
+    迁移期只对改动文件告警，不阻塞合并；存量清零后把 `--warn-only` 去掉即可
+    变成硬门禁。规则见 `docs/code-style.md`。
+    """
+    check = Check(
+        "注释规范",
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "check_comments.py"),
+            "--changed",
+            "--base",
+            base,
+            "--warn-only",
+        ],
+    )
+    check.done = True
+    eprint("→ 注释规范: changed .rs files (report-only)")
+    code, out = run(check.cmd)
+    check.output = out
+    if code != 0:
+        check.status = "fail"
+        check.detail = "check_comments.py failed"
+        eprint("  FAILED")
+        eprint("\n".join(out.rstrip().splitlines()[-10:]))
+        return check
+
+    match = re.search(r"comments: (\d+) finding\(s\)", out)
+    count = int(match.group(1)) if match else 0
+    if count:
+        check.status = "warn"
+        check.detail = f"{count} 处（迁移期，未阻塞）"
+        eprint(f"  warn: {count} finding(s)")
+    else:
+        check.status = "ok"
+        check.detail = "clean"
+        eprint("  ok")
+    return check
+
+
 def editor_checks(changed: list[str], quick: bool) -> list[Check]:
     """`editor/` 是独立 workspace（egui + ash），只能在有 Vulkan 的桌面上运行。
 
@@ -525,6 +567,7 @@ def main() -> int:
 
     checks: list[Check] = [whitespace_check(), artifact_guard(changed)]
     checks.append(format_check(rs_files, args.verbose))
+    checks.append(comment_check(base))
 
     if default_crates:
         clippy_cmd = ["cargo", "clippy"]
@@ -627,12 +670,17 @@ def main() -> int:
         "| Check | Result | Detail |",
         "|---|---|---|",
     ]
-    icons = {"ok": "✅", "fail": "❌", "skip": "⏭️"}
+    icons = {"ok": "✅", "fail": "❌", "skip": "⏭️", "warn": "⚠️"}
     for check in checks:
         detail = check.detail.replace("|", "\\|")
         lines.append(f"| {check.name} | {icons[check.status]} | {detail} |")
     lines.append("")
-    lines.append("**Result: ✅ all checks passed**" if not failed else "**Result: ❌ checks failed**")
+    if failed:
+        lines.append("**Result: ❌ checks failed**")
+    elif any(check.status == "warn" for check in checks):
+        lines.append("**Result: ✅ all checks passed**（注释规范仅有迁移期告警）")
+    else:
+        lines.append("**Result: ✅ all checks passed**")
 
     # 未运行的 skip 项没有经过 run()，这里也把它们标出来。
     print("\n".join(lines))

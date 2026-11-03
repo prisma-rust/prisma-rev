@@ -1,27 +1,27 @@
-//! Bindless 纹理 表 — modern separated SRV + 全局 采样器 模型
+//! Bindless texture table — modern separated SRV + global sampler model.
 //!
 //! Replaces the legacy combined-image-sampler approach with the modern idiom:
 //!
-//! - **`bindless_srvs[]`** — a runtime-sized 数组 of `SAMPLED_IMAGE` 纹理
+//! - **`bindless_srvs[]`** — a runtime-sized array of `SAMPLED_IMAGE` (texture
 //!   views without samplers baked in). This is where all textures live.
-//! - **`global_samplers[]`** — a small fixed 数组 of 采样器 descriptors
+//! - **`global_samplers[]`** — a small fixed array of `SAMPLER` descriptors
 //!   (one per [`SamplerType`]). There are only a handful of sampling modes;
 //!   sharing them across all textures is more cache-efficient and avoids
-//! redundantly creating thousands of 相同 samplers.
+//!   redundantly creating thousands of identical samplers.
 //!
-//! Shaders 样本 like:
+//! Shaders sample like:
 //!
 //! ```slang
 //! Texture2D tex = bindless_srvs[NonUniformResourceIndex(handle.index)];
 //! tex.Sample(global_samplers[sampler_type], uv);
 //! ```
 //!
-//! ## 无效 handle 回退
+//! ## INVALID handle fallback
 //!
 //! Unregistered or not-yet-ready textures get [`TextureHandle::INVALID`].
-//! The 着色器 checks for this and returns a magenta 回退 颜色
+//! The shader checks for this and returns a magenta fallback color,
 //! avoiding crashes from reading unbound descriptors — critical on mobile
-//! where 异步 资源 loading is common.
+//! where async resource loading is common.
 //!
 //! ## Flags
 //!
@@ -32,16 +32,16 @@ use anyhow::Context as _;
 use ash::vk;
 use ash::vk::Handle as _;
 
-/// 不透明 handle into the bindless SRV 数组
+/// Opaque handle into the bindless SRV array.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextureHandle(pub u32);
 
 impl TextureHandle {
-    /// 无效 槽 — shaders return 回退 颜色 when they see this.
+    /// Invalid slot — shaders return fallback color when they see this.
     pub const INVALID: TextureHandle = TextureHandle(u32::MAX);
 }
 
-/// Fixed 采样器 types — the only sampling modes the engine needs.
+/// Fixed sampler types — the only sampling modes the engine needs.
 /// Each maps to one entry in `global_samplers[]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
@@ -50,17 +50,17 @@ pub enum SamplerType {
     LinearWrap = 0,
     /// Bilinear filtering, clamp-to-edge — cubemaps, LUTs, UI.
     LinearClamp = 1,
-    /// Nearest filtering — 像素 art, 调试 visualizations.
+    /// Nearest filtering — pixel art, debug visualizations.
     Nearest = 2,
-    /// PCF shadow 比较 采样器 — shadow maps.
+    /// PCF shadow comparison sampler — shadow maps.
     Shadow = 3,
 }
 
 impl SamplerType {
-    /// Number of 采样器 slots in `global_samplers[]`.
+    /// Number of sampler slots in `global_samplers[]`.
     pub const COUNT: u32 = 4;
 
-    /// 创建 the Vulkan 采样器 create-info for this 采样器 类型
+    /// Create the Vulkan sampler create-info for this sampler type.
     fn create_info(self) -> vk::SamplerCreateInfo<'static> {
         match self {
             SamplerType::LinearWrap => vk::SamplerCreateInfo {
@@ -107,7 +107,7 @@ impl SamplerType {
     }
 }
 
-/// The descriptor-indexing sub-features this 表 needs.
+/// The descriptor-indexing sub-features this table needs.
 pub fn required_features() -> vk::PhysicalDeviceVulkan12Features<'static> {
     vk::PhysicalDeviceVulkan12Features::default()
         .descriptor_indexing(true)
@@ -235,11 +235,11 @@ impl SlotAllocator {
     }
 }
 
-/// Bindless 纹理 表 with separated SRV + 全局 samplers.
+/// Bindless texture table with separated SRV + global samplers.
 ///
-/// Two bindings in one 描述符 集合
-/// - 绑定 0: `bindless_srvs[]` — SAMPLED_IMAGE 数组 纹理 views)
-/// - 绑定 1: `global_samplers[4]` — 采样器 数组 (fixed sampling modes)
+/// Two bindings in one descriptor set:
+/// - binding 0: `bindless_srvs[]` — SAMPLED_IMAGE array (texture views)
+/// - binding 1: `global_samplers[4]` — SAMPLER array (fixed sampling modes)
 pub struct BindlessTextureTable {
     device: ash::Device,
     pub layout: vk::DescriptorSetLayout,
@@ -247,27 +247,27 @@ pub struct BindlessTextureTable {
     pub set: vk::DescriptorSet,
     /// SRV 槽 bookkeeping (bump pointer + free-list, see [`SlotAllocator`]).
     slots: SlotAllocator,
-    /// The 4 全局 采样器 objects owned by this 表
+    /// The 4 global sampler objects owned by this table.
     samplers: [vk::Sampler; SamplerType::COUNT as usize],
 }
 
-/// 描述符 集合 绑定 indices.
+/// Descriptor set binding indices.
 ///
-/// `SAMPLERS` is 绑定 0 (fixed-size 数组 and `SRV` is 绑定 1 (the
-/// runtime-sized, variable-count 数组 Vulkan requires
-/// `VARIABLE_DESCRIPTOR_COUNT` to be on the 绑定 with the highest number, so
-/// the variable-count SRV 数组 must come *after* the fixed 采样器 数组
+/// `SAMPLERS` is binding 0 (fixed-size array) and `SRV` is binding 1 (the
+/// runtime-sized, variable-count array). Vulkan requires
+/// `VARIABLE_DESCRIPTOR_COUNT` to be on the binding with the highest number, so
+/// the variable-count SRV array must come *after* the fixed sampler array.
 pub mod bindings {
-    /// `global_samplers[4]` - fixed 采样器 数组
+    /// `global_samplers[4]` - fixed SAMPLER array.
     pub const SAMPLERS: u32 = 0;
-    /// `bindless_srvs[]` - runtime-sized SAMPLED_IMAGE 数组
+    /// `bindless_srvs[]` - runtime-sized SAMPLED_IMAGE array.
     pub const SRV: u32 = 1;
 }
 
 impl BindlessTextureTable {
-    /// 创建 the 表 with room for 容量 纹理 views.
+    /// Create the table with room for `capacity` texture views.
     pub fn new(device: &ash::Device, capacity: u32) -> anyhow::Result<Self> {
-        // --- 创建 the 4 全局 samplers ---
+        // --- Create the 4 global samplers ---
         let mut samplers = [vk::Sampler::null(); SamplerType::COUNT as usize];
         for (i, st) in [
             SamplerType::LinearWrap,
@@ -282,12 +282,12 @@ impl BindlessTextureTable {
                 .context("create global sampler")?;
         }
 
-        // --- 描述符 集合 布局 two bindings ---
-        // Bindings are listed in ascending binding-number order so the 绑定
-        // flags (which must be in the same order as the bindings 数组 line 上
-        // correctly. The variable-count SRV 数组 is the highest 绑定
+        // --- Descriptor set layout: two bindings ---
+        // Bindings are listed in ascending binding-number order so the binding
+        // flags (which must be in the same order as the bindings array) line up
+        // correctly. The variable-count SRV array is the highest binding.
         let bindings = [
-            // 绑定 0: 全局 samplers (fixed count)
+            // binding 0: global samplers (fixed count)
             vk::DescriptorSetLayoutBinding::default()
                 .binding(bindings::SAMPLERS)
                 .descriptor_type(vk::DescriptorType::SAMPLER)
@@ -297,7 +297,7 @@ impl BindlessTextureTable {
                         | vk::ShaderStageFlags::FRAGMENT
                         | vk::ShaderStageFlags::COMPUTE,
                 ),
-            // 绑定 1: SRV 数组 (textures without samplers)
+            // binding 1: SRV array (textures without samplers)
             vk::DescriptorSetLayoutBinding::default()
                 .binding(bindings::SRV)
                 .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
@@ -309,9 +309,9 @@ impl BindlessTextureTable {
                 ),
         ];
 
-        // 绑定 flags: samplers are immutable; the SRV 数组 gets the bindless
-        // flags. VARIABLE_DESCRIPTOR_COUNT must be on the highest-numbered 绑定
-        // 绑定 1 = SRV), which it now is.
+        // Binding flags: samplers are immutable; the SRV array gets the bindless
+        // flags. VARIABLE_DESCRIPTOR_COUNT must be on the highest-numbered binding
+        // (binding 1 = SRV), which it now is.
         let binding_flags = [
             vk::DescriptorBindingFlags::empty(),
             vk::DescriptorBindingFlags::PARTIALLY_BOUND
@@ -328,7 +328,7 @@ impl BindlessTextureTable {
         let layout = unsafe { device.create_descriptor_set_layout(&layout_info, None) }
             .context("create bindless descriptor set layout")?;
 
-        // --- 池 ---
+        // --- Pool ---
         let pool_sizes = [
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::SAMPLED_IMAGE,
@@ -346,7 +346,7 @@ impl BindlessTextureTable {
         let pool = unsafe { device.create_descriptor_pool(&pool_info, None) }
             .context("create bindless descriptor pool")?;
 
-        // --- Allocate the 集合 with 变量 描述符 count ---
+        // --- Allocate the set with variable descriptor count ---
         let counts = [capacity];
         let mut count_info = vk::DescriptorSetVariableDescriptorCountAllocateInfo::default()
             .descriptor_counts(&counts);
@@ -358,7 +358,7 @@ impl BindlessTextureTable {
         let set = unsafe { device.allocate_descriptor_sets(&alloc_info) }
             .context("allocate bindless descriptor set")?[0];
 
-        // 写入 the 全局 samplers into 绑定 1 immediately (they never change).
+        // Write the global samplers into binding 1 immediately (they never change).
         let sampler_infos: Vec<_> = samplers
             .iter()
             .map(|&s| {
@@ -385,10 +385,10 @@ impl BindlessTextureTable {
         })
     }
 
-    /// Register a 纹理 视图 (without 采样器 — the 着色器 picks a
-    /// [`SamplerType`] at 样本 时间 Returns a handle for 着色器 indexing.
+    /// Register a texture view (without sampler — the shader picks a
+    /// [`SamplerType`] at sample time). Returns a handle for shader indexing.
     ///
-    /// The 图像 must already be in `SHADER_READ_ONLY_OPTIMAL` 布局
+    /// The image must already be in `SHADER_READ_ONLY_OPTIMAL` layout.
     pub fn register(&mut self, image_view: vk::ImageView) -> anyhow::Result<TextureHandle> {
         // 释放过的 槽 are reused before the bump pointer advances.
         let slot = self.slots.claim()?;
@@ -396,16 +396,16 @@ impl BindlessTextureTable {
         Ok(TextureHandle(slot))
     }
 
-    /// Register a 纹理 视图 at a specific 槽 The 调用者 must
-    /// ensure the 槽 is currently free (otherwise the 上一个 视图 is
+    /// Register a texture view at a specific slot. The caller must
+    /// ensure the slot is currently free (otherwise the previous view is
     /// silently overwritten, which is what `write_srv` does). This is
-    /// the path `RenderTextureManager` uses to claim 槽 0 for the
-    /// magenta 回退 at construction 时间
+    /// the path `RenderTextureManager` uses to claim slot 0 for the
+    /// magenta fallback at construction time.
     ///
-    /// If the requested 槽 is at or past 下一个 下一个 is bumped to
-    /// 槽 + 1` so a subsequent `register` 调用 will not overwrite
-    /// the 槽 we just placed. This is what makes the 槽 0 is the
-    /// 回退 convention safe.
+    /// If the requested slot is at or past `next`, `next` is bumped to
+    /// `slot + 1` so a subsequent `register` call will not overwrite
+    /// the slot we just placed. This is what makes the "slot 0 is the
+    /// fallback" convention safe.
     pub fn register_with_handle(
         &mut self,
         slot: u32,
@@ -435,7 +435,7 @@ impl BindlessTextureTable {
         self.slots.is_used(slot)
     }
 
-    /// Overwrite an existing SRV 槽 (e.g. to 交换 a 纹理 without reallocating).
+    /// Overwrite an existing SRV slot (e.g. to swap a texture without reallocating).
     pub fn write_srv(&self, slot: u32, image_view: vk::ImageView) {
         let image_info = [vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
@@ -449,13 +449,13 @@ impl BindlessTextureTable {
         unsafe { self.device.update_descriptor_sets(&[write], &[]) };
     }
 
-    /// Get the raw Vulkan 采样器 handle for a [`SamplerType`].
-    /// Useful for 代码 paths that still need a combined 描述符
+    /// Get the raw Vulkan sampler handle for a [`SamplerType`].
+    /// Useful for code paths that still need a combined descriptor.
     pub fn sampler(&self, ty: SamplerType) -> vk::Sampler {
         self.samplers[ty as usize]
     }
 
-    /// 借用 the `ash::Device` this 表 was created with. Used by owners
+    /// Borrow the `ash::Device` this table was created with. Used by owners
     /// that need to free GPU resources (images/views) referenced by the
     /// table's descriptors.
     pub fn device(&self) -> &ash::Device {

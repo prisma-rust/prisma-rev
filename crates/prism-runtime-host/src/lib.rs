@@ -5,11 +5,12 @@
 //! Unloading before the engine is dropped would leave dangling function/code
 //! pointers.
 //!
-//! ## 边界
+//! ## Boundaries
 //!
-//! 宿主从不把 `World` / `Engine` 指针交给项目模块。模块只能通过
-//! [`WorldCommands`] 构造的 [`HostApi`] 函数表操作世界；组件数据以 RTTIBin
-//! 字节流往返，类型解析留在宿主自己的 `ComponentRegistry` 里。
+//! The host never hands `World` / `Engine` pointers to the project module. The
+//! module can only touch the world through the [`HostApi`] function table built
+//! by [`WorldCommands`]; component data travels as RTTIBin byte streams and type
+//! resolution stays in the host's own `ComponentRegistry`.
 
 use std::path::{Path, PathBuf};
 
@@ -24,7 +25,7 @@ use thiserror::Error;
 
 const GET_API_SYMBOL: &[u8] = b"prism_project_get_api\0";
 
-/// ABI 载荷类型，供宿主侧直接使用（无需再依赖 `prism-project-api`）。
+/// ABI payload types re-exported for direct host use (no dependency on `prism-project-api` needed).
 pub use prism_project_api::{
     EntityHandle, InputSnapshot, TouchSnapshot, UiQuad, TOUCH_PHASE_CANCELLED, TOUCH_PHASE_ENDED,
     TOUCH_PHASE_MOVED, TOUCH_PHASE_STARTED,
@@ -62,18 +63,16 @@ pub enum ProjectModuleError {
     Tick { path: PathBuf, status: i32 },
 }
 
-/// 宿主侧一次 tick 的命令上下文。
+/// Host-side loose asset access.
 ///
-/// 回调只拿到一份 `user_data`，所以世界、注册表和临时缓冲必须打包在同一个
-/// 结构里；它的生命周期由 [`WorldCommands`] 保证，不会活过本次 tick。
-/// 宿主侧的松散资产访问。实现放在宿主（编辑器 / Player），资产根解析仍然只有
-/// `prism-engine::asset_paths` 一份实现。
+/// The implementation lives in the host (editor / Player), but asset root
+/// resolution still has a single implementation in `prism-engine::asset_paths`.
 pub trait AssetIo {
     fn exists(&self, path: &str) -> bool;
     fn read(&self, path: &str) -> std::io::Result<Vec<u8>>;
 }
 
-/// 默认实现：不支持松散资产（例如只跑 `.pak` 内容的宿主）。
+/// Default implementation that supports no loose assets (for hosts that only run `.pak` content).
 pub struct NoAssets;
 
 impl AssetIo for NoAssets {
@@ -91,22 +90,24 @@ impl AssetIo for NoAssets {
 
 static NO_ASSETS: NoAssets = NoAssets;
 
-/// 项目模块请求的换场动作（#482）。
+/// Scene-switch action requested by a project module (#482).
 ///
-/// 回调执行时引擎的世界正被借用，所以只能**记录请求**；宿主在本 tick 结束后
-/// 调 [`WorldCommands::take_scene_request`] 并真正切换场景。
+/// The engine world is borrowed while callbacks run, so the request can only be
+/// **recorded**; the host calls [`WorldCommands::take_scene_request`] after the
+/// tick and performs the actual switch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SceneRequest {
-    /// 加载 `.scene.json`；`additive` = 叠加（不卸载旧场景）。
+    /// Load a `.scene.json`; `additive` layers it on without unloading the old scene.
     Load { path: String, additive: bool },
-    /// 卸载当前场景（`Persistent` 子树保留）。
+    /// Unload the current scene (`Persistent` subtrees are kept).
     Unload,
 }
 
-/// 宿主注入的射线查询结果（#522）。
+/// Raycast hit injected by the host (#522).
 ///
-/// 本 crate 不依赖 `prism-engine`（会带进第二份引擎），所以几何实现由宿主以
-/// 函数指针注入；编辑器传 `prism_engine::physics::raycast` 的适配器。
+/// This crate does not depend on `prism-engine` (that would pull in a second
+/// engine), so the geometry implementation is injected by the host as a function
+/// pointer; the editor passes an adapter over `prism_engine::physics::raycast`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RaycastResult {
     pub entity: prism_ecs::Entity,
@@ -116,34 +117,39 @@ pub struct RaycastResult {
     pub is_trigger: bool,
 }
 
-/// 射线查询实现的签名（`prism_engine::physics::raycast` 的等价物）。
+/// Signature of a raycast implementation (the equivalent of `prism_engine::physics::raycast`).
 pub type RaycastFn = fn(&prism_ecs::World, [f32; 3], [f32; 3], f32, u32) -> Option<RaycastResult>;
 
+/// Per-tick command context on the host side.
+///
+/// Callbacks only receive a single `user_data`, so the world, the registry and
+/// the scratch buffers must be packed into one struct; [`WorldCommands`] bounds
+/// its lifetime and it never outlives the tick.
 struct CommandContext<'a> {
     world: &'a mut prism_ecs::World,
     registry: &'a prism_scene::ComponentRegistry,
-    /// `get_component` 的返回缓冲：指针只在下次宿主调用前有效。
+    /// Return buffer for `get_component`; the pointer is valid only until the next host call.
     scratch: Vec<u8>,
-    /// 项目提交的 UI 四边形；宿主在 UI 渲染前取走。
+    /// UI quads submitted by the project; the host takes them before UI rendering.
     quads: Vec<UiQuad>,
     scene_generation: u64,
     input: InputSnapshot,
     asset: &'a dyn AssetIo,
-    /// `read_asset_file` 的返回缓冲：指针只在下次宿主调用前有效。
+    /// Return buffer for `read_asset_file`; the pointer is valid only until the next host call.
     asset_bytes: Vec<u8>,
-    /// 引擎自带的场景存档（#484）。宿主注入，**本 crate 不依赖 prism-engine**，
-    /// 所以走函数指针而不是直接调用。
+    /// Engine-provided scene state (#484). Injected by the host; **this crate does not depend on
+    /// `prism-engine`**, so it is called through function pointers.
     save_state: Option<fn(&prism_ecs::World)>,
     load_state: Option<fn(&mut prism_ecs::World) -> bool>,
-    /// 本 tick 项目代码请求的换场（#482），由宿主 tick 结束后取走。
+    /// Scene switch requested by the project during this tick (#482), taken by the host afterwards.
     scene_request: Option<SceneRequest>,
-    /// 宿主是否会执行 `scene_request`；只有会执行的宿主才对外声明能力位。
+    /// Whether the host will execute `scene_request`; only such hosts advertise the capability bit.
     scene_switch: bool,
-    /// 宿主的射线查询实现（#522）；`None` 时不声明 `HOST_CAP_PHYSICS`。
+    /// The host's raycast implementation (#522); `HOST_CAP_PHYSICS` is not advertised when `None`.
     raycast: Option<RaycastFn>,
 }
 
-/// 把宿主世界包装成 [`HostApi`] 函数表。
+/// Wraps the host world into the [`HostApi`] function table.
 pub struct WorldCommands<'a> {
     context: CommandContext<'a>,
 }
@@ -173,15 +179,17 @@ impl<'a> WorldCommands<'a> {
         }
     }
 
-    /// 注入松散资产访问（宿主实现 `AssetIo`）。
+    /// Injects loose asset access (the host implements `AssetIo`).
     pub fn with_assets(mut self, asset: &'a dyn AssetIo) -> Self {
         self.context.asset = asset;
         self
     }
 
-    /// 注入引擎自带的场景存档实现（宿主传 `prism_engine::scene_state::*`）。
+    /// Injects the engine-provided scene-state implementation (the host passes
+    /// `prism_engine::scene_state::*`).
     ///
-    /// 本 crate 不能依赖 `prism-engine`（会带进第二份引擎），所以只能收函数指针。
+    /// This crate cannot depend on `prism-engine` (that would pull in a second
+    /// engine), so it only accepts function pointers.
     pub fn with_scene_state(
         mut self,
         save: fn(&prism_ecs::World),
@@ -192,40 +200,44 @@ impl<'a> WorldCommands<'a> {
         self
     }
 
-    /// 声明宿主会执行项目代码的换场请求（#482）。
+    /// Declares that the host will execute scene-switch requests from project code (#482).
     ///
-    /// 只有真的会在 tick 结束后调用 [`Self::take_scene_request`] 并换场的宿主
-    /// 才能打开这个能力位；否则项目代码会以为请求生效了。
+    /// Only a host that really calls [`Self::take_scene_request`] after the tick
+    /// and performs the switch may set this capability bit; otherwise project code
+    /// would assume the request took effect.
     pub fn with_scene_switch(mut self) -> Self {
         self.context.scene_switch = true;
         self
     }
 
-    /// 注入射线查询实现（#522）。
+    /// Injects the raycast implementation (#522).
     ///
-    /// 只有真正提供查询的宿主才打开 `HOST_CAP_PHYSICS`；编辑器传
-    /// `prism_engine::physics::raycast` 的适配器（见 `engine_raycast`）。
+    /// Only a host that really provides queries sets `HOST_CAP_PHYSICS`; the editor
+    /// passes an adapter over `prism_engine::physics::raycast` (see `engine_raycast`).
     pub fn with_raycast(mut self, raycast: RaycastFn) -> Self {
         self.context.raycast = Some(raycast);
         self
     }
 
-    /// 本帧输入快照；`ui`/项目代码通过 `HostApi::input` 读取。
+    /// Input snapshot for this frame; UI / project code reads it through `HostApi::input`.
     pub fn set_input(&mut self, input: InputSnapshot) {
         self.context.input = input;
     }
 
-    /// 取走项目本帧提交的 UI 四边形（宿主在 UI 渲染前合并）。
+    /// Takes the UI quads the project submitted this frame (the host merges them
+    /// before UI rendering).
     pub fn take_quads(&mut self) -> Vec<UiQuad> {
         std::mem::take(&mut self.context.quads)
     }
 
-    /// 取走本 tick 项目代码请求的换场（#482）；宿主在 tick 结束后执行。
+    /// Takes the scene switch requested by project code this tick (#482); the host
+    /// executes it after the tick.
     pub fn take_scene_request(&mut self) -> Option<SceneRequest> {
         self.context.scene_request.take()
     }
 
-    /// 构造本 tick 的能力表。指针只在 `api` 返回后到本 tick 结束之间有效。
+    /// Builds the capability table for this tick. The pointers are valid only from
+    /// the return of `api` until the end of the tick.
     pub fn api(&mut self) -> HostApi {
         HostApi {
             abi_version: ABI_VERSION,
@@ -287,7 +299,7 @@ impl<'a> WorldCommands<'a> {
 }
 
 /// # Safety
-/// `user_data` 必须来自本 tick 的 [`WorldCommands::api`]。
+/// `user_data` must come from [`WorldCommands::api`] for this tick.
 unsafe fn context<'a>(user_data: *mut std::ffi::c_void) -> Option<&'a mut CommandContext<'a>> {
     if user_data.is_null() {
         return None;
@@ -296,7 +308,7 @@ unsafe fn context<'a>(user_data: *mut std::ffi::c_void) -> Option<&'a mut Comman
 }
 
 /// # Safety
-/// `ptr`/`len` 必须描述一块本次调用期间有效的 UTF-8 字节。
+/// `ptr`/`len` must describe a block of UTF-8 bytes valid for the duration of this call.
 unsafe fn type_name<'a>(ptr: *const u8, len: usize) -> Option<&'a str> {
     if len == 0 {
         return None;
@@ -468,7 +480,8 @@ unsafe extern "C" fn host_set_component(
     if !context.world.is_alive(entity) {
         return INVALID_ARGUMENT;
     }
-    // 运行时组件先走（注册表对它们只会打一条「unknown」警告再拒绝）。
+    // Try runtime components first (the registry would only log an "unknown"
+    // warning and reject them).
     if apply_runtime_component(context.world, entity, object) {
         return SUCCESS;
     }
@@ -478,22 +491,26 @@ unsafe extern "C" fn host_set_component(
     UNKNOWN_TYPE
 }
 
-/// 写「运行时组件」：注册表刻意不让作者文档挂载它们，但工程代码必须能写。
+/// Writes a "runtime component": the registry deliberately keeps them out of
+/// authored documents, but project code must still be able to write them.
 ///
-/// `LocalTransform` 在注册表里只登记为**类型**（见 `prism-scene` 的
-/// `register_builtin_components`：作者只写 `transform`，由 loader / cooker bake 成
-/// `LocalTransform` + `LocalToWorld`，否则会在世界矩阵算完之后被覆盖）。
-/// 玩家形态里工程代码是 `GameWorld::host(...)` → `world.set(entity, LocalTransform)`，
-/// 直接进 ECS；插件形态必须有一条等价通路，否则模块 spawn 出来的实体没有变换，
-/// 只能停在原点。
+/// `LocalTransform` is registered as a **type** only (see
+/// `register_builtin_components` in `prism-scene`: authors write only `transform`,
+/// and the loader / cooker bakes it into `LocalTransform` + `LocalToWorld`;
+/// otherwise it would be overwritten after the world matrix is computed). In
+/// player form, project code calls `GameWorld::host(...)` →
+/// `world.set(entity, LocalTransform)` straight into the ECS; the plugin form
+/// needs an equivalent path, or entities spawned by a module would have no
+/// transform and pile up at the origin.
 ///
-/// 只在注册表之前尝试：作者 JSON 走的是 `registry.apply`，语义一点没变。
+/// Tried before the registry: authored JSON goes through `registry.apply`, so the
+/// semantics are unchanged.
 fn apply_runtime_component(
     world: &mut prism_ecs::World,
     entity: prism_ecs::Entity,
     object: &prism_reflect::Object,
 ) -> bool {
-    // 类型名与 `#[reflect(name = ...)]` 固定值对齐。
+    // The type name is pinned to the `#[reflect(name = ...)]` value.
     const LOCAL_TRANSFORM: &str = "prism_engine::scene::LocalTransform";
     if object.type_name != LOCAL_TRANSFORM {
         return false;
@@ -558,7 +575,8 @@ unsafe extern "C" fn host_is_alive(user_data: *mut std::ffi::c_void, entity: Ent
     i32::from(context.world.is_alive(handle_to_entity(entity)))
 }
 
-/// 射线查询（#522）：几何实现由宿主注入，本 crate 只做 ABI 适配。
+/// Raycast query (#522): the geometry implementation is injected by the host; this
+/// crate only adapts the ABI.
 unsafe extern "C" fn host_raycast(
     user_data: *mut std::ffi::c_void,
     origin: *const [f32; 3],
@@ -597,7 +615,7 @@ unsafe extern "C" fn host_raycast(
     1
 }
 
-/// 记录项目代码的换场请求（#482）。真正执行由宿主在 tick 结束后完成。
+/// Records the scene switch requested by project code (#482). The host performs it after the tick.
 unsafe extern "C" fn host_load_scene(
     user_data: *mut std::ffi::c_void,
     path: *const u8,
@@ -621,7 +639,7 @@ unsafe extern "C" fn host_load_scene(
     SUCCESS
 }
 
-/// 记录卸载请求（#482）。
+/// Records an unload request (#482).
 unsafe extern "C" fn host_unload_scene(user_data: *mut std::ffi::c_void) -> i32 {
     let Some(context) = (user_data as *mut CommandContext).as_mut() else {
         return INVALID_ARGUMENT;
@@ -638,7 +656,8 @@ unsafe extern "C" fn host_draw_quad(user_data: *mut std::ffi::c_void, quad: UiQu
     SUCCESS
 }
 
-/// 把引擎自带的场景存档写盘（#484）。项目代码通过 `GameWorld::save_scene_state` 调用。
+/// Writes the engine-provided scene state to disk (#484). Project code calls it through
+/// `GameWorld::save_scene_state`.
 unsafe extern "C" fn host_save_scene_state(user_data: *mut std::ffi::c_void) -> i32 {
     let Some(context) = (unsafe { (user_data as *mut CommandContext<'_>).as_mut() }) else {
         return prism_project_api::INVALID_ARGUMENT;
@@ -652,7 +671,7 @@ unsafe extern "C" fn host_save_scene_state(user_data: *mut std::ffi::c_void) -> 
     }
 }
 
-/// 读取场景存档：1 = 已恢复，0 = 没有存档。
+/// Reads the scene state: 1 = restored, 0 = no saved state.
 unsafe extern "C" fn host_load_scene_state(user_data: *mut std::ffi::c_void) -> i32 {
     let Some(context) = (unsafe { (user_data as *mut CommandContext<'_>).as_mut() }) else {
         return prism_project_api::INVALID_ARGUMENT;
@@ -726,9 +745,7 @@ pub struct ProjectModule {
 }
 
 impl ProjectModule {
-    /// Load and validate a project module. The library remains loaded until
-    /// this value is dropped.
-    /// Validate that a project API satisfies the host ABI and schema requirements.
+    /// Validates that a project API satisfies the host ABI and schema requirements.
     pub fn validate_api(
         api: &ProjectApi,
         expected_fingerprint: u64,
@@ -877,8 +894,9 @@ unsafe extern "C" fn host_log(
         unsafe { std::slice::from_raw_parts(message, message_len) }
     };
     let text = String::from_utf8_lossy(bytes);
-    // target 固定为 `project`：编辑器 Console 按 target 把模块日志归到 `Game`
-    // 来源（`logging::source_for`），和引擎 / 编辑器日志分开。
+    // The target is always `project`: the editor Console groups module logs under
+    // the `Game` source by target (`logging::source_for`), keeping them apart from
+    // engine / editor logs.
     match level {
         0 => log::error!(target: "project", "{text}"),
         1 => log::warn!(target: "project", "{text}"),
@@ -924,7 +942,7 @@ mod tests {
         }
     }
 
-    /// #484：存档能力是可选注入的，没注入时不宣称支持。
+    /// #484: the state capability is injected optionally; it is not advertised when missing.
     #[test]
     fn scene_state_capability_requires_an_injected_implementation() {
         fn save(_world: &prism_ecs::World) {}
@@ -938,7 +956,8 @@ mod tests {
         let mut plain = WorldCommands::new(&mut world, &registry, 1);
         let api = plain.api();
         assert_eq!(api.capabilities & HOST_CAP_STATE, 0);
-        // 回调本身总是在的（宿主统一实现），但没有注入时明确报 UNSUPPORTED。
+        // The callback itself is always present (the host implements it), but it reports
+        // UNSUPPORTED when nothing was injected.
         let callback = api.save_scene_state.expect("callback");
         assert_eq!(
             unsafe { callback(api.user_data) },
@@ -952,13 +971,15 @@ mod tests {
         assert_eq!(unsafe { callback(api.user_data) }, 1);
     }
 
-    /// #482：换场请求只在宿主声明会执行时才可见，并且是延迟执行的记录。
+    /// #482: scene-switch requests are visible only when the host declares it will
+    /// execute them, and are recorded for later execution.
     #[test]
     fn scene_switch_requests_are_recorded_only_when_enabled() {
         let mut world = prism_ecs::World::new();
         let registry = registry();
 
-        // 没声明能力：不暴露回调，避免项目代码以为换场生效。
+        // Capability not declared: the callback is not exposed, so project code does not
+        // assume the switch took effect.
         let mut plain = WorldCommands::new(&mut world, &registry, 3);
         let api = plain.api();
         assert_eq!(api.capabilities & HOST_CAP_SCENE, 0);
@@ -985,7 +1006,7 @@ mod tests {
         );
         assert!(wired.take_scene_request().is_none());
 
-        // additive 标志透传。
+        // The additive flag is passed through.
         assert_eq!(
             unsafe { load(api.user_data, path.as_ptr(), path.len(), 1) },
             SUCCESS
@@ -1001,7 +1022,7 @@ mod tests {
         assert_eq!(unsafe { unload(api.user_data) }, SUCCESS);
         assert_eq!(wired.take_scene_request(), Some(SceneRequest::Unload));
 
-        // 空路径 / 非 UTF-8 路径明确报错，不记录半个请求。
+        // Empty and non-UTF-8 paths report an error instead of recording a half request.
         assert_eq!(
             unsafe { load(api.user_data, path.as_ptr(), 0, 0) },
             prism_project_api::INVALID_ARGUMENT
@@ -1014,7 +1035,8 @@ mod tests {
         assert!(wired.take_scene_request().is_none());
     }
 
-    /// #522：射线查询只有宿主注入实现后才声明能力位；结果按 POD 写回。
+    /// #522: the raycast capability bit is set only after the host injects an
+    /// implementation; the hit is written back as POD.
     #[test]
     fn raycast_capability_requires_an_injected_implementation() {
         fn fake_raycast(
@@ -1075,7 +1097,7 @@ mod tests {
         assert_eq!(hit.normal, [0.0, 1.0, 0.0]);
         assert_eq!(hit.is_trigger, 1);
 
-        // 未命中返回 0；空指针是参数错误。
+        // A miss returns 0; a null pointer is an argument error.
         assert_eq!(
             unsafe { raycast(api.user_data, &[0.0; 3], &[0.0; 3], 10.0, 0, &mut hit) },
             0
@@ -1108,7 +1130,8 @@ mod tests {
         );
     }
 
-    /// 项目模块拿到的松散资产访问与宿主同一份实现（走 `HOST_CAP_ASSET`）。
+    /// The loose asset access the project module gets uses the same host implementation
+    /// (through `HOST_CAP_ASSET`).
     #[test]
     fn asset_capability_reads_through_host_callbacks() {
         let mut world = prism_ecs::World::new();
@@ -1138,11 +1161,12 @@ mod tests {
         assert_eq!(bytes, br#"{"layers":[]}"#);
     }
 
-    /// 工程代码通过 ABI 写的 `LocalTransform` 必须真的进世界。
+    /// A `LocalTransform` written by project code through the ABI must really reach the world.
     ///
-    /// 注册表刻意不让作者文档挂载它（作者只写 `transform`，由 loader bake），
-    /// 但运行时模块 spawn 出来的实体没有变换就只会堆在原点 —— 插件形态必须和
-    /// `GameWorld::host(...)` 的 `world.set(entity, LocalTransform)` 等价。
+    /// The registry deliberately keeps it out of authored documents (authors write only
+    /// `transform`, which the loader bakes), but entities spawned by a runtime module
+    /// would have no transform and pile up at the origin — the plugin form must be
+    /// equivalent to `world.set(entity, LocalTransform)` in `GameWorld::host(...)`.
     #[test]
     fn plugin_set_can_write_local_transform() {
         use prism_scene::components::LocalTransform;
@@ -1323,7 +1347,7 @@ mod tests {
             "round_trip"
         );
 
-        // 查询：先探长度再填充。
+        // Query: probe the length first, then fill.
         let query = api.query_entities.expect("component capability");
         let type_name = prism_scene::components::Name::type_desc().name.as_bytes();
         let mut count = 0usize;
@@ -1357,7 +1381,7 @@ mod tests {
         );
         assert_eq!(out[0], handle);
 
-        // 读取：指针在下次宿主调用前有效，立刻拷贝。
+        // Read: the pointer is valid until the next host call, so copy immediately.
         let get = api.get_component.expect("component capability");
         let mut ptr: *const u8 = std::ptr::null();
         let mut len = 0usize;
@@ -1380,7 +1404,6 @@ mod tests {
             prism_scene::components::Name::from_object(&decoded.objects[0]).expect("restore");
         assert_eq!(restored.0, "round_trip");
 
-        // 移除。
         let remove = api.remove_component.expect("component capability");
         assert_eq!(
             unsafe { remove(api.user_data, handle, type_name.as_ptr(), type_name.len()) },
@@ -1416,7 +1439,7 @@ mod tests {
 
         assert_eq!(unsafe { despawn(api.user_data, handle) }, SUCCESS);
         assert_eq!(unsafe { is_alive(api.user_data, handle) }, 0);
-        // 二次销毁必须被拒绝，而不是静默成功。
+        // A second despawn must be rejected instead of silently succeeding.
         assert_eq!(unsafe { despawn(api.user_data, handle) }, INVALID_ARGUMENT);
     }
 

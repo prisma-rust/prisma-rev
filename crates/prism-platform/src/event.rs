@@ -1,14 +1,15 @@
-//! 与窗口库无关的事件 / 按键类型。
+//! Window-library-independent event and key types.
 //!
-//! 两个窗口后端（winit、Win32）都把自己的原始事件翻译成这里的
-//! [`PlatformEvent`]，`prism-app` 只消费这一层——所以关掉 `winit-backend`
-//! 时不会有任何 winit 类型参与编译。
+//! Both window backends (winit, Win32) translate their raw events into the
+//! [`PlatformEvent`] here, and `prism-app` consumes only this layer — so with
+//! `winit-backend` disabled no winit type takes part in compilation.
 //!
-//! [`Key`] 只建模引擎真正用到的物理键（WASD/QE/T、数字行、方向键、
-//! 修饰键、F1–F12）；其余键落到 [`Key::Other`]，载荷是**后端原始码**
-//! （winit 判别值 / Win32 虚拟键码 `VK_*`），不会被静默丢弃。
+//! [`Key`] models only the physical keys the engine actually uses (WASD/QE/T, the
+//! number row, arrow keys, modifiers, F1–F12); every other key lands in
+//! [`Key::Other`] with the **backend raw code** as payload (winit discriminant /
+//! Win32 virtual key code `VK_*`) instead of being silently dropped.
 
-/// 物理按键（窗口库无关）。
+/// A physical key (window-library independent).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Key {
     KeyW,
@@ -17,7 +18,7 @@ pub enum Key {
     KeyD,
     KeyQ,
     KeyE,
-    /// `T` —— PBR 调试用的色调映射切换快捷键。
+    /// `T` — the tonemapping toggle used for PBR debugging.
     KeyT,
     Space,
     ShiftLeft,
@@ -55,14 +56,16 @@ pub enum Key {
     F10,
     F11,
     F12,
-    /// 未建模的物理键：载荷是**后端原始码**（winit 判别值 / Win32 `VK_*`）。
+    /// An unmodeled physical key.
+    ///
+    /// The payload is the **backend raw code** (winit discriminant / Win32 `VK_*`).
     Other(u32),
 }
 
-/// Win32 虚拟键码（`WM_KEYDOWN` / `WM_KEYUP` 的 `wParam`）。
+/// Win32 virtual key codes (the `wParam` of `WM_KEYDOWN` / `WM_KEYUP`).
 ///
-/// 这里只抄了 [`Key::from_vk`] 用得到的常量，避免为了几个数字打开
-/// `windows-sys` 的整组模块；数值与 `winuser.h` 一致。
+/// Only the constants used by [`Key::from_vk`] are copied here, avoiding pulling in
+/// the whole `windows-sys` module for a few numbers; the values match `winuser.h`.
 mod vk {
     pub const VK_TAB: u32 = 0x09;
     pub const VK_RETURN: u32 = 0x0D;
@@ -85,12 +88,14 @@ mod vk {
 }
 
 impl Key {
-    /// Win32 虚拟键码 → 中立键。
+    /// Maps a Win32 virtual key code to a neutral key.
     ///
-    /// 纯数值表（不依赖 `windows-sys`），因此**在非 Windows 主机上也能单测**。
+    /// A pure numeric table (no `windows-sys` dependency), so it can be unit-tested
+    /// on non-Windows hosts too.
     ///
-    /// 已知限制：`WM_KEYDOWN` 对 Shift/Ctrl/Alt 报的是通用 `VK_SHIFT` /
-    /// `VK_CONTROL` / `VK_MENU`，左右无法区分，统一按左侧处理。
+    /// Known limitation: `WM_KEYDOWN` reports the generic `VK_SHIFT` / `VK_CONTROL` /
+    /// `VK_MENU` for Shift/Ctrl/Alt, which cannot distinguish left from right, so both
+    /// are treated as the left key.
     pub fn from_vk(vk: u32) -> Self {
         match vk {
             vk::VK_TAB => Key::Tab,
@@ -121,7 +126,7 @@ impl Key {
                 10 => Key::F11,
                 _ => Key::F12,
             },
-            // 字母行：VK_* 就是 ASCII 大写码。
+            // Digit row: the `VK_*` codes are the ASCII codes for `0`-`9`.
             0x30..=0x39 => match vk - 0x30 {
                 0 => Key::Digit0,
                 1 => Key::Digit1,
@@ -148,12 +153,12 @@ impl Key {
         }
     }
 
-    /// 这个键对应的 Win32 虚拟键码。
+    /// Returns this key's Win32 virtual key code.
     ///
-    /// [`Key::Other`] 直接返回原始码；其余返回规范化的 `VK_*`
-    /// （左右修饰键分别用 `VK_LSHIFT` / `VK_RSHIFT` 这类区分码）。
-    /// 用途：引擎的 `KeyCode` 没有 F1–F12 之类的专用变体，向下传递时需要
-    /// 一个稳定的数字载荷。
+    /// [`Key::Other`] returns its raw code; all others return the canonical `VK_*`
+    /// (left/right modifiers use distinct codes such as `VK_LSHIFT` / `VK_RSHIFT`).
+    /// Used because the engine's `KeyCode` has no dedicated variants for F1–F12, so
+    /// a stable numeric payload is needed when forwarding.
     pub fn to_vk(self) -> u32 {
         match self {
             Key::Tab => 0x09,
@@ -204,10 +209,11 @@ impl Key {
     }
 }
 
-/// 修饰键状态（`WindowEvent::ModifiersChanged` / `GetKeyState` 的抽象）。
+/// Modifier-key state (an abstraction over `WindowEvent::ModifiersChanged` /
+/// `GetKeyState`).
 ///
-/// `KeyboardInput` / `WM_KEYDOWN` 自身都不携带修饰键，PBR 分量调试快捷键
-/// （Shift+1..5）只能靠这份状态区分。
+/// Neither `KeyboardInput` nor `WM_KEYDOWN` carries modifiers, so the PBR component
+/// debug shortcuts (Shift+1..5) can only be distinguished through this state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Modifiers {
     pub shift: bool,
@@ -225,10 +231,10 @@ impl Modifiers {
     }
 }
 
-/// 与窗口库无关的平台事件快照。
+/// A window-library-independent snapshot of a platform event.
 ///
-/// `prism-app` 和宿主扩展最终应消费此类型，而不是直接依赖 winit 的
-/// `WindowEvent`。
+/// `prism-app` and host extensions should consume this type instead of depending on
+/// winit's `WindowEvent` directly.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PlatformEvent {
     CloseRequested,
@@ -238,14 +244,16 @@ pub enum PlatformEvent {
         height: u32,
     },
     CursorMoved {
-        /// 窗口客户区内的物理像素坐标。
+        /// Physical-pixel coordinates within the window client area.
         x: f64,
         y: f64,
     },
-    /// 指针锁定下的**原始设备增量**（相对位移，不是绝对坐标）。
+    /// **Raw device delta** under pointer lock (relative motion, not absolute
+    /// coordinates).
     ///
-    /// winit 后端来自 `DeviceEvent::MouseMotion`，Win32 后端来自
-    /// 「隐藏 + 每帧回中」的鼠标捕获。只有这一个是增量语义。
+    /// The winit backend gets this from `DeviceEvent::MouseMotion`; the Win32 backend
+    /// from "hide + recenter every frame" mouse capture. This is the only event with
+    /// delta semantics.
     MouseMotion {
         dx: f64,
         dy: f64,
@@ -254,11 +262,12 @@ pub enum PlatformEvent {
         button: u16,
         pressed: bool,
     },
-    /// 垂直滚动量，**单位是「滚轮行」**（一格传统滚轮 = 1.0）。
+    /// Vertical scroll amount in **wheel lines** (one traditional wheel notch = 1.0).
     ///
-    /// winit 在部分平台/设备上给的是像素增量（触控板、precision 滚轮），
-    /// 平台层已按 [`PIXELS_PER_SCROLL_LINE`] 折算成行，所以消费方可以
-    /// 统一按「1.0 ≈ 一格」处理，不必知道来源设备。
+    /// On some platforms / devices winit reports a pixel delta (trackpads, precision
+    /// wheels); the platform layer converts it to lines using
+    /// [`PIXELS_PER_SCROLL_LINE`], so consumers can treat "1.0 ≈ one notch"
+    /// uniformly without knowing the source device.
     MouseWheel {
         delta: f64,
     },
@@ -266,10 +275,11 @@ pub enum PlatformEvent {
         key: Key,
         pressed: bool,
     },
-    /// 修饰键状态变化（Shift/Ctrl/Alt 的当前快照）。
+    /// A modifier-key change (current Shift/Ctrl/Alt snapshot).
     Modifiers(Modifiers),
     Touch {
-        /// 触点 id（同一根手指的手指按下到抬起保持不变，多点触控据此区分）。
+        /// Touch-point id (stable from finger-down to finger-up; used to tell
+        /// multi-touch contacts apart).
         id: u64,
         x: f64,
         y: f64,
@@ -286,21 +296,25 @@ pub enum TouchPhase {
     Cancelled,
 }
 
-/// 像素增量折算成滚轮行的换算常量（50 px ≈ 一格）。
+/// Conversion constant from pixel delta to wheel lines (50 px ≈ one notch).
 ///
-/// winit 的 [`MouseScrollDelta`](https://docs.rs/winit/latest/winit/event/enum.MouseScrollDelta.html)
-/// 有两个单位互不相同的变体：
-/// 传统滚轮报 `LineDelta`（一格 `1.0`），触控板/高精度滚轮报 `PixelDelta`
-/// （一格通常几十到上百像素）。两者直接混用会让同一份缩放在不同平台上快
-/// 60–120 倍，所以平台层在这里统一折算，`PlatformEvent::MouseWheel` 的
-/// `delta` 与 `InputManager::scroll_delta` 只以「行」为准。
+/// [`MouseScrollDelta`](https://docs.rs/winit/latest/winit/event/enum.MouseScrollDelta.html)
+/// has two variants with different units: a traditional wheel reports `LineDelta`
+/// (one notch = `1.0`) while a trackpad / high-precision wheel reports `PixelDelta`
+/// (one notch is typically tens to hundreds of pixels). Mixing the two directly
+/// would make the same zoom 60–120× faster on one platform than another, so the
+/// platform layer converts here and `PlatformEvent::MouseWheel`'s `delta` and
+/// `InputManager::scroll_delta` are always in lines.
 ///
-/// 50 是经验值（Windows 的 `WHEEL_DELTA` 与各平台触控板的常见步长都落在这个
-/// 量级），不是任何平台的协议常量；只有「同一格滚轮在两种单位下折算结果一致」
-/// 是必须保持的契约，调这个数值不会改变缩放曲线的手感定义。
+/// 50 is an empirical value (Windows' `WHEEL_DELTA` and common trackpad step sizes
+/// fall in this range), not a protocol constant of any platform; only the contract
+/// that "the same wheel notch converts to the same result in either unit" must
+/// hold — changing this number does not change the feel definition of the zoom
+/// curve.
 pub const PIXELS_PER_SCROLL_LINE: f64 = 50.0;
 
-/// 把像素级滚动增量折算成滚轮行（保留小数，触控板滑动平滑累积）。
+/// Converts a pixel-level scroll delta into wheel lines (fractions kept, so
+/// trackpad scrolling accumulates smoothly).
 pub fn scroll_lines_from_pixels(pixels: f64) -> f64 {
     pixels / PIXELS_PER_SCROLL_LINE
 }
@@ -309,7 +323,7 @@ pub fn scroll_lines_from_pixels(pixels: f64) -> f64 {
 mod tests {
     use super::*;
 
-    /// VK 映射是手工表：抽查移动/修饰/功能/数字键。
+    /// The VK map is hand-written: spot-check movement / modifier / function / digit keys.
     #[test]
     fn win32_virtual_keys_map_to_native_keys() {
         assert_eq!(Key::from_vk(0x57), Key::KeyW);
@@ -340,8 +354,9 @@ mod tests {
         assert_eq!(Key::from_vk(0x7B), Key::F12);
     }
 
-    /// `to_vk` 与 `from_vk` 必须互为逆映射（`prism-app` 用 `to_vk` 给引擎的
-    /// `KeyCode::Other` 造数字载荷，映射漂移会让键被认错）。
+    /// `to_vk` and `from_vk` must be inverses (`prism-app` uses `to_vk` to build the
+    /// numeric payload for the engine's `KeyCode::Other`; a mapping drift
+    /// misidentifies keys).
     #[test]
     fn key_round_trips_through_virtual_key_codes() {
         for key in [
@@ -385,7 +400,7 @@ mod tests {
         assert_eq!(Key::Other(0x24).to_vk(), 0x24);
     }
 
-    /// 未建模的键不能丢：退化为后端原始码。
+    /// Unmodeled keys must not be dropped: they degrade to the backend raw code.
     #[test]
     fn unmapped_virtual_keys_fall_back_to_raw_code() {
         assert_eq!(Key::from_vk(0x5A), Key::Other(0x5A)); // 'Z'
@@ -393,8 +408,8 @@ mod tests {
         assert_eq!(Key::from_vk(0x7C), Key::Other(0x7C)); // VK_F13
     }
 
-    /// 回归守卫：同一格滚轮无论走哪个单位，引擎看到的都是 1.0 行，
-    /// 否则 zoom/移动速度会按平台差 60–120 倍。
+    /// Regression guard: one wheel notch must reach the engine as 1.0 line in either
+    /// unit, or zoom / movement speed would differ 60–120× by platform.
     #[test]
     fn one_notch_is_one_line_in_either_unit() {
         let line = 1.0;

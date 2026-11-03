@@ -99,7 +99,7 @@ pub struct RenderShared {
     pub renderer_messages: Mutex<Vec<RendererMessage>>,
     /// 来自渲染线程的最新渲染统计（渲染→主线程）。
     pub render_stats: Mutex<RenderStats>,
-    /// 集合 `true` by main 线程 to request PT accumulation reset.
+    /// Set `true` by main thread to request PT accumulation reset.
     pub pt_reset_requested: AtomicBool,
     /// 资产上传请求队列（主线程 CPU 段 → 渲染线程 GPU 段）。
     /// 主线程 `prepare_requests` 生成的纯数据请求在这里入队；
@@ -120,7 +120,7 @@ pub struct RenderShared {
 }
 
 impl RenderShared {
-    /// 创建 a new shared 状态 with `running = true`.
+    /// Create a new shared state with `running = true`.
     pub fn new() -> (Arc<Self>, Arc<AtomicBool>) {
         let running = Arc::new(AtomicBool::new(true));
         let shared = Arc::new(Self {
@@ -143,10 +143,10 @@ impl RenderShared {
     }
 
     // -------------------------------------------------------------------
-    // Packet (main → 渲染
+    // Packet (main → render)
     // -------------------------------------------------------------------
 
-    /// Submit the latest 帧 packet (main 线程 → 渲染 线程
+    /// Submit the latest frame packet (main thread → render thread).
     pub fn send_packet(&self, packet: FramePacket) {
         *self.packet.lock().unwrap() = Some(packet);
         self.packet_ready.notify_one();
@@ -160,7 +160,7 @@ impl RenderShared {
         self.overlay_messages.lock().unwrap().push(msg);
     }
 
-    /// Take the latest 帧 packet 渲染 线程
+    /// Take the latest frame packet (render thread).
     pub fn take_packet(&self) -> Option<FramePacket> {
         self.packet.lock().unwrap().take()
     }
@@ -298,29 +298,29 @@ impl RenderShared {
     }
 
     // -------------------------------------------------------------------
-    // RenderStats 渲染 → main)
+    // RenderStats (render → main)
     // -------------------------------------------------------------------
 
-    /// 写入 latest 渲染 stats 渲染 线程
+    /// Write latest render stats (render thread).
     pub fn set_render_stats(&self, stats: RenderStats) {
         *self.render_stats.lock().unwrap() = stats;
     }
 
-    /// 读取 latest 渲染 stats (main 线程
+    /// Read latest render stats (main thread).
     pub fn read_render_stats(&self) -> RenderStats {
         self.render_stats.lock().unwrap().clone()
     }
 
     // -------------------------------------------------------------------
-    // PT reset (main → 渲染
+    // PT reset (main → render)
     // -------------------------------------------------------------------
 
-    /// Request PT accumulation reset (main 线程
+    /// Request PT accumulation reset (main thread).
     pub fn request_pt_reset(&self) {
         self.pt_reset_requested.store(true, Ordering::Relaxed);
     }
 
-    /// Take and 清空 PT reset flag 渲染 线程
+    /// Take and clear PT reset flag (render thread).
     pub fn take_pt_reset(&self) -> bool {
         self.pt_reset_requested.swap(false, Ordering::Relaxed)
     }

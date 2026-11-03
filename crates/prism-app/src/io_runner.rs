@@ -42,7 +42,7 @@ pub enum IoResult {
     },
 }
 
-// ── GPU upload 任务 ───────────────────────────────────────────────────
+// ── GPU upload task ───────────────────────────────────────────────────
 
 /// 主线程入队、供渲染线程执行的任务（从 CPU 端资源数据创建 Vulkan 资源）。
 #[derive(Debug, Clone)]
@@ -61,10 +61,10 @@ pub enum GpuUploadTask {
     },
 }
 
-// ── 线程 entry point ────────────────────────────────────────────────
+// ── Thread entry point ────────────────────────────────────────────────
 
-/// Run the IO 事件 循环 Blocks on `rx` until [`IoRequest::Shutdown`]
-/// is received or the 通道 is closed.
+/// Run the IO event loop. Blocks on `rx` until [`IoRequest::Shutdown`]
+/// is received or the channel is closed.
 pub fn io_thread_main(rx: Receiver<IoRequest>, result_tx: Sender<IoResult>) {
     log::info!("IO thread started");
 

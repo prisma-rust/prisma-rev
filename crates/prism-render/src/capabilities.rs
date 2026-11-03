@@ -13,8 +13,8 @@
 //! 第 1 层 Vulkan 1.2 提升特性（buffer_device_address、descriptor_indexing、timeline_semaphore）
 //! ```
 //!
-//! An 扩展 is only considered *usable* when **both** the 扩展 is
-//! advertised by the driver **and** the corresponding 特性 结构体 reports
+//! An extension is only considered *usable* when **both** the extension is
+//! advertised by the driver **and** the corresponding feature struct reports
 //! it as supported (`vkGetPhysicalDeviceFeatures2`).
 
 use std::collections::HashSet;
@@ -22,40 +22,40 @@ use std::ffi::CStr;
 
 use ash::vk;
 
-/// 结果 of probing one 物理 设备 for ray-tracing capabilities.
+/// Result of probing one physical device for ray-tracing capabilities.
 ///
-/// Every field is `false` / 零 when the 特性 is absent, so callers can
-/// unconditionally 分支 on these flags without risking a 恐慌 on non-RT
+/// Every field is `false` / zero when the feature is absent, so callers can
+/// unconditionally branch on these flags without risking a panic on non-RT
 /// hardware.
 #[derive(Debug, Clone, Default)]
 pub struct RayTracingCaps {
-    // -- 层 1: Vulkan 1.2 promoted features (foundation for RT) --
-    /// 物理 设备 supports Vulkan 1.2 API (`api_version >= 1.2`).
+    // -- Layer 1: Vulkan 1.2 promoted features (foundation for RT) --
+    /// Physical device supports Vulkan 1.2 API (`api_version >= 1.2`).
     pub vulkan_1_2: bool,
-    /// `bufferDeviceAddress` available (required by 加速度 structures).
+    /// `bufferDeviceAddress` available (required by acceleration structures).
     pub buffer_device_address: bool,
-    /// `descriptorIndexing` available (used by RT 描述符 layouts).
+    /// `descriptorIndexing` available (used by RT descriptor layouts).
     pub descriptor_indexing: bool,
     /// `timelineSemaphore` available (useful for long-running AS builds).
     pub timeline_semaphore: bool,
     pub synchronization2: bool,
     pub copy_commands2: bool,
 
-    // -- 层 2: 加速度 structures (prerequisite for any RT) --
-    /// `VK_KHR_acceleration_structure` 扩展 + 特性 available.
+    // -- Layer 2: acceleration structures (prerequisite for any RT) --
+    /// `VK_KHR_acceleration_structure` extension + feature available.
     pub acceleration_structure: bool,
-    /// `VK_KHR_deferred_host_operations` available (AS 构建 dependency).
+    /// `VK_KHR_deferred_host_operations` available (AS build dependency).
     pub deferred_host_operations: bool,
 
-    // -- 层 3: RT-core 管线 --
-    /// `VK_KHR_ray_tracing_pipeline` 扩展 + 特性 available.
+    // -- Layer 3: RT-core pipeline --
+    /// `VK_KHR_ray_tracing_pipeline` extension + feature available.
     pub ray_tracing_pipeline: bool,
 
-    // -- 层 4: inline 射线 queries --
-    /// `VK_KHR_ray_query` 扩展 + 特性 available.
+    // -- Layer 4: inline ray queries --
+    /// `VK_KHR_ray_query` extension + feature available.
     pub ray_query: bool,
 
-    // -- RT 管线 properties (only meaningful when ray_tracing_pipeline) --
+    // -- RT pipeline properties (only meaningful when ray_tracing_pipeline) --
     pub max_recursion_depth: u32,
     pub shader_group_handle_size: u32,
     pub max_shader_group_stride: u32,
@@ -67,18 +67,18 @@ pub struct RayTracingCaps {
 
 impl RayTracingCaps {
     /// Convenience: is *any* ray-tracing path available?
-    /// True when 加速度 structures are present and at least one of
+    /// True when acceleration structures are present and at least one of
     /// the ray-tracing-pipeline or ray-query layers is usable.
     pub fn any_ray_tracing(&self) -> bool {
         self.acceleration_structure && (self.ray_tracing_pipeline || self.ray_query)
     }
 
-    /// The 完整 RT-core 管线 path (BLAS/TLAS + SBT + rgen/rmiss/rchit).
+    /// The full RT-core pipeline path (BLAS/TLAS + SBT + rgen/rmiss/rchit).
     pub fn has_rt_pipeline(&self) -> bool {
         self.acceleration_structure && self.ray_tracing_pipeline
     }
 
-    /// The lighter ray-query path (inline `traceRayEXT` in 片元 shaders).
+    /// The lighter ray-query path (inline `traceRayEXT` in fragment shaders).
     pub fn has_ray_query(&self) -> bool {
         self.acceleration_structure && self.ray_query
     }
@@ -122,9 +122,9 @@ impl std::fmt::Display for RayTracingCaps {
     }
 }
 
-/// Collect all 设备 扩展 names advertised by the 物理 设备
+/// Collect all device extension names advertised by the physical device.
 ///
-/// Pure 函数 over the enumerated properties; kept separate from
+/// Pure function over the enumerated properties; kept separate from
 /// [`probe`] so it can be unit-tested with synthetic data.
 pub fn collect_extension_names(props: &[vk::ExtensionProperties]) -> HashSet<String> {
     props
@@ -137,15 +137,15 @@ pub fn collect_extension_names(props: &[vk::ExtensionProperties]) -> HashSet<Str
         .collect()
 }
 
-/// Does the advertised 扩展 集合 contain `name`?
+/// Does the advertised extension set contain `name`?
 pub fn has_extension(available: &HashSet<String>, name: &str) -> bool {
     available.contains(name)
 }
 
-/// The 集合 of 设备 extensions that should be 启用 for 射线 tracing,
+/// The set of device extensions that should be enabled for ray tracing,
 /// given the probed capabilities. Always includes `VK_KHR_swapchain`
-/// (the 调用者 already adds it). Returns the RT-specific 扩展 names
-/// as `&'static CStr` for direct use in the 扩展 指针 数组
+/// (the caller already adds it). Returns the RT-specific extension names
+/// as `&'static CStr` for direct use in the extension pointer array.
 pub fn rt_extension_names(caps: &RayTracingCaps) -> Vec<&'static CStr> {
     let mut names = Vec::new();
     if caps.acceleration_structure {
@@ -169,11 +169,11 @@ pub fn rt_extension_names(caps: &RayTracingCaps) -> Vec<&'static CStr> {
     names
 }
 
-/// Probe a 物理 设备 for ray-tracing capabilities.
+/// Probe a physical device for ray-tracing capabilities.
 ///
-/// # 安全性
+/// # Safety
 ///
-/// 实例 and `physical_device` must be 有效 Vulkan handles obtained
+/// `instance` and `physical_device` must be valid Vulkan handles obtained
 /// from a loaded `ash::Entry`.
 pub unsafe fn probe(
     instance: &ash::Instance,
@@ -219,9 +219,9 @@ pub unsafe fn probe(
         vk::KHR_SHADER_FLOAT_CONTROLS_NAME.to_str().unwrap(),
     );
 
-    // --- 特性 链 查询 what the driver actually supports ---
-    // We 链 Vulkan12Features + the three RT 特性 structs (when their
-    // extensions are advertised) and 读取 后 the support bools.
+    // --- feature chain: query what the driver actually supports ---
+    // We chain Vulkan12Features + the three RT feature structs (when their
+    // extensions are advertised) and read back the support bools.
     let mut vk12 = vk::PhysicalDeviceVulkan12Features::default();
     let mut accel_features = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default();
     let mut rt_pipeline_features = vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default();
@@ -240,12 +240,12 @@ pub unsafe fn probe(
 
     unsafe { instance.get_physical_device_features2(physical_device, &mut features2) };
 
-    // 层 1: Vulkan 1.2 promoted features.
+    // Layer 1: Vulkan 1.2 promoted features.
     let buffer_device_address = vk12.buffer_device_address == vk::TRUE;
     let descriptor_indexing = vk12.descriptor_indexing == vk::TRUE;
     let timeline_semaphore = vk12.timeline_semaphore == vk::TRUE;
 
-    // 层 2: 加速度 structure (real only when ext + 特性 agree).
+    // Layer 2: acceleration structure (real only when ext + feature agree).
     let acceleration_structure = has_accel_ext
         && has_deferred_ext
         && has_descriptor_indexing_ext
@@ -253,7 +253,7 @@ pub unsafe fn probe(
         && accel_features.acceleration_structure == vk::TRUE;
     let deferred_host_operations = has_deferred_ext;
 
-    // 层 3/4: RT 管线 / 射线 查询 (independent of each other).
+    // Layer 3/4: RT pipeline / ray query (independent of each other).
     let ray_tracing_pipeline = has_rt_pipeline_ext
         && has_spirv_1_4_ext
         && has_shader_float_controls_ext
@@ -263,7 +263,7 @@ pub unsafe fn probe(
         && has_shader_float_controls_ext
         && ray_query_features.ray_query == vk::TRUE;
 
-    // --- RT 管线 properties (SBT 对齐 etc.) ---
+    // --- RT pipeline properties (SBT alignment etc.) ---
     let mut rt_props = vk::PhysicalDeviceRayTracingPipelinePropertiesKHR::default();
     let mut props2 = vk::PhysicalDeviceProperties2::default().push_next(&mut rt_props);
     if ray_tracing_pipeline {

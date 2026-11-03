@@ -1,10 +1,10 @@
-//! PrismaRev 音频子系统
+//! PrismaRev audio subsystem.
 //!
-//! 基于 [Firewheel](https://github.com/BillyDM/firewheel) 构建，
-//! 一个纯 Rust 音频图引擎，后端使用 cpal。支持 Windows、macOS、Linux、
-//! Android、iOS 和 WebAssembly。
+//! Built on [Firewheel](https://github.com/BillyDM/firewheel), a pure-Rust
+//! audio graph engine, with cpal as the backend. Supports Windows, macOS,
+//! Linux, Android, iOS and WebAssembly.
 //!
-//! # 快速开始
+//! # Quick start
 //!
 //! ```rust,no_run
 //! use prism_audio::*;
@@ -12,17 +12,16 @@
 //! let mut engine = AudioEngine::new(AudioConfig::default())
 //!     .expect("audio engine");
 //!
-//! // 加载声音
+//! // Load a sound.
 //! let data = decoder::decode_file("beep.wav").unwrap();
 //!
-//! // 播放
+//! // Play it.
 //! let handle = engine.play(&data);
 //!
-//! // 控制音量（引擎管理句柄）
+//! // Adjust the volume; the engine owns the handle.
 //! engine.set_volume(&handle, 0.5);
-//! // engine.stop(&handle);
 //!
-//! // 每帧更新
+//! // Call once per frame.
 //! engine.update();
 //! ```
 

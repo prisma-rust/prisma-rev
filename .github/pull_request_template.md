@@ -18,7 +18,8 @@
 
 ## Self-check
 
-<!-- 粘贴 `python scripts/pr_ready.py` 打印的 Markdown 块（`--base origin/master`）。 -->
+<!-- 粘贴 `python scripts/pr_ready.py` 打印的 Markdown 块（`--base origin/master`）。
+     注释-only PR 额外粘贴 `python scripts/check_comment_only.py --base origin/master` 的结果。 -->
 
 ## AI 参与声明
 

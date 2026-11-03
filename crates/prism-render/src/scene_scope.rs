@@ -1,10 +1,10 @@
-//! Scene-level GPU resources with 生命周期 independent of the 交换链
+//! Scene-level GPU resources with lifetime independent of the swapchain.
 //!
-//! [`SceneScope`] owns the probe-volume 全局光照 resources (3D 纹理 + 信息 UBO +
-//! 描述符 集合 These survive 交换链 recreation and are only rebuilt
+//! [`SceneScope`] owns the probe-volume GI resources (3D texture + info UBO +
+//! descriptor set). These survive swapchain recreation and are only rebuilt
 //! when the scene/level changes (`recreate_probe_volume`).
 //!
-//! Design: mirrors the IBL 模式 — GraphRenderer holds `SceneScope`, borrows
+//! Design: mirrors the IBL pattern — GraphRenderer holds `SceneScope`, borrows
 //! its 描述符 集合 + 布局 into `ForwardPass` 集合 5).
 
 use anyhow::Context as _;
@@ -15,44 +15,44 @@ use std::sync::Arc;
 use crate::context::VulkanContext;
 use crate::shader_bindings::scene_frag;
 
-/// Scene-level probe-volume 全局光照 resources 集合 5).
+/// Scene-level probe-volume GI resources (set 5).
 ///
-/// 生命周期 created once per scene 加载 survives 交换链 recreation.
-/// Destroyed explicitly via [`SceneScope::destroy`] or on 放置
+/// Lifetime: created once per scene load; survives swapchain recreation.
+/// Destroyed explicitly via [`SceneScope::destroy`] or on `Drop`.
 pub struct SceneScope {
     device: ash::Device,
     context: Arc<VulkanContext>,
-    // ---- 集合 5 描述符 resources ----
-    /// 描述符 集合 布局 绑定 0: SAMPLED_IMAGE, 绑定 1: UBO).
+    // ---- set 5 descriptor resources ----
+    /// Descriptor set layout (binding 0: SAMPLED_IMAGE, binding 1: UBO).
     pub descriptor_set_layout: vk::DescriptorSetLayout,
-    /// The single 描述符 集合 written with the probe 音量 + 信息 UBO.
+    /// The single descriptor set written with the probe volume + info UBO.
     pub descriptor_set: vk::DescriptorSet,
     descriptor_pool: vk::DescriptorPool,
-    // ---- probe 音量 3D 纹理 ----
+    // ---- probe volume 3D texture ----
     volume_image: vk::Image,
     volume_view: vk::ImageView,
     volume_memory: vk::DeviceMemory,
-    // ---- ProbeVolumeInfo UBO (48 字节 ----
+    // ---- ProbeVolumeInfo UBO (48 bytes) ----
     info_buffer: vk::Buffer,
     info_memory: vk::DeviceMemory,
 }
 
 impl SceneScope {
-    /// 创建 the scene-scope 全局光照 resources with a synthetic analytical sky SH
+    /// Create the scene-scope GI resources with a synthetic analytical sky SH
     /// field (Phase A placeholder). Phase E replaces with real baked data via
     /// [`SceneScope::recreate_probe_volume`].
     pub fn new(context: Arc<VulkanContext>) -> Result<Self> {
         let device = context.device.clone();
 
-        // ---- 描述符 集合 布局 集合 5) ----
+        // ---- Descriptor set layout (set 5) ----
         let gi_bindings = [
-            // 绑定 0: probe 音量 3D 纹理 (SAMPLED_IMAGE, no 采样器
+            // binding 0: probe volume 3D texture (SAMPLED_IMAGE, no sampler).
             vk::DescriptorSetLayoutBinding::default()
                 .binding(scene_frag::PROBE_VOLUME_BINDING)
                 .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
-            // 绑定 1: ProbeVolumeInfo UBO (48 字节
+            // binding 1: ProbeVolumeInfo UBO (48 bytes).
             vk::DescriptorSetLayoutBinding::default()
                 .binding(scene_frag::PROBE_INFO_BINDING)
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
@@ -108,17 +108,17 @@ impl SceneScope {
             info_memory: vk::DeviceMemory::null(),
         };
 
-        // Populate with synthetic sky SH field (Phase A 默认
+        // Populate with synthetic sky SH field (Phase A default).
         scope.upload_synthetic_probe_volume()?;
 
         Ok(scope)
     }
 
-    /// Rebuild the probe 音量 from 外部 data (Phase C/E: loaded from
-    /// `.bin` via prism-asset). Destroys prior 音量 resources 第一个
+    /// Rebuild the probe volume from external data (Phase C/E: loaded from
+    /// `.bin` via prism-asset). Destroys prior volume resources first.
     ///
     /// `pixels` is RGBA32F texel data laid out as
-    /// `dims[0] x dims[1] x (dims[2]*9)` (coefficient-major 深度 slices).
+    /// `dims[0] x dims[1] x (dims[2]*9)` (coefficient-major depth slices).
     pub fn recreate_probe_volume(
         &mut self,
         info: &crate::gi::ProbeVolumeInfo,
@@ -129,9 +129,9 @@ impl SceneScope {
         self.upload_probe_volume(info, dims, pixels)
     }
 
-    /// Upload probe 音量 from a `ProbeVolumeData` (loaded via
-    /// [`crate::probe_loader`]). Converts the per-probe coefficient 布局 into
-    /// the 3D texture's coefficient-major depth-slice 布局 and calls
+    /// Upload probe volume from a `ProbeVolumeData` (loaded via
+    /// [`crate::probe_loader`]). Converts the per-probe coefficient layout into
+    /// the 3D texture's coefficient-major depth-slice layout and calls
     /// `recreate_probe_volume`.
     pub fn from_probe_data(&mut self, data: &crate::probe_loader::ProbeVolumeData) -> Result<()> {
         anyhow::ensure!(
@@ -145,9 +145,9 @@ impl SceneScope {
         self.recreate_probe_volume(&info, data.dims, &pixels)
     }
 
-    /// 转换 `ProbeVolumeData` (per-probe coefficient 数组 into the 3D
-    /// 纹理 像素 布局 `dims[0] x dims[1] x (dims[2]*9)` RGBA32F.
-    /// Coefficient c occupies 深度 切片 `[c*dims.z, (c+1)*dims.z)`.
+    /// Convert `ProbeVolumeData` (per-probe coefficient array) into the 3D
+    /// texture pixel layout: `dims[0] x dims[1] x (dims[2]*9)` RGBA32F.
+    /// Coefficient c occupies depth slice `[c*dims.z, (c+1)*dims.z)`.
     fn probe_data_to_pixels(data: &crate::probe_loader::ProbeVolumeData) -> Vec<f32> {
         let dx = data.dims[0] as usize;
         let dy = data.dims[1] as usize;
@@ -175,7 +175,7 @@ impl SceneScope {
     }
 
     // -------------------------------------------------------------------
-    // 内部 upload helpers
+    // Internal: upload helpers
     // -------------------------------------------------------------------
 
     /// Upload synthetic analytical sky-hemisphere SH field (Phase A).
@@ -190,7 +190,7 @@ impl SceneScope {
         self.upload_probe_volume(&info, dims, &pixels)
     }
 
-    /// Core upload path: 创建 3D 纹理 + 信息 UBO + 写入 descriptors.
+    /// Core upload path: create 3D texture + info UBO + write descriptors.
     fn upload_probe_volume(
         &mut self,
         info: &crate::gi::ProbeVolumeInfo,
@@ -204,7 +204,7 @@ impl SceneScope {
         let tex_h = dims[1];
         let tex_d = dims[2] * 9; // 9 coefficient layers
 
-        // ---- 创建 3D 图像 (RGBA32SFLOAT, device-local) ----
+        // ---- Create 3D image (RGBA32SFLOAT, device-local) ----
         let image_info = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_3D)
             .format(vk::Format::R32G32B32A32_SFLOAT)
@@ -241,7 +241,7 @@ impl SceneScope {
         unsafe { device.bind_image_memory(volume_image, volume_memory, 0) }
             .context("SceneScope: bind GI volume memory")?;
 
-        // ---- Upload via staging 缓冲区 ----
+        // ---- Upload via staging buffer ----
         let data_bytes: &[u8] = unsafe {
             std::slice::from_raw_parts(pixels.as_ptr() as *const u8, std::mem::size_of_val(pixels))
         };
@@ -262,7 +262,7 @@ impl SceneScope {
             device.unmap_memory(staging_mem);
         }
 
-        // One-shot 命令 缓冲区 布局 过渡 + 复制
+        // One-shot command buffer: layout transition + copy.
         let cmd_pool = unsafe {
             device.create_command_pool(
                 &vk::CommandPoolCreateInfo::default()
@@ -308,7 +308,7 @@ impl SceneScope {
                         layer_count: 1,
                     })],
             );
-            // 复制 staging -> 3D 图像
+            // Copy staging -> 3D image.
             device.cmd_copy_buffer_to_image(
                 cmd_buf,
                 staging_buf,
@@ -377,7 +377,7 @@ impl SceneScope {
             device.free_memory(staging_mem, None);
         }
 
-        // ---- 图像 视图 (3D, single mip/layer) ----
+        // ---- Image view (3D, single mip/layer) ----
         let volume_view = unsafe {
             device.create_image_view(
                 &vk::ImageViewCreateInfo::default()
@@ -396,7 +396,7 @@ impl SceneScope {
         }
         .context("SceneScope: create GI volume image view")?;
 
-        // ---- ProbeVolumeInfo UBO (48 字节 host-visible) ----
+        // ---- ProbeVolumeInfo UBO (48 bytes, host-visible) ----
         let info_size = std::mem::size_of::<crate::gi::ProbeVolumeInfo>() as vk::DeviceSize;
         let (info_buffer, info_memory) = crate::buffer::create_buffer(
             context,
@@ -418,7 +418,7 @@ impl SceneScope {
             device.unmap_memory(info_memory);
         }
 
-        // ---- 写入 描述符 集合 ----
+        // ---- Write descriptor set ----
         let img_info = vk::DescriptorImageInfo::default()
             .image_view(volume_view)
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
@@ -458,8 +458,8 @@ impl SceneScope {
 
     /// Generate a synthetic analytical sky-hemisphere SH probe field.
     /// All probes share the same SH (position-independent sky dome) so the
-    /// visual 结果 is a uniform 间接 diffuse from above. Used in Phase A
-    /// to validate the sampling 管线 before real baked data is available.
+    /// visual result is a uniform indirect diffuse from above. Used in Phase A
+    /// to validate the sampling pipeline before real baked data is available.
     fn generate_synthetic_sh_field(dims: [usize; 3]) -> Vec<f32> {
         use crate::gi::{sh_basis, SH_COEFF_COUNT};
         const N: usize = 64; // samples per probe (uniform sphere)
@@ -467,10 +467,10 @@ impl SceneScope {
         // RGBA pixels: (dims[0]) x (dims[1]) x (dims[2]*9)
         let mut pixels = vec![0.0f32; dims[0] * dims[1] * (dims[2] * 9) * 4];
 
-        // Precompute SH 投影 of a sky hemisphere (same for all probes).
+        // Precompute SH projection of a sky hemisphere (same for all probes).
         let mut sh = [[0.0f32; 3]; SH_COEFF_COUNT];
         for si in 0..N {
-            // Fibonacci 球体 for uniform direction distribution.
+            // Fibonacci sphere for uniform direction distribution.
             let y = 1.0 - 2.0 * (si as f32 + 0.5) / N as f32;
             let r = (1.0 - y * y).max(0.0).sqrt();
             let phi = si as f32 * 2.399963; // golden angle
@@ -482,7 +482,7 @@ impl SceneScope {
                 [0.12f32, 0.10, 0.08] // ground brown
             };
             let basis = sh_basis(d);
-            // Monte Carlo SH 投影 with cosine weighting:
+            // Monte Carlo SH projection with cosine weighting:
             //   c_l = (4*pi/N) * sum_i L(d_i) * max(d_i.y, 0) * B_l(d_i)
             let cos_w = d[1].max(0.0); // surface normal = up
             let w = 4.0 * std::f32::consts::PI / N as f32 * cos_w;
@@ -516,8 +516,8 @@ impl SceneScope {
     // Teardown
     // -------------------------------------------------------------------
 
-    /// 销毁 only the 音量 + UBO resources (not the 描述符 layout/pool).
-    /// Called before re-uploading a new probe 音量
+    /// Destroy only the volume + UBO resources (not the descriptor layout/pool).
+    /// Called before re-uploading a new probe volume.
     fn destroy_volume_resources(&mut self) {
         let device = &self.device;
         if self.volume_view != vk::ImageView::null() {
@@ -542,8 +542,8 @@ impl SceneScope {
         }
     }
 
-    /// 销毁 ALL GPU resources owned by this SceneScope.
-    /// 调用者 must ensure `device_wait_idle` has been called.
+    /// Destroy ALL GPU resources owned by this SceneScope.
+    /// Caller must ensure `device_wait_idle` has been called.
     pub fn destroy(&mut self) {
         self.destroy_volume_resources();
         if self.descriptor_pool != vk::DescriptorPool::null() {

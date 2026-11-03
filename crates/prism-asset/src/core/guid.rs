@@ -15,13 +15,13 @@ use std::hash::{Hash, Hasher};
 pub struct AssetGuid(pub [u8; 16]);
 
 impl AssetGuid {
-    /// Generate a new 随机 GUID (v4-style UUID).
+    /// Generate a new random GUID (v4-style UUID).
     pub fn new() -> Self {
         let u = uuid::Uuid::new_v4();
         Self(*u.as_bytes())
     }
 
-    /// 创建 a nil GUID (all zeroes). Use as a sentinel / "null" value.
+    /// Create a nil GUID (all zeroes). Use as a sentinel / "null" value.
     pub const fn nil() -> Self {
         Self([0u8; 16])
     }
@@ -31,7 +31,7 @@ impl AssetGuid {
         self.0 == [0u8; 16]
     }
 
-    /// Parse a UUID hex 字符串 (with or without hyphens).
+    /// Parse a UUID hex string (with or without hyphens).
     pub fn parse_str(s: &str) -> Result<Self, &'static str> {
         let hex: String = s
             .chars()
@@ -48,7 +48,7 @@ impl AssetGuid {
         Ok(Self(bytes))
     }
 
-    /// 转换 to a hyphenated hex 字符串
+    /// Convert to a hyphenated hex string.
     pub fn to_hyphenated(&self) -> String {
         self.to_string()
     }
@@ -68,7 +68,7 @@ impl fmt::Debug for AssetGuid {
 
 impl fmt::Display for AssetGuid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // 标准 UUID hex 格式 8-4-4-4-12
+        // Standard UUID hex format: 8-4-4-4-12
         let b = self.0;
         write!(
             f,
@@ -79,7 +79,7 @@ impl fmt::Display for AssetGuid {
     }
 }
 
-// Manual 哈希 so we don't rely on derive for [u8; 16].
+// Manual Hash so we don't rely on derive for [u8; 16].
 impl Hash for AssetGuid {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.0.hash(state);
@@ -87,7 +87,7 @@ impl Hash for AssetGuid {
 }
 
 // ---------------------------------------------------------------------------
-// Serde — 序列化 as a hex UUID 字符串 for human readability
+// Serde — serialize as a hex UUID string for human readability
 // ---------------------------------------------------------------------------
 
 impl serde::Serialize for AssetGuid {

@@ -3,7 +3,7 @@
 //! 参数化超高落差拟真水力+热力侵蚀高度图生成器。
 //! 支持 −11 000 m 到 +8 850 m（总落差 ≈ 20 km）。
 //!
-//! ## 用法
+//! ## Usage
 //! ```rust,ignore
 //! let hm = Heightmap::new(width, height, data);
 //! let params = ErosionParams::default();

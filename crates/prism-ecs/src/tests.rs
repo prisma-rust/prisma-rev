@@ -113,7 +113,7 @@ fn insert_on_dead_entity_is_noop() {
     let e = world.spawn();
     world.despawn(e);
     world.insert(e, Position(0.0, 0.0));
-    // recycled 槽 should not receive the stale 插入
+    // A recycled slot should not receive the stale insert.
     let e2 = world.spawn();
     assert_eq!(world.get::<Position>(e2), None);
 }
@@ -134,7 +134,7 @@ fn query2_joins_two_components() {
     world.insert(a, Position(1.0, 0.0));
     world.insert(a, Velocity(0.5, 0.0));
     world.insert(b, Position(2.0, 0.0));
-    // b has no 速度 _c has neither
+    // `b` has no `Velocity`; `_c` has neither.
     world.insert(_c, Position(3.0, 0.0));
 
     let results: Vec<_> = world.query2::<Position, Velocity>().collect();
@@ -153,7 +153,7 @@ fn query3_joins_three_components() {
     world.insert(a, Position(1.0, 0.0));
     world.insert(a, Velocity(0.5, 0.0));
     world.insert(a, Health(100));
-    // b is 缺少 Health
+    // `b` is missing `Health`.
     world.insert(b, Position(2.0, 0.0));
     world.insert(b, Velocity(1.0, 0.0));
 
@@ -246,7 +246,7 @@ fn query2_empty_when_one_pool_missing() {
     let mut world = World::new();
     let a = world.spawn();
     world.insert(a, Position(0.0, 0.0));
-    // No 实体 has 速度 at all
+    // No entity has `Velocity` at all.
     assert!(world.query2::<Position, Velocity>().next().is_none());
 }
 
