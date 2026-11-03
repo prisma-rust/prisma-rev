@@ -2324,6 +2324,31 @@ pub fn duplicate_state(document: &mut Value, name: &str) -> Result<String, Strin
     Ok(candidate)
 }
 
+/// 在 `states` 数组里前后移动一个状态，返回移动后的下标。
+///
+/// 运行时把**第一个状态**当作初始状态（`Animator.state` 为空时落到下标 0），
+/// 所以这个顺序同时决定初始状态。转移按状态名引用，重排不会改转移。
+/// 越界移动返回错误而不是静默夹到端点，面板据此禁用端点上的箭头。
+pub fn move_state(document: &mut Value, index: usize, offset: isize) -> Result<usize, String> {
+    let states = document
+        .get_mut("states")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "state machine needs a `states` array".to_string())?;
+    if index >= states.len() {
+        return Err(format!("state machine has no state #{index}"));
+    }
+    let len = states.len() as isize;
+    let target = index as isize + offset;
+    if target < 0 || target >= len {
+        return Err(format!(
+            "state #{index} cannot move by {offset} (only {len} states)"
+        ));
+    }
+    let state = states.remove(index);
+    states.insert(target as usize, state);
+    Ok(target as usize)
+}
+
 /// 追加一个状态。
 ///
 /// 名字与剪辑路径都去空白后必须非空（cooker 会拒绝空剪辑）；名字不能与现有
@@ -2672,6 +2697,35 @@ mod state_tests {
         assert!(set_state_speed(&mut doc, 9, 1.0).is_err());
         assert!(set_state_looped(&mut doc, 9, true).is_err());
         assert!(set_state_clip(&mut json!({ "states": ["bad"] }), 0, "a.ranim").is_err());
+    }
+
+    #[test]
+    fn states_can_be_reordered_without_touching_transitions() {
+        let mut doc = document();
+        add_state(&mut doc, "Jump", "jump.ranim").expect("adds");
+        let moved = move_state(&mut doc, 2, -2).expect("moves to the front");
+        assert_eq!(moved, 0);
+        assert_eq!(doc["states"][0]["name"], "Jump");
+        assert_eq!(doc["states"][1]["name"], "Idle");
+        assert_eq!(doc["states"][2]["name"], "Run");
+        assert_eq!(doc["transitions"][0]["to"], "Run", "转移按名字引用");
+        assert_eq!(doc["transitions"][1]["from"], "*");
+
+        let moved = move_state(&mut doc, 0, 1).expect("moves back");
+        assert_eq!(moved, 1);
+        assert_eq!(doc["states"][0]["name"], "Idle");
+        assert_eq!(doc["states"][1]["name"], "Jump");
+    }
+
+    #[test]
+    fn moving_states_rejects_out_of_range_indices() {
+        let mut doc = document();
+        assert!(move_state(&mut doc, 0, -1).is_err(), "已在最前");
+        assert!(move_state(&mut doc, 1, 1).is_err(), "已在最后");
+        assert!(move_state(&mut doc, 9, -1).is_err());
+        assert!(move_state(&mut json!({}), 0, 1).is_err());
+        assert!(move_state(&mut json!({ "states": ["bad"] }), 0, 1).is_err());
+        assert_eq!(doc["states"].as_array().unwrap().len(), 2, "失败不改文档");
     }
 
     #[test]
