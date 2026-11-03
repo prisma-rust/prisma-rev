@@ -5768,7 +5768,7 @@ pub fn anim_graph(
 ) {
     let Some(path) = state.asset_primary().cloned() else {
         ui.label(
-            RichText::new("select an .animgraph.json / .statemachine.json asset")
+            RichText::new("select an animation graph / state machine / clip / sidecar asset")
                 .weak()
                 .size(11.0),
         );
@@ -5776,11 +5776,12 @@ pub fn anim_graph(
     };
     let notify_asset = is_notify_sidecar(&path);
     let sync_marker_asset = is_sync_markers_sidecar(&path);
+    let clip_asset = path.ends_with(".ranim");
     let graph_asset = path.ends_with(".animgraph.json");
     let machine_asset = path.ends_with(".statemachine.json");
-    if !notify_asset && !sync_marker_asset && !graph_asset && !machine_asset {
+    if !notify_asset && !sync_marker_asset && !clip_asset && !graph_asset && !machine_asset {
         ui.label(
-            RichText::new("select an animation graph / state machine / notify / sync marker asset")
+            RichText::new("select an animation graph / state machine / clip / sidecar asset")
                 .weak()
                 .size(11.0),
         );
@@ -5802,6 +5803,10 @@ pub fn anim_graph(
     }
     if sync_marker_asset {
         draw_sync_markers_asset(ui, workspace, state, &path);
+        return;
+    }
+    if clip_asset {
+        draw_clip_asset(ui, workspace, &path);
         return;
     }
 
@@ -6040,6 +6045,193 @@ fn draw_notifies_asset(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiSta
         }
         Ok(false) => {}
         Err(error) => state.status = format!("notify file: {error}"),
+    }
+}
+
+/// `.ranim`：只读检查器（时长、轨道、Notify / 同步标记、根运动）。
+///
+/// 事件 / 标记的编辑走作者侧侧车；这里不写二进制资产。
+fn draw_clip_asset(ui: &mut Ui, workspace: &Workspace, path: &str) {
+    let bytes = match workspace.read_asset_bytes(path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            ui.label(
+                RichText::new(format!("read {path} failed: {error}"))
+                    .color(Color32::from_rgb(232, 96, 96)),
+            );
+            return;
+        }
+    };
+    let Some(clip) = prism_anim::decode_ranim(&bytes) else {
+        ui.label(RichText::new("not a valid .ranim clip").color(Color32::from_rgb(232, 96, 96)));
+        return;
+    };
+    let duration = clip.clip_duration().max(0.0);
+    ui.label(RichText::new(&clip.name).strong().size(13.0));
+    ui.label(RichText::new(path).weak().size(10.0));
+    let flags = match (clip.looped, clip.additive) {
+        (true, true) => "looped · additive",
+        (true, false) => "looped",
+        (false, true) => "additive",
+        (false, false) => "one-shot",
+    };
+    ui.label(
+        RichText::new(format!(
+            "{duration:.2}s · {:.0} fps · {flags} · {} tracks · {} notifies · {} sync markers",
+            clip.fps,
+            clip.tracks.len(),
+            clip.notifies.len(),
+            clip.sync_markers.len()
+        ))
+        .weak()
+        .size(10.0),
+    );
+
+    ui.separator();
+    let width = ui.available_width().clamp(160.0, 560.0);
+    let (track, painter) = ui.allocate_painter(Vec2::new(width, 44.0), egui::Sense::hover());
+    let rect = track.rect;
+    painter.rect_filled(rect, 3.0, Color32::from_rgb(26, 28, 32));
+    let inset = 8.0;
+    let left = rect.left() + inset;
+    let usable = (rect.width() - inset * 2.0).max(1.0);
+    let y = rect.center().y;
+    painter.line_segment(
+        [egui::pos2(left, y), egui::pos2(left + usable, y)],
+        egui::Stroke::new(1.0_f32, Color32::from_rgb(58, 63, 72)),
+    );
+    painter.text(
+        egui::pos2(left, rect.bottom() - 1.0),
+        egui::Align2::LEFT_BOTTOM,
+        "0",
+        egui::FontId::monospace(8.0),
+        Color32::from_rgb(110, 116, 126),
+    );
+    painter.text(
+        egui::pos2(left + usable, rect.bottom() - 1.0),
+        egui::Align2::RIGHT_BOTTOM,
+        format!("{duration:.2}s"),
+        egui::FontId::monospace(8.0),
+        Color32::from_rgb(110, 116, 126),
+    );
+    for notify in &clip.notifies {
+        let x = prism_editor_core::timeline_x(notify.time, duration, left, usable);
+        painter.circle_filled(egui::pos2(x, y), 3.5, Color32::from_rgb(214, 178, 74));
+    }
+    for phase in &clip.sync_markers {
+        let x = prism_editor_core::timeline_x(phase * duration, duration, left, usable);
+        painter.rect_filled(
+            egui::Rect::from_center_size(egui::pos2(x, y - 7.0), Vec2::new(5.0, 5.0)),
+            1.0,
+            Color32::from_rgb(112, 196, 168),
+        );
+    }
+    if let Some(pos) = track.hover_pos() {
+        let mut closest: Option<(f32, String)> = None;
+        for notify in &clip.notifies {
+            let x = prism_editor_core::timeline_x(notify.time, duration, left, usable);
+            let distance = (x - pos.x).abs();
+            if distance <= 8.0 && closest.as_ref().is_none_or(|(best, _)| distance < *best) {
+                closest = Some((distance, format!("{} @ {:.2}s", notify.name, notify.time)));
+            }
+        }
+        for phase in &clip.sync_markers {
+            let x = prism_editor_core::timeline_x(phase * duration, duration, left, usable);
+            let distance = (x - pos.x).abs();
+            if distance <= 8.0 && closest.as_ref().is_none_or(|(best, _)| distance < *best) {
+                closest = Some((distance, format!("sync {phase:.3}")));
+            }
+        }
+        if let Some((_, text)) = closest {
+            track.clone().on_hover_text(text);
+        }
+    }
+    ui.label(
+        RichText::new("gold = notify · green = sync marker · read-only (edit sidecars)")
+            .weak()
+            .size(9.0),
+    );
+
+    if let Some(root) = clip.tracks.iter().min_by_key(|track| track.joint) {
+        if let (Some(first), Some(last)) = (
+            root.positions
+                .iter()
+                .min_by(|a, b| a.time.total_cmp(&b.time)),
+            root.positions
+                .iter()
+                .max_by(|a, b| a.time.total_cmp(&b.time)),
+        ) {
+            let (delta, yaw) = prism_editor_core::root_motion_delta(first.value, last.value);
+            ui.label(
+                RichText::new(format!(
+                    "root joint {} · Δ ({:.2}, {:.2}, {:.2}) m · yaw {:.1}°",
+                    root.joint, delta[0], delta[1], delta[2], yaw
+                ))
+                .monospace()
+                .size(10.0),
+            );
+        }
+    }
+
+    egui::CollapsingHeader::new(
+        RichText::new(format!("Tracks ({})", clip.tracks.len()))
+            .strong()
+            .size(11.0),
+    )
+    .id_salt("clip-tracks")
+    .show(ui, |ui| {
+        for track in &clip.tracks {
+            let first = track
+                .positions
+                .iter()
+                .map(|key| key.time)
+                .chain(track.rotations.iter().map(|key| key.time))
+                .chain(track.scales.iter().map(|key| key.time))
+                .filter(|time| time.is_finite())
+                .fold(f32::INFINITY, f32::min);
+            let last = track
+                .positions
+                .iter()
+                .map(|key| key.time)
+                .chain(track.rotations.iter().map(|key| key.time))
+                .chain(track.scales.iter().map(|key| key.time))
+                .filter(|time| time.is_finite())
+                .fold(f32::NEG_INFINITY, f32::max);
+            let range = if first.is_finite() && last.is_finite() {
+                format!("{first:.2}..{last:.2}s")
+            } else {
+                "no keys".to_string()
+            };
+            ui.label(
+                RichText::new(format!(
+                    "#{} · pos {} · rot {} · scale {} · {range}",
+                    track.joint,
+                    track.positions.len(),
+                    track.rotations.len(),
+                    track.scales.len()
+                ))
+                .monospace()
+                .size(9.0),
+            );
+        }
+    });
+
+    if !clip.notifies.is_empty() {
+        egui::CollapsingHeader::new(
+            RichText::new(format!("Notifies ({})", clip.notifies.len()))
+                .strong()
+                .size(11.0),
+        )
+        .id_salt("clip-notifies")
+        .show(ui, |ui| {
+            for notify in &clip.notifies {
+                ui.label(
+                    RichText::new(format!("{:.2}s · {}", notify.time, notify.name))
+                        .monospace()
+                        .size(9.0),
+                );
+            }
+        });
     }
 }
 

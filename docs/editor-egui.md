@@ -509,6 +509,10 @@ for event in world.get_resource::<AnimEvents>().map(|e| e.drain()).unwrap_or_def
   在空白处点一下会在该时间打开新增草稿（剪辑名与时间已填好，只差事件名），点已有标记不会新建。
   保存后由松散资产热重载重新 cook，`.ranim` 里的 v3 事件表随之更新。
 
+**剪辑检查器**：在资产面板选中 `.ranim` 后，Animation Graph 面板显示只读检查器：时长 / fps /
+loop / additive、轨道数与每条轨道的关键帧范围、Notify / 同步标记时间轴、根关节首尾位移与
+偏航角。事件和标记仍通过作者侧侧车编辑，检查器不写二进制剪辑。
+
 **同步标记（Sync marker）**：走路 / 跑步循环的脚落地相位不同，混合时可以按标记对齐。
 作者写侧车 `assets/<mesh>.skinning/sync_markers.json`，键是 glTF 动画名，值是归一化相位：
 
