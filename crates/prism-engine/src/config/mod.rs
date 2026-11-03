@@ -14,7 +14,7 @@ use ini::Ini;
 use crate::render_settings::{InternalScaleMode, RenderMode, RenderSettings};
 
 // ---------------------------------------------------------------------------
-// Top-level 配置
+// Top-level config
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
@@ -343,7 +343,7 @@ fn default_app_name() -> String {
 }
 
 // ---------------------------------------------------------------------------
-// 窗口 defaults
+// Window defaults
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]

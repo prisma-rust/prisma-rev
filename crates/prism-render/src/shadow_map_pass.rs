@@ -128,13 +128,13 @@ fn prepare_shadow_batches_with(
 /// 叠加坡度/常量深度偏移以减少阴影痤疮和彼得潘现象，
 /// 并通过推送常量（无 UBO）传递光源空间矩阵。
 pub struct ShadowMapPass {
-    /// Shadow 映射表 深度 附件 handle (created in `setup`).
+    /// Shadow map depth attachment handle (created in `setup`).
     pub shadow_map: ResourceHandle,
     /// Square shadow tile 分辨率 (e.g. 2048).
     shadow_size: u32,
     /// Allocated atlas width: `shadow_size * cascade_count` (2048 or 4096).
     shadow_atlas_width: u32,
-    /// Depth-only graphics 管线 (lazy-created on 第一个 执行
+    /// Depth-only graphics pipeline (lazy-created on first `execute`).
     ///
     /// 背面剔除版本，供 `ShadowCastingMode::Off` / `On` / `ShadowsOnly` 使用。
     pipeline: Option<GraphicsPipeline>,
@@ -143,11 +143,11 @@ pub struct ShadowMapPass {
     /// 引擎的 `ShadowCastingMode.TwoSided` 会在阴影渲染时关闭背面剔除，
     /// 即使物体材质本身开启了背面剔除。
     pipeline_two_sided: Option<GraphicsPipeline>,
-    /// Shadow 渲染 pass (depth-only).
+    /// Shadow render pass (depth-only).
     render_pass: Option<vk::RenderPass>,
-    /// 帧缓冲 wrapping the shadow 映射表 深度 视图
+    /// Framebuffer wrapping the shadow map depth view.
     framebuffer: Option<vk::Framebuffer>,
-    /// Cloned 设备 handle for 放置
+    /// Cloned device handle for `Drop`.
     device: Option<ash::Device>,
     /// Track whether the shadow map image layout has been transitioned from UNDEFINED.
     layout_initialized: bool,
@@ -204,7 +204,7 @@ impl ShadowMapPass {
         }
     }
 
-    /// Shadow 映射表 资源 handle (for the lighting pass to 读取
+    /// Shadow map resource handle (for the lighting pass to read).
     pub fn shadow_map_handle(&self) -> ResourceHandle {
         self.shadow_map
     }
@@ -243,14 +243,14 @@ impl ShadowMapPass {
         }
     }
 
-    /// 创建 a depth-only 渲染 pass (single 深度 附件 no 颜色
+    /// Create a depth-only render pass (single depth attachment, no color).
     ///
     /// Uses `DEPTH_STENCIL_ATTACHMENT_OPTIMAL` / `DEPTH_STENCIL_READ_ONLY_OPTIMAL`
     /// rather than the separate-depth-only layouts: the latter require the
-    /// `separateDepthStencilLayouts` Vulkan 1.2 特性 which we don't enable
+    /// `separateDepthStencilLayouts` Vulkan 1.2 feature, which we don't enable
     /// (it's optional and not uniformly available on mobile). The combined
-    /// layouts are 有效 for a `D32_SFLOAT` (depth-only) 图像 with the 深度
-    /// 宽高比 masked in the 视图
+    /// layouts are valid for a `D32_SFLOAT` (depth-only) image with the depth
+    /// aspect masked in the view.
     fn create_render_pass(
         device: &ash::Device,
         depth_format: vk::Format,
@@ -263,11 +263,11 @@ impl ShadowMapPass {
             .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
             .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
             // `UNDEFINED` + LOAD_OP_CLEAR is the Vulkan-idiomatic way to say
-            // "discard incoming contents, I'll 清空 the 渲染 pass performs
-            // the implicit `any -> DEPTH_STENCIL_ATTACHMENT_OPTIMAL` 过渡
-            // This removes the need for the hand-rolled `UNDEFINED -> 附件
+            // "discard incoming contents, I'll clear": the render pass performs
+            // the implicit `any -> DEPTH_STENCIL_ATTACHMENT_OPTIMAL` transition.
+            // This removes the need for the hand-rolled `UNDEFINED -> ATTACHMENT`
             // `cmd_pipeline_barrier` that used to precede `cmd_begin_render_pass`
-            // (the 图像 is graph-managed and re-cleared every 帧 so there
+            // (the image is graph-managed and re-cleared every frame, so there
             // is nothing to preserve between frames).
             .initial_layout(vk::ImageLayout::UNDEFINED)
             .final_layout(vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL);
@@ -711,9 +711,9 @@ impl RenderPassNode for ShadowMapPass {
     }
 
     fn execute(&mut self, ctx: &RenderContext, resources: &mut GraphResources) -> Result<()> {
-        // Only 渲染 when the rasterized shadow path is 激活 The 图
-        // 构建器 adds this pass only for `ShadowMode::Raster`, but guard
-        // anyway so a misconfigured 图 can't waste a 深度 pass
+        // Only render when the rasterized shadow path is active. The graph
+        // builder adds this pass only for `ShadowMode::Raster`, but guard
+        // anyway so a misconfigured graph can't waste a depth pass.
         if ctx.frame.shadow_mode != ShadowMode::Raster {
             if !self.layout_initialized {
                 if let Some(shadow_img) = resources.image(self.shadow_map) {
@@ -758,22 +758,22 @@ impl RenderPassNode for ShadowMapPass {
             }
         };
 
-        // Lazy-init 管线 + 渲染 pass + 帧缓冲 If warmup already
-        // created 管线 + render_pass, only the 帧缓冲 still needs to
-        // be created (it depends on `shadow_view` from the 图 resources,
-        // which are only available during 执行
+        // Lazy-init pipeline + render pass + framebuffer.  If warmup already
+        // created pipeline + render_pass, only the framebuffer still needs to
+        // be created (it depends on `shadow_view` from the graph resources,
+        // which are only available during execute).
         if self.framebuffer.is_none() {
             let device = ctx.device;
             self.device = Some(device.clone());
 
-            // 渲染 pass — shared between warmup and 执行
+            // Render pass — shared between warmup and execute.
             if self.render_pass.is_none() {
                 let render_pass = Self::create_render_pass(device, vk::Format::D32_SFLOAT)?;
                 self.render_pass = Some(render_pass);
             }
             let rp = self.render_pass.unwrap();
 
-            // 帧缓冲 — always needs the per-execute shadow_view.
+            // Framebuffer — always needs the per-execute shadow_view.
             let framebuffer = unsafe {
                 device.create_framebuffer(
                     &vk::FramebufferCreateInfo::default()
@@ -822,11 +822,11 @@ impl RenderPassNode for ShadowMapPass {
         let framebuffer = self.framebuffer.unwrap();
 
         // The shadow map's `UNDEFINED -> DEPTH_STENCIL_ATTACHMENT_OPTIMAL`
-        // 过渡 used to live here as a hand-rolled `cmd_pipeline_barrier`.
-        // It is now handled implicitly by the 渲染 pass the 附件
-        // `initial_layout = UNDEFINED` + `LOAD_OP_CLEAR` lets Vulkan 执行
-        // the 过渡 inside `cmd_begin_render_pass` (see `create_render_pass`).
-        // `shadow_img` is therefore no longer needed in this 函数 body.
+        // transition used to live here as a hand-rolled `cmd_pipeline_barrier`.
+        // It is now handled implicitly by the render pass: the attachment
+        // `initial_layout = UNDEFINED` + `LOAD_OP_CLEAR` lets Vulkan perform
+        // the transition inside `cmd_begin_render_pass` (see `create_render_pass`).
+        // `shadow_img` is therefore no longer needed in this function body.
         let _ = resources.image(self.shadow_map).unwrap_or_default();
 
         let clear = vk::ClearValue {
@@ -1078,7 +1078,7 @@ impl RenderPassNode for ShadowMapPass {
         }
         self.device = Some(device.clone());
 
-        // 渲染 pass — same 布局 as 执行 uses.
+        // Render pass — same layout as `execute` uses.
         let render_pass = Self::create_render_pass(device, vk::Format::D32_SFLOAT)?;
         self.render_pass = Some(render_pass);
 
@@ -1099,18 +1099,18 @@ impl RenderPassNode for ShadowMapPass {
 }
 
 impl ShadowMapPass {
-    /// Tear 下 all GPU resources 帧缓冲 渲染 pass pipeline/layout).
+    /// Tear down all GPU resources (framebuffer, render pass, pipeline/layout).
     ///
     /// Called from [`GraphRenderer::destroy`] on shutdown **before** the
-    /// `Arc<VulkanContext>` 引用 count drops to 零 Without this explicit
-    /// 调用 `ShadowMapPass` relies on its 放置 impl — but Rust's 结构体 field
-    /// 放置 order means the 图 (and thus this pass is dropped *after* the
+    /// `Arc<VulkanContext>` reference count drops to zero. Without this explicit
+    /// call, `ShadowMapPass` relies on its `Drop` impl — but Rust's struct field
+    /// drop order means the graph (and thus this pass) is dropped *after* the
     /// `Arc<VulkanContext>` holders (`runtime`/`ibl`/`scene_scope`), at which
-    /// point the 设备 handle is already stale and calling
-    /// `destroy_framebuffer` / `destroy_render_pass` on it causes an 访问
+    /// point the device handle is already stale and calling
+    /// `destroy_framebuffer` / `destroy_render_pass` on it causes an access
     /// violation.
     ///
-    /// After this 调用 `self.device` is `None`, so the subsequent 放置 becomes
+    /// After this call `self.device` is `None`, so the subsequent `Drop` becomes
     /// a no-op.
     pub fn destroy(&mut self, device: &ash::Device) {
         if let Some(fb) = self.framebuffer.take() {
@@ -1119,7 +1119,7 @@ impl ShadowMapPass {
         if let Some(rp) = self.render_pass.take() {
             unsafe { device.destroy_render_pass(rp, None) };
         }
-        // GraphicsPipeline::Drop frees the 管线 + 布局
+        // GraphicsPipeline::Drop frees the pipeline + layout.
         self.pipeline = None;
         self.pipeline_two_sided = None;
         self.skinned = None;
@@ -1156,7 +1156,7 @@ impl Drop for ShadowMapPass {
             if let Some(rp) = self.render_pass.take() {
                 unsafe { device.destroy_render_pass(rp, None) };
             }
-            // GraphicsPipeline's own 放置 frees the 管线 + 布局
+            // GraphicsPipeline's own Drop frees the pipeline + layout.
         }
     }
 }

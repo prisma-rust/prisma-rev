@@ -1,7 +1,5 @@
-//! `#[derive(Reflect)]` —— 为结构体生成 `prism_reflect::Reflect` 与
-//! `prism_reflect::ReflectType` 实现。
-//!
-//! 用法：
+//! `#[derive(Reflect)]` generates `prism_reflect::Reflect` and
+//! `prism_reflect::ReflectType` implementations for structs.
 //!
 //! ```ignore
 //! #[derive(Default, Reflect)]
@@ -12,16 +10,22 @@
 //! }
 //! ```
 //!
-//! 容器属性：
-//! - `#[reflect(name = "camera")]`：覆盖稳定的类型名（默认 `module_path!()::Type`）。
-//! - `#[reflect(version = 2)]`：类型版本号，写入 TypeDesc（用于迁移）。
+//! Container attributes:
 //!
-//! 字段属性：
-//! - `#[reflect(skip)]`：不参与反射（`from_object` 时保留 `Default` 值）。
-//! - `#[reflect(rename = "fov")]`：字段在 schema 中的名字。
-//! - `#[reflect(read_only)]`：`set_field` 拒绝写入。
+//! - `#[reflect(name = "camera")]` overrides the stable type name, which
+//!   defaults to `module_path!()::Type`.
+//! - `#[reflect(version = 2)]` sets the type version stored in `TypeDesc` and
+//!   used for migration.
 //!
-//! 限制：仅支持具名/元组结构体，不支持泛型、枚举、联合体。
+//! Field attributes:
+//!
+//! - `#[reflect(skip)]` excludes the field from reflection; `from_object`
+//!   leaves it at its `Default` value.
+//! - `#[reflect(rename = "fov")]` sets the name the field uses in the schema.
+//! - `#[reflect(read_only)]` makes `set_field` reject writes.
+//!
+//! Only named and tuple structs are supported; generic types, enums and unions
+//! are rejected with a compile error.
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;

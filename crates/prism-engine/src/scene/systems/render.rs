@@ -1,4 +1,4 @@
-//! Scene 渲染 系统 — collects [`DrawItem`]s from ECS entities.
+//! Scene render system — collects [`DrawItem`]s from ECS entities.
 //!
 //! Iterates entities that carry [`LocalToWorld`] and [`MeshRef`] and are
 //! 激活 The 结果 is fed to [`prism_render`]'s [`GraphRenderer`] each 帧
@@ -27,9 +27,9 @@ pub(crate) fn draw_state(renderer: Option<&MeshRenderer>) -> DrawState {
     }
 }
 
-/// Collect all 可见 绘制 items from the ECS 世界
+/// Collect all visible draw items from the ECS [`World`].
 ///
-/// An 实体 produces a `DrawItem` if and only if it has all of:
+/// An entity produces a `DrawItem` if and only if it has all of:
 /// - [`LocalToWorld`]
 /// - [`MeshRef`]
 /// - [`Active(true)`]
@@ -39,7 +39,7 @@ pub(crate) fn draw_state(renderer: Option<&MeshRenderer>) -> DrawState {
 /// resolved material) still draws, with [`DrawItem::material`] left as `None`
 /// so the renderer falls back to its default material slot.
 ///
-/// Entities without an 激活 分量 默认 to 激活 (the 分量
+/// Entities without an `Active` component default to active (the component
 /// defaults to `true`).
 pub fn scene_render_system(world: &World) -> Vec<DrawItem> {
     let mut out = Vec::new();

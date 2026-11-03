@@ -43,20 +43,20 @@ pub enum ProfileError {
 // Core Enums
 // ===========================================================================
 
-/// 纹理 压缩 格式
+/// Texture compression format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 #[derive(Default)]
 pub enum TextureCompression {
     None,
-    /// Uncompressed RGBA8 默认
+    /// Uncompressed RGBA8 (default).
     #[default]
     Rgba8,
     /// BC1-5 (DXT1/3/5) — desktop D3D.
     Bc1,
     Bc3,
     Bc5,
-    /// BC6H / BC7 — desktop 高动态范围 / high quality.
+    /// BC6H / BC7 — desktop HDR / high quality.
     Bc6H,
     Bc7,
     /// ASTC — mobile (Android/iOS).
@@ -64,11 +64,11 @@ pub enum TextureCompression {
     Astc6x6,
     Astc8x8,
     Astc12x12,
-    /// ETC2 — Android 回退
+    /// ETC2 — Android fallback.
     Etc2Rgba,
 }
 
-/// 目标 platform identifier.
+/// Target platform identifier.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Platform {
@@ -102,10 +102,10 @@ impl Platform {
 }
 
 // ===========================================================================
-// Settings Structs (final merged 配置
+// Settings Structs (final merged configuration)
 // ===========================================================================
 
-/// 纹理 cooking settings.
+/// Texture cooking settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TextureSettings {
@@ -126,7 +126,7 @@ impl Default for TextureSettings {
     }
 }
 
-/// 网格 cooking settings.
+/// Mesh cooking settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MeshSettings {
@@ -160,7 +160,7 @@ impl Default for ShaderSettings {
     }
 }
 
-/// Package-level 压缩 settings.
+/// Package-level compression settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CompressionSettings {
@@ -177,9 +177,9 @@ impl Default for CompressionSettings {
     }
 }
 
-/// Final merged 运行时 cooking settings.
+/// Final merged runtime cooking settings.
 ///
-/// All resolver and 覆盖 逻辑 has been applied before constructing this.
+/// All resolver and override logic has been applied before constructing this.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CookSettings {
     pub platform: String,
@@ -366,18 +366,18 @@ impl CookSettings {
 }
 
 // ===========================================================================
-// 配置 结构体 (JSON-deserializable, 部分
+// Profile Struct (JSON-deserializable, partial)
 // ===========================================================================
 
-/// A single 配置 file. Every field is optional — only the fields that
-/// should 覆盖 the base/parent are present.
+/// A single profile file. Every field is optional — only the fields that
+/// should override the base/parent are present.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CookProfile {
-    /// Optional parent 配置 name for 继承
+    /// Optional parent profile name for inheritance.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
 
-    /// Optional 配置 version for 格式 evolution.
+    /// Optional profile version for format evolution.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<u32>,
 
@@ -410,7 +410,7 @@ pub struct CookProfile {
     pub custom: HashMap<String, serde_json::Value>,
 }
 
-/// CLI-level overrides that sit above the project 配置
+/// CLI-level overrides that sit above the project profile.
 #[derive(Debug, Default, Clone)]
 pub struct CliOverrides {
     pub platform: Option<String>,
@@ -425,21 +425,21 @@ pub struct CliOverrides {
 }
 
 // ===========================================================================
-// 配置 管理器
+// Profile Manager
 // ===========================================================================
 
-/// Loads, resolves 继承 chains, merges, and computes final CookSettings.
+/// Loads, resolves inheritance chains, merges, and computes final CookSettings.
 pub struct ProfileManager {
-    /// Directory containing 配置 JSON files.
+    /// Directory containing profile JSON files.
     profiles_dir: PathBuf,
     /// In-memory cache of parsed profiles (name → CookProfile).
     loaded: HashMap<String, CookProfile>,
 }
 
 impl ProfileManager {
-    /// 创建 a new 管理器 that looks for profiles under `profiles_dir`.
+    /// Create a new manager that looks for profiles under `profiles_dir`.
     ///
-    /// No files are loaded until [`load_profile`] or 解析 is called.
+    /// No files are loaded until [`load_profile`] or [`resolve`] is called.
     pub fn new<P: Into<PathBuf>>(profiles_dir: P) -> Self {
         Self {
             profiles_dir: profiles_dir.into(),
@@ -447,15 +447,15 @@ impl ProfileManager {
         }
     }
 
-    /// 加载 a single 配置 file by name (without `.json` suffix).
+    /// Load a single profile file by name (without `.json` suffix).
     pub fn load_profile(&mut self, name: &str) -> Result<CookProfile, ProfileError> {
-        // Check built-in cache 第一个 (only built-ins are cached).
+        // Check built-in cache FIRST (only built-ins are cached).
         if let Some(cached) = self.loaded.get(name) {
             return Ok(cached.clone());
         }
 
         // Check for a user file. Not cached to avoid shadowing the built-in
-        // when a user 配置 inherits via `base: "desktop"`.
+        // when a user profile inherits via `base: "desktop"`.
         let file_path = self.profiles_dir.join(format!("{name}.json"));
         if file_path.exists() {
             let raw = std::fs::read_to_string(&file_path).map_err(ProfileError::Io)?;
@@ -467,7 +467,7 @@ impl ProfileManager {
             return Ok(profile);
         }
 
-        // Fall 后 to built-in 默认
+        // Fall back to built-in default.
         if let Some(builtin) = BUILTIN_DEFAULTS.get(name) {
             let profile = (*builtin).clone();
             self.loaded.insert(name.to_owned(), profile.clone());
@@ -477,12 +477,12 @@ impl ProfileManager {
         Err(ProfileError::NotFound(name.to_owned()))
     }
 
-    /// 解析 a 配置 name into the final merged CookSettings, applying
-    /// 继承 and the priority 链
+    /// Resolve a profile name into the final merged CookSettings, applying
+    /// inheritance and the priority chain.
     ///
-    /// 继承 detection: a cycle-detection 集合 tracking the 当前 链
-    /// of base→child 配置 names is maintained. If a name repeats, it's an
-    /// 错误
+    /// Inheritance detection: a cycle-detection set tracking the current chain
+    /// of base→child profile names is maintained. If a name repeats, it's an
+    /// error.
     pub fn resolve(&mut self, profile_name: &str) -> Result<CookSettings, ProfileError> {
         let mut seen = Vec::new();
         self.resolve_internal(profile_name, &mut seen)
@@ -538,7 +538,7 @@ impl ProfileManager {
         Ok(settings)
     }
 
-    /// Apply CLI overrides on 顶部 of resolved CookSettings.
+    /// Apply CLI overrides on top of resolved CookSettings.
     pub fn apply_cli_overrides(
         settings: &mut CookSettings,
         overrides: &CliOverrides,
@@ -568,7 +568,7 @@ impl ProfileManager {
         Ok(())
     }
 
-    /// 列表 all available 配置 names (built-in + user files).
+    /// List all available profile names (built-in + user files).
     pub fn list_profiles(&self) -> Vec<String> {
         let mut names: Vec<String> = BUILTIN_DEFAULTS.keys().map(|s| s.to_string()).collect();
 
@@ -589,14 +589,14 @@ impl ProfileManager {
         names
     }
 
-    /// Show the fully resolved settings for a 配置
+    /// Show the fully resolved settings for a profile.
     pub fn show(&mut self, name: &str) -> Result<CookSettings, ProfileError> {
         self.resolve(name)
     }
 }
 
 // ===========================================================================
-// Built-in 默认 Profiles
+// Built-in Default Profiles
 // ===========================================================================
 
 static BUILTIN_DEFAULTS: LazyLock<HashMap<&'static str, CookProfile>> = LazyLock::new(|| {

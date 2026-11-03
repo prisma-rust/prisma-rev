@@ -1,4 +1,4 @@
-//! Modern scene 系统 — ECS components, loading, hierarchy, and systems.
+//! Modern scene system — ECS components, loading, hierarchy, and systems.
 //!
 //! 场景加载（manifest → world）由场景系统 [`SceneManager`] 统一负责；
 //! `Engine::init_scene` 委托给 [`SceneManager::load_first_from_manifest`]。

@@ -1,18 +1,18 @@
 use crate::{impl_asset_data, AssetGuid};
 use serde::{Deserialize, Serialize};
 
-/// Cubemap 纹理 源 资源
+/// Cubemap texture source asset.
 ///
-/// References an equirectangular 高动态范围 file that gets cooked into a GPU
-/// cubemap for IBL / skybox use. No 渲染 parameters (intensity, tint,
-/// 旋转 live here — those belong to the scene's lighting 配置
+/// References an equirectangular HDR file that gets cooked into a GPU
+/// cubemap for IBL / skybox use. No rendering parameters (intensity, tint,
+/// rotation) live here — those belong to the scene's lighting configuration.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct CubeDef {
-    /// 稳定 GUID.
+    /// Stable GUID.
     pub guid: AssetGuid,
-    /// Human-readable 标签
+    /// Human-readable label.
     pub label: String,
-    /// Path to equirectangular 高动态范围 源 file 相对 to 资源 库
+    /// Path to equirectangular HDR source file (relative to asset library).
     pub hdr_source: Option<String>,
 }
 

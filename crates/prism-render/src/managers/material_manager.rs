@@ -1,26 +1,26 @@
-//! `RenderMaterialManager` — PBR 材质 槽 池 with a per-FIF 设备
+//! `RenderMaterialManager` — PBR material slot pool with a per-FIF device
 //! SSBO.
 //!
-//! Each [`MaterialData`] the engine hands in gets a 稳定 槽 索引 in
-//! the 材质 SSBO. The 槽 is what the 着色器 uses to look 上 the
-//! 材质 parameters; the 材质 handle itself is just CPU-side
-//! identity used by the engine to translate 资源 材质 handles
+//! Each [`MaterialData`] the engine hands in gets a stable slot index in
+//! the material SSBO. The slot is what the shader uses to look up the
+//! material parameters; the material handle itself is just CPU-side
+//! identity used by the engine to translate asset material handles
 //! into a render-side handle.
 //!
-//! ## 布局
+//! ## Layout
 //!
-//! `GpuMaterial` is a `#[repr(C)]` POD 结构体 the 着色器 mirrors exactly.
-//! The 总计 大小 and field offsets are pinned by a compile-time assertion
-//! so changes to the Rust 结构体 also require updating the 着色器 (and
+//! `GpuMaterial` is a `#[repr(C)]` POD struct the shader mirrors exactly.
+//! The total size and field offsets are pinned by a compile-time assertion
+//! so changes to the Rust struct also require updating the shader (and
 //! vice versa).
 //!
-//! ## 同步
+//! ## Synchronization
 //!
-//! P0: one 材质 SSBO updated synchronously when `upload` is called.
-//! No double-buffering — the 渲染器 is expected to 调用 `upload` after
-//! all 材质 mutations for a 帧 are done, before the frame's
-//! `cmd_draw_indexed` calls start. A future pass splits the 存储 into
-//! a per-FIF pair to 重叠 CPU upload with GPU consumption.
+//! P0: one material SSBO updated synchronously when `upload` is called.
+//! No double-buffering — the renderer is expected to call `upload` after
+//! all material mutations for a frame are done, before the frame's
+//! `cmd_draw_indexed` calls start. A future pass splits the storage into
+//! a per-FIF pair to overlap CPU upload with GPU consumption.
 
 use anyhow::Context as _;
 use ash::vk;
@@ -30,10 +30,10 @@ use slotmap::{new_key_type, SlotMap};
 use crate::buffer::{self, BufferUsage, MemoryProperties};
 use crate::context::VulkanContext;
 
-/// 最大 number of materials. Caps the SSBO 大小 at 1024 entries; beyond
-/// that the 渲染器 logs a 警告 and stops allocating new slots. The
+/// Maximum number of materials. Caps the SSBO size at 1024 entries; beyond
+/// that the renderer logs a warning and stops allocating new slots. The
 /// number is deliberately small in P0 — a real production engine would
-/// 大小 this from a 配置 设置
+/// size this from a config setting.
 pub const MATERIAL_SSBO_MAX: u32 = 1024;
 
 new_key_type! {
@@ -41,72 +41,72 @@ new_key_type! {
     pub struct MaterialHandle;
 }
 
-/// Shader-visible 材质 record. The Slang `GpuMaterial` 结构体 in
+/// Shader-visible material record. The Slang `GpuMaterial` struct in
 /// `shaders/slang/scene_frag.slang` mirrors this exactly; field order and
-/// 大小 are pinned by the 静态 assertion below.
+/// size are pinned by the static assertion below.
 ///
-/// 布局 (96 字节 16-byte aligned):
+/// Layout (96 bytes, 16-byte aligned):
 ///   @0   base_color[4]                          (float4)
 ///   @16  metallic_roughness_emissive[4]          (float4: x=metallic, y=roughness, z=emissive, w=emissive_strength)
 ///   @32  albedo_idx, normal_idx, mr_idx, emissive_idx  (4 x uint)
 ///   @48  transmission_factor[4]                  (float4: x=transmission, y=ior, z=translucency, w=anisotropy)
 ///   @64  clearcoat[4]                            (float4: x=clearcoat, y=clearcoat_roughness, z=reserved, w=reserved)
 ///   @80  transmission_tex_idx, occlusion_idx     (2 x uint)
-/// @88 normal_scale, occlusion_strength (2 x 浮点数 padded to 96)
+///   @88  normal_scale, occlusion_strength         (2 x float, padded to 96)
 #[repr(C, align(16))]
 #[derive(Copy, Clone, Debug)]
 pub struct GpuMaterial {
-    /// Linear-space base 颜色 RGBA When an albedo 纹理 is bound it is
+    /// Linear-space base color (rgba). When an albedo texture is bound it is
     /// created as `R8G8B8A8_SRGB`, so the hardware converts the sampled value
-    /// to 线性 and no manual sRGB 解码 is needed in the 着色器 this 标量
-    /// factor is always 线性 (per glTF spec).
+    /// to linear and no manual sRGB decode is needed in the shader; this scalar
+    /// factor is always linear (per glTF spec).
     pub base_color: [f32; 4],
     /// Packed metallic/roughness/emissive/emissive_strength: x=metallic,
     /// y=roughness, z=emissive intensity, w=emissive_strength multiplier.
     pub metallic_roughness_emissive: [f32; 4],
-    /// Bindless SRV 槽 of the albedo (base 颜色 纹理 Use
-    /// `TextureHandle::INVALID.0` for "no 纹理 use the 标量
-    /// base_color" - the 着色器 will fall 后 to the 标量
+    /// Bindless SRV slot of the albedo (base color) texture. Use
+    /// `TextureHandle::INVALID.0` for "no texture, use the scalar
+    /// base_color" - the shader will fall back to the scalar.
     pub albedo_idx: u32,
-    /// Bindless SRV 槽 of the tangent-space 法线 映射表 无效 for
-    /// "no 法线 映射表 - the 着色器 uses the geometric 法线
+    /// Bindless SRV slot of the tangent-space normal map. `INVALID` for
+    /// "no normal map" - the shader uses the geometric normal.
     pub normal_idx: u32,
-    /// Bindless SRV 槽 of the packed metallic-roughness 纹理
-    /// (glTF: G=roughness, B=metallic). 无效 for "use the 标量
+    /// Bindless SRV slot of the packed metallic-roughness texture
+    /// (glTF: G=roughness, B=metallic). `INVALID` for "use the scalar
     /// metallic + roughness fields".
     pub metallic_roughness_idx: u32,
-    /// Bindless SRV 槽 of the emissive 纹理 无效 for "use the
-    /// 标量 emissive field".
+    /// Bindless SRV slot of the emissive texture. `INVALID` for "use the
+    /// scalar emissive field".
     pub emissive_idx: u32,
-    // ---- 秒 48-byte 块 (advanced PBR) ----
+    // ---- Second 48-byte block (advanced PBR) ----
     /// Packed transmission/ior/translucency/anisotropy.
     /// x=transmission factor, y=index of refraction, z=translucency, w=anisotropy.
     pub transmission_factor: [f32; 4],
     /// Packed clearcoat parameters.
     /// x=clearcoat factor, y=clearcoat roughness, z=reserved, w=reserved.
     pub clearcoat: [f32; 4],
-    /// Bindless SRV 槽 of the transmission 纹理 (reserved, 0xFFFFFFFF if none).
+    /// Bindless SRV slot of the transmission texture (reserved, 0xFFFFFFFF if none).
     pub transmission_tex_idx: u32,
-    /// Bindless SRV 槽 of the 遮挡 纹理 (R 通道 0xFFFFFFFF if
-    /// none; the 着色器 attenuates IBL diffuse+specular by `mix(1, tex.r,
+    /// Bindless SRV slot of the occlusion texture (R channel). 0xFFFFFFFF if
+    /// none; the shader attenuates IBL diffuse+specular by `mix(1, tex.r,
     /// occlusion_strength)` and never touches direct lighting.
     pub occlusion_idx: u32,
-    /// 法线 映射表 strength (scales decoded tangent-space 法线 xy before
-    /// 归一化 1.0 = verbatim.
+    /// Normal map strength (scales decoded tangent-space normal xy before
+    /// normalize). 1.0 = verbatim.
     pub normal_scale: f32,
-    /// 遮挡 strength 插值 factor between 1.0 and the 遮挡 texture's
-    /// R 通道 applied to IBL diffuse+specular only). Defaults to 1.0.
+    /// Occlusion strength (lerp factor between 1.0 and the occlusion texture's
+    /// R channel, applied to IBL diffuse+specular only). Defaults to 1.0.
     pub occlusion_strength: f32,
 }
 
-// 静态 assertions for 大小 and 对齐
+// Static assertions for size and alignment.
 const _: [(); 96] = [(); std::mem::size_of::<GpuMaterial>()];
 const _: [(); 16] = [(); std::mem::align_of::<GpuMaterial>()];
 
-/// Plain-data 材质 描述 used at the 管理器 boundary. The
-/// engine 层 translates `prism_asset::MaterialData` into this; the
-/// four optional 纹理 slots carry the render-side bindless SRV 槽
-/// (or `u32::MAX` for "no 纹理
+/// Plain-data material description used at the manager boundary. The
+/// engine layer translates `prism_asset::MaterialData` into this; the
+/// four optional texture slots carry the render-side bindless SRV slot
+/// (or `u32::MAX` for "no texture").
 #[derive(Debug, Clone)]
 pub struct MaterialUploadInput {
     pub base_color: [f32; 4],
@@ -131,8 +131,8 @@ pub struct MaterialUploadInput {
 }
 
 impl MaterialUploadInput {
-    /// 打包 标量 parameters into a [`GpuMaterial`]. The 纹理
-    /// indices are 左 at `u32::MAX` when `None`.
+    /// Pack scalar parameters into a [`GpuMaterial`]. The texture
+    /// indices are left at `u32::MAX` when `None`.
     pub fn to_gpu(&self) -> GpuMaterial {
         GpuMaterial {
             base_color: self.base_color,
@@ -161,33 +161,33 @@ impl MaterialUploadInput {
     }
 }
 
-/// 管理器 of GPU materials. Holds a 槽 池 + a single device-local
-/// 存储 缓冲区 that the 材质 SSBO 描述符 references.
+/// Manager of GPU materials. Holds a slot pool + a single device-local
+/// storage buffer that the material SSBO descriptor references.
 pub struct RenderMaterialManager {
-    /// Slotmap-typed CPU handles; 索引 in this 映射表 is *not* the SSBO
-    /// 槽 — use `slot_of()` to translate.
+    /// Slotmap-typed CPU handles; index in this map is *not* the SSBO
+    /// slot — use `slot_of()` to translate.
     materials: SlotMap<MaterialHandle, MaterialUploadInput>,
-    /// 反转 索引 from SSBO 槽 → 材质 handle. `slots[slot]`
-    /// is the handle currently occupying that 槽 or `None` if free.
+    /// Reverse index from SSBO slot → material handle. `slots[slot]`
+    /// is the handle currently occupying that slot, or `None` if free.
     slots: Vec<Option<MaterialHandle>>,
-    /// Free-list of SSBO 槽 indices.
+    /// Free-list of SSBO slot indices.
     free_list: Vec<u32>,
-    /// The 材质 SSBO (device-local, STORAGE_BUFFER 用法 Sized to
+    /// The material SSBO (device-local, STORAGE_BUFFER usage). Sized to
     /// `MATERIAL_SSBO_MAX * size_of::<GpuMaterial>()`.
     buffer: vk::Buffer,
     memory: vk::DeviceMemory,
-    /// Cached 视图 of the SSBO contents, indexed by 槽 Uploaded into
-    /// 缓冲区 when `upload` is called.
+    /// Cached view of the SSBO contents, indexed by slot. Uploaded into
+    /// `buffer` when `upload` is called.
     gpu_data: Vec<GpuMaterial>,
     /// Dirty bits: `dirty_slots[slot] = true` means the GPU data at
-    /// this 槽 needs to be re-uploaded.
+    /// this slot needs to be re-uploaded.
     dirty_slots: Vec<bool>,
     destroyed: bool,
 }
 
 impl RenderMaterialManager {
-    /// Allocate the 材质 SSBO. The 缓冲区 is initialized to 零
-    /// (all slots 无效 until populated).
+    /// Allocate the material SSBO. The buffer is initialized to zero
+    /// (all slots invalid until populated).
     pub fn new(context: &VulkanContext) -> anyhow::Result<Self> {
         let slot_size = std::mem::size_of::<GpuMaterial>() as vk::DeviceSize;
         let total = slot_size * (MATERIAL_SSBO_MAX as vk::DeviceSize);
@@ -232,8 +232,8 @@ impl RenderMaterialManager {
         })
     }
 
-    /// Register a new 材质 and return its handle. The 槽 is taken
-    /// from the free 列表 if the 池 is exhausted, an 错误 is returned
+    /// Register a new material and return its handle. The slot is taken
+    /// from the free list; if the pool is exhausted, an error is returned
     /// and the handle is not assigned.
     pub fn register(&mut self, data: MaterialUploadInput) -> anyhow::Result<MaterialHandle> {
         let slot = self
@@ -247,8 +247,8 @@ impl RenderMaterialManager {
         Ok(handle)
     }
 
-    /// 更新 an existing 材质 in place. Marks its 槽 dirty so the
-    /// 下一个 `upload` re-writes the SSBO.
+    /// Update an existing material in place. Marks its slot dirty so the
+    /// next `upload` re-writes the SSBO.
     pub fn update(
         &mut self,
         handle: MaterialHandle,
@@ -263,7 +263,7 @@ impl RenderMaterialManager {
         Ok(())
     }
 
-    /// Translate a CPU handle to its SSBO 槽 Returns `None` if the
+    /// Translate a CPU handle to its SSBO slot. Returns `None` if the
     /// handle is unknown (it has been removed, or was never registered).
     pub fn slot_of(&self, handle: MaterialHandle) -> Option<u32> {
         self.slots
@@ -272,14 +272,14 @@ impl RenderMaterialManager {
             .map(|i| i as u32)
     }
 
-    /// Underlying Vulkan 缓冲区 The 描述符 集合 the 渲染器 builds
-    /// references this 缓冲区 at `materials_binding`.
+    /// Underlying Vulkan buffer. The descriptor set the renderer builds
+    /// references this buffer at `materials_binding`.
     pub fn buffer(&self) -> vk::Buffer {
         self.buffer
     }
 
-    /// Uploads all dirty slots to the 设备 P0 实现 uploads
-    /// the entire SSBO (cheap because the 缓冲区 is small — 1024 * 48B =
+    /// Uploads all dirty slots to the device. P0 implementation uploads
+    /// the entire SSBO (cheap because the buffer is small — 1024 * 48B =
     /// 48KB). A future pass uploads only the dirty range and keeps a
     /// per-FIF pair.
     pub fn upload(
@@ -288,9 +288,9 @@ impl RenderMaterialManager {
         command_pool: vk::CommandPool,
         graphics_queue: vk::Queue,
     ) -> anyhow::Result<()> {
-        // Use a tiny staging 缓冲区 to 写入 the entire SSBO. We don't
-        // bother with the dirty range 优化 yet because the
-        // upload 大小 is so small (48KB) that the savings are 噪声
+        // Use a tiny staging buffer to write the entire SSBO. We don't
+        // bother with the dirty range optimization yet because the
+        // upload size is so small (48KB) that the savings are noise.
         let total_size = self.gpu_data.len() * std::mem::size_of::<GpuMaterial>();
         let bytes =
             unsafe { std::slice::from_raw_parts(self.gpu_data.as_ptr() as *const u8, total_size) };
@@ -305,17 +305,17 @@ impl RenderMaterialManager {
             )
         }
         .context("RenderMaterialManager::upload")?;
-        // 清空 dirty bits; everything is now on the GPU.
+        // Clear dirty bits; everything is now on the GPU.
         for d in self.dirty_slots.iter_mut() {
             *d = false;
         }
         Ok(())
     }
 
-    /// 释放 a 材质 槽 后 to the free 列表
+    /// Release a material slot back to the free list.
     pub fn unregister(&mut self, handle: MaterialHandle) {
         if let Some(slot) = self.slot_of(handle) {
-            // Reset the GPU data so a future register at this 槽
+            // Reset the GPU data so a future register at this slot
             // doesn't leak old values.
             self.gpu_data[slot as usize] = GpuMaterial {
                 base_color: [0.0; 4],
@@ -350,10 +350,10 @@ impl RenderMaterialManager {
         true
     }
 
-    /// 释放 every 材质 Idempotent.
+    /// Release every material. Idempotent.
     pub fn destroy(&mut self, device: &ash::Device) {
         for (_, _) in self.materials.drain() {
-            // no per-material GPU 状态 to 释放
+            // no per-material GPU state to release
         }
         self.slots.iter_mut().for_each(|s| *s = None);
         self.free_list = (0..MATERIAL_SSBO_MAX).rev().collect();

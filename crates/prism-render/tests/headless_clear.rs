@@ -1,25 +1,25 @@
 //! Headless Vulkan initialisation test.
 //!
-//! Creates a [`GraphRenderer`] without any 窗口 表面 clears the offscreen
-//! 图像 to a known 颜色 reads the pixels 后 via a host-visible 缓冲区
+//! Creates a [`GraphRenderer`] without any window surface, clears the offscreen
+//! image to a known colour, reads the pixels back via a host-visible buffer,
 //! and asserts the RGBA values.
 //!
-//! This test proves the entire GPU initialisation 链 works:
-//! 实例 → 物理 设备 → 逻辑 设备 → Queues → 命令 池
+//! This test proves the entire GPU initialisation chain works:
+//!   Instance → Physical Device → Logical Device → Queues → Command Pool
 //!
 //! Unlike a windowed test it runs on CI servers and in Termux without display
 //! hardware — only a conformant Vulkan driver (e.g. `libvulkan.so`) is needed.
 
 use prism_render::GraphRenderer;
 
-/// Tries to 创建 a headless GraphRenderer.
+/// Tries to create a headless GraphRenderer.
 ///
 /// Returns `None` when no Vulkan driver is available (graceful skip).
 fn try_create_headless() -> Option<GraphRenderer> {
     match GraphRenderer::headless_new(None) {
         Ok(r) => Some(r),
         Err(e) => {
-            // If the 错误 is "no driver" / "no compatible 设备
+            // If the error is "no driver" / "no compatible device",
             // skip instead of failing.
             let msg = format!("{e:#}");
             if msg.contains("VK_ERROR_INCOMPATIBLE_DRIVER")
@@ -31,7 +31,7 @@ fn try_create_headless() -> Option<GraphRenderer> {
                 eprintln!("[SKIP] no Vulkan driver: {e:#}");
                 return None;
             }
-            // Any other 错误 is unexpected.
+            // Any other error is unexpected.
             panic!("headless_new failed: {e:#}");
         }
     }
@@ -44,20 +44,20 @@ fn headless_clear_to_red_and_readback() {
         None => return, // graceful skip
     };
 
-    // 清空 the offscreen 目标 to pure red.
+    // Clear the offscreen target to pure red.
     const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
     renderer
         .clear_offscreen(RED)
         .expect("clear_offscreen failed");
 
-    // 读取 后 the 像素 data.
+    // Read back the pixel data.
     let pixels = renderer.readback_pixels().expect("readback_pixels failed");
 
-    // Offscreen 目标 is 256 × 256 × RGBA8 = 262 144 字节
+    // Offscreen target is 256 × 256 × RGBA8 = 262 144 bytes.
     assert_eq!(pixels.len(), 256 * 256 * 4, "unexpected pixel buffer size");
 
-    // Every 像素 should be (255, 0, 0, 255) — pure red.
-    // 样本 the four corners + center to confirm uniformity.
+    // Every pixel should be (255, 0, 0, 255) — pure red.
+    // Sample the four corners + center to confirm uniformity.
     let w = 256usize;
     let stride = 4;
 

@@ -13,7 +13,7 @@ use crate::buffer::{self, BufferUsage, MemoryProperties};
 use crate::context::VulkanContext;
 use crate::mesh::Mesh;
 
-/// A 内置 bottom-level 加速度 structure for a single 网格
+/// A built bottom-level acceleration structure for a single mesh.
 pub struct BlasEntry {
     pub handle: vk::AccelerationStructureKHR,
     pub device_address: vk::DeviceAddress,
@@ -24,11 +24,11 @@ pub struct BlasEntry {
 }
 
 impl BlasEntry {
-    /// 构建 a BLAS from a mesh's 顶点 + 索引 buffers.
+    /// Build a BLAS from a mesh's vertex + index buffers.
     ///
-    /// The 网格 buffers must have `SHADER_DEVICE_ADDRESS` +
-    /// `ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR` 用法 flags
-    /// 集合 automatically by `Mesh::new`).
+    /// The mesh buffers must have `SHADER_DEVICE_ADDRESS` +
+    /// `ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR` usage flags
+    /// (set automatically by `Mesh::new`).
     pub fn build(
         context: &VulkanContext,
         command_pool: vk::CommandPool,
@@ -52,13 +52,13 @@ impl BlasEntry {
         )
     }
 
-    /// 构建 a BLAS pointing at a **slice** of a combined vertex/index 缓冲区
+    /// Build a BLAS pointing at a **slice** of a combined vertex/index buffer.
     ///
-    /// `vertex_addr` / `index_addr` are the 设备 addresses of this instance's
-    /// vertex/index range (already 偏移 into the combined 缓冲区 and
-    /// `vertex_count` / `tri_count` bound it. Used by `PathTracePass` to 构建
-    /// one BLAS per scene 实例 while keeping a single merged vertex/index
-    /// 缓冲区 for shader-side `ByteAddressBuffer` reads.
+    /// `vertex_addr` / `index_addr` are the device addresses of this instance's
+    /// vertex/index range (already offset into the combined buffer), and
+    /// `vertex_count` / `tri_count` bound it. Used by `PathTracePass` to build
+    /// one BLAS per scene instance while keeping a single merged vertex/index
+    /// buffer for shader-side `ByteAddressBuffer` reads.
     pub fn build_at(
         context: &VulkanContext,
         command_pool: vk::CommandPool,
@@ -199,9 +199,9 @@ impl BlasEntry {
                 std::slice::from_ref(&build_info),
                 &[&ranges],
             );
-            // Make the 内置 BLAS 可见 to subsequent acceleration-structure
-            // reads (the TLAS 构建 references it). Without this 屏障 the
-            // TLAS 构建 can 读取 a stale/empty BLAS and every 射线 misses.
+            // Make the built BLAS visible to subsequent acceleration-structure
+            // reads (the TLAS build references it). Without this barrier the
+            // TLAS build can read a stale/empty BLAS and every ray misses.
             device.cmd_pipeline_barrier(
                 cmd,
                 vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
@@ -253,13 +253,13 @@ pub struct BlasBuildParams {
 }
 
 impl BlasEntry {
-    /// 构建 many BLAS structures, submitted in **chunks** so no single GPU
-    /// burst exceeds the Windows TDR 超时 (~2 s).
+    /// Build many BLAS structures, submitted in **chunks** so no single GPU
+    /// burst exceeds the Windows TDR timeout (~2 s).
     ///
-    /// All AS buffers + scratch are allocated 上 前 builds are recorded
+    /// All AS buffers + scratch are allocated up front; builds are recorded
     /// in batches of at most [`CHUNK_SIZE`] and each batch gets its own
-    /// submit+fence-wait. This avoids both the per-instance submit 开销
-    /// (405 separate submits) and a single 5 秒 GPU burst.
+    /// submit+fence-wait.  This avoids both the per-instance submit overhead
+    /// (405 separate submits) and a single 5 second GPU burst.
     const CHUNK_SIZE: usize = 64;
 
     pub fn build_batch(
@@ -277,7 +277,7 @@ impl BlasEntry {
             return Ok(Vec::new());
         }
 
-        // ---- 1. Get 构建 sizes for every BLAS, 查找 最大值 scratch. ----
+        // ---- 1. Get build sizes for every BLAS, find max scratch. ----
         let mut as_sizes = Vec::with_capacity(params.len());
         let mut max_scratch: vk::DeviceSize = 0;
         for p in params {
@@ -302,7 +302,7 @@ impl BlasEntry {
             }
         }
 
-        // ---- 2. Allocate one scratch 缓冲区 最大值 大小 across all chunks). ----
+        // ---- 2. Allocate one scratch buffer (max size across all chunks). ----
         let (scratch_buffer, scratch_memory) = buffer::create_buffer(
             context,
             max_scratch,
@@ -315,7 +315,7 @@ impl BlasEntry {
             )
         };
 
-        // ---- 3. Allocate AS buffers and 创建 BLAS handles for ALL at once. ----
+        // ---- 3. Allocate AS buffers and create BLAS handles for ALL at once. ----
         let mut entries: Vec<Self> = Vec::with_capacity(params.len());
         for size_info in &as_sizes {
             let (as_buffer, as_memory) = buffer::create_buffer(
@@ -339,8 +339,8 @@ impl BlasEntry {
             let device_address =
                 unsafe { as_fn.get_acceleration_structure_device_address(&addr_info) };
 
-            // Temporary placeholder — we'll fix 上 handle/address after building.
-            // (The handle is already 有效 we just need the 结构体 for the 构建
+            // Temporary placeholder — we'll fix up handle/address after building.
+            // (The handle is already valid; we just need the struct for the build.)
             entries.push(Self {
                 handle,
                 device_address,
@@ -351,7 +351,7 @@ impl BlasEntry {
             });
         }
 
-        // ---- 4. Submit in chunks (each chunk < TDR 超时 ----
+        // ---- 4. Submit in chunks (each chunk < TDR timeout). ----
         let mut chunk_start = 0;
         while chunk_start < params.len() {
             let chunk_end = (chunk_start + Self::CHUNK_SIZE).min(params.len());
@@ -430,7 +430,7 @@ impl BlasEntry {
             chunk_start = chunk_end;
         }
 
-        // ---- 5. Clean 上 scratch. ----
+        // ---- 5. Clean up scratch. ----
         unsafe {
             device.destroy_buffer(scratch_buffer, None);
             device.free_memory(scratch_memory, None);
@@ -440,7 +440,7 @@ impl BlasEntry {
     }
 }
 
-/// Helper: 构建 the `VkAccelerationStructureGeometryKHR` for a single param.
+/// Helper: build the `VkAccelerationStructureGeometryKHR` for a single param.
 fn full_geom(p: &BlasBuildParams) -> vk::AccelerationStructureGeometryKHR<'_> {
     vk::AccelerationStructureGeometryKHR::default()
         .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
@@ -465,7 +465,7 @@ fn full_geom(p: &BlasBuildParams) -> vk::AccelerationStructureGeometryKHR<'_> {
         })
 }
 
-/// A 内置 top-level 加速度 structure — rebuilt per 帧 from instances.
+/// A built top-level acceleration structure — rebuilt per frame from instances.
 pub struct Tlas {
     pub handle: vk::AccelerationStructureKHR,
     pub device_address: vk::DeviceAddress,
@@ -475,7 +475,7 @@ pub struct Tlas {
     memory: vk::DeviceMemory,
 }
 
-/// One 实例 in the TLAS — references a BLAS with a 变换
+/// One instance in the TLAS — references a BLAS with a transform.
 #[derive(Clone, Copy)]
 pub struct TlasInstance {
     pub transform: [f32; 12],
@@ -510,13 +510,13 @@ impl Tlas {
             MemoryProperties::HOST_VISIBLE | MemoryProperties::HOST_COHERENT,
         )?;
 
-        // Pair each 实例 with its BLAS address by 数组 position. We do NOT
-        // use `inst.custom_index` to 索引 `blas_addresses` - that field is
-        // reserved for shader-visible per-instance data (e.g. a 材质 槽
-        // so it must stay decoupled from the BLAS-address 数组 position.
+        // Pair each instance with its BLAS address by array position. We do NOT
+        // use `inst.custom_index` to index `blas_addresses` - that field is
+        // reserved for shader-visible per-instance data (e.g. a material slot),
+        // so it must stay decoupled from the BLAS-address array position.
         // Callers must pass `blas_addresses.len() == instances.len()`; a
-        // 缺少 entry falls 后 to address 0 (produces no hits for that
-        // 实例 - safe, just invisible).
+        // missing entry falls back to address 0 (produces no hits for that
+        // instance - safe, just invisible).
         anyhow::ensure!(
             blas_addresses.len() == instances.len(),
             "Tlas::build: blas_addresses.len() ({}) != instances.len() ({})",
@@ -652,9 +652,9 @@ impl Tlas {
                 std::slice::from_ref(&build_info),
                 &[&ranges],
             );
-            // Make the 内置 TLAS 可见 to subsequent ray-query traces
-            // 计算 着色器 The dst 阶段 covers both further AS builds
-            // and the 计算 阶段 that issues OpRayQueryInitializeKHR.
+            // Make the built TLAS visible to subsequent ray-query traces
+            // (compute shader). The dst stage covers both further AS builds
+            // and the compute stage that issues OpRayQueryInitializeKHR.
             device.cmd_pipeline_barrier(
                 cmd,
                 vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
@@ -692,7 +692,7 @@ impl Tlas {
 
 impl Drop for Tlas {
     fn drop(&mut self) {
-        // `Default`-constructed (null) TLAS instances are safe to 放置
+        // `Default`-constructed (null) TLAS instances are safe to drop.
         if self.handle == vk::AccelerationStructureKHR::null() {
             return;
         }

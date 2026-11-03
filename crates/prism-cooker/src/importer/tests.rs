@@ -268,7 +268,7 @@ fn explicit_relative_key_reuses_scanned_record() {
 
 // ── Real glTF / GLB 导入 test ──────────────────────────────────
 
-/// 构建 a minimal 有效 GLB file in 内存
+/// Build a minimal valid GLB file in memory.
 ///
 /// 包含 one triangle 网格 (3 顶点 3 unsigned-short indices),
 /// no 材质 no textures.

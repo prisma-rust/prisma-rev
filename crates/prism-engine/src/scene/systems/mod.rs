@@ -1,14 +1,14 @@
-//! Scene systems — 变换 hierarchy, 渲染 lights, and 相机
+//! Scene systems — transform hierarchy, rendering, lights, and camera.
 //!
-//! Each 模块 exposes a single 公开 函数 that reads from the ECS
-//! 世界 (or writes, in the case of `hierarchy_system`):
+//! Each module exposes a single public function that reads from the ECS
+//! [`World`] (or writes, in the case of `hierarchy_system`):
 //!
-//! | 模块 | 函数 | Read/Write | Purpose |
+//! | Module      | Function | Read/Write | Purpose |
 //! |-------------|----------|------------|---------|
 //! | `hierarchy` | `hierarchy_system` | 写入 | Recompute `LocalToWorld`（`Engine::update` 结束时调用） |
-//! | 渲染 | `scene_render_system` | 读取 | Collect `DrawItem`s |
-//! | `lights` | `collect_*` | 读取 | Collect 光源 components |
-//! | 相机 | `collect_camera` | 读取 | Collect 相机 分量 |
+//! | `render`    | `scene_render_system` | Read | Collect `DrawItem`s |
+//! | `lights`    | `collect_*` | Read | Collect light components |
+//! | `camera`    | `collect_camera` | Read | Collect camera component |
 
 pub mod animation;
 pub mod animator;

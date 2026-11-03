@@ -18,15 +18,15 @@ impl Default for OrbitCameraController {
 
 impl OrbitCameraController {
     pub fn update(&self, camera: &mut OrbitCamera, input: &InputManager) {
-        // 左 鼠标 拖拽 → orbit
+        // Left mouse drag → orbit
         if input.mouse_held(MouseButton::Left) {
             let d = input.mouse_delta();
             camera.theta -= d[0] as f32 * self.sensitivity;
             camera.phi -= d[1] as f32 * self.sensitivity;
-            // 限定 elevation to avoid gimbal lock
+            // Clamp elevation to avoid gimbal lock
             camera.phi = camera.phi.clamp(0.01, std::f32::consts::PI - 0.01);
         }
-        // 滚动 → zoom
+        // Scroll → zoom
         let scroll = input.scroll_delta() as f32;
         if scroll.abs() > 0.0 {
             camera.distance *= 1.0 - scroll * self.scroll_sensitivity;

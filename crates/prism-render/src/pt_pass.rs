@@ -31,9 +31,9 @@ use crate::render_graph::{
 use crate::shader;
 use crate::shader_bindings;
 
-/// GPU push-constant 块 大小 for PtPush (std140 rounds to 16-byte boundary).
-/// The auto-generated `shader_bindings::pt_render::PtPush` is 136 字节 in
-/// `#[repr(C)]`; add 8 字节 of std140 trailing 填充 for the actual range.
+/// GPU push-constant block size for PtPush (std140 rounds to 16-byte boundary).
+/// The auto-generated `shader_bindings::pt_render::PtPush` is 136 bytes in
+/// `#[repr(C)]`; add 8 bytes of std140 trailing padding for the actual range.
 const PT_PUSH_RANGE_SIZE: u32 = 144;
 
 /// `PtPush::params.w` bit layout, mirrored in `pt_render.slang`
@@ -54,21 +54,21 @@ fn pack_pt_params(frame_count: u32, reset: bool, orthographic: bool) -> u32 {
         | if reset { PT_PARAMS_RESET } else { 0 }
 }
 
-/// Real-time path tracing 计算 pass
+/// Real-time path tracing compute pass.
 pub struct PathTracePass {
-    // 管线
+    // Pipeline
     pipeline: Option<ComputePipeline>,
     ds_layout: vk::DescriptorSetLayout,
     ds_pool: vk::DescriptorPool,
     ds: vk::DescriptorSet,
 
-    // Bindless 纹理 表 集合 1) - shared with the rasterizer. Not owned;
-    // stored so the 管线 布局 can 引用 its 布局 and the 命令
-    // recorder can bind its 集合 Wired via `set_material_resources`.
+    // Bindless texture table (set 1) - shared with the rasterizer. Not owned;
+    // stored so the pipeline layout can reference its layout and the command
+    // recorder can bind its set. Wired via `set_material_resources`.
     bindless_set: vk::DescriptorSet,
     bindless_layout: vk::DescriptorSetLayout,
 
-    // IBL environment cubemap 集合 2) - sampled on 射线 miss for 高动态范围 sky.
+    // IBL environment cubemap (set 2) - sampled on ray miss for HDR sky.
     // Wired via `set_ibl_resources`. Not owned.
     ibl_set: vk::DescriptorSet,
     ibl_layout: vk::DescriptorSetLayout,
@@ -81,61 +81,61 @@ pub struct PathTracePass {
     sample_count_view: vk::ImageView,
     sample_count_memory: vk::DeviceMemory,
 
-    // PT_COLOR_H 输出 图像 (sampled+storage, published to 图 for PostPass)
+    // PT_COLOR_H output image (sampled+storage, published to graph for PostPass)
     output_image: vk::Image,
     output_view: vk::ImageView,
     output_memory: vk::DeviceMemory,
 
     // Per-instance ray-traceable scene (combined vertex/index buffers,
-    // per-instance BLAS, TLAS, instance_meta SSBO). 内置 once per scene by
+    // per-instance BLAS, TLAS, instance_meta SSBO). Built once per scene by
     // `set_geometry` via `bake_common::build_pt_scene`. Owns its GPU resources.
     pt_scene: Option<crate::bake_common::PtScene>,
 
-    // Materials SSBO (shared `RenderMaterialManager::buffer()`), bound at 集合 0
-    // 绑定 7. Wired via `set_material_resources`. The real-time pass does
-    // NOT own this 缓冲区 (the 材质 管理器 does) - it only holds the
-    // handle for 描述符 writes.
+    // Materials SSBO (shared `RenderMaterialManager::buffer()`), bound at set 0
+    // binding 7. Wired via `set_material_resources`. The real-time pass does
+    // NOT own this buffer (the material manager does) - it only holds the
+    // handle for descriptor writes.
     materials_buffer: Option<vk::Buffer>,
 
-    // Lights SSBO 绑定 8) — HOST_VISIBLE | HOST_COHERENT 存储 缓冲区
-    // for PtAnalyticLight[PT_LIGHT_MAX]. Created once, written each 帧
+    // Lights SSBO (binding 8) — HOST_VISIBLE | HOST_COHERENT storage buffer
+    // for PtAnalyticLight[PT_LIGHT_MAX]. Created once, written each frame.
     lights_buffer: vk::Buffer,
     lights_memory: vk::DeviceMemory,
     lights_mapped: *mut u8,
 
-    // Emissive triangle SSBO 绑定 9) — device-local 存储 缓冲区 内置
-    // from `set_emissive`. Read-only during PT 分发 owned directly by
+    // Emissive triangle SSBO (binding 9) — device-local storage buffer built
+    // from `set_emissive`. Read-only during PT dispatch; owned directly by
     // the pass (not through PtScene).
     emissive_buffer: Option<vk::Buffer>,
     emissive_memory: Option<vk::DeviceMemory>,
     emissive_count: u32,
 
     // ReSTIR DI reservoir ping-pong buffers (bindings 10/11).
-    // Two 存储 buffers, each sized for 宽度 × 高度 ReSTIRReservoir
-    // entries. Each 帧 one serves as prev 读取 b10) and the other as
-    // curr 写入 b11); they 交换 roles every 帧
+    // Two storage buffers, each sized for (width × height) ReSTIRReservoir
+    // entries. Each frame one serves as prev (read, b10) and the other as
+    // curr (write, b11); they swap roles every frame.
     reservoir_buffers: [vk::Buffer; 2],
     reservoir_memories: [vk::DeviceMemory; 2],
     reservoir_size: vk::DeviceSize, // current buffer size in bytes
     reservoir_swap: usize,          // index of curr buffer (0 or 1) for this frame
 
-    // 状态 tracking
+    // State tracking
     img_width: u32,
     img_height: u32,
     frame_counter: u32,
     prev_camera_pos: Option<[f32; 3]>,
     prev_view_proj: Option<[[f32; 4]; 4]>,
-    // 全局 accumulation-reset flag. 集合 by either (a) 相机 motion
-    // (`should_reset`) or (b) an 外部 `request_reset()` 调用 when the app
-    // knows a 渲染 参数 changed 最大值 bounces, exposure, 光源
+    // Global accumulation-reset flag. Set by either (a) camera motion
+    // (`should_reset`) or (b) an external `request_reset()` call when the app
+    // knows a render parameter changed (max bounces, exposure, light
     // color/direction, scene reload, ...). Without this, stale samples
     // accumulated under the old parameters keep dominating the running
-    // 平均 and 参数 tweaks look like they do nothing. This keeps the
-    // "what changed?" decision in the 调用者 rather than diffing every PT
-    // 输入 per 帧
+    // average and parameter tweaks look like they do nothing. This keeps the
+    // "what changed?" decision in the caller rather than diffing every PT
+    // input per frame.
     accum_dirty: bool,
 
-    // 设备 handles
+    // Device handles
     device: Option<ash::Device>,
 }
 
@@ -143,18 +143,18 @@ impl PathTracePass {
     pub fn new(context: &VulkanContext) -> anyhow::Result<Self> {
         let device = &context.device;
 
-        // 集合 0 bindings (must 匹配 pt_render.slang / path_integrator.slang):
+        // Set 0 bindings (must match pt_render.slang / path_integrator.slang):
         // b0: RWTexture2D<float4> accumImage
         // b1: RWTexture2D<uint>   sampleCount
         // b2: AccelerationStructure tlas
-        // b3: ByteAddressBuffer vertexData (combined world-space 顶点
-        // b4: StructuredBuffer<uint> indices (combined 索引 缓冲区
+        // b3: ByteAddressBuffer vertexData  (combined world-space vertices)
+        // b4: StructuredBuffer<uint> indices (combined index buffer)
         // b5: RWTexture2D<float4> outputImage
         // b6: StructuredBuffer<PtInstanceMeta> instance_meta (per-instance
-        // 材质 槽 + vertex/index base offsets, indexed by
+        //     material slot + vertex/index base offsets, indexed by
         //     q.CommittedInstanceID())
         // b7: StructuredBuffer<GpuMaterial> materials (shared SSBO)
-        // 集合 1 (bindless, bound separately): globalSamplers[] + bindlessSrvs[]
+        // Set 1 (bindless, bound separately): globalSamplers[] + bindlessSrvs[]
         let bindings = [
             b(
                 0,
@@ -219,9 +219,9 @@ impl PathTracePass {
         ];
 
         // All bindings get UPDATE_AFTER_BIND + PARTIALLY_BOUND because
-        // update_ds() is called every 帧 while previous-frame 命令
+        // update_ds() is called every frame while previous-frame command
         // buffers may still be in flight. Without these flags Vulkan
-        // 验证 complains about updating in-use 描述符 sets.
+        // validation complains about updating in-use descriptor sets.
         let binding_flags = [
             vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
                 | vk::DescriptorBindingFlags::PARTIALLY_BOUND, // b0  accumImage
@@ -296,7 +296,7 @@ impl PathTracePass {
         }
         .context("PathTracePass: allocate ds")?[0];
 
-        // Placeholder images (1×1 — resized on 第一个 执行
+        // Placeholder images (1×1 — resized on first execution)
         let mem_props = &context.physical_device_memory_properties;
         let (ai, av, am) =
             make_accum_image(device, mem_props, 1, 1).context("PathTracePass: accum image")?;
@@ -305,7 +305,7 @@ impl PathTracePass {
         let (oi, ov, om) =
             make_pt_output_image(device, mem_props, 1, 1).context("PathTracePass: output image")?;
 
-        // 创建 persistent HOST_VISIBLE lights 缓冲区 for PtAnalyticLight[]
+        // Create persistent HOST_VISIBLE lights buffer for PtAnalyticLight[]
         let light_buf_size = (PT_LIGHT_MAX as vk::DeviceSize)
             * std::mem::size_of::<PtAnalyticLight>() as vk::DeviceSize;
         let light_buf_create = vk::BufferCreateInfo::default()
@@ -338,7 +338,7 @@ impl PathTracePass {
         }
         .context("PathTracePass: map lights memory")? as *mut u8;
 
-        // 写入 描述符 for the lights SSBO 绑定 8, initially zeroed)
+        // Write descriptor for the lights SSBO (binding 8, initially zeroed)
         unsafe {
             ptr::write_bytes(lights_mapped, 0, light_buf_size as usize);
         }
@@ -383,13 +383,13 @@ impl PathTracePass {
         })
     }
 
-    /// Upload per-instance world-space geometry and 构建 BLAS/TLAS.
+    /// Upload per-instance world-space geometry and build BLAS/TLAS.
     ///
-    /// Builds a single combined 顶点 + 索引 缓冲区 (so the shader's
-    /// `vertexData`/`indices` reads 解析 any instance's 顶点 then one
-    /// BLAS per 实例 pointing at that instance's 切片 of the combined
-    /// buffers, and one TLAS whose `instanceCustomIndex` carries the 实例
-    /// 索引 (0..N) used to look 上 `PtInstanceMeta` -> `material_slot`.
+    /// Builds a single combined vertex + index buffer (so the shader's
+    /// `vertexData`/`indices` reads resolve any instance's vertices), then one
+    /// BLAS per instance pointing at that instance's slice of the combined
+    /// buffers, and one TLAS whose `instanceCustomIndex` carries the instance
+    /// index (0..N) used to look up `PtInstanceMeta` -> `material_slot`.
     ///
     /// `instances` is produced by the engine crate's ECS walk of
     /// `MeshRef`/`MaterialRef` entities.
@@ -403,14 +403,14 @@ impl PathTracePass {
             anyhow::bail!("PathTracePass::set_geometry: no instances");
         }
 
-        // The materials SSBO 字节 if `set_material_resources` wired the
-        // shared `RenderMaterialManager` 缓冲区 we use an 空 切片 (the
-        // 缓冲区 is bound separately at b7 and never owned by the scene); if
-        // not wired (shouldn't happen for the real-time pass fall 后 to a
-        // single neutral 材质 so the 构建 still succeeds.
-        // `build_pt_scene` only allocates its OWN materials 缓冲区 from these
-        // 字节 the real-time pass overrides it with the shared 管理器
-        // 缓冲区 in `update_ds`, so we pass a minimal placeholder here.
+        // The materials SSBO bytes: if `set_material_resources` wired the
+        // shared `RenderMaterialManager` buffer we use an empty slice (the
+        // buffer is bound separately at b7 and never owned by the scene); if
+        // not wired (shouldn't happen for the real-time pass), fall back to a
+        // single neutral material so the build still succeeds.
+        // `build_pt_scene` only allocates its OWN materials buffer from these
+        // bytes; the real-time pass overrides it with the shared manager
+        // buffer in `update_ds`, so we pass a minimal placeholder here.
         let placeholder_material = [0u8; 96]; // one GpuMaterial's worth of zeroes
         let scene = crate::bake_common::build_pt_scene(
             context,
@@ -420,17 +420,17 @@ impl PathTracePass {
         )
         .context("PathTracePass: build_pt_scene")?;
 
-        // 放置 the 上一个 scene (frees its buffers/BLAS/TLAS via 放置
+        // Drop the previous scene (frees its buffers/BLAS/TLAS via Drop).
         self.pt_scene = Some(scene);
 
         log::info!("PathTracePass: {} instances uploaded", instances.len());
         Ok(())
     }
 
-    /// Wire the shared bindless 纹理 表 集合 1) + materials SSBO 集合 0
-    /// 绑定 7). Must be called before the 第一个 帧 so the 管线 布局
-    /// can include the bindless 集合 and `update_ds` can 写入 the materials
-    /// 绑定 The materials 缓冲区 is `RenderMaterialManager::buffer()`.
+    /// Wire the shared bindless texture table (set 1) + materials SSBO (set 0
+    /// binding 7). Must be called before the first frame so the pipeline layout
+    /// can include the bindless set and `update_ds` can write the materials
+    /// binding. The materials buffer is `RenderMaterialManager::buffer()`.
     pub fn set_material_resources(
         &mut self,
         materials_buffer: vk::Buffer,
@@ -440,13 +440,13 @@ impl PathTracePass {
         self.materials_buffer = Some(materials_buffer);
         self.bindless_set = bindless_set;
         self.bindless_layout = bindless_layout;
-        // 力 管线 rebuild so it picks 上 the 2-set 布局
+        // Force pipeline rebuild so it picks up the 2-set layout.
         self.pipeline = None;
     }
 
-    /// Wire the IBL environment cubemap 描述符 集合 集合 2) so the 着色器
-    /// can 样本 envCube on 射线 miss for 高动态范围 sky. Must be called before the
-    /// 第一个 帧 so the 管线 布局 includes 集合 2.
+    /// Wire the IBL environment cubemap descriptor set (set 2) so the shader
+    /// can sample envCube on ray miss for HDR sky. Must be called before the
+    /// first frame so the pipeline layout includes set 2.
     pub fn set_ibl_resources(
         &mut self,
         ibl_set: vk::DescriptorSet,
@@ -454,16 +454,16 @@ impl PathTracePass {
     ) {
         self.ibl_set = ibl_set;
         self.ibl_layout = ibl_layout;
-        // 力 管线 rebuild to pick 上 the 3-set 布局
+        // Force pipeline rebuild to pick up the 3-set layout.
         self.pipeline = None;
     }
 
-    /// 构建 (or rebuild) the emissive triangle SSBO from actual geometry +
-    /// 材质 data. Must be called after `set_geometry` so the scene
-    /// instances are fully 内置 the 材质 字节 come from the scene's
-    /// actual 材质 data (not placeholder).
+    /// Build (or rebuild) the emissive triangle SSBO from actual geometry +
+    /// material data. Must be called after `set_geometry` so the scene
+    /// instances are fully built; the material bytes come from the scene's
+    /// actual material data (not placeholder).
     ///
-    /// Destroys any 上一个 emissive 缓冲区 and triggers an accumulation reset.
+    /// Destroys any previous emissive buffer and triggers an accumulation reset.
     pub fn set_emissive(
         &mut self,
         context: &VulkanContext,
@@ -471,7 +471,7 @@ impl PathTracePass {
         materials_bytes: &[u8],
     ) {
         use crate::bake_common::create_emissive_buffer;
-        // 销毁 上一个 缓冲区
+        // Destroy previous buffer.
         let device = &context.device;
         if let Some(eb) = self.emissive_buffer.take() {
             if let Some(em) = self.emissive_memory.take() {
@@ -488,13 +488,13 @@ impl PathTracePass {
         if count > 0 {
             log::info!("PathTracePass: {} emissive triangles uploaded", count);
         }
-        // Reset accumulation so the new emissive data takes 效果 immediately.
+        // Reset accumulation so the new emissive data takes effect immediately.
         self.accum_dirty = true;
     }
 
     /// Ensure the ReSTIR reservoir ping-pong buffers are large enough for
-    /// the given 宽度 × 高度 Re-allocates (destroys + creates) when the
-    /// 图像 大小 grows; does NOT 收缩
+    /// the given width × height. Re-allocates (destroys + creates) when the
+    /// image size grows; does NOT shrink.
     fn ensure_reservoir_buffers(
         &mut self,
         device: &ash::Device,
@@ -507,7 +507,7 @@ impl PathTracePass {
         if needed <= self.reservoir_size {
             return;
         }
-        // 销毁 上一个
+        // Destroy previous
         for i in 0..2 {
             if self.reservoir_buffers[i] != vk::Buffer::null() {
                 unsafe {
@@ -516,7 +516,7 @@ impl PathTracePass {
                 }
             }
         }
-        // 创建 two device-local 存储 buffers
+        // Create two device-local storage buffers
         let buf_info = vk::BufferCreateInfo::default()
             .size(needed)
             .usage(vk::BufferUsageFlags::STORAGE_BUFFER)
@@ -543,17 +543,17 @@ impl PathTracePass {
         }
         self.reservoir_size = needed;
         self.reservoir_swap = 0;
-        // 力 管线 rebuild so it picks 上 the new 缓冲区 handles.
+        // Force pipeline rebuild so it picks up the new buffer handles.
         self.pipeline = None;
         log::info!("ReSTIR reservoir buffers: {} bytes each", needed);
     }
 
-    /// 写入 the PT analytic 光源 列表 into the lights SSBO 绑定 8).
+    /// Write the PT analytic light list into the lights SSBO (binding 8).
     ///
-    /// Copies 上 to `PT_LIGHT_MAX` lights into the mapped HOST_VISIBLE 缓冲区
-    /// and zeros the remaining entries. The pass owns this 缓冲区 - no 外部
-    /// 描述符 wiring needed beyond the initial `update_ds` 调用
-    /// `GraphRenderer::execute` calls this before 分发 each 帧
+    /// Copies up to `PT_LIGHT_MAX` lights into the mapped HOST_VISIBLE buffer
+    /// and zeros the remaining entries. The pass owns this buffer - no external
+    /// descriptor wiring needed beyond the initial `update_ds` call.
+    /// `GraphRenderer::execute` calls this before dispatch each frame.
     pub fn set_lights(&mut self, lights: &[PtAnalyticLight]) {
         let max_lights = PT_LIGHT_MAX as usize;
         let count = lights.len().min(max_lights);
@@ -564,7 +564,7 @@ impl PathTracePass {
                 self.lights_mapped,
                 count * light_size,
             );
-            // 零 remaining entries
+            // Zero remaining entries
             if count < max_lights {
                 let dst = self.lights_mapped.add(count * light_size);
                 ptr::write_bytes(dst, 0, (max_lights - count) * light_size);
@@ -572,17 +572,17 @@ impl PathTracePass {
         }
     }
 
-    /// Request an accumulation-buffer reset on the 下一个 帧 调用 this when a
-    /// 渲染 参数 that affects the traced radiance changes 最大值 bounces,
-    /// exposure, 光源 color/direction/intensity, scene geometry, ...). The
-    /// pass also resets automatically on 相机 motion; this is the hook for
+    /// Request an accumulation-buffer reset on the next frame. Call this when a
+    /// render parameter that affects the traced radiance changes (max bounces,
+    /// exposure, light color/direction/intensity, scene geometry, ...). The
+    /// pass also resets automatically on camera motion; this is the hook for
     /// non-camera changes it can't otherwise detect.
     pub fn request_reset(&mut self) {
         self.accum_dirty = true;
     }
 
-    /// 当前 帧 计数器 (number of accumulated samples per 像素
-    /// Resets to 0 when accumulation is cleared 相机 motion or
+    /// Current frame counter (number of accumulated samples per pixel).
+    /// Resets to 0 when accumulation is cleared (camera motion or
     /// [`request_reset`]).
     pub fn frame_count(&self) -> u32 {
         self.frame_counter
@@ -598,8 +598,8 @@ impl PathTracePass {
         if w == 0 || h == 0 {
             return Ok(());
         }
-        // Skip if 大小 hasn't changed — avoids unnecessary destroy+recreate
-        // cycles and keeps the graph's 资源 references 有效 across frames.
+        // Skip if size hasn't changed — avoids unnecessary destroy+recreate
+        // cycles and keeps the graph's resource references valid across frames.
         if self.img_width == w && self.img_height == h {
             return Ok(());
         }
@@ -641,9 +641,9 @@ impl PathTracePass {
         const SPV: &[u8] = include_bytes!("../../../assets/shaders/pt_render.comp.spv");
         let mod_ = shader::load_shader_module(device, SPV).context("PathTracePass: load spv")?;
         let entry = std::ffi::CString::new("ptMain").unwrap();
-        // Three sets: 集合 0 = PT-local (accum/output/TLAS/vertex/index/meta/
-        // materials), 集合 1 = shared bindless 纹理 表 (samplers + SRVs),
-        // 集合 2 = IBL environment cubemap 高动态范围 sky).
+        // Three sets: set 0 = PT-local (accum/output/TLAS/vertex/index/meta/
+        // materials), set 1 = shared bindless texture table (samplers + SRVs),
+        // set 2 = IBL environment cubemap (HDR sky).
         let mut layouts = vec![self.ds_layout, self.bindless_layout];
         if self.ibl_layout != vk::DescriptorSetLayout::null() {
             layouts.push(self.ibl_layout);
@@ -678,7 +678,7 @@ impl PathTracePass {
     }
 
     fn clear_accum_images(&self, device: &ash::Device, cmd: vk::CommandBuffer) {
-        // 过渡 accum to GENERAL
+        // Transition accum to GENERAL
         let b1 = vk::ImageMemoryBarrier::default()
             .image(self.accum_image)
             .old_layout(vk::ImageLayout::UNDEFINED)
@@ -723,7 +723,7 @@ impl PathTracePass {
             );
         }
 
-        // 过渡 样本 count to GENERAL
+        // Transition sample count to GENERAL
         let b2 = vk::ImageMemoryBarrier::default()
             .image(self.sample_count_image)
             .old_layout(vk::ImageLayout::UNDEFINED)
@@ -756,7 +756,7 @@ impl PathTracePass {
         }
     }
 
-    /// 更新 描述符 集合 bindings.
+    /// Update descriptor set bindings.
     fn update_ds(&self, device: &ash::Device) {
         let ai = vk::DescriptorImageInfo::default()
             .image_view(self.accum_view)
@@ -769,8 +769,8 @@ impl PathTracePass {
             .image_layout(vk::ImageLayout::GENERAL);
 
         // Geometry buffers come from the PtScene (vertex/index/instance_meta).
-        // The materials 缓冲区 is the shared RenderMaterialManager SSBO (wired
-        // via set_material_resources), NOT the PtScene's placeholder 缓冲区
+        // The materials buffer is the shared RenderMaterialManager SSBO (wired
+        // via set_material_resources), NOT the PtScene's placeholder buffer.
         let (vbuf, ibuf, mbuf) = match self.pt_scene.as_ref() {
             Some(s) => (s.vertex_buffer, s.index_buffer, s.instance_meta_buffer),
             None => (vk::Buffer::null(), vk::Buffer::null(), vk::Buffer::null()),
@@ -800,8 +800,8 @@ impl PathTracePass {
             .offset(0)
             .range(vk::WHOLE_SIZE);
         // ReSTIR reservoir buffers (ping-pong, b10/b11).
-        // 交换 roles each 帧 b10 gets the 缓冲区 written 最后一个 帧 (prev),
-        // b11 gets the 缓冲区 to 写入 this 帧 (curr).
+        // Swap roles each frame: b10 gets the buffer written last frame (prev),
+        // b11 gets the buffer to write this frame (curr).
         let prev_buf = self.reservoir_buffers[1 - self.reservoir_swap];
         let curr_buf = self.reservoir_buffers[self.reservoir_swap];
         let prev_bi = vk::DescriptorBufferInfo::default()
@@ -874,8 +874,8 @@ impl PathTracePass {
             device.update_descriptor_sets(&writes, &[]);
         }
 
-        // 加速度 structure 写入 绑定 2) - done as a separate 调用
-        // because its push_next 引用 must stay alive for the 更新 调用
+        // Acceleration structure write (binding 2) - done as a separate call
+        // because its push_next reference must stay alive for the update call.
         if let Some(handle) = self
             .pt_scene
             .as_ref()
@@ -895,7 +895,7 @@ impl PathTracePass {
         }
     }
 
-    /// 销毁 all GPU resources.
+    /// Destroy all GPU resources.
     pub fn destroy(&mut self, device: &ash::Device) {
         self.pipeline = None;
         unsafe {
@@ -919,7 +919,7 @@ impl PathTracePass {
             device.destroy_descriptor_set_layout(self.ds_layout, None);
             device.destroy_descriptor_pool(self.ds_pool, None);
         }
-        // 销毁 emissive SSBO.
+        // Destroy emissive SSBO.
         if let Some(eb) = self.emissive_buffer.take() {
             if let Some(em) = self.emissive_memory.take() {
                 unsafe {
@@ -928,7 +928,7 @@ impl PathTracePass {
                 }
             }
         }
-        // 销毁 ReSTIR reservoir buffers.
+        // Destroy ReSTIR reservoir buffers.
         for i in 0..2 {
             if self.reservoir_buffers[i] != vk::Buffer::null() {
                 unsafe {
@@ -937,8 +937,8 @@ impl PathTracePass {
                 }
             }
         }
-        // 清空 the cached 设备 handle so Drop::drop becomes a no-op
-        // (graph_renderer calls 销毁 explicitly after device_wait_idle).
+        // Clear the cached device handle so Drop::drop becomes a no-op
+        // (graph_renderer calls destroy() explicitly after device_wait_idle).
         self.device = None;
     }
 }
@@ -973,11 +973,11 @@ impl RenderPassNode for PathTracePass {
             access: vk::AccessFlags::SHADER_WRITE,
             stage: vk::PipelineStageFlags::COMPUTE_SHADER,
             // Declared as SHADER_READ_ONLY_OPTIMAL (not GENERAL) so that when this
-            // pass is skipped (e.g. no 相机 the 状态 tracker always reads the
-            // same 布局 that PostPass wants, avoiding a trampoline 屏障 with a
-            // stale old_layout (the 图像 was never actually transitioned to GENERAL).
-            // The actual post-dispatch GENERAL→SHADER_READ_ONLY_OPTIMAL 过渡
-            // is emitted manually inside 执行
+            // pass is skipped (e.g. no camera) the state tracker always reads the
+            // same layout that PostPass wants, avoiding a trampoline barrier with a
+            // stale old_layout (the image was never actually transitioned to GENERAL).
+            // The actual post-dispatch GENERAL→SHADER_READ_ONLY_OPTIMAL transition
+            // is emitted manually inside `execute`.
             layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
         });
     }
@@ -1005,27 +1005,27 @@ impl RenderPassNode for PathTracePass {
         let w = ctx.render_extent.width.max(1);
         let h = ctx.render_extent.height.max(1);
 
-        // 调整大小 accumulation buffers if needed
+        // Resize accumulation buffers if needed
         self.resize_images(device, &ctx.context.physical_device_memory_properties, w, h)?;
-        // 调整大小 ReSTIR reservoir ping-pong buffers if needed
+        // Resize ReSTIR reservoir ping-pong buffers if needed
         self.ensure_reservoir_buffers(device, &ctx.context, w, h);
 
-        // 写入 analytic lights into the SSBO 绑定 8) — do this before
-        // borrowing `self.pipeline` so the mutable 借用 for set_lights
-        // doesn't conflict with the immutable `pl` 借用 below.
+        // Write analytic lights into the SSBO (binding 8) — do this before
+        // borrowing `self.pipeline` so the mutable borrow for set_lights
+        // doesn't conflict with the immutable `pl` borrow below.
         self.set_lights(ctx.frame.pt_lights);
 
-        // 管线
+        // Pipeline
         self.ensure_pipeline(device)?;
         let pl = self.pipeline.as_ref().unwrap();
 
-        // 相机 detection
+        // Camera detection
         let cam_pos = ctx.frame.camera_pos;
         let cam_xyz = [cam_pos[0], cam_pos[1], cam_pos[2]];
         let inv_vp = mat_inverse(&ctx.frame.view_proj);
-        // Reset on 相机 motion, explicit accum-dirty (geometry), or the
-        // directional-light accumulation-dirty flag from the 帧 (intensity,
-        // 颜色 or direction changed). Cleared after one 帧 in both cases.
+        // Reset on camera motion, explicit accum-dirty (geometry), or the
+        // directional-light accumulation-dirty flag from the frame (intensity,
+        // color, or direction changed). Cleared after one frame in both cases.
         let reset =
             self.should_reset(cam_xyz, inv_vp) || self.accum_dirty || ctx.frame.pt_accum_dirty;
         self.accum_dirty = false;
@@ -1038,14 +1038,14 @@ impl RenderPassNode for PathTracePass {
             self.frame_counter = 0;
         }
 
-        // 屏障 accum → GENERAL 计算 写入
-        // On 帧 1 (after clear_accum_images) the 上一个 写入 was a
+        // Barrier: accum → GENERAL (compute write).
+        // On frame 1 (after clear_accum_images) the previous write was a
         // TRANSFER_WRITE from vkCmdClearColorImage; on subsequent frames it
-        // was a SHADER_WRITE from the previous-frame 计算 分发
+        // was a SHADER_WRITE from the previous-frame compute dispatch.
         // Both access/stage masks must be present to properly order the
-        // dependency regardless of which 生产者 ran 最后一个 — omitting
-        // SHADER_WRITE would mean 帧 2's 计算 着色器 reads undefined
-        // garbage from the accumulation images (causing all-white 输出
+        // dependency regardless of which producer ran last — omitting
+        // SHADER_WRITE would mean frame 2's compute shader reads undefined
+        // garbage from the accumulation images (causing all-white output).
         let accum_to_gen = vk::ImageMemoryBarrier::default()
             .image(self.accum_image)
             .old_layout(vk::ImageLayout::GENERAL)
@@ -1071,8 +1071,8 @@ impl RenderPassNode for PathTracePass {
             );
         }
 
-        // 屏障 sampleCount → GENERAL 计算 写入
-        // Same dual-src 逻辑 as accum above.
+        // Barrier: sampleCount → GENERAL (compute write).
+        // Same dual-src logic as accum above.
         let sc_to_gen = vk::ImageMemoryBarrier::default()
             .image(self.sample_count_image)
             .old_layout(vk::ImageLayout::GENERAL)
@@ -1098,11 +1098,11 @@ impl RenderPassNode for PathTracePass {
             );
         }
 
-        // 屏障 PT_COLOR_H → GENERAL 计算 写入
-        // Use UNDEFINED as old_layout — this is always 有效 per the Vulkan
-        // spec regardless of the image's actual 布局 (SHADER_READ_ONLY_OPTIMAL
-        // from PostPass's 读取 屏障 in the 上一个 帧 or UNDEFINED on
-        // the 第一个 帧 / after 调整大小 The 图 does not issue a 屏障
+        // Barrier: PT_COLOR_H → GENERAL (compute write).
+        // Use UNDEFINED as old_layout — this is always valid per the Vulkan
+        // spec regardless of the image's actual layout (SHADER_READ_ONLY_OPTIMAL
+        // from PostPass's read barrier in the previous frame, or UNDEFINED on
+        // the first frame / after resize). The graph does not issue a barrier
         // for write-only edges, so we must handle this ourselves.
         let out_to_gen = vk::ImageMemoryBarrier::default()
             .image(self.output_image)
@@ -1129,11 +1129,11 @@ impl RenderPassNode for PathTracePass {
             );
         }
 
-        // 更新 descriptors
+        // Update descriptors
         self.update_ds(device);
 
-        // Bind: 集合 0 = PT-local, 集合 1 = shared bindless 纹理 表
-        // 集合 2 = IBL environment cubemap (if wired).
+        // Bind: set 0 = PT-local, set 1 = shared bindless texture table,
+        // set 2 = IBL environment cubemap (if wired).
         let sets = if self.ibl_set != vk::DescriptorSet::null() {
             vec![self.ds, self.bindless_set, self.ibl_set]
         } else {
@@ -1157,8 +1157,8 @@ impl RenderPassNode for PathTracePass {
 
         let light_dir = ctx.frame.light_dir;
         let light_color = ctx.frame.light_color;
-        // 打包 exposure into camera_pos.w (PT only uses camera_pos.xyz for
-        // 射线 origin; the .w 槽 was previously unused).
+        // Pack exposure into camera_pos.w (PT only uses camera_pos.xyz for
+        // ray origin; the .w slot was previously unused).
         let mut camera_pos = cam_pos;
         camera_pos[3] = ctx.frame.exposure;
         let push = shader_bindings::pt_render::PtPush {
@@ -1185,16 +1185,16 @@ impl RenderPassNode for PathTracePass {
             );
         }
 
-        // 分发 (16×16 线程 groups)
+        // Dispatch (16×16 thread groups)
         let gx = (w + 15) / 16;
         let gy = (h + 15) / 16;
         unsafe {
             device.cmd_dispatch(cmd, gx, gy, 1);
         }
 
-        // Post-dispatch 屏障 PT_COLOR_H GENERAL → SHADER_READ_ONLY_OPTIMAL
-        // so PostPass can 样本 it. Must be manual because the 写入 edge
-        // declares SHADER_READ_ONLY_OPTIMAL as the post-pass 布局 (to avoid
+        // Post-dispatch barrier: PT_COLOR_H GENERAL → SHADER_READ_ONLY_OPTIMAL
+        // so PostPass can sample it. Must be manual because the write edge
+        // declares SHADER_READ_ONLY_OPTIMAL as the post-pass layout (to avoid
         // stale-tracker barriers when the pass is skipped).
         let out_to_read = vk::ImageMemoryBarrier::default()
             .image(self.output_image)
@@ -1221,12 +1221,12 @@ impl RenderPassNode for PathTracePass {
             );
         }
 
-        // Advance reservoir 交换 索引 for 下一个 帧
+        // Advance reservoir swap index for next frame
         self.reservoir_swap = (self.reservoir_swap + 1) & 1;
 
         self.frame_counter = self.frame_counter.wrapping_add(1);
 
-        // 发布 for PostPass
+        // Publish for PostPass
         resources.set_image_view(PT_COLOR_H, self.output_view);
         resources.set_image(PT_COLOR_H, self.output_image);
 
@@ -1416,8 +1416,8 @@ mod mat_inverse_tests {
         o
     }
 
-    /// A representative Vulkan view-projection (y-flip, 深度 [0,1]) with a
-    /// yawed 视图 - exercises the 旋转 terms that exposed the old bug.
+    /// A representative Vulkan view-projection (y-flip, depth [0,1]) with a
+    /// yawed view - exercises the rotation terms that exposed the old bug.
     fn sample_vp() -> [[f32; 4]; 4] {
         let inv_tan = 1.0_f32 / (1.0472_f32 * 0.5).tan();
         let mut proj = [[0.0f32; 4]; 4];
@@ -1458,18 +1458,18 @@ mod mat_inverse_tests {
 
     #[test]
     fn unprojects_near_plane_center_to_camera() {
-        // A clip-space point at 深度 0 近 平面 must unproject to a point
-        // ~znear in 前 of the 相机 along its viewing direction. With this
-        // identity-rotation 视图 the 相机 looks 下 +Z_world toward the
-        // origin (eye = (3,2,6), 目标 ~ (3,2,0)), so the near-plane center is
-        // at 世界 z ≈ eye_z - znear = 5.9... but Vulkan's [0,1] 深度 maps the
-        // *near* 平面 to z_ndc=0 only for -z_view rays; here the 视图 basis
-        // points the 相机 at +Z so the recovered point lands at z ≈ -6.1
-        // (i.e. znear beyond the eye in the look direction). The 精确 符号 is
-        // convention-dependent; what matters is that x/y 匹配 the eye and z
-        // is within znear of it - i.e. the 射线 origin is sane, not garbage.
-        // This guards against the original symptom (nonsense 世界 points ->
-        // all-white path-traced 图像
+        // A clip-space point at depth 0 (near plane) must unproject to a point
+        // ~znear in front of the camera along its viewing direction. With this
+        // identity-rotation view the camera looks down +Z_world toward the
+        // origin (eye = (3,2,6), target ~ (3,2,0)), so the near-plane center is
+        // at world z ≈ eye_z - znear = 5.9... but Vulkan's [0,1] depth maps the
+        // *near* plane to z_ndc=0 only for -z_view rays; here the view basis
+        // points the camera at +Z so the recovered point lands at z ≈ -6.1
+        // (i.e. znear beyond the eye in the look direction). The exact sign is
+        // convention-dependent; what matters is that x/y match the eye and z
+        // is within znear of it - i.e. the ray origin is sane, not garbage.
+        // This guards against the original symptom (nonsense world points ->
+        // all-white path-traced image).
         let mut proj = [[0.0f32; 4]; 4];
         let inv_tan = 1.0_f32 / (1.0472_f32 * 0.5).tan();
         proj[0][0] = inv_tan / 1.7777;
@@ -1493,11 +1493,11 @@ mod mat_inverse_tests {
             }
         }
         let p = [wp[0] / wp[3], wp[1] / wp[3], wp[2] / wp[3]];
-        // x/y must 等于 the eye 射线 passes through the 像素 column/row of
+        // x/y must equal the eye (ray passes through the pixel column/row of
         // the eye). A broken inverse would scatter these wildly.
         assert!((p[0] - 3.0).abs() < 1e-3, "x = {}", p[0]);
         assert!((p[1] - 2.0).abs() < 1e-3, "y = {}", p[1]);
-        // z is within znear (0.1) of the eye's z 模长 - i.e. the
+        // z is within znear (0.1) of the eye's z magnitude - i.e. the
         // near-plane point, not a far-away garbage value.
         assert!((p[2].abs() - 6.0).abs() < 0.2, "z = {}", p[2]);
     }

@@ -12,13 +12,13 @@
 //! | 平台 | 对话框 | 剪贴板 |
 //! |----------|--------|-----------|
 //! | Windows | `MessageBoxW` (`MB_YESNO`) | `OpenClipboard` / `SetClipboardData` |
-//! | macOS | `osascript` (`display 对话框 | `pbcopy` |
-//! | Linux | `zenity --question` 回退 text on stderr) | `xclip`/`xsel` |
+//! | macOS    | `osascript` (`display dialog`) | `pbcopy` |
+//! | Linux    | `zenity --question` (fallback: text on stderr) | `xclip`/`xsel` |
 //! | Android | `AlertDialog` via JNI (模态轮询等待) | `ClipboardManager` via JNI |
 //!
-//! The 对话框 blocks the calling 线程 (the winit event-loop / main 线程
+//! The dialog blocks the calling thread (the winit event-loop / main thread)
 //! 直到用户确认，这自然"暂停"了渲染循环。
-//! confirmation the 调用者 tears 下 the 事件 循环
+//! confirmation the caller tears down the event loop.
 //!
 //! ## Android
 //!
@@ -28,10 +28,10 @@
 //! the 对话框 is dismissed. The 错误 text is also copied to the Android 系统
 //! clipboard via `ClipboardManager` on dismissal.
 
-/// The user's choice in the 崩溃 对话框
+/// The user's choice in the crash dialog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CrashChoice {
-    /// 复制 & Exit": 复制 the 错误 text to the clipboard, then exit.
+    /// "Copy & Exit": copy the error text to the clipboard, then exit.
     CopyAndExit,
     /// "Exit": just exit.
     Exit,
@@ -50,9 +50,9 @@ struct AndroidAppHandles {
 }
 
 #[cfg(any(target_os = "android", test))]
-// 安全性 the handles are raw pointers into the JVM/Activity, which live for
-// the entire 进程 They are only dereferenced from the main 线程 (the
-// winit 事件 循环 线程 which is also the 线程 that registered them.
+// SAFETY: the handles are raw pointers into the JVM/Activity, which live for
+// the entire process. They are only dereferenced from the main thread (the
+// winit event loop thread), which is also the thread that registered them.
 unsafe impl Send for AndroidAppHandles {}
 #[cfg(any(target_os = "android", test))]
 unsafe impl Sync for AndroidAppHandles {}
@@ -60,12 +60,12 @@ unsafe impl Sync for AndroidAppHandles {}
 #[cfg(any(target_os = "android", test))]
 static ANDROID_APP: std::sync::RwLock<Option<AndroidAppHandles>> = std::sync::RwLock::new(None);
 
-/// Register the `AndroidApp` so the 崩溃 对话框 can reach the JVM/Activity
+/// Register the `AndroidApp` so the crash dialog can reach the JVM/Activity
 /// for showing an `AlertDialog`. Called from `android_main` before the
 /// 事件 循环 starts. Overwrites any previous registration so re-entering the
 /// Android activity always replaces any stale Activity handle.
 ///
-/// No-op on non-Android platforms (the 函数 simply isn't compiled there).
+/// No-op on non-Android platforms (the function simply isn't compiled there).
 #[cfg(target_os = "android")]
 pub fn register_android_app(app: &android_activity::AndroidApp) {
     let handles = AndroidAppHandles {
@@ -87,17 +87,17 @@ pub fn unregister_android_app() {
 }
 
 // ---------------------------------------------------------------------------
-// 公开 entry point
+// Public entry point
 // ---------------------------------------------------------------------------
 
-/// Show the native 崩溃 对话框 with `title` and 消息
+/// Show the native crash dialog with `title` and `message`.
 ///
-/// Blocks the calling 线程 until the user confirms. Returns the chosen
-/// action. If showing the 对话框 fails on a platform that uses a subprocess
-/// (macOS/Linux) or JNI Android the 错误 text is logged and `Exit` is
-/// returned so the 调用者 still terminates.
+/// Blocks the calling thread until the user confirms. Returns the chosen
+/// action. If showing the dialog fails on a platform that uses a subprocess
+/// (macOS/Linux) or JNI (Android), the error text is logged and `Exit` is
+/// returned so the caller still terminates.
 pub fn show_crash_dialog(title: &str, message: &str) -> CrashChoice {
-    // Always 对数 the 完整 错误 第一个 so it's in the 对数 even if the 对话框
+    // Always log the full error first so it's in the log even if the dialog
     // backend fails (e.g. zenity not installed).
     log::error!("FATAL: {title}\n{message}");
 
@@ -111,7 +111,7 @@ pub fn show_crash_dialog(title: &str, message: &str) -> CrashChoice {
 }
 
 // ---------------------------------------------------------------------------
-// Platform 分发
+// Platform dispatch
 // ---------------------------------------------------------------------------
 
 #[cfg(windows)]

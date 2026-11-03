@@ -250,7 +250,7 @@ pub fn required_vulkan_extensions(window: &PlatformWindow) -> Vec<String> {
         .collect()
 }
 
-/// Grab the cursor (hide + confine) for FPS-style 指针 lock.
+/// Grab the cursor (hide + confine) for FPS-style pointer lock.
 pub fn grab_pointer(window: &PlatformWindow) {
     window.set_cursor_visible(false);
     if let Err(e) = window.set_pointer_confined(true) {
@@ -258,7 +258,7 @@ pub fn grab_pointer(window: &PlatformWindow) {
     }
 }
 
-/// 释放 the cursor (show + unconfine).
+/// Release the cursor (show + unconfine).
 pub fn release_pointer(window: &PlatformWindow) {
     window.set_cursor_visible(true);
     if let Err(e) = window.set_pointer_confined(false) {

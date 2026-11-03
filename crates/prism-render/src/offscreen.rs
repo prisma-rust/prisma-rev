@@ -1,22 +1,22 @@
-//! Offscreen 渲染 目标 for headless / Vulkan-init tests.
+//! Offscreen rendering target for headless / Vulkan-init tests.
 //!
-//! An [`OffscreenTarget`] owns a device-local 颜色 图像 and a host-visible
-//! staging 缓冲区 — no 窗口 表面 or 交换链 needed. Callers 清空 the
-//! 图像 复制 it 后 to the 缓冲区 and 读取 the pixels on the CPU.
+//! An [`OffscreenTarget`] owns a device-local colour image and a host-visible
+//! staging buffer — no window surface or swapchain needed.  Callers clear the
+//! image, copy it back to the buffer, and read the pixels on the CPU.
 //!
-//! Used by [`GraphRenderer`] for headless 众数 and by integration tests that
-//! exercise the Vulkan 栈 in CI or Termux.
+//! Used by [`GraphRenderer`] for headless mode and by integration tests that
+//! exercise the Vulkan stack in CI or Termux.
 
 use anyhow::Context as _;
 use ash::vk;
 
 use crate::context::VulkanContext;
 
-/// Offscreen 颜色 图像 + host-readable readback 缓冲区
+/// Offscreen colour image + host-readable readback buffer.
 ///
-/// Owns a dedicated 命令 池 (created from
-/// [`VulkanContext::graphics_queue_family`]) so it can submit 清空 + 复制
-/// operations without borrowing a 池 from another subsystem.
+/// Owns a dedicated command pool (created from
+/// [`VulkanContext::graphics_queue_family`]) so it can submit clear + copy
+/// operations without borrowing a pool from another subsystem.
 ///
 /// 编辑器宿主模式用它实现**零拷贝**视口：帧结束时把图像转到
 /// `SHADER_READ_ONLY_OPTIMAL`，再把 [`image_view`](Self::image_view) 交给
@@ -59,8 +59,8 @@ impl OffscreenTarget {
         self.format
     }
 
-    /// 创建 the offscreen 图像 a host-visible readback 缓冲区 and a
-    /// dedicated 命令 池
+    /// Create the offscreen image, a host-visible readback buffer, and a
+    /// dedicated command pool.
     ///
     /// `usage` 同时包含 `COLOR_ATTACHMENT`：PostPass 会把 tonemap 结果直接
     /// 渲染进这张图（无交换链的宿主模式），随后经 `TRANSFER_SRC` 读回 CPU。
@@ -72,7 +72,7 @@ impl OffscreenTarget {
         let pixel_size = 4u32;
         let buffer_size = (extent.width * extent.height * pixel_size) as u64;
 
-        // ---- device-local 图像 ----
+        // ---- device-local image ----
         let image = unsafe {
             context.device.create_image(
                 &vk::ImageCreateInfo::default()
@@ -120,7 +120,7 @@ impl OffscreenTarget {
         }
         .context("create offscreen image view")?;
 
-        // ---- host-visible staging 缓冲区 ----
+        // ---- host-visible staging buffer ----
         let buffer = unsafe {
             context.device.create_buffer(
                 &vk::BufferCreateInfo::default()
@@ -152,7 +152,7 @@ impl OffscreenTarget {
         unsafe { context.device.bind_buffer_memory(buffer, buffer_memory, 0) }
             .context("bind readback buffer memory")?;
 
-        // ---- dedicated 命令 池 ----
+        // ---- dedicated command pool ----
         let pool_info = vk::CommandPoolCreateInfo::default()
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
             .queue_family_index(context.graphics_queue_family);
@@ -173,8 +173,8 @@ impl OffscreenTarget {
         })
     }
 
-    /// 清空 the offscreen 图像 to 颜色 复制 it to the host-visible
-    /// 缓冲区 and wait for the GPU. Afterwards 调用 [`readback`](Self::readback).
+    /// Clear the offscreen image to `color`, copy it to the host-visible
+    /// buffer, and wait for the GPU.  Afterwards call [`readback`](Self::readback).
     pub fn clear_and_copy(
         &mut self,
         context: &VulkanContext,
@@ -182,7 +182,7 @@ impl OffscreenTarget {
     ) -> anyhow::Result<()> {
         let device = &context.device;
 
-        // ---- one-shot 命令 缓冲区 ----
+        // ---- one-shot command buffer ----
         let alloc_info = vk::CommandBufferAllocateInfo::default()
             .command_pool(self.command_pool)
             .level(vk::CommandBufferLevel::PRIMARY)
@@ -208,7 +208,7 @@ impl OffscreenTarget {
             vk::PipelineStageFlags::TRANSFER,
         );
 
-        // 清空
+        // Clear
         let clear_color = vk::ClearColorValue { float32: color };
         let range = vk::ImageSubresourceRange {
             aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -227,7 +227,7 @@ impl OffscreenTarget {
             );
         }
 
-        // TRANSFER_DST_OPTIMAL → TRANSFER_SRC_OPTIMAL (for 复制
+        // TRANSFER_DST_OPTIMAL → TRANSFER_SRC_OPTIMAL (for copy)
         image_barrier(
             device,
             cmd,
@@ -240,7 +240,7 @@ impl OffscreenTarget {
             vk::PipelineStageFlags::TRANSFER,
         );
 
-        // 复制 图像 → 缓冲区
+        // Copy image → buffer
         let copy = vk::BufferImageCopy::default()
             .buffer_offset(0)
             .buffer_row_length(0)
@@ -269,7 +269,7 @@ impl OffscreenTarget {
 
         unsafe { device.end_command_buffer(cmd) }.context("end offscreen cmd buffer")?;
 
-        // Submit + 围栏
+        // Submit + fence
         let fence = unsafe { device.create_fence(&vk::FenceCreateInfo::default(), None) }
             .context("create offscreen fence")?;
         let submit_cmds = [cmd];
@@ -547,7 +547,7 @@ impl OffscreenTarget {
         Ok(Some(data))
     }
 
-    /// 映射表 the host-visible 缓冲区 and return 像素 data as `Vec<u8>` RGBA
+    /// Map the host-visible buffer and return pixel data as `Vec<u8>` (RGBA).
     pub fn readback(&self, context: &VulkanContext) -> anyhow::Result<Vec<u8>> {
         let size = (self.extent.width * self.extent.height * 4) as usize;
         let ptr = unsafe {
@@ -568,11 +568,11 @@ impl OffscreenTarget {
         Ok(data)
     }
 
-    /// Free all Vulkan resources. Must be called while the 设备 is alive.
+    /// Free all Vulkan resources.  Must be called while the device is alive.
     ///
-    /// # 安全性
+    /// # Safety
     ///
-    /// 设备 must be the same `ash::Device` used to 创建 these objects,
+    /// `device` must be the same `ash::Device` used to create these objects,
     /// and must 已 have been destroyed.
     pub(crate) unsafe fn destroy(&mut self, device: &ash::Device) {
         unsafe {

@@ -34,7 +34,7 @@ fn make_rscn(entities: &[RscnEntity]) -> Vec<u8> {
         let parent: i32 = e.parent.map(|p| p as i32).unwrap_or(-1);
         buf.extend_from_slice(&parent.to_le_bytes());
 
-        // 变换
+        // Transform.
         for &v in &e.position {
             buf.extend_from_slice(&v.to_le_bytes());
         }
@@ -64,21 +64,21 @@ fn make_rscn(entities: &[RscnEntity]) -> Vec<u8> {
         }
         buf.push(flags);
 
-        // 网格 path.
+        // Mesh path.
         if e.has_mesh {
             let path_bytes = e.mesh_path.as_bytes();
             buf.extend_from_slice(&(path_bytes.len() as u16).to_le_bytes());
             buf.extend_from_slice(path_bytes);
         }
 
-        // 材质 path.
+        // Material path.
         if e.has_material {
             let path_bytes = e.material_path.as_bytes();
             buf.extend_from_slice(&(path_bytes.len() as u16).to_le_bytes());
             buf.extend_from_slice(path_bytes);
         }
 
-        // 光源
+        // Light.
         if e.has_light {
             buf.push(e.light_type);
             for &v in &e.light_color {
@@ -90,7 +90,7 @@ fn make_rscn(entities: &[RscnEntity]) -> Vec<u8> {
             buf.extend_from_slice(&e.light_outer_cone.to_le_bytes());
         }
 
-        // 相机
+        // Camera.
         if e.has_camera {
             buf.extend_from_slice(&e.camera_fov.to_le_bytes());
             buf.extend_from_slice(&e.camera_near.to_le_bytes());

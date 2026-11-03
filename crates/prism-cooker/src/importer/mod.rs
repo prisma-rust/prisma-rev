@@ -59,18 +59,18 @@ pub enum ImportError {
 }
 
 // ---------------------------------------------------------------------------
-// 导入 Context
+// Import Context
 // ---------------------------------------------------------------------------
 
-/// Context provided to an importer during the 导入 进程
+/// Context provided to an importer during the import process.
 pub struct ImportContext {
-    /// 绝对 path to the 源 file being imported.
+    /// Absolute path to the source file being imported.
     pub source_path: PathBuf,
-    /// xxh3 哈希 of the 源 file contents.
+    /// xxh3 hash of the source file contents.
     pub source_hash: u64,
     /// JSON settings passed to the importer.
     pub settings: Value,
-    /// 引用 to the 资源 database (for dependency lookups).
+    /// Reference to the asset database (for dependency lookups).
     pub db: Arc<AssetDatabase>,
 }
 
@@ -84,18 +84,18 @@ impl std::fmt::Debug for ImportContext {
 }
 
 // ---------------------------------------------------------------------------
-// 导入 结果
+// Import Result
 // ---------------------------------------------------------------------------
 
-/// The 结果 of a successful 导入
+/// The result of a successful import.
 pub struct ImportResult {
-    /// The 类型 of 资源 produced.
+    /// The type of asset produced.
     pub asset_type: AssetType,
     /// IDs of other assets this one depends on.
     pub dependencies: Vec<AssetId>,
-    /// Intermediate 二进制 data 输入 to the cooker).
+    /// Intermediate binary data (input to the cooker).
     pub output_data: Vec<u8>,
-    /// Optional JSON metadata stored alongside the 资源
+    /// Optional JSON metadata stored alongside the asset.
     pub metadata: Option<Value>,
 }
 
@@ -110,14 +110,14 @@ impl std::fmt::Debug for ImportResult {
 }
 
 // ---------------------------------------------------------------------------
-// 导入 File 结果 (returned by ImportPipeline::import_file)
+// Import File Result (returned by ImportPipeline::import_file)
 // ---------------------------------------------------------------------------
 
-/// 结果 of a single `import_file` 调用
+/// Result of a single `import_file` call.
 pub struct ImportFileResult {
     /// `true` when the file was actually imported; `false` when cache hit.
     pub was_imported: bool,
-    /// When `was_imported == true`, the importer's intermediate 输出 data.
+    /// When `was_imported == true`, the importer's intermediate output data.
     /// `None` when the file was cached.
     pub intermediate_data: Option<Vec<u8>>,
 }
@@ -126,24 +126,24 @@ pub struct ImportFileResult {
 // Importer trait
 // ---------------------------------------------------------------------------
 
-/// A 可插拔 importer that converts 源 files into intermediate data.
+/// A pluggable importer that converts source files into intermediate data.
 ///
-/// Implementations must be `Send + Sync` so they can be registered in a 全局
-/// registry and run on any 线程
+/// Implementations must be `Send + Sync` so they can be registered in a global
+/// registry and run on any thread.
 pub trait Importer: Send + Sync {
-    /// 唯一 name for this importer (e.g. `"texture-importer"`).
+    /// Unique name for this importer (e.g. `"texture-importer"`).
     fn name(&self) -> &'static str;
 
-    /// Version of this importer. Increment when the 输出 格式 changes
-    /// to 力 re-import.
+    /// Version of this importer. Increment when the output format changes
+    /// to force re-import.
     fn version(&self) -> u32;
 
-    /// Return `true` if this impporter can handle the given 源 file.
+    /// Return `true` if this impporter can handle the given source file.
     fn can_import(&self, path: &Path) -> bool;
 
-    /// 执行 the 导入
+    /// Perform the import.
     ///
-    /// This may be called on a background 线程 / 异步 任务
+    /// This may be called on a background thread / async task.
     fn import(&self, ctx: &ImportContext) -> Result<ImportResult, ImportError>;
 }
 
@@ -158,7 +158,7 @@ pub struct ImporterRegistry {
 }
 
 impl ImporterRegistry {
-    /// 创建 an 空 registry.
+    /// Create an empty registry.
     pub fn new() -> Self {
         Self {
             importers: Vec::new(),
@@ -187,14 +187,14 @@ impl ImporterRegistry {
         self.importers.is_empty()
     }
 
-    /// 查找 an importer by name.
+    /// Find an importer by name.
     pub fn get(&self, name: &str) -> Option<&dyn Importer> {
         self.by_name
             .get(name)
             .map(|&idx| self.importers[idx].as_ref())
     }
 
-    /// 查找 the 第一个 importer that can handle a given file.
+    /// Find the first importer that can handle a given file.
     pub fn find_for_path(&self, path: &Path) -> Option<&dyn Importer> {
         self.importers
             .iter()
@@ -221,32 +221,32 @@ impl std::fmt::Debug for ImporterRegistry {
 }
 
 // ---------------------------------------------------------------------------
-// 导入 管线
+// Import Pipeline
 // ---------------------------------------------------------------------------
 
-/// High-level 导入 管线 that coordinates importers, the database, and
-/// the 导入 cache.
+/// High-level import pipeline that coordinates importers, the database, and
+/// the import cache.
 pub struct ImportPipeline {
     registry: Arc<ImporterRegistry>,
 }
 
 impl ImportPipeline {
-    /// 创建 a new 管线 using the given importer registry.
+    /// Create a new pipeline using the given importer registry.
     pub fn new(registry: Arc<ImporterRegistry>) -> Self {
         Self { registry }
     }
 
-    /// 引用 to the underlying registry.
+    /// Reference to the underlying registry.
     pub fn registry(&self) -> &ImporterRegistry {
         &self.registry
     }
 
-    /// 导入 a single file.
+    /// Import a single file.
     ///
-    /// If the file is unchanged (matching 哈希 in 导入 cache), the 导入
+    /// If the file is unchanged (matching hash in import cache), the import
     /// is skipped. Returns [`ImportFileResult`] with `was_imported` indicating
     /// whether the file was actually processed, and `intermediate_data` carrying
-    /// the importer's 输出 for downstream cooking.
+    /// the importer's output for downstream cooking.
     pub fn import_file(
         &self,
         source_path: &Path,
@@ -283,7 +283,7 @@ impl ImportPipeline {
         let settings_hash =
             xxhash_rust::xxh3::xxh3_64(serde_json::to_string(&settings)?.as_bytes());
 
-        // 查找 importer.
+        // Find importer.
         let importer = self
             .registry
             .find_for_path(source_path)
@@ -298,7 +298,7 @@ impl ImportPipeline {
             });
         }
 
-        // Run 导入
+        // Run import.
         let ctx = ImportContext {
             source_path: source_path.to_path_buf(),
             source_hash: hash,
@@ -308,7 +308,7 @@ impl ImportPipeline {
 
         let result = importer.import(&ctx)?;
 
-        // 更新 database.
+        // Update database.
         let id = db
             .id_by_path(&normalized)
             .unwrap_or_else(|| db.generate_id());
@@ -320,7 +320,7 @@ impl ImportPipeline {
         record.version = importer.version();
         db.insert(record)?;
 
-        // 更新 cache.
+        // Update cache.
         cache.record(&normalized, hash, settings_hash, id, importer.version());
 
         Ok(ImportFileResult {
@@ -329,7 +329,7 @@ impl ImportPipeline {
         })
     }
 
-    /// 导入 all files in a directory 树
+    /// Import all files in a directory tree.
     pub fn import_directory(
         &self,
         dir: &Path,
@@ -353,7 +353,7 @@ impl ImportPipeline {
     }
 }
 
-/// 摘要 of an 导入 run.
+/// Summary of an import run.
 #[derive(Debug, Default, Clone)]
 pub struct ImportSummary {
     pub imported: u32,
@@ -367,10 +367,10 @@ pub struct ImportSummary {
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
-// Raw / 二进制 Importer
+// Raw / Binary Importer
 // ---------------------------------------------------------------------------
 
-/// Imports any unrecognized file as a raw 二进制 blob.
+/// Imports any unrecognized file as a raw binary blob.
 pub struct RawImporter;
 
 impl Importer for RawImporter {
@@ -398,20 +398,20 @@ impl Importer for RawImporter {
 }
 
 // ---------------------------------------------------------------------------
-// 纹理 Importer (real 解码
+// Texture Importer (real decode)
 // ---------------------------------------------------------------------------
 
-/// 导入 格式 tag stored in the intermediate 二进制 data.
+/// Import format tag stored in the intermediate binary data.
 const TEXTURE_INTERMEDIATE_MAGIC: &[u8; 4] = b"RTXI";
 
-/// 纹理 像素 格式 枚举 for intermediate 存储
+/// Texture pixel format enum for intermediate storage.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy)]
 enum TexIntermediateFormat {
     Rgba8 = 0,
 }
 
-/// Imports 图像 files by decoding them to RGBA8 and storing a 标准
+/// Imports image files by decoding them to RGBA8 and storing a standard
 /// intermediate representation: `[magic:4][width:4][height:4][channels:1][format:1][pixels:N]`
 pub struct TextureImporter;
 
@@ -493,10 +493,10 @@ impl Importer for TextureImporter {
 }
 
 // ---------------------------------------------------------------------------
-// glTF 网格 Importer
+// glTF Mesh Importer
 // ---------------------------------------------------------------------------
 
-/// Intermediate 网格 格式 magic: "RMXI" 资源 网格 Intermediate)
+/// Intermediate mesh format magic: "RMXI" (Resource Mesh Intermediate)
 const MESH_INTERMEDIATE_MAGIC: &[u8; 4] = b"RMXI";
 
 /// Imports .gltf / .glb files: **整棵场景树**里的所有三角形 primitive 都被烘成一个
@@ -508,10 +508,10 @@ const MESH_INTERMEDIATE_MAGIC: &[u8; 4] = b"RMXI";
 /// 源文件里的材质 / 图片可通过 [`GltfImporter::side_assets`] 落成 RMAT / RTEX
 /// 旁路资产；材质参数与图片像素只保存在内存中间结果里，不写进 JSON metadata。
 ///
-/// Intermediate 格式
+/// Intermediate format:
 /// ```text
 /// [magic:4][version:1][vert_count:4][idx_count:4][uv_count:4]
-/// [positions: f32*3*vert_count][normals: f32*3*vert_count or 空
+/// [positions: f32*3*vert_count][normals: f32*3*vert_count or empty]
 /// [uv0: f32*2*vert_count or empty][indices: u32*idx_count]
 /// v2 only: [submesh_count:4][index_start:4][index_count:4][material_index:4]...
 /// ```
@@ -2129,7 +2129,7 @@ impl Importer for AnimGraphImporter {
 // JSON Importer
 // ---------------------------------------------------------------------------
 
-/// Imports JSON files, validating syntax, and registers them as 二进制 assets
+/// Imports JSON files, validating syntax, and registers them as Binary assets
 /// with structured metadata.
 pub struct JsonImporter;
 
@@ -2169,15 +2169,15 @@ impl Importer for JsonImporter {
 }
 
 // ---------------------------------------------------------------------------
-// 材质 Importer (.mat.json -> RMATI intermediate)
+// Material Importer (.mat.json -> RMATI intermediate)
 // ---------------------------------------------------------------------------
 
-/// Intermediate 材质 格式 magic: "RMATI" 资源 材质 Intermediate).
-/// 5 字节 so it is 不同 from the 4-byte RMAT 运行时 magic.
+/// Intermediate material format magic: "RMATI" (Resource Material Intermediate).
+/// 5 bytes so it is distinct from the 4-byte RMAT runtime magic.
 const MATERIAL_INTERMEDIATE_MAGIC: &[u8; 5] = b"RMATI";
 
-/// 纹理 slots referenced by a 材质 The order is fixed and matches the
-/// RMATI/RMAT 二进制 布局 (5 slots). Names 匹配 the `MaterialJson` fields.
+/// Texture slots referenced by a material. The order is fixed and matches the
+/// RMATI/RMAT binary layout (5 slots). Names match the `MaterialJson` fields.
 const MATERIAL_TEX_SLOTS: [&str; 5] = [
     "albedo_tex",
     "normal_tex",
@@ -2188,8 +2188,8 @@ const MATERIAL_TEX_SLOTS: [&str; 5] = [
 
 /// Authoring schema for `.mat.json` files.
 ///
-/// 纹理 fields are 相对 资源 paths (resolved to `AssetId` dependencies
-/// at 导入 时间 All 标量 fields are optional with sensible defaults.
+/// Texture fields are relative asset paths (resolved to `AssetId` dependencies
+/// at import time). All scalar fields are optional with sensible defaults.
 #[derive(Debug, Clone, serde::Deserialize)]
 struct MaterialJson {
     #[serde(default)]
@@ -2245,35 +2245,35 @@ fn default_ior() -> f32 {
     1.5
 }
 
-/// Imports `.mat.json` 材质 定义 files.
+/// Imports `.mat.json` material definition files.
 ///
-/// Produces an RMATI intermediate blob (magic + version + scalars + 5 纹理
-/// path records) and resolves the 纹理 paths to `AssetId` dependencies via
-/// `ctx.db.id_by_path`. Textures that don't 解析 are dropped with a 警告
-/// (the 材质 still imports; the 槽 is 左 空 at 运行时
+/// Produces an RMATI intermediate blob (magic + version + scalars + 5 texture
+/// path records) and resolves the texture paths to `AssetId` dependencies via
+/// `ctx.db.id_by_path`. Textures that don't resolve are dropped with a warning
+/// (the material still imports; the slot is left empty at runtime).
 ///
-/// Intermediate 格式 (all little-endian):
+/// Intermediate format (all little-endian):
 /// ```text
 /// [magic:5]   b"RMATI"
 /// [version:1] 1
 /// [scalars]   base_color[4] + metallic + roughness + emissive[3]
 ///             + emissive_strength + normal_scale + occlusion_strength
-/// + transmission + ior + translucency + 各向异性
-/// + clearcoat + clearcoat_roughness (each f32 LE, 18 floats 总计
-/// per 槽 (5x):
+///             + transmission + ior + translucency + anisotropy
+///             + clearcoat + clearcoat_roughness   (each f32 LE, 18 floats total)
+/// per slot (5x):
 ///   [present:1]   0 or 1
-/// [if present] [path_len:u16][path 字节 UTF-8]
+///   [if present]  [path_len:u16][path bytes UTF-8]
 /// ```
 pub struct MaterialImporter;
 
 impl MaterialImporter {
-    /// 序列化 scalars + 5 texture-path records into the RMATI blob.
+    /// Serialize scalars + 5 texture-path records into the RMATI blob.
     fn write_intermediate(mat: &MaterialJson, tex_paths: &[Option<String>; 5]) -> Vec<u8> {
         let mut buf = Vec::with_capacity(64);
         buf.extend_from_slice(MATERIAL_INTERMEDIATE_MAGIC);
         buf.push(1); // version
 
-        // 16 标量 floats (64 字节
+        // 16 scalar floats (64 bytes).
         buf.extend_from_slice(&mat.base_color[0].to_le_bytes());
         buf.extend_from_slice(&mat.base_color[1].to_le_bytes());
         buf.extend_from_slice(&mat.base_color[2].to_le_bytes());
@@ -2293,7 +2293,7 @@ impl MaterialImporter {
         buf.extend_from_slice(&mat.clearcoat.to_le_bytes());
         buf.extend_from_slice(&mat.clearcoat_roughness.to_le_bytes());
 
-        // 5 纹理 path records.
+        // 5 texture path records.
         for slot in tex_paths {
             match slot {
                 Some(path) => {
@@ -2321,7 +2321,7 @@ impl Importer for MaterialImporter {
     }
 
     fn can_import(&self, path: &Path) -> bool {
-        // `.mat.json` or `.mat` files. We 匹配 `.mat.json` so plain JSON files
+        // `.mat.json` or `.mat` files. We match `.mat.json` so plain JSON files
         // still fall through to JsonImporter; bare `.mat` is also accepted.
         let name = path
             .file_name()
@@ -2341,7 +2341,7 @@ impl Importer for MaterialImporter {
         let mat: MaterialJson = serde_json::from_str(&text)
             .map_err(|e| ImportError::ImportFailed(format!("material JSON parse failed: {e}")))?;
 
-        // Collect the 5 纹理 paths in 槽 order.
+        // Collect the 5 texture paths in slot order.
         let raw_paths: [Option<String>; 5] = [
             mat.albedo_tex.clone(),
             mat.normal_tex.clone(),
@@ -2350,7 +2350,7 @@ impl Importer for MaterialImporter {
             mat.occlusion_tex.clone(),
         ];
 
-        // 解析 each path to an AssetId dependency via the database.
+        // Resolve each path to an AssetId dependency via the database.
         let mut dependencies: Vec<AssetId> = Vec::new();
         let mut resolved_paths: [Option<String>; 5] = [None, None, None, None, None];
         for (i, path_opt) in raw_paths.iter().enumerate() {
@@ -2362,8 +2362,8 @@ impl Importer for MaterialImporter {
                         resolved_paths[i] = Some(normalized);
                     }
                     None => {
-                        // The 纹理 资源 isn't registered yet; warn and leave
-                        // the 槽 空 The 材质 still imports.
+                        // The texture asset isn't registered yet; warn and leave
+                        // the slot empty. The material still imports.
                         tracing::warn!(
                             "material importer: texture '{}' not in DB (slot '{}'); leaving empty",
                             normalized,
@@ -2392,24 +2392,24 @@ impl Importer for MaterialImporter {
 }
 
 // ---------------------------------------------------------------------------
-// 着色器 Importer Slang -> RSLI intermediate)
+// Shader Importer (.slang -> RSLI intermediate)
 // ---------------------------------------------------------------------------
 
-/// Intermediate 着色器 格式 magic: "RSLI" 资源 Slang Intermediate).
+/// Intermediate shader format magic: "RSLI" (Resource Slang Intermediate).
 const SHADER_INTERMEDIATE_MAGIC: &[u8; 4] = b"RSLI";
 
-/// Infer the Slang entry-point name and 阶段 from a 源 filename.
+/// Infer the Slang entry-point name and stage from a source filename.
 ///
 /// Convention (matches `shaders/compile.sh`):
-/// - `*_vert.slang` -> `vertexMain` / 顶点
-/// - `*_frag.slang` -> `fragmentMain` / 片元
-/// - `*_comp.slang` -> `computeMain` / 计算
+/// - `*_vert.slang`  -> `vertexMain`   / `vertex`
+/// - `*_frag.slang`  -> `fragmentMain` / `fragment`
+/// - `*_comp.slang`  -> `computeMain`  / `compute`
 /// - `*_geom.slang`  -> `geometryMain` / `geometry`
 /// - `*_hull.slang`  -> `hullMain`     / `hull`
 /// - `*_domain.slang`-> `domainMain`   / `domain`
-/// - `pt_*.slang` / `gi_*.slang` 计算 -> `ptMain` / 计算
+/// - `pt_*.slang` / `gi_*.slang` (compute) -> `ptMain` / `compute`
 ///
-/// Returns `None` for unrecognized names; the 调用者 falls 后 to defaults.
+/// Returns `None` for unrecognized names; the caller falls back to defaults.
 fn infer_entry_stage_from_name(file_stem: &str) -> Option<(&'static str, &'static str)> {
     let stem = file_stem.to_lowercase();
     if stem.ends_with("_vert") {
@@ -2425,15 +2425,15 @@ fn infer_entry_stage_from_name(file_stem: &str) -> Option<(&'static str, &'stati
     } else if stem.ends_with("_domain") {
         Some(("domainMain", "domain"))
     } else if stem.starts_with("pt_") {
-        // Path-tracing 计算 shaders use `ptMain` per compile.sh.
+        // Path-tracing compute shaders use `ptMain` per compile.sh.
         Some(("ptMain", "compute"))
     } else {
         None
     }
 }
 
-/// Look 上 调 in the importer settings JSON (an 对象 returning its
-/// 字符串 value if present.
+/// Look up `key` in the importer settings JSON (an object), returning its
+/// string value if present.
 fn setting_str(settings: &Value, key: &str) -> Option<String> {
     settings
         .get(key)
@@ -2441,26 +2441,26 @@ fn setting_str(settings: &Value, key: &str) -> Option<String> {
         .map(|s| s.to_owned())
 }
 
-/// Imports Slang 着色器 源 files.
+/// Imports `.slang` shader source files.
 ///
 /// Produces an RSLI intermediate blob that carries the entry-point name,
-/// 阶段 配置 and raw 源 字节 The cooker later feeds these to
+/// stage, profile, and raw source bytes. The cooker later feeds these to
 /// `slangc` to produce SPIR-V
 ///
-/// Entry-point / 阶段 / 配置 are resolved in this priority order:
+/// Entry-point / stage / profile are resolved in this priority order:
 /// 1. `settings["slang_entry"]` / `["slang_stage"]` / `["slang_profile"]`
 ///   (per-asset 导入 overrides passed by the 编辑器 / CLI).
 /// 2. Filename convention (see [`infer_entry_stage_from_name`]).
-/// 3. Defaults: entry = `vertexMain`, 阶段 = 顶点 配置 = `spirv_1_5`.
+/// 3. Defaults: entry = `vertexMain`, stage = `vertex`, profile = `spirv_1_5`.
 ///
-/// Intermediate 格式 (all little-endian):
+/// Intermediate format (all little-endian):
 /// ```text
 /// [magic:4]        b"RSLI"
 /// [version:1]      1
-/// [entry_len:u16] + entry 字节 (UTF-8)
-/// [stage_len:u16] + 阶段 字节 (UTF-8)
-/// [profile_len:u16]+ 配置 字节 (UTF-8)
-/// [source_len:u32] + 源 字节 (raw Slang content)
+/// [entry_len:u16]  + entry bytes (UTF-8)
+/// [stage_len:u16]  + stage bytes (UTF-8)
+/// [profile_len:u16]+ profile bytes (UTF-8)
+/// [source_len:u32] + source bytes (raw .slang content)
 /// ```
 pub struct ShaderImporter;
 
@@ -2517,7 +2517,7 @@ impl Importer for ShaderImporter {
             .and_then(|s| s.to_str())
             .unwrap_or("");
 
-        // 解析 entry / 阶段 / 配置
+        // Resolve entry / stage / profile.
         let (default_entry, default_stage) =
             infer_entry_stage_from_name(file_stem).unwrap_or(("vertexMain", "vertex"));
         let entry =
@@ -2546,10 +2546,10 @@ impl Importer for ShaderImporter {
 }
 
 // ---------------------------------------------------------------------------
-// 默认 Registry
+// Default Registry
 // ---------------------------------------------------------------------------
 
-/// 构建 the 默认 importer registry with all built-in importers.
+/// Build the default importer registry with all built-in importers.
 pub fn default_importer_registry() -> ImporterRegistry {
     let mut reg = ImporterRegistry::new();
     reg.register(Box::new(TextureImporter));
