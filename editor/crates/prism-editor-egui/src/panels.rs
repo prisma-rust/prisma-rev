@@ -5863,6 +5863,15 @@ pub struct AnimGraphEditState {
     /// 正在编辑的状态名 / 剪辑：(状态下标, 文本)，同样失焦才写回。
     pub sm_state_name: Option<(usize, String)>,
     pub sm_state_clip: Option<(usize, String)>,
+    /// 正在编辑的图节点剪辑：(节点名, 文本)。
+    pub graph_node_clip: Option<(String, String)>,
+}
+
+fn is_clip_player(kind: &str) -> bool {
+    matches!(
+        kind.to_ascii_lowercase().as_str(),
+        "clip" | "clip_player" | "clipplayer"
+    )
 }
 
 fn draw_anim_graph_view(
@@ -5897,6 +5906,10 @@ fn draw_anim_graph_view(
     let mut remove_link = None;
     let mut weight_edits = Vec::new();
     let mut mask_edits = Vec::new();
+    let mut node_clip_edits = Vec::new();
+    let mut node_speed_edits = Vec::new();
+    let mut node_weight_edits = Vec::new();
+    let mut node_loop_edits = Vec::new();
     for node in &graph.nodes {
         let title = if node.is_output() {
             format!("{} · {} (output)", node.name, node.kind)
@@ -5909,13 +5922,80 @@ fn draw_anim_graph_view(
                 if !node.is_output() && ui.small_button("× Remove node").clicked() {
                     remove_node = Some(node.name.clone());
                 }
-                if !node.clips.is_empty() {
+                if !node.parameter.is_empty() {
+                    ui.label(
+                        RichText::new(format!("parameter: {}", node.parameter))
+                            .weak()
+                            .size(10.0),
+                    );
+                }
+                if node.state_machine.is_empty() && node.kind.eq_ignore_ascii_case("state_machine")
+                {
+                    ui.label(
+                        RichText::new("state machine path is empty")
+                            .weak()
+                            .size(10.0),
+                    );
+                }
+                if is_clip_player(&node.kind) {
+                    let editing = edit
+                        .graph_node_clip
+                        .as_ref()
+                        .filter(|(owner, _)| owner == &node.name);
+                    let mut text = editing
+                        .map(|(_, text)| text.clone())
+                        .unwrap_or_else(|| node.clips.first().cloned().unwrap_or_default());
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut text)
+                            .hint_text("clip.ranim")
+                            .desired_width(180.0),
+                    );
+                    if response.changed() {
+                        edit.graph_node_clip = Some((node.name.clone(), text));
+                    } else if response.lost_focus() {
+                        if let Some((owner, text)) = edit.graph_node_clip.take() {
+                            if owner == node.name {
+                                node_clip_edits.push((node.name.clone(), text));
+                            }
+                        }
+                    }
+                } else if !node.clips.is_empty() {
                     ui.label(
                         RichText::new(format!("clips: {}", node.clips.join(", ")))
                             .weak()
                             .size(10.0),
                     );
                 }
+                ui.horizontal(|ui| {
+                    let mut speed = node.speed;
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut speed)
+                                .speed(0.01)
+                                .range(0.0..=5.0)
+                                .prefix("speed "),
+                        )
+                        .changed()
+                    {
+                        node_speed_edits.push((node.name.clone(), speed));
+                    }
+                    let mut weight = node.weight;
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut weight)
+                                .speed(0.01)
+                                .range(0.0..=1.0)
+                                .prefix("w "),
+                        )
+                        .changed()
+                    {
+                        node_weight_edits.push((node.name.clone(), weight));
+                    }
+                    let mut looped = node.looped;
+                    if ui.checkbox(&mut looped, "loop").changed() {
+                        node_loop_edits.push((node.name.clone(), looped));
+                    }
+                });
                 if !node.state_machine.is_empty() {
                     ui.label(
                         RichText::new(format!("state machine: {}", node.state_machine))
@@ -6049,6 +6129,22 @@ fn draw_anim_graph_view(
     }
     if let Some(node) = remove_node {
         prism_editor_core::remove_graph_node(document, &node)?;
+        changed = true;
+    }
+    for (node, clip) in node_clip_edits {
+        prism_editor_core::set_graph_node_clip(document, &node, &clip)?;
+        changed = true;
+    }
+    for (node, speed) in node_speed_edits {
+        prism_editor_core::set_graph_node_speed(document, &node, speed)?;
+        changed = true;
+    }
+    for (node, weight) in node_weight_edits {
+        prism_editor_core::set_graph_node_weight(document, &node, weight)?;
+        changed = true;
+    }
+    for (node, looped) in node_loop_edits {
+        prism_editor_core::set_graph_node_looped(document, &node, looped)?;
         changed = true;
     }
     if let Some((target, source)) = add_link {
