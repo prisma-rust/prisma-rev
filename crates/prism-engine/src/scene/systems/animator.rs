@@ -14,8 +14,8 @@ use std::sync::Arc;
 
 use prism_anim::{
     palette_to_arrays, AnimGraphEvaluator, AnimGraphSource, AnimParameters, BlendLayer,
-    BlendSample, BlendSample2D, BlendSpace1D, BlendSpace2D, BlendStack, BoneMask, Clip, Montage,
-    Pose, Skeleton, StateMachine,
+    BlendSample, BlendSample2D, BlendSpace1D, BlendSpace2D, BlendStack, BoneMask, Clip,
+    GraphEvalError, Montage, Pose, Skeleton, StateMachine,
 };
 use prism_asset::formats_anim_graph::AnimGraphInfo;
 use prism_ecs::{Entity, World};
@@ -268,6 +268,131 @@ impl AnimGraphRuntimes {
         &mut slot.evaluator
     }
 }
+
+/// 一个实体本帧的图求值工作项（#560 P6）。
+///
+/// 求值器在收集阶段从 [`AnimGraphRuntimes`] 里取出来、求值完再放回，这样每个
+/// 工作项独占自己的求值器，可以分给不同线程。
+struct GraphPoseJob {
+    entity: Entity,
+    skeleton: Arc<Skeleton>,
+    runtime: GraphRuntime,
+    result: Option<Result<(Pose, Vec<AnimEvent>), GraphEvalError>>,
+}
+
+impl GraphPoseJob {
+    fn evaluate(&mut self, library: &LibraryView, dt: f32) {
+        let entity = self.entity;
+        let evaluated = self
+            .runtime
+            .evaluator
+            .evaluate_with_events(library, &self.skeleton, dt);
+        self.result = Some(evaluated.map(|(pose, events)| {
+            let events = events
+                .into_iter()
+                .map(|event| AnimEvent {
+                    entity,
+                    name: event.name,
+                    time: event.time,
+                })
+                .collect();
+            (pose, events)
+        }));
+    }
+}
+
+/// 先顺序应用 Montage 请求 / 参数，再把各实体的图求值分给工作线程（#560 P6）。
+///
+/// 每个图求值器只属于一个实体，彼此不共享状态；`LibraryView` 只读且全是
+/// `Arc`，可以安全地在多个线程里同时借用。少于两个实体或只有单核时不建线程，
+/// 直接顺序求值 —— 线程开销比这点工作在单角色场景里更贵。
+fn evaluate_graph_poses(
+    world: &World,
+    library: &LibraryView,
+    graph_runtimes: &mut AnimGraphRuntimes,
+    params: &AnimParameters,
+    montage_requests: &mut HashMap<Entity, Vec<MontageRequest>>,
+    graph_entities: &mut HashSet<Entity>,
+    dt: f32,
+) -> HashMap<Entity, Result<(Pose, Vec<AnimEvent>), GraphEvalError>> {
+    let mut jobs: Vec<GraphPoseJob> = Vec::new();
+    for (entity, animator) in world.query::<Animator>() {
+        let path = animator.anim_graph_path.trim();
+        if path.is_empty() {
+            continue;
+        }
+        let Some(root) = world.get::<SkeletonRoot>(entity) else {
+            continue;
+        };
+        let Some(skeleton) = library.skeleton(&root.skeleton_path) else {
+            continue;
+        };
+        let Some(graph) = library.graph(path) else {
+            continue;
+        };
+        graph_entities.insert(entity);
+        let evaluator = graph_runtimes.get_or_create(entity, path, graph);
+        if let Some(requests) = montage_requests.remove(&entity) {
+            apply_montage_requests(evaluator, requests, &library.clips);
+        }
+        // 项目侧写入的 float / bool / trigger 同步进图求值器。
+        for parameter in evaluator.graph().parameters.clone() {
+            match parameter.kind {
+                prism_asset::formats_anim_graph::GraphParameterKind::Float => {
+                    if let Some(value) = params.float(&parameter.name) {
+                        evaluator.parameters_mut().set_float(parameter.name, value);
+                    }
+                }
+                prism_asset::formats_anim_graph::GraphParameterKind::Bool => {
+                    if let Some(value) = params.bool(&parameter.name) {
+                        evaluator.parameters_mut().set_bool(parameter.name, value);
+                    }
+                }
+                prism_asset::formats_anim_graph::GraphParameterKind::Trigger => {
+                    if params.has_trigger(&parameter.name) {
+                        evaluator.parameters_mut().set_trigger(parameter.name);
+                    }
+                }
+            }
+        }
+        let Some(runtime) = graph_runtimes.runtimes.remove(&entity) else {
+            continue;
+        };
+        jobs.push(GraphPoseJob {
+            entity,
+            skeleton,
+            runtime,
+            result: None,
+        });
+    }
+
+    let threads = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
+        .min(jobs.len())
+        .min(MAX_GRAPH_EVAL_THREADS);
+    prism_ecs::jobs::scoped_parallel_chunks(&mut jobs, threads, |job| {
+        job.evaluate(library, dt);
+    });
+
+    let mut results = HashMap::with_capacity(jobs.len());
+    for job in jobs {
+        let GraphPoseJob {
+            entity,
+            runtime,
+            result,
+            ..
+        } = job;
+        if let Some(result) = result {
+            results.insert(entity, result);
+        }
+        graph_runtimes.runtimes.insert(entity, runtime);
+    }
+    results
+}
+
+/// 图求值最多用几个工作线程；超过角色数之后再多线程也不涨吞吐。
+const MAX_GRAPH_EVAL_THREADS: usize = 8;
 
 /// 一次 Montage 请求的动作。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -537,6 +662,16 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
 
     let mut updates: Vec<(Entity, BonePalette, AnimatorPlayhead)> = Vec::new();
     let mut events: Vec<AnimEvent> = Vec::new();
+    // 图求值先按实体并行算好（#560 P6）；下面的循环只做顺序的 World 读写。
+    let mut graph_results = evaluate_graph_poses(
+        world,
+        &library,
+        &mut graph_runtimes,
+        &params,
+        &mut montage_requests,
+        &mut graph_entities,
+        dt,
+    );
     for (entity, animator) in world.query::<Animator>() {
         let Some(root) = world.get::<SkeletonRoot>(entity) else {
             continue;
@@ -548,71 +683,36 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
         // 动画图（#560 P1）：路径非空且图已加载时优先于状态机 / 混合空间 / 单剪辑。
         // 求值器按实体持久化（状态机节点需要跨帧状态）；图换路径时重建。
         if !animator.anim_graph_path.trim().is_empty() {
-            if let Some(graph) = library.graph(animator.anim_graph_path.trim()) {
-                graph_entities.insert(entity);
-                let path = animator.anim_graph_path.trim().to_string();
-                let evaluator = graph_runtimes.get_or_create(entity, &path, graph);
-                if let Some(requests) = montage_requests.remove(&entity) {
-                    apply_montage_requests(evaluator, requests, &library.clips);
+            match graph_results.remove(&entity) {
+                Some(Ok((pose, graph_events))) => {
+                    events.extend(graph_events);
+                    let mut playhead = world.get::<AnimatorPlayhead>(entity).cloned().unwrap_or(
+                        AnimatorPlayhead {
+                            clip_path: ANIM_GRAPH_KEY.into(),
+                            time: 0.0,
+                            finished: false,
+                            previous_pose: None,
+                            pose: Pose::default(),
+                            blend_elapsed: 0.0,
+                            blend_total: None,
+                        },
+                    );
+                    playhead.clip_path = ANIM_GRAPH_KEY.into();
+                    playhead.finished = false;
+                    playhead.previous_pose = None;
+                    playhead.pose = pose.clone();
+                    let palette = BonePalette::from_matrices(&skeleton.bone_palette(&pose));
+                    updates.push((entity, palette, playhead));
+                    continue;
                 }
-                // 项目侧写入的 float / bool / trigger 同步进图求值器。
-                let declared = evaluator.graph().parameters.clone();
-                for parameter in declared {
-                    match parameter.kind {
-                        prism_asset::formats_anim_graph::GraphParameterKind::Float => {
-                            if let Some(value) = params.float(&parameter.name) {
-                                evaluator.parameters_mut().set_float(parameter.name, value);
-                            }
-                        }
-                        prism_asset::formats_anim_graph::GraphParameterKind::Bool => {
-                            if let Some(value) = params.bool(&parameter.name) {
-                                evaluator.parameters_mut().set_bool(parameter.name, value);
-                            }
-                        }
-                        prism_asset::formats_anim_graph::GraphParameterKind::Trigger => {
-                            if params.has_trigger(&parameter.name) {
-                                evaluator.parameters_mut().set_trigger(parameter.name);
-                            }
-                        }
-                    }
+                Some(Err(error)) => {
+                    log::warn!(
+                        "animator: graph '{}' on entity {:?} failed: {error}",
+                        animator.anim_graph_path.trim(),
+                        entity
+                    );
                 }
-                match evaluator.evaluate_with_events(&library, &skeleton, dt) {
-                    Ok((pose, graph_events)) => {
-                        for event in graph_events {
-                            events.push(AnimEvent {
-                                entity,
-                                name: event.name,
-                                time: event.time,
-                            });
-                        }
-                        let mut playhead = world
-                            .get::<AnimatorPlayhead>(entity)
-                            .cloned()
-                            .unwrap_or(AnimatorPlayhead {
-                                clip_path: ANIM_GRAPH_KEY.into(),
-                                time: 0.0,
-                                finished: false,
-                                previous_pose: None,
-                                pose: Pose::default(),
-                                blend_elapsed: 0.0,
-                                blend_total: None,
-                            });
-                        playhead.clip_path = ANIM_GRAPH_KEY.into();
-                        playhead.finished = false;
-                        playhead.previous_pose = None;
-                        playhead.pose = pose.clone();
-                        let palette = BonePalette::from_matrices(&skeleton.bone_palette(&pose));
-                        updates.push((entity, palette, playhead));
-                        continue;
-                    }
-                    Err(error) => {
-                        log::warn!(
-                            "animator: graph '{}' on entity {:?} failed: {error}",
-                            path,
-                            entity
-                        );
-                    }
-                }
+                None => {}
             }
         }
 
