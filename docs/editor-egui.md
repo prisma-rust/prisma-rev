@@ -518,6 +518,12 @@ for event in world.get_resource::<AnimEvents>().map(|e| e.drain()).unwrap_or_def
 
 cook 时归一化到 `[0, 1)`、排序去重，写进 `.ranim` v3；运行时
 `Clip::sync_marker_set()` 返回 `SyncMarkerSet`，可以构造 `SyncGroup` 做相位映射。
+
+编辑器可以编辑这张表：在资产面板选中 `assets/<mesh>.skinning/sync_markers.json` 后打开
+Window → General → Animation Graph，按剪辑列出标记。每条有 `phase` DragValue 和 `×`；
+每个剪辑上方的时间轴（0..1）用绿色圆点显示相位，拖动改相位，空白处点一下会在该相位打开
+新增草稿，`+ Marker` 也可以手动输入剪辑名与相位。写入时归一化到 `[0, 1)` 并拒绝重复相位
+（误差 `1e-6`），数组顺序保持作者写入顺序，cook 时再排序去重。保存后由松散资产热重载重新 cook。
 文件不存在 = 没有标记；存在但解析失败会让 build 失败；名字对不上任何动画会 warn。
 
 ### 状态机
