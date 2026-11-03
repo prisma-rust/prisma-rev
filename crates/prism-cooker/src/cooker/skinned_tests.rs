@@ -1,7 +1,8 @@
 use super::*;
 use prism_asset::formats_skinned::{
     decode_ranim, decode_rskel, decode_rskin, AnimTrackInfo, JointInfo, JointTransform,
-    QuatKeyInfo, SubmeshInfo, Vec3KeyInfo, RANI_NOTIFY_VERSION, RANI_SYNC_MARKER_VERSION,
+    QuatKeyInfo, SubmeshInfo, Vec3KeyInfo, RANI_NOTIFY_VERSION, RANI_SECTION_VERSION,
+    RANI_SYNC_MARKER_VERSION,
 };
 
 fn identity_matrix() -> [f32; 16] {
@@ -72,6 +73,7 @@ fn walk_clip() -> AnimClipInfo {
         notifies: Vec::new(),
         sync_markers: Vec::new(),
         sections: Vec::new(),
+        warp_windows: Vec::new(),
         tracks: vec![AnimTrackInfo {
             joint: 1,
             // 故意乱序：编码器要按时间排好。
@@ -239,7 +241,7 @@ fn trailing_bytes_are_rejected() {
 }
 
 #[test]
-fn ranim_v4_round_trips_notifies_markers_sections_and_reads_older_clips() {
+fn ranim_v5_round_trips_notifies_markers_sections_and_reads_older_clips() {
     use prism_asset::formats_skinned::{decode_ranim, AnimNotifyInfo};
 
     // v2：事件表按时间排序写出。
@@ -255,8 +257,8 @@ fn ranim_v4_round_trips_notifies_markers_sections_and_reads_older_clips() {
         },
     ];
     let bytes = encode_ranim(&clip).expect("encode");
-    assert_eq!(bytes[4], RANI_VERSION, "版本号要写成 v4");
-    let decoded = decode_ranim(&bytes).expect("decode v4");
+    assert_eq!(bytes[4], RANI_VERSION, "版本号要写成 v5");
+    let decoded = decode_ranim(&bytes).expect("decode v5");
     let names: Vec<&str> = decoded
         .notifies
         .iter()
@@ -265,8 +267,16 @@ fn ranim_v4_round_trips_notifies_markers_sections_and_reads_older_clips() {
     assert_eq!(names, vec!["Footstep.L", "Footstep.R"], "编码时按时间排序");
     assert!((decoded.notifies[0].time - 0.2).abs() < 1e-6);
 
-    // v3 兼容：去掉末尾的 section 表、版本号写回 3，事件 / 标记仍然能解出。
+    // v4 兼容：去掉末尾的 warp window 表、版本号写回 4。
     let mut legacy = encode_ranim(&walk_clip()).expect("encode");
+    legacy.truncate(legacy.len() - 4); // warp_window_count
+    legacy[4] = RANI_SECTION_VERSION;
+    let decoded = decode_ranim(&legacy).expect("decode v4");
+    assert!(decoded.warp_windows.is_empty(), "v4 剪辑没有 warp window");
+
+    // v3 兼容：再去掉 section 表、版本号写回 3，事件 / 标记仍然能解出。
+    let mut legacy = encode_ranim(&walk_clip()).expect("encode");
+    legacy.truncate(legacy.len() - 4); // warp_window_count
     legacy.truncate(legacy.len() - 4); // section_count
     legacy[4] = RANI_SYNC_MARKER_VERSION;
     let decoded = decode_ranim(&legacy).expect("decode v3");
@@ -274,6 +284,7 @@ fn ranim_v4_round_trips_notifies_markers_sections_and_reads_older_clips() {
 
     // v2 兼容：再去掉 sync marker 表、版本号写回 2，事件表仍然能解出。
     let mut legacy = encode_ranim(&walk_clip()).expect("encode");
+    legacy.truncate(legacy.len() - 4); // warp_window_count
     legacy.truncate(legacy.len() - 4); // section_count
     legacy.truncate(legacy.len() - 4); // marker_count
     legacy[4] = RANI_NOTIFY_VERSION;
@@ -283,6 +294,7 @@ fn ranim_v4_round_trips_notifies_markers_sections_and_reads_older_clips() {
 
     // v1 兼容：再从 v2 去掉事件表（notify_count = 0 的 4 字节），仍然能解出剪辑。
     let mut legacy = encode_ranim(&walk_clip()).expect("encode");
+    legacy.truncate(legacy.len() - 4); // warp_window_count
     legacy.truncate(legacy.len() - 4); // section_count
     legacy.truncate(legacy.len() - 4); // marker_count
     legacy.truncate(legacy.len() - 4); // notify_count (empty)
@@ -294,8 +306,8 @@ fn ranim_v4_round_trips_notifies_markers_sections_and_reads_older_clips() {
 }
 
 #[test]
-fn ranim_v4_round_trips_normalized_sync_markers_and_sections() {
-    use prism_asset::formats_skinned::{decode_ranim, AnimClipSectionInfo};
+fn ranim_v5_round_trips_normalized_markers_ranges_and_windows() {
+    use prism_asset::formats_skinned::{decode_ranim, AnimClipSectionInfo, AnimClipWarpWindowInfo};
 
     let mut clip = walk_clip();
     clip.sync_markers = vec![0.5, 0.0, 0.5, 1.5, f32::NAN, -0.25];
@@ -322,6 +334,23 @@ fn ranim_v4_round_trips_normalized_sync_markers_and_sections() {
             end: 0.0,
         },
     ];
+    clip.warp_windows = vec![
+        AnimClipWarpWindowInfo {
+            name: "LandWarp".into(),
+            start: 0.8,
+            end: 1.0,
+        },
+        AnimClipWarpWindowInfo {
+            name: "VaultWarp".into(),
+            start: 0.3,
+            end: 0.8,
+        },
+        AnimClipWarpWindowInfo {
+            name: "Bad".into(),
+            start: 0.5,
+            end: 0.2,
+        },
+    ];
     let bytes = encode_ranim(&clip).expect("encode");
     let decoded = decode_ranim(&bytes).expect("decode");
     // 归一化、排序、去重、丢掉非有限值。
@@ -334,4 +363,11 @@ fn ranim_v4_round_trips_normalized_sync_markers_and_sections() {
     assert_eq!(names, vec!["Start", "Vault", "Land"], "编码时按 start 排序");
     assert!((decoded.sections[1].start - 0.3).abs() < 1e-6);
     assert!((decoded.sections[2].end - 1.0).abs() < 1e-6);
+    let windows: Vec<&str> = decoded
+        .warp_windows
+        .iter()
+        .map(|window| window.name.as_str())
+        .collect();
+    assert_eq!(windows, vec!["VaultWarp", "LandWarp"]);
+    assert!((decoded.warp_windows[0].start - 0.3).abs() < 1e-6);
 }

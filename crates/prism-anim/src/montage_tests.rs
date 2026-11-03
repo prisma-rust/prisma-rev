@@ -3,7 +3,7 @@ use std::sync::Arc;
 use glam::Vec3;
 
 use super::{Montage, MontagePlayer, MAX_MONTAGE_QUEUE};
-use crate::clip::{Clip, ClipNotify, ClipSection, Track, Vec3Key};
+use crate::clip::{Clip, ClipNotify, ClipSection, ClipWarpWindow, Track, Vec3Key};
 use crate::pose::Pose;
 use crate::skeleton::JointTransform;
 
@@ -43,6 +43,7 @@ fn clip(name: &str, x: f32, notify: Option<(&str, f32)>) -> Arc<Clip> {
             .unwrap_or_default(),
         sync_markers: Vec::new(),
         sections: Vec::new(),
+        warp_windows: Vec::new(),
     })
 }
 
@@ -329,6 +330,27 @@ fn a_branch_in_can_loop_back_to_an_earlier_section() {
         player.active_section().map(|section| section.name.as_str()),
         Some("Start")
     );
+}
+
+#[test]
+fn warp_windows_report_active_window_and_progress() {
+    let mut clip = (*sectioned_clip()).clone();
+    clip.warp_windows = vec![ClipWarpWindow {
+        name: "VaultWarp".into(),
+        start: 0.3,
+        end: 0.8,
+    }];
+    let mut player = MontagePlayer::new();
+    player.play_now(Montage::new(Arc::new(clip)));
+
+    player.tick(0.55);
+    let window = player.active_warp_window().expect("in window");
+    assert_eq!(window.name, "VaultWarp");
+    assert!((player.warp_window_progress().unwrap() - 0.5).abs() < 1e-5);
+
+    player.tick(0.3);
+    assert!(player.active_warp_window().is_none());
+    assert!(player.warp_window_progress().is_none());
 }
 
 #[test]

@@ -11,7 +11,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use crate::clip::{Clip, ClipSection};
+use crate::clip::{Clip, ClipSection, ClipWarpWindow};
 use crate::pose::Pose;
 
 /// 队列上限：坏逻辑（每帧 enqueue）不应该无限吃内存。
@@ -223,6 +223,38 @@ impl MontagePlayer {
             .sections
             .iter()
             .find(|section| section.contains(local))
+    }
+
+    /// 当前时间所在的 MotionWarping 窗口；没有活动段 / 不在任何窗口内时返回 `None`。
+    pub fn active_warp_window(&self) -> Option<&ClipWarpWindow> {
+        let active = self.active.as_ref()?;
+        let local = local_time(
+            active.montage.clip.duration,
+            active.montage.looped,
+            active.time,
+        );
+        active
+            .montage
+            .clip
+            .warp_windows
+            .iter()
+            .find(|window| window.contains(local))
+    }
+
+    /// 当前 warp window 内的归一化进度（0..=1）；不在窗口内返回 `None`。
+    pub fn warp_window_progress(&self) -> Option<f32> {
+        let active = self.active.as_ref()?;
+        let local = local_time(
+            active.montage.clip.duration,
+            active.montage.looped,
+            active.time,
+        );
+        active
+            .montage
+            .clip
+            .warp_windows
+            .iter()
+            .find_map(|window| window.progress(local))
     }
 
     /// 跳到命名 Montage 段的起点；段不存在或没有活动段时返回 `false`。

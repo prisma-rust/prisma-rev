@@ -128,7 +128,7 @@ FIFO 排队、单次播完自动接下一段，`stop` / `stop_after_current` 清
 `enqueue_montage` / `stop_montage` 按节点名操作，活动段按权重覆盖 Slot 输入；
 没有活动段时回退到作者写的 `clips[0]`。
 
-Montage 段（#560 P4）：`.ranim` v4 的段表（作者侧 `*.skinning/montages.json`）在运行时
+Montage 段（#560 P4）：`.ranim` v5 的段表（作者侧 `*.skinning/montages.json`）在运行时
 解成 `Clip.sections`。`Montage::with_start_section("Vault")` 从段首开始，
 `MontagePlayer::active_section()` 返回当前时间所在段，`jump_to_section` 在播放中跳段；
 段不存在时回退到 `start_time`。引擎的 `MontageRequest::with_section` /
@@ -146,7 +146,13 @@ Montage BranchIn（#560 P4）：剪辑 Notify 名为 `BranchIn.<section>` 时，
 不触发。BranchIn 本身仍作为普通 Notify 进入事件队列，编辑器现有的 Notify 侧车就能写。
 例如 `{"time": 0.5, "name": "BranchIn.Land"}`。
 
-同步标记：`.ranim` v4 的同步标记表通过 `Clip::sync_marker_set()` 转成
+MotionWarping 窗口（#560 P4）：`.ranim` v5 的 warp window 表（作者侧
+`*.skinning/montages.json` 的 `warp_windows`）解成 `Clip.warp_windows`。
+`MontagePlayer::active_warp_window()` 返回当前窗口，`warp_window_progress()` 返回窗口内
+0..=1 的进度；调试快照的 `MontageSnapshot.warp_window` / `warp_window_progress` 同步显示。
+这一层只提供窗口数据与查询，实际的根运动扭曲 / 目标点求解由后续 MotionWarping 消费。
+
+同步标记：`.ranim` v5 的同步标记表通过 `Clip::sync_marker_set()` 转成
 `SyncMarkerSet`；资产侧来自 `*.skinning/sync_markers.json`。`BlendSpace1D/2D`
 在所有样本都有同结构标记时自动建 `SyncGroup`，以**当前权重最大的样本**为领跑剪辑把
 相位映射到其余样本（参数切换时 leader 跟着换）；标记缺失或数量不一致时退回共用归一化相位。

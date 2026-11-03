@@ -83,8 +83,10 @@ pub use keys::{
 pub use logbuf::{LogBuffer, LogFilter, LogLevel, LogLine, LogSource, LOG_ROW_HEIGHT};
 pub use manifest::{doc_relative_path, SceneEntry, SceneManifest};
 pub use montage_view::{
-    add_montage_section, montage_section_at, parse_montages_view, remove_montage_section,
-    set_montage_section, ClipMontageView, MontageSectionView, MontagesView,
+    add_montage_section, add_montage_warp_window, montage_section_at, montage_warp_window_at,
+    parse_montages_view, remove_montage_section, remove_montage_warp_window, set_montage_section,
+    set_montage_warp_window, ClipMontageView, MontageSectionView, MontageWarpWindowView,
+    MontagesView,
 };
 pub use notify_view::{
     add_notify, nearest_notify_index, notify_time_at, notify_timeline_span, parse_notifies_view,

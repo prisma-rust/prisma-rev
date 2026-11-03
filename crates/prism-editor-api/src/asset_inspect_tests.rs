@@ -62,6 +62,7 @@ fn clip() -> AnimClipInfo {
         notifies: Vec::new(),
         sync_markers: Vec::new(),
         sections: Vec::new(),
+        warp_windows: Vec::new(),
         tracks: vec![AnimTrackInfo {
             joint: 1,
             positions: vec![Vec3KeyInfo {
