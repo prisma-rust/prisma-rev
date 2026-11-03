@@ -545,6 +545,7 @@ Window → General → Animation Graph，按剪辑列出标记。每条有 `phas
 ```
 
 - 条件种类：`float_greater` / `float_less`（`threshold`）、`bool_is`（`value`）、`trigger`；
+  面板可以切换已有条件的类型，切换时保留参数名并补齐 / 删除该类型需要的载荷；
 - 缺省：`speed = 1`、`looped = true`、`from = "*"`（任意状态）、`duration = 0`（硬切）、
   `min_state_fraction = 0`；`to` / `from` 写错状态名是**硬错误**（整份资产失败），
   重复状态名、空的 `clip` / `name`、未知条件种类同样报错并指出是哪一条；
