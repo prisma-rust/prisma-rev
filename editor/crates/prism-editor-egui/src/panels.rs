@@ -5682,6 +5682,11 @@ fn runtime_node_summary(node: &prism_anim::GraphNodeSnapshot) -> String {
 /// 运行中的 Montage Slot 一行。
 fn runtime_montage_summary(montage: &prism_anim::MontageSnapshot) -> String {
     let clip = montage.clip.as_deref().unwrap_or("-");
+    let section = montage
+        .section
+        .as_deref()
+        .map(|section| format!(" · {section}"))
+        .unwrap_or_default();
     let time = montage
         .time
         .map(|time| format!("{time:.2}s"))
@@ -5697,7 +5702,7 @@ fn runtime_montage_summary(montage: &prism_anim::MontageSnapshot) -> String {
         flags.push_str(&format!(" +{} queued", montage.queued));
     }
     format!(
-        "slot {} · {clip} {time} w={:.2}{flags}",
+        "slot {} · {clip}{section} {time} w={:.2}{flags}",
         montage.slot, montage.weight
     )
 }
@@ -5786,10 +5791,17 @@ pub fn anim_graph(
     };
     let notify_asset = is_notify_sidecar(&path);
     let sync_marker_asset = is_sync_markers_sidecar(&path);
+    let montage_asset = is_montages_sidecar(&path);
     let clip_asset = path.ends_with(".ranim");
     let graph_asset = path.ends_with(".animgraph.json");
     let machine_asset = path.ends_with(".statemachine.json");
-    if !notify_asset && !sync_marker_asset && !clip_asset && !graph_asset && !machine_asset {
+    if !notify_asset
+        && !sync_marker_asset
+        && !montage_asset
+        && !clip_asset
+        && !graph_asset
+        && !machine_asset
+    {
         ui.label(
             RichText::new("select an animation graph / state machine / clip / sidecar asset")
                 .weak()
@@ -5813,6 +5825,10 @@ pub fn anim_graph(
     }
     if sync_marker_asset {
         draw_sync_markers_asset(ui, workspace, state, &path);
+        return;
+    }
+    if montage_asset {
+        draw_montages_asset(ui, workspace, state, &path);
         return;
     }
     if clip_asset {
@@ -6013,6 +6029,11 @@ fn is_notify_sidecar(path: &str) -> bool {
 fn is_sync_markers_sidecar(path: &str) -> bool {
     path.to_ascii_lowercase()
         .ends_with(".skinning/sync_markers.json")
+}
+
+fn is_montages_sidecar(path: &str) -> bool {
+    path.to_ascii_lowercase()
+        .ends_with(".skinning/montages.json")
 }
 
 /// `*.skinning/notifies.json`：按剪辑列出事件，可改时间 / 名字、增删。
@@ -6396,6 +6417,327 @@ fn draw_clip_asset(ui: &mut Ui, workspace: &mut Workspace, path: &str) {
             .weak()
             .size(9.0),
     );
+}
+
+/// `*.skinning/montages.json`：按剪辑列出 Montage 段，可改 / 增删。
+fn draw_montages_asset(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState, path: &str) {
+    let mut value = match workspace.read_asset_json(path) {
+        Ok(value) => value,
+        Err(error) => {
+            ui.label(
+                RichText::new(format!("read {path} failed: {error}"))
+                    .color(Color32::from_rgb(232, 96, 96)),
+            );
+            return;
+        }
+    };
+    let view = match prism_editor_core::parse_montages_view(&value) {
+        Ok(view) => view,
+        Err(error) => {
+            ui.label(RichText::new(error).color(Color32::from_rgb(232, 96, 96)));
+            return;
+        }
+    };
+    let before = value.clone();
+    match draw_montages_view(ui, &view, &mut value, &mut state.anim_graph_edit) {
+        Ok(true) => {
+            state.status = match workspace.write_asset_json(path, &value) {
+                Ok(()) => {
+                    workspace.record_asset_edit(path, &before, &value);
+                    format!("saved montage sections in {path}")
+                }
+                Err(error) => format!("save montage sections failed: {error}"),
+            };
+        }
+        Ok(false) => {}
+        Err(error) => state.status = format!("montage file: {error}"),
+    }
+}
+
+fn draw_montages_view(
+    ui: &mut Ui,
+    view: &prism_editor_core::MontagesView,
+    document: &mut Value,
+    edit: &mut AnimGraphEditState,
+) -> Result<bool, String> {
+    let mut changed = false;
+    let mut error: Option<String> = None;
+    ui.label(
+        RichText::new(format!("Montage sections ({})", view.len()))
+            .strong()
+            .size(11.0),
+    );
+    if view.is_empty() {
+        ui.label(
+            RichText::new("no montage sections yet — add one below")
+                .weak()
+                .size(10.0),
+        );
+    }
+    if edit.montage_new_section.is_none() && ui.button("+ New clip section").clicked() {
+        edit.montage_new_section = Some((String::new(), String::new(), 0.0, 0.5));
+    }
+
+    for clip in &view.clips {
+        ui.label(
+            RichText::new(format!("{} ({})", clip.clip, clip.sections.len()))
+                .strong()
+                .size(10.0),
+        );
+        let span = clip
+            .sections
+            .iter()
+            .map(|section| section.end)
+            .filter(|end| end.is_finite() && *end > 0.0)
+            .fold(1.0_f32, f32::max)
+            * 1.1;
+        let width = ui.available_width().clamp(160.0, 560.0);
+        let (track, painter) = ui.allocate_painter(Vec2::new(width, 28.0), egui::Sense::hover());
+        let rect = track.rect;
+        painter.rect_filled(rect, 3.0, Color32::from_rgb(26, 28, 32));
+        let inset = 6.0;
+        let left = rect.left() + inset;
+        let usable = (rect.width() - inset * 2.0).max(1.0);
+        for (index, section) in clip.sections.iter().enumerate() {
+            let start = prism_editor_core::timeline_x(section.start, span, left, usable);
+            let end = prism_editor_core::timeline_x(section.end, span, left, usable);
+            let bar = egui::Rect::from_min_max(
+                egui::pos2(start, rect.top() + 5.0),
+                egui::pos2(end.max(start + 2.0), rect.bottom() - 5.0),
+            );
+            let color = if index % 2 == 0 {
+                Color32::from_rgb(86, 142, 196)
+            } else {
+                Color32::from_rgb(112, 168, 124)
+            };
+            painter.rect_filled(bar, 2.0, color);
+            if bar.width() > 28.0 {
+                painter.text(
+                    bar.center(),
+                    egui::Align2::CENTER_CENTER,
+                    &section.name,
+                    egui::FontId::monospace(8.0),
+                    Color32::from_rgb(18, 20, 24),
+                );
+            }
+        }
+        painter.text(
+            egui::pos2(left + usable, rect.bottom() - 1.0),
+            egui::Align2::RIGHT_BOTTOM,
+            format!("{span:.2}s"),
+            egui::FontId::monospace(8.0),
+            Color32::from_rgb(110, 116, 126),
+        );
+
+        for (index, section) in clip.sections.iter().enumerate() {
+            ui.horizontal(|ui| {
+                let editing = matches!(
+                    &edit.montage_section_name,
+                    Some((clip_path, edit_index, _))
+                        if clip_path == &clip.clip && *edit_index == index
+                );
+                let mut name = if editing {
+                    edit.montage_section_name
+                        .as_ref()
+                        .map(|(_, _, name)| name.clone())
+                        .unwrap_or_else(|| section.name.clone())
+                } else {
+                    section.name.clone()
+                };
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut name)
+                        .desired_width(96.0)
+                        .hint_text("section name"),
+                );
+                if response.has_focus() {
+                    edit.montage_section_name = Some((clip.clip.clone(), index, name.clone()));
+                }
+                if response.lost_focus() && name.trim() != section.name {
+                    if let Err(err) = prism_editor_core::set_montage_section(
+                        document,
+                        &clip.clip,
+                        index,
+                        &name,
+                        section.start,
+                        section.end,
+                    ) {
+                        error = Some(err);
+                    } else {
+                        edit.montage_section_name = None;
+                        changed = true;
+                    }
+                }
+
+                let mut start = section.start;
+                let mut end = section.end;
+                let start_changed = ui
+                    .add(
+                        egui::DragValue::new(&mut start)
+                            .speed(0.01)
+                            .range(0.0..=span)
+                            .prefix("start "),
+                    )
+                    .changed();
+                let end_changed = ui
+                    .add(
+                        egui::DragValue::new(&mut end)
+                            .speed(0.01)
+                            .range(start..=span)
+                            .prefix("end "),
+                    )
+                    .changed();
+                if start_changed || end_changed {
+                    let current_name = edit
+                        .montage_section_name
+                        .as_ref()
+                        .filter(|(clip_path, edit_index, _)| {
+                            clip_path == &clip.clip && *edit_index == index
+                        })
+                        .map(|(_, _, name)| name.as_str())
+                        .unwrap_or(&section.name);
+                    if let Err(err) = prism_editor_core::set_montage_section(
+                        document,
+                        &clip.clip,
+                        index,
+                        current_name,
+                        start,
+                        end,
+                    ) {
+                        error = Some(err);
+                    } else {
+                        changed = true;
+                    }
+                }
+                if ui
+                    .button("×")
+                    .on_hover_text("delete this montage section")
+                    .clicked()
+                {
+                    if let Err(err) =
+                        prism_editor_core::remove_montage_section(document, &clip.clip, index)
+                    {
+                        error = Some(err);
+                    } else {
+                        edit.montage_section_name = None;
+                        changed = true;
+                    }
+                }
+            });
+            if let Some(err) = error.take() {
+                return Err(err);
+            }
+        }
+
+        let draft_matches = matches!(
+            &edit.montage_new_section,
+            Some((clip_path, _, _, _)) if clip_path == &clip.clip
+        );
+        if draft_matches {
+            let mut add = false;
+            let mut cancel = false;
+            {
+                let (_, name, start, end) = edit
+                    .montage_new_section
+                    .as_mut()
+                    .expect("draft checked above");
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(name)
+                            .desired_width(96.0)
+                            .hint_text("new section"),
+                    );
+                    ui.add(
+                        egui::DragValue::new(start)
+                            .speed(0.01)
+                            .range(0.0..=span)
+                            .prefix("start "),
+                    );
+                    ui.add(
+                        egui::DragValue::new(end)
+                            .speed(0.01)
+                            .range(*start..=span)
+                            .prefix("end "),
+                    );
+                    add = ui.button("Add").clicked();
+                    cancel = ui.button("Cancel").clicked();
+                });
+            }
+            if add {
+                let (_, name, start, end) = edit
+                    .montage_new_section
+                    .clone()
+                    .expect("draft checked above");
+                prism_editor_core::add_montage_section(document, &clip.clip, &name, start, end)?;
+                edit.montage_new_section = None;
+                changed = true;
+            } else if cancel {
+                edit.montage_new_section = None;
+            }
+        } else if ui.button("+ Section").clicked() {
+            edit.montage_new_section = Some((clip.clip.clone(), String::new(), 0.0, span.min(0.5)));
+        }
+    }
+
+    // 新剪辑的段：顶部按钮打开草稿后，这里允许填剪辑名（glTF 动画原名）。
+    if let Some((clip, _, _, _)) = edit.montage_new_section.as_ref() {
+        if !view.clips.iter().any(|entry| &entry.clip == clip) {
+            ui.separator();
+            let mut add = false;
+            let mut cancel = false;
+            {
+                let (clip_name, name, start, end) = edit
+                    .montage_new_section
+                    .as_mut()
+                    .expect("draft checked above");
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(clip_name)
+                            .desired_width(110.0)
+                            .hint_text("glTF clip name"),
+                    );
+                    ui.add(
+                        egui::TextEdit::singleline(name)
+                            .desired_width(96.0)
+                            .hint_text("section name"),
+                    );
+                    ui.add(
+                        egui::DragValue::new(start)
+                            .speed(0.01)
+                            .range(0.0..=f32::MAX)
+                            .prefix("start "),
+                    );
+                    ui.add(
+                        egui::DragValue::new(end)
+                            .speed(0.01)
+                            .range(*start..=f32::MAX)
+                            .prefix("end "),
+                    );
+                    add = ui.button("Add").clicked();
+                    cancel = ui.button("Cancel").clicked();
+                });
+            }
+            if add {
+                let (clip_name, name, start, end) = edit
+                    .montage_new_section
+                    .clone()
+                    .expect("draft checked above");
+                prism_editor_core::add_montage_section(document, &clip_name, &name, start, end)?;
+                edit.montage_new_section = None;
+                changed = true;
+            } else if cancel {
+                edit.montage_new_section = None;
+            }
+        }
+    }
+
+    ui.label(
+        RichText::new(
+            "cook merges sections into .ranim v4 · MontageRequest::with_section jumps to them",
+        )
+        .weak()
+        .size(9.0),
+    );
+    Ok(changed)
 }
 
 /// `*.skinning/sync_markers.json`：按剪辑列出归一化相位，可改 / 增删。
@@ -7007,6 +7349,10 @@ pub struct AnimGraphEditState {
     pub sync_marker_drag: Option<(String, usize)>,
     /// 新增同步标记草稿：(剪辑, 相位)。
     pub sync_marker_draft: Option<(String, f32)>,
+    /// 正在编辑的 Montage 段名：(剪辑, 下标, 文本)，失焦才写回。
+    pub montage_section_name: Option<(String, usize, String)>,
+    /// 新增 Montage 段草稿：(剪辑, 名字, 起点, 终点)。
+    pub montage_new_section: Option<(String, String, f32, f32)>,
     /// 正在拖拽的二维混合空间样本：(节点, 下标)。
     pub graph_sample_drag: Option<(String, usize)>,
 }
@@ -11521,6 +11867,7 @@ mod window_smoke_tests {
         let montage = prism_anim::MontageSnapshot {
             slot: "hit".into(),
             clip: Some("hit.anim".into()),
+            section: Some("Impact".into()),
             time: Some(0.25),
             weight: 0.5,
             playing: true,

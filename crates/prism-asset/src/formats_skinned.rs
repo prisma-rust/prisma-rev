@@ -34,7 +34,7 @@
 //! bind_pose: 10×f32
 //! ```
 //!
-//! ## RANI v3（animation clip + notifies + sync markers）
+//! ## RANI v4（animation clip + notifies + sync markers + montage sections）
 //!
 //! ```text
 //! [magic:4 "RANI"][version:1][name_len:u16][name][duration:f32][fps:f32][flags:u16][track_count:4]
@@ -46,10 +46,14 @@
 //! }
 //! notifies: notify_count:4, notify_count × { time:f32, name_len:u16, name }
 //! sync markers: marker_count:4, marker_count × { phase:f32 }
+//! montage sections: section_count:4, section_count × {
+//!     start:f32, end:f32, name_len:u16, name
+//! }
 //! ```
 //!
 //! v2 在 v1 末尾追加事件表；v3 再追加同步标记表（`marker_count` = 0 时就是一个
-//! u32 的零）。头与轨道布局不变，v1 / v2 剪辑仍然可读，缺的表解出来为空。
+//! u32 的零）；v4 再追加 Montage 段表。头与轨道布局不变，v1 / v2 / v3 剪辑仍然
+//! 可读，缺的表解出来为空。
 
 /// RSKL magic。
 pub const RSKL_MAGIC: &[u8; 4] = b"RSKL";
@@ -65,10 +69,16 @@ pub const SKINNED_FORMAT_VERSION: u8 = 1;
 ///
 /// 与 [`SKINNED_FORMAT_VERSION`] 分开，是因为骨架 / 蒙皮网格没有需要加字段的理由，
 /// 而剪辑需要；混在一起会让 RSKL/RSKN 也跟着无谓地跳版本。
-pub const RANI_VERSION: u8 = 3;
+pub const RANI_VERSION: u8 = 4;
 
 /// 首次带 Notify 事件表的 RANI 版本。
 pub const RANI_NOTIFY_VERSION: u8 = 2;
+
+/// 首次带同步标记表的 RANI 版本。
+pub const RANI_SYNC_MARKER_VERSION: u8 = 3;
+
+/// 首次带 Montage 段表的 RANI 版本。
+pub const RANI_SECTION_VERSION: u8 = 4;
 
 /// 每根骨骼的 cooked 记录大小：parent(4) + flags(1) + pad(3) + local(40) + inverse_bind(64)。
 pub const RSKL_JOINT_RECORD_SIZE: usize = 4 + 1 + 3 + 40 + 64;
@@ -544,6 +554,17 @@ pub struct AnimNotifyInfo {
     pub name: String,
 }
 
+/// 一段 Montage 区间（#560 P4）：按名字跳转 / 调试时显示。
+///
+/// `start` / `end` 都是剪辑本地时间（秒），`end` 可以等于 `start`（零长度段，
+/// 用于只标记一个时间点）。编码器按 `start` 排序，运行时按同样顺序查找。
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnimClipSectionInfo {
+    pub name: String,
+    pub start: f32,
+    pub end: f32,
+}
+
 /// 解码后的 `.ranim`。
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnimClipInfo {
@@ -557,6 +578,8 @@ pub struct AnimClipInfo {
     pub notifies: Vec<AnimNotifyInfo>,
     /// 同步标记的归一化相位（升序、去重；v1 / v2 剪辑为空）。
     pub sync_markers: Vec<f32>,
+    /// Montage 段（按 `start` 升序；v1–v3 剪辑为空）。
+    pub sections: Vec<AnimClipSectionInfo>,
 }
 
 impl AnimClipInfo {
@@ -688,7 +711,7 @@ pub fn decode_ranim(data: &[u8]) -> Option<AnimClipInfo> {
 
     // v3 追加同步标记表；v1 / v2 没有。
     let mut sync_markers = Vec::new();
-    if version >= RANI_VERSION {
+    if version >= RANI_SYNC_MARKER_VERSION {
         let marker_count = reader.u32()? as usize;
         if marker_count > 1 << 16 {
             return None;
@@ -701,6 +724,36 @@ pub fn decode_ranim(data: &[u8]) -> Option<AnimClipInfo> {
             }
             sync_markers.push(phase.rem_euclid(1.0));
         }
+    }
+
+    // v4 追加 Montage 段表；v1–v3 没有。
+    let mut sections = Vec::new();
+    if version >= RANI_SECTION_VERSION {
+        let section_count = reader.u32()? as usize;
+        if section_count > 1 << 12 {
+            return None;
+        }
+        sections.reserve(section_count);
+        for _ in 0..section_count {
+            let start = reader.f32()?;
+            let end = reader.f32()?;
+            let name_len = reader.u16()? as usize;
+            let name = String::from_utf8(reader.take(name_len)?.to_vec()).ok()?;
+            if name.trim().is_empty()
+                || !start.is_finite()
+                || !end.is_finite()
+                || start < 0.0
+                || end < start
+            {
+                return None;
+            }
+            sections.push(AnimClipSectionInfo { name, start, end });
+        }
+        sections.sort_by(|a, b| {
+            a.start
+                .total_cmp(&b.start)
+                .then_with(|| a.name.cmp(&b.name))
+        });
     }
 
     if reader.remaining() != 0 {
@@ -716,6 +769,7 @@ pub fn decode_ranim(data: &[u8]) -> Option<AnimClipInfo> {
         tracks,
         notifies,
         sync_markers,
+        sections,
     })
 }
 

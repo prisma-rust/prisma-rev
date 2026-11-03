@@ -473,7 +473,7 @@ cook 阶段把 glTF 的 `skins` / `JOINTS_0` / `WEIGHTS_0` / `animations` 烘成
 关键帧，鼠标悬停时刻度加粗并显示 `Jump to this keyframe`；点空白处不跳，避免拖时间轴时
 被吸到某个关键帧。
 
-**关键帧事件（Notify，#560 P1）**：`.ranim` v3 在剪辑末尾追加事件表（`time` + 名字）和同步标记表，
+**关键帧事件（Notify，#560 P1）**：`.ranim` v4 在剪辑末尾追加事件表（`time` + 名字）、同步标记表和 Montage 段表，
 引擎每帧把「这一帧跨过的时间点」写进 `AnimEvents` 资源（整体重建，不是累加）：
 
 ```rust
@@ -507,7 +507,7 @@ for event in world.get_resource::<AnimEvents>().map(|e| e.drain()).unwrap_or_def
   一条时间轴：金色圆点是事件，悬停显示「名字 @ 秒数」，左右拖动直接改时间（量化到 0.01s，
   夹在 0..=窗口长度，窗口长度按最晚事件自动取 ≥2s），和 DragValue 共用同一个写回路径。
   在空白处点一下会在该时间打开新增草稿（剪辑名与时间已填好，只差事件名），点已有标记不会新建。
-  保存后由松散资产热重载重新 cook，`.ranim` 里的 v3 事件表随之更新。
+  保存后由松散资产热重载重新 cook，`.ranim` 里的 v4 事件表随之更新。
 
 **剪辑检查器**：在资产面板选中 `.ranim` 后，Animation Graph 面板显示检查器：时长 / fps /
 loop / additive、轨道数与每条轨道的关键帧范围、Notify / 同步标记时间轴、根关节首尾位移与
@@ -522,7 +522,7 @@ loop / additive、轨道数与每条轨道的关键帧范围、Notify / 同步�
 { "clips": { "walk": [0.0, 0.5], "run": [0.05, 0.55] } }
 ```
 
-cook 时归一化到 `[0, 1)`、排序去重，写进 `.ranim` v3；运行时
+cook 时归一化到 `[0, 1)`、排序去重，写进 `.ranim` v4；运行时
 `Clip::sync_marker_set()` 返回 `SyncMarkerSet`，可以构造 `SyncGroup` 做相位映射。
 
 编辑器可以编辑这张表：在资产面板选中 `assets/<mesh>.skinning/sync_markers.json` 后打开
@@ -531,6 +531,34 @@ Window → General → Animation Graph，按剪辑列出标记。每条有 `phas
 新增草稿，`+ Marker` 也可以手动输入剪辑名与相位。写入时归一化到 `[0, 1)` 并拒绝重复相位
 （误差 `1e-6`），数组顺序保持作者写入顺序，cook 时再排序去重。保存后由松散资产热重载重新 cook。
 文件不存在 = 没有标记；存在但解析失败会让 build 失败；名字对不上任何动画会 warn。
+
+**Montage 段（#560 P4）**：翻越 / 受击这类一次性动画需要按段跳转（Start → Vault → Land）。
+作者写侧车 `assets/<mesh>.skinning/montages.json`，键是 glTF 动画原名：
+
+```json
+{
+  "clips": {
+    "vault": {
+      "sections": [
+        { "name": "Start", "start": 0.0, "end": 0.3 },
+        { "name": "Vault", "start": 0.3, "end": 0.8 },
+        { "name": "Land", "start": 0.8, "end": 1.0 }
+      ]
+    }
+  }
+}
+```
+
+段名必须非空且同一剪辑内唯一；时间必须有限、`0 <= start <= end`，`end` 不能超过剪辑时长。
+cook 时按 `start` 排序写进 `.ranim` v4，运行时 `Clip.sections` / `MontagePlayer::active_section`
+可直接读；`MontageRequest::play_section(...)` 或 `with_section("Vault")` 会从段首开始，
+`MontagePlayer::jump_to_section` 可在播放中跳段。文件不存在 = 没有段；存在但解析失败 /
+超出剪辑长度会让 build 失败；名字对不上任何动画会 warn。
+
+编辑器可以编辑这张表：在资产面板选中 `assets/<mesh>.skinning/montages.json` 后打开
+Window → General → Animation Graph，按剪辑列出段。每个剪辑上方有一条彩色区间条（按时间画
+start..end），下面是名字文本框（失焦写回）、`start` / `end` DragValue 和 `×`；`+ Section`
+给当前剪辑加段，`+ New clip section` 可以给新剪辑键加第一段。保存后由松散资产热重载重新 cook。
 
 ### 状态机
 

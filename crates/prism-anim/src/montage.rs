@@ -11,7 +11,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use crate::clip::Clip;
+use crate::clip::{Clip, ClipSection};
 use crate::pose::Pose;
 
 /// 队列上限：坏逻辑（每帧 enqueue）不应该无限吃内存。
@@ -22,6 +22,8 @@ pub const MAX_MONTAGE_QUEUE: usize = 32;
 pub struct Montage {
     clip: Arc<Clip>,
     start_time: f32,
+    /// 从剪辑的哪个 Montage 段开始；找不到时回退到 `start_time`。
+    start_section: Option<String>,
     looped: bool,
     speed: f32,
     weight: f32,
@@ -33,6 +35,7 @@ impl Montage {
         Self {
             clip,
             start_time: 0.0,
+            start_section: None,
             looped: true,
             speed: 1.0,
             weight: 1.0,
@@ -41,6 +44,13 @@ impl Montage {
 
     pub fn with_start_time(mut self, start_time: f32) -> Self {
         self.start_time = start_time;
+        self
+    }
+
+    /// 从指定 Montage 段开始播放；段不存在时在 `start` 时回退到 `start_time`。
+    pub fn with_start_section(mut self, section: impl Into<String>) -> Self {
+        let section = section.into();
+        self.start_section = (!section.trim().is_empty()).then_some(section);
         self
     }
 
@@ -153,6 +163,43 @@ impl MontagePlayer {
         self.active.as_ref().map(|active| active.time)
     }
 
+    /// 当前时间所在的 Montage 段；没有活动段 / 不在任何段内时返回 `None`。
+    pub fn active_section(&self) -> Option<&ClipSection> {
+        let active = self.active.as_ref()?;
+        let local = local_time(
+            active.montage.clip.duration,
+            active.montage.looped,
+            active.time,
+        );
+        active
+            .montage
+            .clip
+            .sections
+            .iter()
+            .find(|section| section.contains(local))
+    }
+
+    /// 跳到命名 Montage 段的起点；段不存在或没有活动段时返回 `false`。
+    ///
+    /// 暂停状态保持不变：暂停中跳段后仍停在段首，恢复后才继续推进。
+    pub fn jump_to_section(&mut self, name: &str) -> bool {
+        let Some(active) = self.active.as_mut() else {
+            return false;
+        };
+        let Some(section) = active
+            .montage
+            .clip
+            .sections
+            .iter()
+            .find(|section| section.name == name)
+        else {
+            return false;
+        };
+        active.time = section.start;
+        self.pending_notifies.clear();
+        true
+    }
+
     pub fn is_finished(&self) -> bool {
         self.finished
     }
@@ -246,11 +293,24 @@ impl MontagePlayer {
 }
 
 fn start(montage: Montage) -> ActiveMontage {
-    let start_time = if montage.start_time.is_finite() {
-        montage.start_time.max(0.0)
-    } else {
-        0.0
-    };
+    let section_start = montage
+        .start_section
+        .as_deref()
+        .and_then(|name| {
+            montage
+                .clip
+                .sections
+                .iter()
+                .find(|section| section.name == name)
+        })
+        .map(|section| section.start);
+    let start_time = section_start.unwrap_or_else(|| {
+        if montage.start_time.is_finite() {
+            montage.start_time.max(0.0)
+        } else {
+            0.0
+        }
+    });
     ActiveMontage {
         weight: sanitize_weight(montage.weight),
         time: local_time(montage.clip.duration, montage.looped, start_time),
