@@ -2078,6 +2078,34 @@ fn a_pause_request_freezes_the_montage_until_resumed() {
 }
 
 #[test]
+fn a_montage_request_carries_blend_in_and_blend_out() {
+    let (mut world, entity) = setup_slot_world();
+    world
+        .get_resource_mut::<SkeletonLibrary>()
+        .unwrap()
+        .insert_clip("montage.ranim", montage_clip("MontageStep", 0.5));
+    world.insert_resource(AnimGraphDebug::default());
+    world
+        .get_resource_mut::<AnimMontageRequests>()
+        .unwrap()
+        .push(
+            MontageRequest::play(entity, "slot", "montage.ranim")
+                .with_looping(false)
+                .with_blend_in(0.2)
+                .with_blend_out(0.4),
+        );
+
+    animator_system(&mut world, 0.1);
+    let debug = world.get_resource::<AnimGraphDebug>().unwrap();
+    assert!((debug.montages(entity).unwrap()[0].weight - 0.5).abs() < 1e-5);
+
+    // 0.1 → 0.8：淡入已满，剩余 0.2s / blend_out 0.4s → 0.5 权重。
+    animator_system(&mut world, 0.7);
+    let debug = world.get_resource::<AnimGraphDebug>().unwrap();
+    assert!((debug.montages(entity).unwrap()[0].weight - 0.5).abs() < 1e-5);
+}
+
+#[test]
 fn a_montage_request_can_start_at_a_named_section() {
     let (mut world, entity) = setup_slot_world();
     let mut clip = montage_clip("MontageStep", 0.5);

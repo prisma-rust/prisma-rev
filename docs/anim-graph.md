@@ -135,6 +135,12 @@ Montage 段（#560 P4）：`.ranim` v4 的段表（作者侧 `*.skinning/montage
 `AnimMontageRequests::play_section` 把段名带进请求，调试快照的 `MontageSnapshot.section`
 显示当前段。
 
+Montage blend-in / blend-out（#560 P4）：`Montage::with_blend_in(seconds)` 从 0 权重线性
+升到作者权重，`with_blend_out(seconds)` 在单次 Montage 结束前线性降到 0；循环 Montage
+不使用 blend-out，避免每圈结尾闪一下。`MontagePlayer::active_weight()` 返回乘过淡入 /
+淡出系数的实际权重（调试快照的 `weight` 也是它），暂停时淡入不推进。引擎请求对应
+`MontageRequest::with_blend_in` / `with_blend_out`。
+
 同步标记：`.ranim` v4 的同步标记表通过 `Clip::sync_marker_set()` 转成
 `SyncMarkerSet`；资产侧来自 `*.skinning/sync_markers.json`。`BlendSpace1D/2D`
 在所有样本都有同结构标记时自动建 `SyncGroup`，以**当前权重最大的样本**为领跑剪辑把
@@ -197,7 +203,7 @@ LayeredBlend 的连线权重就是层权重）。`weight` 只用于显示，不�
 
 引擎侧项目代码通过 `AnimMontageRequests` 资源发请求（`MontageRequest::play` /
 `enqueue` / `stop` / `stop_after_current` / `pause` / `resume`，可带循环 / 速度 / 权重 /
-开始时间 / 段名）；`animator_system` 每帧消费一次，把剪辑路径解析成 `Montage` 注入对应实体的
+开始时间 / 段名 / blend-in / blend-out）；`animator_system` 每帧消费一次，把剪辑路径解析成 `Montage` 注入对应实体的
 Slot。请求只活一帧；剪辑未加载、实体没有图或 Slot 名不存在时忽略并告警；段名不存在时
 记录警告并回退到 `start_time`。
 

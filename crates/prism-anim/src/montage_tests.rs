@@ -253,3 +253,105 @@ fn section_playback_keeps_the_paused_state() {
     assert!(player.tick(0.2));
     assert!((player.active_time().unwrap() - 0.4).abs() < 1e-5);
 }
+
+#[test]
+fn blend_in_ramps_the_weight_and_paused_time_does_not_count() {
+    let mut player = MontagePlayer::new();
+    player.play_now(
+        Montage::new(clip("hit", 0.0, None))
+            .with_blend_in(0.5)
+            .with_weight(0.8),
+    );
+    assert!(player.active_weight().abs() < 1e-5, "从 0 权重开始");
+
+    player.tick(0.25);
+    assert!((player.active_weight() - 0.4).abs() < 1e-5);
+
+    player.set_paused(true);
+    player.tick(0.5);
+    assert!(
+        (player.active_weight() - 0.4).abs() < 1e-5,
+        "暂停不推进淡入"
+    );
+    player.set_paused(false);
+
+    player.tick(0.25);
+    assert!((player.active_weight() - 0.8).abs() < 1e-5, "基准权重封顶");
+    player.tick(0.5);
+    assert!((player.active_weight() - 0.8).abs() < 1e-5);
+}
+
+#[test]
+fn blend_in_uses_wall_clock_not_playback_speed() {
+    let mut player = MontagePlayer::new();
+    player.play_now(
+        Montage::new(clip("fast", 0.0, None))
+            .with_speed(2.0)
+            .with_blend_in(0.5),
+    );
+    player.tick(0.25);
+    assert!((player.active_time().unwrap() - 0.5).abs() < 1e-5);
+    assert!(
+        (player.active_weight() - 0.5).abs() < 1e-5,
+        "淡入按 0.5s 墙钟"
+    );
+}
+
+#[test]
+fn blend_out_only_applies_to_one_shot_montages() {
+    let mut player = MontagePlayer::new();
+    player.play_now(
+        Montage::new(clip("hit", 0.0, None))
+            .with_looping(false)
+            .with_blend_out(0.4),
+    );
+    player.tick(0.5);
+    assert!((player.active_weight() - 1.0).abs() < 1e-5);
+    player.tick(0.3);
+    assert!((player.active_weight() - 0.5).abs() < 1e-5);
+    player.tick(0.15);
+    assert!((player.active_weight() - 0.125).abs() < 1e-5);
+
+    // 循环 Montage 不在每圈结尾闪一下。
+    let mut looping = MontagePlayer::new();
+    looping.play_now(Montage::new(clip("loop", 0.0, None)).with_blend_out(0.4));
+    looping.tick(0.9);
+    assert!((looping.active_weight() - 1.0).abs() < 1e-5);
+}
+
+#[test]
+fn a_queued_montage_starts_its_own_blend_in() {
+    let mut player = MontagePlayer::new();
+    player.play_now(
+        Montage::new(clip("a", 0.0, None))
+            .with_looping(false)
+            .with_blend_in(1.0),
+    );
+    player.enqueue(Montage::new(clip("b", 0.0, None)).with_blend_in(0.5));
+    player.tick(0.5);
+    assert!((player.active_weight() - 0.5).abs() < 1e-5);
+    player.tick(0.6);
+    assert!(
+        player.active_clip().is_some_and(|clip| clip.name == "b"),
+        "A 播完后接 B"
+    );
+    assert!(
+        player.active_weight().abs() < 1e-5,
+        "B 从自己的淡入起点开始"
+    );
+    player.tick(0.25);
+    assert!((player.active_weight() - 0.5).abs() < 1e-5);
+}
+
+#[test]
+fn blend_durations_are_sanitized() {
+    let mut player = MontagePlayer::new();
+    player.play_now(
+        Montage::new(clip("hit", 0.0, None))
+            .with_blend_in(f32::NAN)
+            .with_blend_out(-2.0),
+    );
+    assert!((player.active_weight() - 1.0).abs() < 1e-5);
+    player.tick(0.1);
+    assert!((player.active_weight() - 1.0).abs() < 1e-5);
+}

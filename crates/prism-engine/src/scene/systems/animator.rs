@@ -466,6 +466,10 @@ pub struct MontageRequest {
     pub start_time: f32,
     /// 从剪辑的哪个 Montage 段开始；空 = 从 `start_time` 开始。
     pub section: String,
+    /// 起始淡入时长（秒）。
+    pub blend_in: f32,
+    /// 单次 Montage 结束前的淡出时长（秒）。
+    pub blend_out: f32,
 }
 
 impl MontageRequest {
@@ -481,6 +485,8 @@ impl MontageRequest {
             weight: 1.0,
             start_time: 0.0,
             section: String::new(),
+            blend_in: 0.0,
+            blend_out: 0.0,
         }
     }
 
@@ -547,6 +553,18 @@ impl MontageRequest {
     /// 从命名 Montage 段开始；段不存在时回退到 `start_time`。
     pub fn with_section(mut self, section: impl Into<String>) -> Self {
         self.section = section.into();
+        self
+    }
+
+    /// 起始淡入时长（秒）。
+    pub fn with_blend_in(mut self, seconds: f32) -> Self {
+        self.blend_in = seconds;
+        self
+    }
+
+    /// 单次 Montage 结束前的淡出时长（秒）。
+    pub fn with_blend_out(mut self, seconds: f32) -> Self {
+        self.blend_out = seconds;
         self
     }
 }
@@ -663,7 +681,9 @@ fn apply_montage_requests(
                     .with_start_section(request.section.as_str())
                     .with_looping(request.looped)
                     .with_speed(request.speed)
-                    .with_weight(request.weight);
+                    .with_weight(request.weight)
+                    .with_blend_in(request.blend_in)
+                    .with_blend_out(request.blend_out);
                 if request.action == MontageAction::PlayNow {
                     evaluator.play_montage(slot, montage);
                 } else {
