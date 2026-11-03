@@ -489,3 +489,114 @@ mod layout_tests {
         );
     }
 }
+
+fn find_node_mut<'a>(document: &'a mut Value, name: &str) -> Option<&'a mut Value> {
+    document
+        .get_mut("nodes")?
+        .as_array_mut()?
+        .iter_mut()
+        .find(|node| node.get("name").and_then(Value::as_str) == Some(name))
+}
+
+fn input_name(value: &Value) -> Option<&str> {
+    match value {
+        Value::String(name) => Some(name),
+        Value::Object(map) => map.get("node").and_then(Value::as_str),
+        _ => None,
+    }
+}
+
+/// 给图节点追加一条连线（写回作者的 `inputs` 数组）。
+///
+/// 链式节点（用单数 `input` 的 `slot` / `cached_pose` / `output`）不混用数组：
+/// 对它们返回错误，避免生成 cooker 不认识的形状。
+pub fn add_graph_input(document: &mut Value, target: &str, source: &str) -> Result<(), String> {
+    if target == source {
+        return Err("a node cannot connect to itself".to_string());
+    }
+    let names: Vec<String> = document
+        .get("nodes")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|node| node.get("name").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect();
+    if !names.iter().any(|name| name == source) {
+        return Err(format!("unknown source node '{source}'"));
+    }
+    let Some(node) = find_node_mut(document, target) else {
+        return Err(format!("unknown target node '{target}'"));
+    };
+    if node.get("input").is_some() {
+        return Err(format!(
+            "node '{target}' uses a single input; edit it as JSON"
+        ));
+    }
+    if node.get("inputs").is_none() {
+        node["inputs"] = json!([]);
+    }
+    let Some(inputs) = node.get_mut("inputs").and_then(Value::as_array_mut) else {
+        return Err(format!("node '{target}' has an invalid `inputs` field"));
+    };
+    if inputs
+        .iter()
+        .filter_map(input_name)
+        .any(|name| name == source)
+    {
+        return Err(format!("node '{target}' already connects to '{source}'"));
+    }
+    inputs.push(Value::String(source.to_string()));
+    Ok(())
+}
+
+/// 删除图节点 `inputs` 数组里的第 `index` 条连线。
+pub fn remove_graph_input(document: &mut Value, target: &str, index: usize) -> Result<(), String> {
+    let Some(node) = find_node_mut(document, target) else {
+        return Err(format!("unknown target node '{target}'"));
+    };
+    let Some(inputs) = node.get_mut("inputs").and_then(Value::as_array_mut) else {
+        return Err(format!("node '{target}' has no editable `inputs` array"));
+    };
+    if index >= inputs.len() {
+        return Err(format!("node '{target}' has no input #{index}"));
+    }
+    inputs.remove(index);
+    Ok(())
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::*;
+
+    fn document() -> Value {
+        json!({
+            "nodes": [
+                { "name": "a", "type": "clip_player", "clip": "a.ranim" },
+                { "name": "b", "type": "clip_player", "clip": "b.ranim" },
+                { "name": "stack", "type": "blend_stack", "inputs": ["a"] },
+                { "name": "out", "type": "output", "input": "stack" }
+            ]
+        })
+    }
+
+    #[test]
+    fn links_can_be_added_and_removed() {
+        let mut doc = document();
+        add_graph_input(&mut doc, "stack", "b").expect("adds");
+        assert_eq!(doc["nodes"][2]["inputs"], json!(["a", "b"]));
+        remove_graph_input(&mut doc, "stack", 0).expect("removes");
+        assert_eq!(doc["nodes"][2]["inputs"], json!(["b"]));
+    }
+
+    #[test]
+    fn self_unknown_duplicate_and_chain_nodes_are_rejected() {
+        let mut doc = document();
+        assert!(add_graph_input(&mut doc, "stack", "stack").is_err());
+        assert!(add_graph_input(&mut doc, "stack", "missing").is_err());
+        assert!(add_graph_input(&mut doc, "stack", "a").is_err());
+        assert!(add_graph_input(&mut doc, "out", "a").is_err());
+        assert!(remove_graph_input(&mut doc, "stack", 9).is_err());
+    }
+}
