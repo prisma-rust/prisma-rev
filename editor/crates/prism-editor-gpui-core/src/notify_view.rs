@@ -164,6 +164,41 @@ fn find_clip_mut<'a>(
     Ok(Some(entries))
 }
 
+/// 时间轴上的 x 坐标（`left..left+width`）映射成秒，夹到 `0..=span` 并量化到 0.01 秒。
+///
+/// 面板拖拽和单元测试共用这一份换算，避免 UI 与测试各写一套夹取逻辑。
+pub fn notify_time_at(x: f32, left: f32, width: f32, span: f32) -> f32 {
+    if !x.is_finite() || !width.is_finite() || width <= 0.0 || !span.is_finite() || span <= 0.0 {
+        return 0.0;
+    }
+    let fraction = ((x - left) / width).clamp(0.0, 1.0);
+    ((fraction * span) * 100.0).round() / 100.0
+}
+
+/// 时间轴命中：返回离 `x` 最近、且像素距离不超过 `radius` 的事件下标。
+pub fn nearest_notify_index(
+    entries: &[NotifyEntryView],
+    x: f32,
+    left: f32,
+    width: f32,
+    span: f32,
+    radius: f32,
+) -> Option<usize> {
+    if !x.is_finite() || !width.is_finite() || width <= 0.0 || !span.is_finite() || span <= 0.0 {
+        return None;
+    }
+    entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let marker = left + (entry.time / span).clamp(0.0, 1.0) * width;
+            (index, (marker - x).abs())
+        })
+        .filter(|(_, distance)| *distance <= radius)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(index, _)| index)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,6 +235,49 @@ mod tests {
         assert!(
             parse_notifies_view(&json!({ "clips": { "walk": [{ "time": 0.1 }] } })).is_err(),
             "无名事件要报错"
+        );
+    }
+
+    #[test]
+    fn timeline_coordinates_map_to_clamped_centisecond_times() {
+        // 100px 装 2 秒：中点 1 秒，两端夹住。
+        assert_eq!(notify_time_at(50.0, 0.0, 100.0, 2.0), 1.0);
+        assert_eq!(notify_time_at(-40.0, 0.0, 100.0, 2.0), 0.0);
+        assert_eq!(notify_time_at(400.0, 0.0, 100.0, 2.0), 2.0);
+        assert_eq!(notify_time_at(33.0, 0.0, 100.0, 2.0), 0.66);
+        assert_eq!(notify_time_at(f32::NAN, 0.0, 100.0, 2.0), 0.0);
+        assert_eq!(notify_time_at(10.0, 0.0, 0.0, 2.0), 0.0);
+    }
+
+    #[test]
+    fn timeline_hit_testing_picks_the_nearest_marker_within_the_radius() {
+        let entries = vec![
+            NotifyEntryView {
+                time: 0.5,
+                name: "A".to_string(),
+            },
+            NotifyEntryView {
+                time: 1.5,
+                name: "B".to_string(),
+            },
+        ];
+        // 0..200px 装 2 秒 → A 在 50px、B 在 150px。
+        assert_eq!(
+            nearest_notify_index(&entries, 52.0, 0.0, 200.0, 2.0, 8.0),
+            Some(0)
+        );
+        assert_eq!(
+            nearest_notify_index(&entries, 146.0, 0.0, 200.0, 2.0, 8.0),
+            Some(1)
+        );
+        assert_eq!(
+            nearest_notify_index(&entries, 100.0, 0.0, 200.0, 2.0, 8.0),
+            None
+        );
+        assert_eq!(nearest_notify_index(&[], 50.0, 0.0, 200.0, 2.0, 8.0), None);
+        assert_eq!(
+            nearest_notify_index(&entries, f32::INFINITY, 0.0, 200.0, 2.0, 8.0),
+            None
         );
     }
 
