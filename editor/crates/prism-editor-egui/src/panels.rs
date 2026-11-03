@@ -6623,6 +6623,8 @@ pub struct AnimGraphEditState {
     pub sm_new_state: Option<(String, String)>,
     /// 待执行的状态改名：(状态下标, 新名字)，由工作区同步场景 / 预制体引用。
     pub sm_state_rename: Option<(usize, String)>,
+    /// 正在编辑的条件参数名：(转移下标, 条件下标, 文本)，失焦才写回。
+    pub sm_condition_name: Option<(usize, usize, String)>,
     /// 正在编辑的图节点剪辑：(节点名, 文本)。
     pub graph_node_clip: Option<(String, String)>,
     /// 正在编辑的图节点名字：(旧名字, 文本)。
@@ -7658,6 +7660,7 @@ fn draw_state_machine_view(
     let mut remove = None;
     let mut timing_edits = Vec::new();
     let mut kind_edits = Vec::new();
+    let mut condition_name_edits = Vec::new();
     let mut threshold_edits = Vec::new();
     let mut value_edits = Vec::new();
     let mut remove_condition = None;
@@ -7790,11 +7793,28 @@ fn draw_state_machine_view(
                         if kind != condition.kind {
                             kind_edits.push((index, condition_index, kind));
                         }
-                        ui.label(
-                            RichText::new(format!("if {}", condition.summary))
-                                .monospace()
-                                .size(10.0),
+                        let mut name_text = edit
+                            .sm_condition_name
+                            .as_ref()
+                            .filter(|(transition, slot, _)| {
+                                *transition == index && *slot == condition_index
+                            })
+                            .map(|(_, _, text)| text.clone())
+                            .unwrap_or_else(|| condition.name.clone());
+                        let name_response = ui.add(
+                            egui::TextEdit::singleline(&mut name_text)
+                                .hint_text("parameter")
+                                .desired_width(90.0),
                         );
+                        if name_response.changed() {
+                            edit.sm_condition_name = Some((index, condition_index, name_text));
+                        } else if name_response.lost_focus() {
+                            if let Some((transition, slot, text)) = edit.sm_condition_name.take() {
+                                if transition == index && slot == condition_index {
+                                    condition_name_edits.push((index, condition_index, text));
+                                }
+                            }
+                        }
                         match condition.kind.as_str() {
                             "float_greater" | "float_less" => {
                                 let mut threshold = condition.threshold;
@@ -7890,6 +7910,10 @@ fn draw_state_machine_view(
     }
     for (index, condition, kind) in kind_edits {
         prism_editor_core::set_condition_kind(document, index, condition, &kind)?;
+        changed = true;
+    }
+    for (index, condition, name) in condition_name_edits {
+        prism_editor_core::set_condition_name(document, index, condition, &name)?;
         changed = true;
     }
     for (index, condition, threshold) in threshold_edits {

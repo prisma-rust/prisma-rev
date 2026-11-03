@@ -2743,6 +2743,55 @@ pub fn set_condition_kind(
     Ok(())
 }
 
+/// 改一条条件的参数名，保留类型与载荷。
+///
+/// 同一转移里 `(type, name)` 不能重复；`float_greater speed` 与
+/// `float_less speed` 是两条不同条件，允许共存。
+pub fn set_condition_name(
+    document: &mut Value,
+    index: usize,
+    condition: usize,
+    name: &str,
+) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("a condition needs a non-empty parameter name".to_string());
+    }
+    let transition = find_transition_mut(document, index)?;
+    let Some(conditions) = transition
+        .get_mut("conditions")
+        .and_then(Value::as_array_mut)
+    else {
+        return Err(format!(
+            "transition #{index} has no editable `conditions` array"
+        ));
+    };
+    if condition >= conditions.len() {
+        return Err(format!("transition #{index} has no condition #{condition}"));
+    }
+    if !conditions[condition].is_object() {
+        return Err(format!(
+            "transition #{index} condition #{condition} is malformed"
+        ));
+    }
+    let kind = conditions[condition]
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("transition #{index} condition #{condition} needs a type"))?
+        .to_string();
+    if conditions.iter().enumerate().any(|(other_index, other)| {
+        other_index != condition
+            && other.get("type").and_then(Value::as_str) == Some(kind.as_str())
+            && other.get("name").and_then(Value::as_str) == Some(name)
+    }) {
+        return Err(format!(
+            "transition #{index} already has the condition '{name} ({kind})'"
+        ));
+    }
+    conditions[condition]["name"] = json!(name);
+    Ok(())
+}
+
 #[cfg(test)]
 mod state_tests {
     use super::*;
@@ -3046,6 +3095,41 @@ mod condition_tests {
         assert!(set_condition_kind(&mut blank, 0, 0, "bool_is").is_err());
         let mut malformed = json!({ "transitions": [{ "conditions": ["bad"] }] });
         assert!(set_condition_kind(&mut malformed, 0, 0, "trigger").is_err());
+    }
+
+    #[test]
+    fn condition_names_can_be_edited_and_keep_type_and_payload() {
+        let mut doc = document();
+        set_condition_name(&mut doc, 0, 0, " velocity ").expect("renames");
+        assert_eq!(
+            doc["transitions"][0]["conditions"][0],
+            json!({ "type": "float_greater", "name": "velocity", "threshold": 1.5 })
+        );
+
+        add_state_condition(&mut doc, 0, "bool_is", "velocity", 0.0, false).expect("adds bool");
+        set_condition_name(&mut doc, 0, 0, "velocity").expect("same name on another type is fine");
+        assert_eq!(doc["transitions"][0]["conditions"][1]["type"], "bool_is");
+        assert_eq!(doc["transitions"][0]["conditions"][1]["name"], "velocity");
+    }
+
+    #[test]
+    fn condition_names_reject_duplicates_and_bad_input() {
+        let mut doc = document();
+        add_state_condition(&mut doc, 0, "float_greater", "speed2", 0.0, false).expect("adds");
+        assert!(
+            set_condition_name(&mut doc, 0, 0, "speed2").is_err(),
+            "同一类型下重名"
+        );
+        assert_eq!(doc["transitions"][0]["conditions"][0]["name"], "speed");
+
+        assert!(set_condition_name(&mut doc, 0, 0, "  ").is_err());
+        assert!(set_condition_name(&mut doc, 9, 0, "speed").is_err());
+        assert!(set_condition_name(&mut doc, 0, 9, "speed").is_err());
+
+        let mut malformed = json!({ "transitions": [{ "conditions": ["bad"] }] });
+        assert!(set_condition_name(&mut malformed, 0, 0, "speed").is_err());
+        let mut without_type = json!({ "transitions": [{ "conditions": [{ "name": "speed" }] }] });
+        assert!(set_condition_name(&mut without_type, 0, 0, "speed").is_err());
     }
 }
 
