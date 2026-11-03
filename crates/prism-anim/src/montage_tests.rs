@@ -255,6 +255,83 @@ fn section_playback_keeps_the_paused_state() {
 }
 
 #[test]
+fn a_branch_in_notify_jumps_to_the_named_section() {
+    let mut player = MontagePlayer::new();
+    let mut clip = (*sectioned_clip()).clone();
+    clip.notifies.push(ClipNotify {
+        time: 0.5,
+        name: "BranchIn.Land".into(),
+    });
+    player.play_now(Montage::new(Arc::new(clip)).with_looping(false));
+
+    player.tick(0.6);
+    assert!(
+        (player.active_time().unwrap() - 0.8).abs() < 1e-5,
+        "跨过 BranchIn.Land 后跳到 Land 段首"
+    );
+    assert_eq!(
+        player.active_section().map(|section| section.name.as_str()),
+        Some("Land")
+    );
+    let events = player.take_notifies();
+    assert!(
+        events.iter().any(|event| event.name == "BranchIn.Land"),
+        "BranchIn 本身仍然是 Notify 事件: {events:?}"
+    );
+}
+
+#[test]
+fn a_branch_in_with_a_missing_section_does_not_jump() {
+    let mut player = MontagePlayer::new();
+    let mut clip = (*sectioned_clip()).clone();
+    clip.notifies.push(ClipNotify {
+        time: 0.5,
+        name: "BranchIn.Missing".into(),
+    });
+    player.play_now(Montage::new(Arc::new(clip)).with_looping(false));
+
+    player.tick(0.6);
+    assert!((player.active_time().unwrap() - 0.6).abs() < 1e-5);
+    assert_eq!(
+        player.active_section().map(|section| section.name.as_str()),
+        Some("Vault")
+    );
+}
+
+#[test]
+fn a_paused_player_does_not_fire_branch_in() {
+    let mut player = MontagePlayer::new();
+    let mut clip = (*sectioned_clip()).clone();
+    clip.notifies.push(ClipNotify {
+        time: 0.5,
+        name: "BranchIn.Land".into(),
+    });
+    player.play_now(Montage::new(Arc::new(clip)).with_looping(false));
+    player.set_paused(true);
+    player.tick(0.6);
+    assert!((player.active_time().unwrap()).abs() < 1e-5);
+    assert!(player.take_notifies().is_empty());
+}
+
+#[test]
+fn a_branch_in_can_loop_back_to_an_earlier_section() {
+    let mut player = MontagePlayer::new();
+    let mut clip = (*sectioned_clip()).clone();
+    clip.notifies.push(ClipNotify {
+        time: 0.9,
+        name: "BranchIn.Start".into(),
+    });
+    player.play_now(Montage::new(Arc::new(clip)).with_looping(false));
+
+    player.tick(0.95);
+    assert!((player.active_time().unwrap()).abs() < 1e-5);
+    assert_eq!(
+        player.active_section().map(|section| section.name.as_str()),
+        Some("Start")
+    );
+}
+
+#[test]
 fn blend_in_ramps_the_weight_and_paused_time_does_not_count() {
     let mut player = MontagePlayer::new();
     player.play_now(
