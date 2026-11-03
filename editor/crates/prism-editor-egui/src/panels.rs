@@ -5695,18 +5695,29 @@ fn runtime_montage_summary(montage: &prism_anim::MontageSnapshot) -> String {
     )
 }
 
+/// Play 模式下动画图面板要读的运行时数据（#560 编辑器-运行时桥）。
+#[derive(Clone, Copy)]
+pub struct AnimRuntimeView<'a> {
+    pub graph: &'a prism_engine::scene::systems::animator::AnimGraphDebug,
+    /// 这一帧的 Notify 事件；引擎还没跑过动画系统时是 `None`。
+    pub events: Option<&'a prism_engine::scene::systems::animator::AnimEvents>,
+}
+
+/// 一条 Notify 事件的显示文本。
+fn runtime_event_summary(event: &prism_engine::scene::systems::animator::AnimEvent) -> String {
+    format!("• {} @ {:.2}s", event.name, event.time)
+}
+
 /// Play 模式下的动画图实时快照（#560 编辑器-运行时桥）。
 ///
 /// 数据由引擎在资源存在时每帧重建；这里只读。没有图实体时给一行提示，
 /// 不会因为「还没按 Play」而隐藏整个面板。
-fn draw_runtime_debug(
-    ui: &mut Ui,
-    runtime: Option<&prism_engine::scene::systems::animator::AnimGraphDebug>,
-) {
+fn draw_runtime_debug(ui: &mut Ui, runtime: Option<AnimRuntimeView<'_>>) {
     let Some(runtime) = runtime else {
         return;
     };
-    if runtime.entities.is_empty() {
+    let debug = runtime.graph;
+    if debug.entities.is_empty() {
         ui.label(
             RichText::new("runtime: no animated graph entities (press Play)")
                 .weak()
@@ -5715,17 +5726,17 @@ fn draw_runtime_debug(
         return;
     }
     egui::CollapsingHeader::new(
-        RichText::new(format!("Runtime · {} entities", runtime.entities.len()))
+        RichText::new(format!("Runtime · {} entities", debug.entities.len()))
             .color(Color32::from_rgb(120, 200, 160))
             .size(10.0),
     )
     .id_salt("anim-graph-runtime")
     .default_open(true)
     .show(ui, |ui| {
-        let mut entities: Vec<_> = runtime.entities.iter().collect();
+        let mut entities: Vec<_> = debug.entities.iter().collect();
         entities.sort_by_key(|(entity, _)| format!("{entity:?}"));
         for (entity, nodes) in entities {
-            let path = runtime.path(*entity).unwrap_or("?");
+            let path = debug.path(*entity).unwrap_or("?");
             ui.label(
                 RichText::new(format!("{entity:?} · {path}"))
                     .weak()
@@ -5734,9 +5745,18 @@ fn draw_runtime_debug(
             for node in nodes {
                 ui.label(RichText::new(runtime_node_summary(node)).size(9.0));
             }
-            if let Some(montages) = runtime.montages(*entity) {
+            if let Some(montages) = debug.montages(*entity) {
                 for montage in montages {
                     ui.label(RichText::new(runtime_montage_summary(montage)).size(9.0));
+                }
+            }
+            if let Some(events) = runtime.events {
+                for event in events.events.iter().filter(|event| event.entity == *entity) {
+                    ui.label(
+                        RichText::new(runtime_event_summary(event))
+                            .color(Color32::from_rgb(110, 200, 255))
+                            .size(9.0),
+                    );
                 }
             }
         }
@@ -5747,7 +5767,7 @@ pub fn anim_graph(
     ui: &mut Ui,
     workspace: &mut Workspace,
     state: &mut UiState,
-    runtime: Option<&prism_engine::scene::systems::animator::AnimGraphDebug>,
+    runtime: Option<AnimRuntimeView<'_>>,
 ) {
     let Some(path) = state.asset_primary().cloned() else {
         ui.label(
@@ -10675,6 +10695,18 @@ mod window_smoke_tests {
         assert!(line.contains("0.25s"), "{line}");
         assert!(line.contains("paused"), "{line}");
         assert!(line.contains("+2 queued"), "{line}");
+    }
+
+    #[test]
+    fn runtime_event_lines_show_name_and_time() {
+        let event = prism_engine::scene::systems::animator::AnimEvent {
+            entity: prism_engine::ecs::Entity::from_raw(7, 0),
+            name: "footstep".into(),
+            time: 0.3,
+        };
+        let line = runtime_event_summary(&event);
+        assert!(line.contains("footstep"), "{line}");
+        assert!(line.contains("0.30s"), "{line}");
     }
 
     #[test]
