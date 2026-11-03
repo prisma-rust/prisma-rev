@@ -1,6 +1,6 @@
-//! RTTIBin：带类型表的自描述二进制格式。
+//! RTTIBin: a self-describing binary format that carries its own type table.
 //!
-//! 文件结构（小端）：
+//! File structure (little-endian):
 //!
 //! ```text
 //! magic   : "PRTB" (4)
@@ -14,10 +14,11 @@
 //!     name str | value
 //! ```
 //!
-//! `str` = `u32` 字节长度 + UTF-8。
+//! `str` = `u32` byte length + UTF-8.
 //!
-//! 与 serde/bincode 的区别：**类型表在数据里**。读取方不需要编译期类型即可
-//! 遍历对象树；需要还原成具体 Rust 类型时再查 [`TypeRegistry`]。
+//! Difference from serde/bincode: **the type table lives in the data**, so
+//! the reader can walk the object tree without compile-time types and only
+//! consults [`TypeRegistry`] when it needs to restore a concrete Rust type.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -27,18 +28,16 @@ pub const MAGIC: [u8; 4] = *b"PRTB";
 pub const VERSION: u16 = 1;
 
 const MAX_TYPES: usize = 1 << 16;
-/// 字段数上限 = `u16` 的容纳上限：字段计数在文件里写成 `u16`，
-/// 上限必须与承载宽度一致，否则恰好 `1 << 16` 个字段会通过 `>` 守卫、
-/// 再被 `as u16` 截断成 0，文件声称「0 字段」而解码端毫无察觉（#87）。
+/// Field count limit = the maximum `u16` can hold. The field count is
+/// written as `u16` in the file, so the limit must match the carrier width;
+/// otherwise exactly `1 << 16` fields pass the `>` guard and are then
+/// truncated to 0 by `as u16`, leaving the file claiming "0 fields" with
+/// the decoder none the wiser (#87).
 const MAX_FIELDS: usize = u16::MAX as usize;
 const MAX_OBJECTS: usize = 1 << 24;
 const MAX_DEPTH: u32 = 64;
 
-// ---------------------------------------------------------------------------
-// Errors
-// ---------------------------------------------------------------------------
-
-/// 编解码错误。
+/// Encode/decode error.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RttiError {
     BadMagic,
@@ -70,18 +69,15 @@ impl std::fmt::Display for RttiError {
 
 impl std::error::Error for RttiError {}
 
-// ---------------------------------------------------------------------------
-// 解码后的类型表
-// ---------------------------------------------------------------------------
-
-/// 解码出的字段 schema（名字/类型为自有字符串，生命周期独立于源数据）。
+/// A decoded field schema (name/type are owned strings, independent of the
+/// source data's lifetime).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldSchema {
     pub name: String,
     pub ty: FieldType,
 }
 
-/// 解码出的类型 schema。
+/// A decoded type schema.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeSchema {
     pub id: TypeId,
@@ -98,7 +94,7 @@ impl TypeSchema {
     }
 }
 
-/// 文件自带的类型表。
+/// The type table carried by the file.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TypeTable {
     types: BTreeMap<TypeId, TypeSchema>,
@@ -126,21 +122,18 @@ impl TypeTable {
     }
 }
 
-/// [`decode`] 的结果。
+/// The result of [`decode`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct Decoded {
     pub type_table: TypeTable,
     pub objects: Vec<Object>,
 }
 
-// ---------------------------------------------------------------------------
-// 编码
-// ---------------------------------------------------------------------------
-
-/// 把一组对象编码成 RTTIBin。
+/// Encodes a set of objects as RTTIBin.
 ///
-/// 类型表按 type id 排序，对象字段按名字排序 → 同一输入重复编码字节一致。
-/// 所有对象（含嵌套 `Value::Object`）的类型都必须已注册。
+/// The type table is sorted by type id and object fields by name, so
+/// encoding the same input twice produces identical bytes. Every object
+/// type, including nested `Value::Object`, must be registered.
 pub fn encode(objects: &[Object], registry: &TypeRegistry) -> Result<Vec<u8>, RttiError> {
     let mut type_ids = BTreeSet::new();
     for object in objects {
@@ -150,8 +143,8 @@ pub fn encode(objects: &[Object], registry: &TypeRegistry) -> Result<Vec<u8>, Rt
     let mut buf = Vec::new();
     buf.extend_from_slice(&MAGIC);
     buf.extend_from_slice(&VERSION.to_le_bytes());
-    // 编码端必须与解码端的 `MAX_TYPES` 检查对称，否则能写出解码器
-    // 会拒绝的文件（#87）。
+    // The encoder must mirror the decoder's `MAX_TYPES` check, otherwise it
+    // can write a file the decoder rejects (#87).
     if type_ids.len() > MAX_TYPES {
         return Err(RttiError::LimitExceeded("type"));
     }
@@ -185,7 +178,7 @@ pub fn encode(objects: &[Object], registry: &TypeRegistry) -> Result<Vec<u8>, Rt
     Ok(buf)
 }
 
-/// 单对象编码的便捷入口。
+/// Convenience entry point for encoding a single object.
 pub fn encode_one(object: &Object, registry: &TypeRegistry) -> Result<Vec<u8>, RttiError> {
     encode(std::slice::from_ref(object), registry)
 }
@@ -231,11 +224,8 @@ fn collect_field_type(ty: &FieldType, registry: &TypeRegistry, out: &mut BTreeSe
     }
 }
 
-// ---------------------------------------------------------------------------
-// 解码
-// ---------------------------------------------------------------------------
-
-/// 解码 RTTIBin。返回类型表 + 对象树；不要求类型已注册。
+/// Decodes RTTIBin, returning the type table and the object tree. The types
+/// do not need to be registered.
 pub fn decode(bytes: &[u8]) -> Result<Decoded, RttiError> {
     let mut reader = Reader::new(bytes);
 
@@ -307,13 +297,10 @@ pub fn decode(bytes: &[u8]) -> Result<Decoded, RttiError> {
     })
 }
 
-// ---------------------------------------------------------------------------
-// 编码辅助
-// ---------------------------------------------------------------------------
-
-/// 字段计数写进 `u16` 前的边界检查（`#87`）。
+/// Bounds check before a field count is written as `u16` (#87).
 ///
-/// 单点实现，避免「上限用 `1 << 16`、承载用 `u16`」这种不一致再次出现。
+/// A single implementation point, so the "limit is `1 << 16` but the
+/// carrier is `u16`" inconsistency cannot reappear.
 fn checked_field_count(len: usize) -> Result<u16, RttiError> {
     if len > MAX_FIELDS {
         return Err(RttiError::LimitExceeded("field"));
@@ -435,10 +422,6 @@ fn write_value(buf: &mut Vec<u8>, value: &Value, depth: u32) -> Result<(), RttiE
     }
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// 解码辅助
-// ---------------------------------------------------------------------------
 
 struct Reader<'a> {
     bytes: &'a [u8],
@@ -587,8 +570,9 @@ mod tests {
 
     #[test]
     fn field_limit_matches_its_u16_wire_width() {
-        // `#87`：上限曾经是 `1 << 16`，恰好 65 536 个字段能通过 `>` 守卫，
-        // 再被 `as u16` 截断成 0。上限必须等于承载宽度的最大值。
+        // `#87`: the limit used to be `1 << 16`, so exactly 65 536 fields
+        // passed the `>` guard and were truncated to 0 by `as u16`. The limit
+        // must equal the carrier width's maximum.
         assert_eq!(MAX_FIELDS, u16::MAX as usize);
     }
 
@@ -603,8 +587,8 @@ mod tests {
 
     #[test]
     fn type_limit_fits_the_u32_count_field() {
-        // 编码端的守卫与解码端的 `type_count > MAX_TYPES` 必须对称，
-        // 且上限本身能写进 `u32`。
+        // The encoder's guard must mirror the decoder's `type_count >
+        // MAX_TYPES` check, and the limit itself must fit in `u32`.
         assert!(MAX_TYPES <= u32::MAX as usize);
     }
 }

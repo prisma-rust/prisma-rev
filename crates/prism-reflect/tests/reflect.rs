@@ -1,4 +1,5 @@
-//! prism-reflect 集成测试：派生、动态注册表、RTTIBin 往返。
+//! Integration tests for prism-reflect: derive, dynamic registry, and RTTIBin
+//! round-trips.
 
 use prism_reflect::{rtti_bin, Reflect, ReflectError, TypeId, TypeRegistry, Value};
 
@@ -109,7 +110,7 @@ fn set_rejects_unknown_and_read_only() {
         value.set_field("id", Value::U64(1)),
         Err(ReflectError::ReadOnly("id".into()))
     );
-    // 反序列化路径忽略 read_only。
+    // The deserialization path ignores read_only.
     value.set_field_force("id", Value::U64(99)).unwrap();
     assert_eq!(value.id, 99);
 }
@@ -123,10 +124,10 @@ fn from_object_keeps_defaults_for_missing_and_skips_unknown() {
         .insert("not_in_schema".into(), Value::Bool(true));
 
     let restored = Outer::from_object(&object).unwrap();
-    assert_eq!(restored.name, ""); // Default 保留
+    assert_eq!(restored.name, ""); // Default kept
     assert_eq!(restored.pos, glam::Vec3::new(1.0, 2.0, 3.0));
-    assert_eq!(restored.id, 7); // read_only 字段经 force 路径恢复
-                                // skip 字段永远不会从对象恢复。
+    assert_eq!(restored.id, 7); // read_only field restored via the force path
+                                // skip fields are never restored from the object.
     assert_eq!(restored.runtime_only, 0);
 }
 
@@ -157,7 +158,7 @@ fn registry_restores_without_static_type() {
     let restored = any.downcast_ref::<Outer>().expect("downcast Outer");
     assert_eq!(restored, &sample());
 
-    // 反向：Any -> Object。
+    // Reverse direction: Any -> Object.
     let any: Box<dyn std::any::Any> = Box::new(sample());
     let object2 = registry.to_object(any.as_ref()).expect("registered");
     assert_eq!(object, object2);
@@ -169,8 +170,9 @@ fn registry_restores_without_static_type() {
     assert_eq!(registry.len(), 4);
 }
 
-/// 两个不同的 Rust 类型不能共用同一个 reflect name（#166）：
-/// 稳定 `TypeId` 只由名字派生，静默覆盖会让先写出的数据被错误类型解码。
+/// Two different Rust types must not share one reflect name (#166): the
+/// stable `TypeId` is derived only from the name, so a silent overwrite
+/// would let data written by the first type be decoded by the wrong type.
 #[derive(Debug, Default, Clone, PartialEq, Reflect)]
 #[reflect(name = "test::Clash")]
 struct ClashA {
@@ -198,7 +200,7 @@ fn registry_accepts_the_same_type_twice() {
     assert_eq!(registry.register::<Outer>(), Some(Outer::type_desc().id));
     assert_eq!(registry.len(), 1);
 
-    // 重复注册不能破坏还原路径。
+    // Re-registering must not break the restore path.
     let any = registry.from_object(&sample().to_object()).unwrap();
     assert_eq!(any.downcast_ref::<Outer>().unwrap(), &sample());
 }
@@ -211,7 +213,7 @@ fn rtti_bin_round_trip_and_determinism() {
     let bytes = rtti_bin::encode_one(&object, &registry).unwrap();
     assert_eq!(&bytes[..4], &rtti_bin::MAGIC);
 
-    // 同一输入重复编码必须字节一致。
+    // Encoding the same input twice must produce identical bytes.
     let bytes2 = rtti_bin::encode_one(&object, &registry).unwrap();
     assert_eq!(bytes, bytes2);
 
@@ -227,11 +229,11 @@ fn rtti_bin_round_trip_and_determinism() {
         3
     );
 
-    // 用注册表把解码结果还原成具体类型。
+    // Restore the decoded result to a concrete type via the registry.
     let any = registry.from_object(&decoded.objects[0]).unwrap();
     assert_eq!(any.downcast_ref::<Outer>().unwrap(), &sample());
 
-    // 嵌套对象在类型表里存在。
+    // Nested objects are present in the type table.
     assert!(decoded.type_table.get(Inner::type_desc().id).is_some());
 }
 
@@ -267,7 +269,7 @@ fn rtti_bin_rejects_bad_input() {
         rtti_bin::RttiError::TrailingBytes
     );
 
-    // 截断。
+    // Truncated input.
     let bytes = rtti_bin::encode_one(&sample().to_object(), &registry).unwrap();
     let truncated = &bytes[..bytes.len() / 2];
     assert!(rtti_bin::decode(truncated).is_err());
@@ -285,7 +287,8 @@ fn value_type_errors_are_reported() {
     assert!(matches!(err, ReflectError::TypeMismatch { .. }));
 }
 
-/// 容器类型应把内层枚举的变体名转发给 schema（编辑器下拉框依赖它）。
+/// Container types should forward the inner enum's variant names to the schema
+/// (the editor dropdown relies on it).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Flag {
     #[default]
@@ -325,7 +328,8 @@ fn containers_forward_enum_variants() {
     assert_eq!(Option::<Flag>::enum_variants(), expected);
     assert_eq!(<[Flag; 4]>::enum_variants(), expected);
 
-    // 非枚举字段仍为 None（不能把 "没有枚举" 误当成 "空变体列表"）。
+    // Non-enum fields are still None (an absent enum must not be confused with
+    // an empty variant list).
     assert_eq!(u8::enum_variants(), None);
     assert_eq!(Vec::<u8>::enum_variants(), None);
     assert_eq!(Option::<String>::enum_variants(), None);

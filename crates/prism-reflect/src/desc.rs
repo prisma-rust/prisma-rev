@@ -1,24 +1,26 @@
-//! 类型描述：`TypeId` / `FieldType` / `FieldDesc` / `TypeDesc`。
+//! Type descriptions: `TypeId`, `FieldType`, `FieldDesc`, and `TypeDesc`.
 
 use std::collections::HashSet;
 use std::fmt;
 
 use crate::registry::TypeRegistry;
 
-/// FNV-1a 64 位参数（类型 id 与 schema 指纹共用）。
+/// FNV-1a 64-bit parameters, shared by type ids and schema fingerprints.
 const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
-/// 稳定的类型标识。
+/// A stable type identifier.
 ///
-/// **不是** `std::any::TypeId`——后者每次编译都会变、无法持久化。这里用
-/// 类型名（默认 `module_path!()::Type`）做 FNV-1a 64 位哈希，跨进程、跨
-/// 构建稳定，可以安全写入文件。
+/// This is **not** `std::any::TypeId`, which changes on every build and
+/// cannot be persisted. Instead it hashes the type name (by default
+/// `module_path!()::Type`) with FNV-1a 64, which is stable across processes
+/// and builds, so it is safe to write to files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TypeId(pub u64);
 
 impl TypeId {
-    /// 由规范化类型名计算稳定 id（确定性 FNV-1a）。
+    /// Computes the stable id from a canonical type name (deterministic
+    /// FNV-1a).
     pub const fn from_name(name: &str) -> Self {
         let bytes = name.as_bytes();
         let mut hash: u64 = FNV_OFFSET_BASIS;
@@ -42,16 +44,17 @@ impl fmt::Display for TypeId {
     }
 }
 
-/// 类型种类。当前只有结构体；枚举/联合体留给后续格式。
+/// The kind of type. Only structs exist today; enums and unions are left to a
+/// future format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypeKind {
     Struct,
 }
 
-/// 字段的静态类型。
+/// The static type of a field.
 ///
-/// `Struct` 指向另一个 `TypeDesc`，从而支持嵌套对象；`List` / `Optional` /
-/// `Array` 是容器。
+/// `Struct` points at another `TypeDesc` to support nested objects; `List`,
+/// `Optional`, and `Array` are containers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldType {
     Bool,
@@ -73,9 +76,10 @@ pub enum FieldType {
 }
 
 impl FieldType {
-    /// 该字段是否内联定长（可以直接 memcpy 到 POD 布局）。
+    /// Whether the field is inline and fixed-size (can be memcpy'd into a POD
+    /// layout).
     ///
-    /// 字符串、容器、嵌套对象都返回 `false`。
+    /// Strings, containers, and nested objects return `false`.
     pub fn is_plain(&self) -> bool {
         matches!(
             self,
@@ -93,7 +97,8 @@ impl FieldType {
         )
     }
 
-    /// 字段类型的人读名字（用于错误信息 / 编辑器提示）。
+    /// Human-readable name of the field type (for error messages and editor
+    /// hints).
     pub fn display_name(&self) -> String {
         match self {
             Self::Bool => "bool".into(),
@@ -116,41 +121,45 @@ impl FieldType {
     }
 }
 
-/// 单个字段的描述。
+/// Description of a single field.
 #[derive(Debug, Clone)]
 pub struct FieldDesc {
-    /// schema 中的字段名（可用 `#[reflect(rename = "...")]` 覆盖）。
+    /// Field name in the schema (overridable with
+    /// `#[reflect(rename = "...")]`).
     pub name: &'static str,
-    /// 相对结构体起始地址的字节偏移（`core::mem::offset_of!`）。
+    /// Byte offset from the start of the struct (`core::mem::offset_of!`).
     pub offset: usize,
-    /// 字段类型。
+    /// The field type.
     pub ty: FieldType,
-    /// 编辑器只读（`set_field` 拒绝写入）。
+    /// Editor read-only (`set_field` rejects writes).
     pub read_only: bool,
-    /// 枚举变体名（作者 JSON 里的字符串），非枚举字段为 `None`。
+    /// Enum variant names (the strings used in authored JSON); `None` for
+    /// non-enum fields.
     ///
-    /// 来自 [`ReflectType::enum_variants`](crate::ReflectType::enum_variants)。
-    /// **不参与 [`TypeDesc::schema_hash`]**：它只是编辑器展示元数据，改标签不该让
-    /// 已 cook 的 `.rscn` 失效。
+    /// Comes from
+    /// [`ReflectType::enum_variants`](crate::ReflectType::enum_variants).
+    /// It **does not participate in
+    /// [`TypeDesc::schema_hash`]**: it is only editor display metadata, so
+    /// renaming a variant must not invalidate cooked `.rscn` data.
     pub enum_variants: Option<&'static [&'static str]>,
 }
 
-/// 一个类型的完整描述。
+/// The full description of a type.
 #[derive(Debug, Clone)]
 pub struct TypeDesc {
-    /// 稳定 id（同名同 id）。
+    /// Stable id (same name, same id).
     pub id: TypeId,
-    /// 规范化类型名。
+    /// Canonical type name.
     pub name: &'static str,
-    /// schema 版本，字段变更时递增（供迁移使用）。
+    /// Schema version, bumped when fields change (used by migration).
     pub version: u32,
-    /// `size_of::<T>()`。
+    /// `size_of::<T>()`.
     pub size: usize,
-    /// `align_of::<T>()`。
+    /// `align_of::<T>()`.
     pub align: usize,
-    /// 类型种类。
+    /// The kind of type.
     pub kind: TypeKind,
-    /// 字段列表（按源码顺序）。
+    /// Field list in source order.
     pub fields: Vec<FieldDesc>,
 }
 
@@ -163,17 +172,21 @@ impl TypeDesc {
         self.fields.iter().map(|field| field.name)
     }
 
-    /// 与内存布局无关的 schema 指纹。
+    /// A schema fingerprint independent of memory layout.
     ///
-    /// 覆盖：类型名、`version`、字段顺序、字段名、字段类型（含嵌套）。
-    /// 不覆盖：字段偏移 / `size_of` / `align_of` / `read_only`。
+    /// Covers: type name, `version`, field order, field names, and field
+    /// types (including nested ones). Does not cover: field offsets,
+    /// `size_of`, `align_of`, or `read_only`.
     ///
-    /// 用途：紧凑的运行时二进制只存 `(TypeId, schema_hash)`，加载时用编译进
-    /// 二进制的 `TypeDesc` 重新计算并比对。这样：
-    /// - 编译器重排字段、改 padding 不会让 cooked 数据失效；
-    /// - 字段增删、改名、改类型或改顺序会立刻被发现（即使忘了 bump version）。
+    /// Use: the compact runtime binary stores only `(TypeId, schema_hash)`
+    /// and recomputes and compares it on load using the `TypeDesc` compiled
+    /// into the binary. This way:
+    /// - reordered fields or changed padding do not invalidate cooked data;
+    /// - added, removed, renamed, retyped, or reordered fields are caught
+    ///   immediately, even if the author forgot to bump `version`.
     ///
-    /// 注意：`TypeId` 只哈希类型名，**不能**单独用来校验 schema。
+    /// Note: `TypeId` hashes only the type name, so it **must not** be used
+    /// alone to validate a schema.
     pub fn schema_hash(&self, registry: &TypeRegistry) -> u64 {
         let mut hash = FNV_OFFSET_BASIS;
         let mut visiting = HashSet::new();
@@ -200,7 +213,7 @@ impl TypeDesc {
         hash_bytes(hash, &(self.fields.len() as u32).to_le_bytes());
         for field in &self.fields {
             hash_bytes(hash, field.name.as_bytes());
-            hash_bytes(hash, &[0xff]); // 字段界
+            hash_bytes(hash, &[0xff]); // field separator
             hash_field_type(hash, &field.ty, registry, visiting);
         }
     }
