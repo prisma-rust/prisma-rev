@@ -416,15 +416,19 @@ cook 阶段把 glTF 的 `skins` / `JOINTS_0` / `WEIGHTS_0` / `animations` 烘成
   跳过，不会把姿态打坏。
 - **Root motion 记录（#560 P0）**：动画系统每帧把根关节（joint 0）相对上一帧的**局部**平移
   与绕 Y 偏航写进 `AnimatorPlayhead.root_motion`（`RootMotionDelta`，米 / 弧度，最短路径）；
-  首帧、换剪辑 / 换播放内容、被 LOD 冻结的帧都是零。这一步只记录，不驱动实体位移 ——
-  P2 的 CharacterMovement 再决定怎么消费，避免和物理 capsule 双重位移。
+  首帧、换剪辑 / 换播放内容、被 LOD 冻结的帧都是零。默认只记录；开启
+  `root_motion_consume` 后把根**平移**按实体朝向旋到世界空间加到 `LocalTransform.position`，
+  并把姿态根平移清零，避免双倍位移（根旋转仍只记录，等 CharacterMovement 统一处理）。
 - **动画 LOD（`lod_enabled` / `lod_near` / `lod_far`，#560 P6）**：默认关闭。开启后实体离
   **启用中的相机**超过 `lod_far` 米（默认 50，非有限或 `<= 0` 也按 50）时，动画系统这一帧
   完全不推进 —— 时间、状态机转移、图求值器与 Montage 全部冻结在当前姿态，回到范围内接着走，
   冻结期间不补时间。`lod_near..lod_far`（默认 25..50）之间隔帧求值：更新帧推进
   `2 * dt`，所以播放速度不变；`lod_near` 非有限 / `<= 0` / 大于 `lod_far` 时没有降频档。
   相机来自场景里第一个 `enabled` 的 `Camera`（读 `LocalToWorld`，没有就读 `LocalTransform`），
-  没有相机时 LOD 不生效（编辑器预览不会因为相机没摆好而停住）。骨骼子集 / root-only 是后续档位。
+  没有相机时 LOD 不生效（编辑器预览不会因为相机没摆好而停住）。
+  开启 `lod_root_only` 后，超过 `lod_far` 的**单剪辑**实体不再整体冻结：时间照常推进、
+  只采样根关节，其余骨骼保持上一帧姿态（第一次进入该档先完整求值一帧，避免 T-pose 突变），
+  根运动消费仍然生效。状态机 / 混合空间 / 动画图实体因为需要完整求值器推进，仍整体冻结。
 - **`SkeletonRoot`**：检查器里画骨骼树（`CollapsingHeader` 按父链缩进，成环有护栏）。
 - **混合参数平滑（`blend_smoothing`，#560 P1）**：默认 `0`，直接使用游戏侧写入的
   `blend_parameter` / `blend_parameter_y`；大于 0 时按指数 `1 - exp(-dt / tau)` 趋近目标，

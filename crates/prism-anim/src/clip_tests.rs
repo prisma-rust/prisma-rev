@@ -272,3 +272,46 @@ fn sync_markers_expose_a_normalized_marker_set() {
     let empty = Clip::default();
     assert!(empty.sync_marker_set().is_none());
 }
+
+#[test]
+fn sample_joint_into_only_touches_the_requested_joint() {
+    let clip = Clip {
+        name: "two".into(),
+        duration: 1.0,
+        fps: 30.0,
+        looped: false,
+        additive: false,
+        tracks: vec![
+            Track {
+                joint: 0,
+                translation: vec![Vec3Key {
+                    time: 0.0,
+                    value: Vec3::new(7.0, 0.0, 0.0),
+                }],
+                rotation: Vec::new(),
+                scale: Vec::new(),
+            },
+            Track {
+                joint: 1,
+                translation: Vec::new(),
+                rotation: vec![crate::QuatKey {
+                    time: 0.0,
+                    value: glam::Quat::from_rotation_z(1.0),
+                }],
+                scale: Vec::new(),
+            },
+        ],
+        ..Default::default()
+    };
+    let mut pose = Pose::from_locals(vec![
+        crate::skeleton::JointTransform::IDENTITY,
+        crate::skeleton::JointTransform::IDENTITY,
+    ]);
+    assert!(clip.sample_joint_into(0.0, 1, &mut pose));
+    assert_eq!(pose.local(0).unwrap().translation, Vec3::ZERO, "根没动");
+    assert!(
+        (pose.local(1).unwrap().rotation.z - 0.5f32.sin()).abs() < 1e-6,
+        "关节 1 被采样"
+    );
+    assert!(!clip.sample_joint_into(0.0, 9, &mut pose), "越界关节");
+}

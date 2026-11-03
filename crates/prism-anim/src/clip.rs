@@ -213,6 +213,41 @@ impl Clip {
         touched
     }
 
+    /// 只采样一个关节（动画 LOD 仅根骨 / 根运动用），返回该关节是否有轨道。
+    ///
+    /// 没被采样到的关节保持 `pose` 里的值；轨道缺少某个通道（平移 / 旋转 / 缩放）
+    /// 时那个通道也不动，和 [`Self::sample_into`] 的语义一致。越界关节返回
+    /// `false`。
+    pub fn sample_joint_into(&self, time: f32, joint: usize, pose: &mut Pose) -> bool {
+        let time = if time.is_finite() { time } else { 0.0 };
+        let Some(current) = pose.local(joint) else {
+            return false;
+        };
+        let mut touched = false;
+        let mut next = current;
+        for track in &self.tracks {
+            if track.joint != joint {
+                continue;
+            }
+            if let Some(value) = sample_vec3(&track.translation, time) {
+                next.translation = value;
+                touched = true;
+            }
+            if let Some(value) = sample_quat(&track.rotation, time) {
+                next.rotation = value;
+                touched = true;
+            }
+            if let Some(value) = sample_vec3(&track.scale, time) {
+                next.scale = value;
+                touched = true;
+            }
+        }
+        if next != current {
+            pose.set_local(joint, next);
+        }
+        touched
+    }
+
     /// 先按剪辑自己的 `looped` 折算时间再采样（单独使用剪辑时的方便入口）。
     pub fn sample_wrapped_into(&self, time: f32, pose: &mut Pose) -> bool {
         let local = self.wrap_time(time);

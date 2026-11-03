@@ -182,6 +182,56 @@ fn root_motion_is_not_consumed_by_default() {
 }
 
 #[test]
+fn distant_root_only_lod_keeps_bones_frozen_while_time_advances() {
+    let (mut world, entity) = world_with_animator("");
+    {
+        let animator = world.get_mut::<Animator>(entity).unwrap();
+        animator.lod_enabled = true;
+        animator.lod_root_only = true;
+    }
+    add_camera(&mut world, Vec3::new(0.0, 0.0, 100.0));
+
+    animator_system(&mut world, 0.0);
+    let tip = child_tip(&world, entity);
+    assert!((tip.x - 2.0).abs() < 1e-4, "首帧完整求值 {tip:?}");
+
+    animator_system(&mut world, 0.5);
+    let head = world.get::<AnimatorPlayhead>(entity).unwrap();
+    assert!((head.time - 0.5).abs() < 1e-5, "时间照常推进");
+    let tip = child_tip(&world, entity);
+    assert!(
+        (tip.x - 2.0).abs() < 1e-4 && (tip.y - 1.0).abs() < 1e-4,
+        "只采样根骨，子骨骼保持上一帧 {tip:?}"
+    );
+}
+
+#[test]
+fn root_only_lod_still_consumes_root_motion() {
+    let (mut world, entity) = world_with_animator("");
+    install_forward(&mut world);
+    world.insert(entity, LocalTransform::default());
+    {
+        let animator = world.get_mut::<Animator>(entity).unwrap();
+        animator.clip_path = "forward.ranim".into();
+        animator.looped = false;
+        animator.lod_enabled = true;
+        animator.lod_root_only = true;
+        animator.root_motion_consume = true;
+    }
+    add_camera(&mut world, Vec3::new(0.0, 0.0, 100.0));
+
+    animator_system(&mut world, 0.0);
+    animator_system(&mut world, 0.5);
+
+    let position = world.get::<LocalTransform>(entity).unwrap().position;
+    assert!(
+        (position.x - 1.0).abs() < 1e-4,
+        "仅根骨档仍然消费根位移，position {position:?}"
+    );
+    assert!(root_translation(&world, entity).length() < 1e-4);
+}
+
+#[test]
 fn far_animators_freeze_and_resume_when_the_camera_comes_back() {
     let (mut world, entity) = world_with_animator("");
     world.get_mut::<Animator>(entity).unwrap().lod_enabled = true;

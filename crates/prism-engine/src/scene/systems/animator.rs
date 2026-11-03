@@ -831,8 +831,9 @@ fn animation_frame_plans(
     eye: Option<glam::Vec3>,
     dt: f32,
     throttle: &mut AnimLodThrottle,
-) -> HashMap<Entity, f32> {
+) -> (HashMap<Entity, f32>, HashSet<Entity>) {
     let mut plans = HashMap::new();
+    let mut root_only = HashSet::new();
     for (entity, animator) in world.query::<Animator>() {
         let Some(eye) = eye else {
             plans.insert(entity, dt);
@@ -847,6 +848,15 @@ fn animation_frame_plans(
         let distance = entity_position(world, entity).distance(eye);
         if distance > far {
             throttle.skipped.remove(&entity);
+            if animator.lod_root_only
+                && animator.anim_graph_path.trim().is_empty()
+                && animator.state_machine_path.trim().is_empty()
+                && !animator.uses_blend_space()
+                && !animator.uses_blend_space_2d()
+            {
+                plans.insert(entity, dt);
+                root_only.insert(entity);
+            }
             continue;
         }
         if distance > near {
@@ -861,7 +871,7 @@ fn animation_frame_plans(
         throttle.skipped.remove(&entity);
         plans.insert(entity, dt);
     }
-    plans
+    (plans, root_only)
 }
 
 pub fn animator_system(world: &mut World, dt: f32) -> usize {
@@ -914,7 +924,8 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
     let mut throttle = world
         .remove_resource::<AnimLodThrottle>()
         .unwrap_or_default();
-    let plans = animation_frame_plans(world, camera_eye(world), dt, &mut throttle);
+    let (plans, root_only_entities) =
+        animation_frame_plans(world, camera_eye(world), dt, &mut throttle);
     world.insert_resource(throttle);
     // 图求值先按实体并行算好（#560 P6）；下面的循环只做顺序的 World 读写。
     let mut graph_results = evaluate_graph_poses(
@@ -1198,6 +1209,32 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
                     });
                 }
             }
+        }
+        // 动画 LOD「仅根骨」：保住上一帧姿态，只推进时间 + 采样根关节。
+        // 首次进入（没有姿态快照）先完整求值一帧，避免远看时突然变成 T-pose。
+        if root_only_entities.contains(&entity)
+            && playhead.pose.len() == skeleton.joints().len()
+            && playhead.pose.len() > 0
+        {
+            let mut pose = playhead.pose.clone();
+            if let Some(clip) = clip.as_ref() {
+                clip.sample_joint_into(local, 0, &mut pose);
+            }
+            playhead.previous_pose = None;
+            playhead.blend_elapsed = 0.0;
+            playhead.blend_total = None;
+            playhead.record_root_motion(&pose);
+            consume_root_translation(
+                animator,
+                &playhead,
+                &mut pose,
+                entity,
+                &mut root_motion_moves,
+            );
+            playhead.pose = pose.clone();
+            let palette = BonePalette::from_matrices(&skeleton.bone_palette(&pose));
+            updates.push((entity, palette, playhead));
+            continue;
         }
         let (blend_x, blend_y) = smoothed_blend_parameters(&mut playhead, animator, dt);
         let mut pose = skeleton.rest_pose();

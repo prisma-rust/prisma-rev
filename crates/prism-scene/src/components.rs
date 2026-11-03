@@ -2361,6 +2361,11 @@ pub struct Animator {
     /// 每次更新推进 `2 * dt` 保持播放速度。非有限 / `<= 0` / 大于 `lod_far`
     /// 时等于 `lod_far`（没有降频档）。
     pub lod_near: f32,
+    /// 动画 LOD 的「仅根骨」档（#560 P6）：超过 `lod_far` 时不整体冻结，而是
+    /// 只推进时间并采样根关节（其余骨骼保持上一帧姿态），根运动消费仍然生效。
+    /// 只支持单剪辑 / 普通剪辑路径；状态机、混合空间、动画图的实体仍然整体冻结
+    /// （它们需要完整求值器推进）。第一次进入该档时会先完整求值一帧。
+    pub lod_root_only: bool,
     /// 根运动消费（#560 P2）：`true` 时把每帧的根位移增量加到实体的
     /// [`LocalTransform`] 上，并把姿态里的根平移清零，避免「实体走了、骨骼里的
     /// 根也跟着走」的双倍位移。只消费**平移**；根旋转增量仍只记录在
@@ -2395,6 +2400,7 @@ impl Default for Animator {
             lod_far: 50.0,
             lod_near: 25.0,
             root_motion_consume: false,
+            lod_root_only: false,
         }
     }
 }
