@@ -151,6 +151,8 @@ pub struct GraphNodeSnapshot {
     pub blend_weight: f32,
     /// `cached_pose` 节点是否已经有缓存姿态。
     pub cached: bool,
+    /// 这个节点对最终姿态的权重 `0..=1`（从输出节点按连线权重往下乘）。
+    pub weight: f32,
 }
 
 /// 一个动画图求值器实例，对应一个角色。
@@ -286,6 +288,7 @@ impl AnimGraphEvaluator {
     /// 自己的本地时间（状态机节点是当前状态的时间），`blending` / `blend_weight`
     /// 反映状态机是否正在交叉淡入。只拷贝标量，不动求值器状态。
     pub fn node_snapshots(&self) -> Vec<GraphNodeSnapshot> {
+        let weights = self.node_weights();
         self.graph
             .nodes
             .iter()
@@ -307,9 +310,40 @@ impl AnimGraphEvaluator {
                     blending,
                     blend_weight,
                     cached: !runtime.cached.is_empty(),
+                    weight: weights[index],
                 }
             })
             .collect()
+    }
+
+    /// 从输出节点往下走，按连线权重给出每个节点对最终姿态的贡献（`0..=1`）。
+    ///
+    /// 共享节点取路径上的最大值（同一个节点被两条线引用时按权重更大的那条算）；
+    /// 没连到输出节点的是 0。BlendStack / LayeredBlend 的连线权重就是层权重，
+    /// 其他节点通常是 1 —— 只用于调试显示，不参与求值。
+    fn node_weights(&self) -> Vec<f32> {
+        let mut weights = vec![0.0f32; self.graph.nodes.len()];
+        let mut seen = vec![false; self.graph.nodes.len()];
+        self.collect_weights(self.graph.output, 1.0, &mut weights, &mut seen);
+        weights
+    }
+
+    fn collect_weights(&self, index: u32, weight: f32, weights: &mut [f32], seen: &mut [bool]) {
+        let index = index as usize;
+        if index >= self.graph.nodes.len() {
+            return;
+        }
+        if weight > weights[index] {
+            weights[index] = weight;
+        }
+        if seen[index] {
+            return;
+        }
+        seen[index] = true;
+        for input in &self.graph.nodes[index].inputs {
+            let weight = (weight * input.weight).clamp(0.0, 1.0);
+            self.collect_weights(input.node, weight, weights, seen);
+        }
     }
 
     /// 当前状态机节点的状态下标（调试面板 / 测试用）；不是状态机节点时返回 `None`。

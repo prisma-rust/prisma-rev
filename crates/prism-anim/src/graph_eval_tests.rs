@@ -349,6 +349,45 @@ fn a_state_machine_transitions_on_a_trigger() {
 }
 
 #[test]
+fn node_snapshots_report_link_weights() {
+    let mut base = node("base", GraphNodeKind::ClipPlayer);
+    base.clips.push("base.ranim".into());
+    let mut layer = node("layer", GraphNodeKind::ClipPlayer);
+    layer.clips.push("layer.ranim".into());
+    let mut stack = node("stack", GraphNodeKind::BlendStack);
+    stack.inputs = vec![
+        GraphInputInfo {
+            node: 0,
+            weight: 1.0,
+            bone_mask: Vec::new(),
+        },
+        GraphInputInfo {
+            node: 1,
+            weight: 0.25,
+            bone_mask: Vec::new(),
+        },
+    ];
+    let mut evaluator = AnimGraphEvaluator::new(graph(vec![base, layer, stack, output(2)], 3));
+    let skeleton = skeleton();
+    let source = Source::new(&[
+        ("base.ranim", translation_clip("base", 0.0)),
+        ("layer.ranim", translation_clip("layer", 10.0)),
+    ]);
+    evaluator
+        .evaluate(&source, &skeleton, 0.0)
+        .expect("evaluates");
+    let snapshots = evaluator.node_snapshots();
+    assert!((snapshots[0].weight - 1.0).abs() < 1e-6, "base 权重 1");
+    assert!(
+        (snapshots[1].weight - 0.25).abs() < 1e-6,
+        "layer 权重 0.25，得到 {}",
+        snapshots[1].weight
+    );
+    assert!((snapshots[2].weight - 1.0).abs() < 1e-6);
+    assert!((snapshots[3].weight - 1.0).abs() < 1e-6);
+}
+
+#[test]
 fn node_snapshots_report_time_state_and_blend() {
     let mut machine_node = node("sm", GraphNodeKind::StateMachine);
     machine_node.state_machine_path = "hero.rasm".into();
@@ -384,6 +423,8 @@ fn node_snapshots_report_time_state_and_blend() {
     assert!(!snapshots[0].blending);
     assert!((snapshots[0].time - 0.1).abs() < 1e-5);
     assert_eq!(snapshots[1].kind, GraphNodeKind::Output);
+    assert!((snapshots[0].weight - 1.0).abs() < 1e-6, "输出链上权重 1");
+    assert!((snapshots[1].weight - 1.0).abs() < 1e-6, "输出节点权重 1");
 
     evaluator.parameters_mut().set_trigger("go");
     evaluator.evaluate(&source, &skeleton, 0.05).expect("walk");
