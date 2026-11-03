@@ -606,10 +606,11 @@ cooker 校验）；`× Remove node` 删除节点，输出节点和仍被引用�
 仍然手写 JSON。状态机视图支持 `+ Transition`（任意状态 / 指定 from → to）和 `× Remove transition`，
 保存回 `.statemachine.json`。展开一条转移后 `from` / `to` 是下拉框（`from` 可选 `any`），
 重连会拒绝重名状态、自连和与现有转移完全重复的 `(from, to)`；`↑` / `↓` 调整转移顺序，
-顺序就是优先级（运行时取第一条条件命中的转移，列表上也写了这句提示）。状态行末尾的 `⧉` 复制整个状态（剪辑 / speed / looped 原样保留，名字自动 `_copy`），
+顺序就是优先级（运行时取第一条条件命中的转移，列表上也写了这句提示）；`⧉ Duplicate` 复制整条转移
+与条件并插入到原转移之后，作者再改 `from` / `to`。状态行末尾的 `⧉` 复制整个状态（剪辑 / speed / looped 原样保留，名字自动 `_copy`），
 转移表不变，复制出来的状态需要自己接线。状态行的名字与剪辑是文本框（失焦写回）、`speed` 是 DragValue（0..5）、
-`loop` 是复选框；重命名会同步改写转移里的 `from` / `to`，但不会改运行时 `Animator.state`
-或 `.scene.json` 里按旧名字写死的字段，改名后要自己检查场景。每条转移的 `blend` / `min` 是 DragValue（混合时长 / 最小状态占比）；
+`loop` 是复选框；重命名会同步改写转移里的 `from` / `to`，以及场景 / 预制体里指向同一状态机的
+`Animator.state`（其它状态机的同名状态不受影响）。每条转移的 `blend` / `min` 是 DragValue（混合时长 / 最小状态占比）；
 条件行可以直接改 float 阈值或 bool 期望值、`×` 删除，`+ Condition` 打开草稿表单（类型下拉
 `float >` / `float <` / `bool ==` / `trigger`、参数名、阈值或布尔值），点 `Add condition` 才写盘。
 条件只校验形状（名字非空、类型已知、`(type, name)` 不重复），参数是否真在运行时的

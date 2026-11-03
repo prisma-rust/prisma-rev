@@ -8012,6 +8012,7 @@ fn draw_state_machine_view(
             .size(9.0),
     );
     let mut move_transition = None;
+    let mut duplicate_transition = None;
     let mut remove = None;
     let mut timing_edits = Vec::new();
     let mut kind_edits = Vec::new();
@@ -8052,6 +8053,13 @@ fn draw_state_machine_view(
                             move_transition = Some((index, 1));
                         }
                     });
+                    if ui
+                        .small_button("⧉ Duplicate")
+                        .on_hover_text("copy this transition and its conditions")
+                        .clicked()
+                    {
+                        duplicate_transition = Some(index);
+                    }
                     if ui.small_button("× Remove transition").clicked() {
                         remove = Some(index);
                     }
@@ -8249,6 +8257,10 @@ fn draw_state_machine_view(
     }
     if let Some((index, offset)) = move_transition {
         prism_editor_core::move_state_transition(document, index, offset)?;
+        changed = true;
+    }
+    if let Some(index) = duplicate_transition {
+        prism_editor_core::duplicate_state_transition(document, index)?;
         changed = true;
     }
     for (index, from, to) in retargets {
