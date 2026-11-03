@@ -1,7 +1,7 @@
-# 动画图格式（RAGP v1，#560 P1）
+# 动画图格式（RAGP v2，#560 P1）
 
 动画图把剪辑、混合空间、BlendStack、Slot、分层混合和状态机连成一张有向无环图。
-作者写 `*.animgraph.json`，cooker 校验后编成 `.rag`（RAGP v1）放进 `.pak`；
+作者写 `*.animgraph.json`，cooker 校验后编成 `.rag`（RAGP v2）放进 `.pak`；
 运行时只解码，不在加载时查名字。
 
 > 当前范围：格式、作者 JSON 校验、cooker 编码、构建管线导入、运行时解码、资源类型、
@@ -21,6 +21,7 @@
       "type": "blend_space_1d",
       "clips": ["idle.ranim", "run.ranim"],
       "positions": [0.0, 5.0],
+      "speeds": [1.0, 2.0],
       "parameter": "speed"
     },
     {
@@ -49,6 +50,8 @@
   `{ "node": "aim", "weight": 0.5, "bone_mask": ["spine_02"] }`。
 - `blend_space_1d` 至少 2 个剪辑，`positions` 与剪辑一一对应；
   `blend_space_2d` 至少 3 个剪辑，`positions` 是 `[x, y]`。
+- 可选 `speeds` 给 BlendSpace 每个样本独立播放速度，长度必须等于剪辑数，
+  值有限且 `>= 0`；缺省 / 全 1 时使用共享相位。
 - `slot` / `cached_pose` / `output` 恰好 1 个输入；
   `blend_stack` / `layered_blend` 至少 1 个输入。
 - 图必须恰好有 1 个 `output` 节点；连线必须指向已存在的节点，且不能成环。
@@ -81,13 +84,15 @@ nodes: count × {
     name:u16+utf8, kind:u8, flags:u8, speed:f32, weight:f32,
     clip_count:4 + clips, sample_count:4 + [x,y] f32,
     param_x:u16+utf8, param_y:u16+utf8, machine:u16+utf8,
-    input_count:4 × { node:u32, weight:f32, mask_count:4 + names }
+    input_count:4 × { node:u32, weight:f32, mask_count:4 + names },
+    speed_count:4 + f32 × count          // v2；v1 无此表
 }
 [output:u32]
 ```
 
 `flags`：bit0 = looped，bit1 = additive。所有计数都有上限；截断、非法 magic /
 version、未知 kind / flags、越界节点下标和尾随字节都会让解码返回 `None`。
+v1 剪辑（无速度表）仍可解码，`sample_speeds` 为空。
 
 ## 运行时求值
 

@@ -7,9 +7,13 @@ fn push_string(out: &mut Vec<u8>, value: &str) {
 
 /// 两个节点：ClipPlayer → Output。
 fn minimal_graph() -> Vec<u8> {
+    minimal_graph_version(RAGP_VERSION, true)
+}
+
+fn minimal_graph_version(version: u8, with_speeds: bool) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(RAGP_MAGIC);
-    out.push(RAGP_VERSION);
+    out.push(version);
     out.extend_from_slice(&0u32.to_le_bytes()); // parameters
 
     out.extend_from_slice(&2u32.to_le_bytes()); // nodes
@@ -25,6 +29,9 @@ fn minimal_graph() -> Vec<u8> {
     push_string(&mut out, "");
     push_string(&mut out, "");
     out.extend_from_slice(&0u32.to_le_bytes()); // inputs
+    if with_speeds {
+        out.extend_from_slice(&0u32.to_le_bytes()); // sample speeds
+    }
 
     push_string(&mut out, "out");
     out.push(GraphNodeKind::Output.to_u8());
@@ -40,6 +47,9 @@ fn minimal_graph() -> Vec<u8> {
     out.extend_from_slice(&0u32.to_le_bytes()); // input node
     out.extend_from_slice(&1.0f32.to_le_bytes());
     out.extend_from_slice(&0u32.to_le_bytes()); // mask
+    if with_speeds {
+        out.extend_from_slice(&0u32.to_le_bytes()); // sample speeds
+    }
 
     out.extend_from_slice(&1u32.to_le_bytes()); // output
     out
@@ -54,6 +64,13 @@ fn a_minimal_graph_decodes() {
     assert!(graph.nodes[0].looped);
     assert_eq!(graph.nodes[0].clips, ["idle.ranim"]);
     assert_eq!(graph.nodes[1].inputs[0].node, 0);
+}
+
+#[test]
+fn a_v1_graph_still_decodes_without_sample_speeds() {
+    let graph = decode_rag(&minimal_graph_version(1, false)).expect("v1 RAGP");
+    assert!(graph.nodes[0].sample_speeds.is_empty());
+    assert_eq!(graph.nodes[0].clips, ["idle.ranim"]);
 }
 
 #[test]

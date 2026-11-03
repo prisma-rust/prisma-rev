@@ -4,7 +4,7 @@
 //! 与 `.rskel` / `.rskin` / `.ranim` / `.rasm` 同一套分层（编码端在
 //! `prism-cooker::cooker::anim_graph`）。
 //!
-//! ## RAGP v1
+//! ## RAGP v2
 //!
 //! ```text
 //! [magic:4 "RAGP"][version:1]
@@ -31,11 +31,13 @@
 //!         weight: f32
 //!         [mask_count:4] mask: mask_count × { name_len: u16, name: utf8 }
 //!     }
+//!     [speed_count:4] sample_speeds: speed_count × f32  // v2
 //! }
 //! [output:4]                    // 输出节点下标
 //! ```
 //!
-//! 连线在 cook 时就解析成节点下标，运行时不需要再查名字。所有计数都有上限，
+//! v2 在节点末尾追加每样本速度表；v1 没有该表，解出来为空。连线在 cook 时
+//! 就解析成节点下标，运行时不需要再查名字。所有计数都有上限，
 //! 坏文件返回 `None` 而不是分配一大块内存；cooker 还会拒绝重复节点名、未知
 //! 连线和成环的图。
 
@@ -44,7 +46,7 @@ use crate::formats_skinned::Reader;
 /// RAGP magic。
 pub const RAGP_MAGIC: &[u8; 4] = b"RAGP";
 /// RAGP 版本。
-pub const RAGP_VERSION: u8 = 1;
+pub const RAGP_VERSION: u8 = 2;
 
 /// 参数上限。
 pub const MAX_GRAPH_PARAMETERS: usize = 1024;
@@ -187,6 +189,8 @@ pub struct GraphNodeInfo {
     pub clips: Vec<String>,
     /// BlendSpace 的采样坐标（1D 只用 x；其他节点为空）。
     pub positions: Vec<[f32; 2]>,
+    /// BlendSpace 每样本播放速度（空 = 全部 1 / 共享相位；按 `clips` 顺序）。
+    pub sample_speeds: Vec<f32>,
     pub parameter_x: String,
     pub parameter_y: String,
     pub state_machine_path: String,
@@ -208,7 +212,8 @@ pub fn decode_rag(data: &[u8]) -> Option<AnimGraphInfo> {
         return None;
     }
     let mut reader = Reader::new(data, 4);
-    if reader.u8()? != RAGP_VERSION {
+    let version = reader.u8()?;
+    if version == 0 || version > RAGP_VERSION {
         return None;
     }
 
@@ -290,6 +295,23 @@ pub fn decode_rag(data: &[u8]) -> Option<AnimGraphInfo> {
             });
         }
 
+        // v2：节点末尾追加每样本速度表；v1 无此表。
+        let mut sample_speeds = Vec::new();
+        if version >= 2 {
+            let speed_count = reader.u32()? as usize;
+            if speed_count > MAX_GRAPH_CLIPS {
+                return None;
+            }
+            sample_speeds.reserve(speed_count);
+            for _ in 0..speed_count {
+                let speed = reader.f32()?;
+                if !speed.is_finite() || speed < 0.0 {
+                    return None;
+                }
+                sample_speeds.push(speed);
+            }
+        }
+
         nodes.push(GraphNodeInfo {
             name,
             kind,
@@ -299,6 +321,7 @@ pub fn decode_rag(data: &[u8]) -> Option<AnimGraphInfo> {
             weight,
             clips,
             positions,
+            sample_speeds,
             parameter_x,
             parameter_y,
             state_machine_path,
