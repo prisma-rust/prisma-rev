@@ -484,13 +484,16 @@ impl SceneManager {
             }
         };
         log::info!("scene manifest: {:?} ({} bytes)", manifest_path, text.len());
-        let manifest: SceneManifest = match SceneManifest::parse(&text) {
+        let mut manifest: SceneManifest = match SceneManifest::parse(&text) {
             Ok(m) => m,
             Err(e) => {
                 log::warn!("scene manifest parse error: {e}");
                 return None;
             }
         };
+        if let Some(assets_root) = manifest_path.parent() {
+            resolve_manifest_guids(&mut manifest, assets_root);
+        }
         log::info!(
             "scene manifest parsed: {} scene(s) listed",
             manifest.scenes.len()
@@ -621,6 +624,33 @@ fn default_enabled() -> bool {
     true
 }
 
+/// Resolve `scenes.json` GUID references against the source `assets/` tree.
+///
+/// The manifest stores logical pak paths (`.rscn`), while `.rmeta` sidecars
+/// belong to authoring documents (`.scene.json`). Preserve the `.rscn` style
+/// when a GUID resolves to its source document so the runtime lookup key keeps
+/// pointing at the cooked asset.
+fn resolve_manifest_guids(manifest: &mut SceneManifest, assets_root: &std::path::Path) {
+    let index = prism_asset::GuidIndex::scan(assets_root);
+    for entry in &mut manifest.scenes {
+        let Some(guid) = entry.guid.as_deref() else {
+            continue;
+        };
+        let Some(resolved) = index.path_for_guid(guid) else {
+            continue;
+        };
+        entry.path = manifest_style_path(&entry.path, resolved);
+    }
+}
+
+fn manifest_style_path(current: &str, resolved: &str) -> String {
+    if current.ends_with(".rscn") && resolved.ends_with(".scene.json") {
+        format!("{}.rscn", resolved.trim_end_matches(".scene.json"))
+    } else {
+        resolved.to_string()
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SceneManifestEntry {
     pub name: String,
@@ -628,6 +658,9 @@ pub struct SceneManifestEntry {
     /// Build Settings 的勾选状态；缺省视为启用（兼容旧 manifest）。
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// 场景源文档的稳定 GUID（#466）。打包后的清单会去掉它，运行时只认 path。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guid: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -636,7 +669,7 @@ pub struct SceneManifest {
 }
 
 impl SceneManifest {
-    /// 解析清单文本：优先 `scenes.json`（`{"scenes":[{name,path,enabled}]}`），
+    /// 解析清单文本：优先 `scenes.json`（`{"scenes":[{name,path,enabled,guid}]}`），
     /// 失败时回退到旧项目的 `scenes.toml`（`[[scenes]]` 数组表）并提示迁移。
     ///
     /// 回退只在 JSON 解析失败时发生，所以新格式解析错误不会被旧解析器
@@ -683,6 +716,7 @@ fn parse_legacy_toml(text: &str) -> Result<SceneManifest, String> {
                 name: String::new(),
                 path: String::new(),
                 enabled: true,
+                guid: None,
             });
             saw_table = true;
             continue;
@@ -752,7 +786,8 @@ fn find_and_parse_manifest() -> Option<(PathBuf, SceneManifest)> {
     let manifest_path = find_manifest_path()?;
     let manifest_dir = manifest_path.parent()?.to_path_buf();
     let text = std::fs::read_to_string(&manifest_path).ok()?;
-    let manifest = SceneManifest::parse(&text).ok()?;
+    let mut manifest = SceneManifest::parse(&text).ok()?;
+    resolve_manifest_guids(&mut manifest, &manifest_dir);
     log::info!(
         "scene manifest: {:?} ({} entries)",
         manifest_path,

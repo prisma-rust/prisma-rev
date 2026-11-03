@@ -230,6 +230,7 @@ mod tests {
             name: name.into(),
             path: format!("scenes/{name}.scene.json"),
             enabled,
+            guid: None,
         }
     }
 
@@ -319,6 +320,7 @@ mod tests {
             name: "notes".into(),
             path: "docs/notes.txt".into(),
             enabled: true,
+            guid: None,
         };
         assert!(
             BuildProfile::new(&settings(), std::slice::from_ref(&bad_scene))
@@ -342,6 +344,7 @@ mod tests {
             name: "main".into(),
             path: "scenes/main.rscn".into(),
             enabled: true,
+            guid: None,
         };
         assert!(BuildProfile::new(&settings(), &[rscn_scene])
             .validate()

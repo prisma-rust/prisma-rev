@@ -4,7 +4,7 @@
 //! `path` 是 `.pak` 里的逻辑路径（`scenes/xxx.rscn`），作者文档用
 //! [`doc_relative_path`] 映射回 `assets/scenes/xxx.scene.json`。
 //!
-//! 形状：`{"scenes": [{"name": "...", "path": "...", "enabled": true}]}`。
+//! 形状：`{"scenes": [{"name": "...", "path": "...", "enabled": true, "guid": "..."}]}`。
 //! 旧项目的 `assets/scenes.toml`（`[[scenes]]` 数组表）仍可读，写端只产出
 //! `scenes.json`；一次性迁移由 `prism-build-pipeline build-scenes` 完成。
 
@@ -31,6 +31,9 @@ pub struct SceneEntry {
     /// 是否参与构建 / 启动；缺省视为 true（兼容旧清单）。
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// 场景源文档的稳定 GUID（#466）。旧清单没有该键时按路径工作。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guid: Option<String>,
 }
 
 impl SceneEntry {
@@ -39,6 +42,7 @@ impl SceneEntry {
             name: name.into(),
             path: path.into(),
             enabled: true,
+            guid: None,
         }
     }
 }
@@ -56,12 +60,14 @@ impl SceneManifest {
             return Ok(Self::default());
         };
         let text = std::fs::read_to_string(&path)?;
-        Self::parse(&text).map_err(|error| {
+        let mut manifest = Self::parse(&text).map_err(|error| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("解析 {} 失败: {error}", path.display()),
             )
-        })
+        })?;
+        manifest.sync_guids(root);
+        Ok(manifest)
     }
 
     /// 实际存在的清单文件：`scenes.json` 优先，回退旧 `scenes.toml`。
@@ -84,8 +90,10 @@ impl SceneManifest {
 
     /// 校验后写回（新格式）。
     pub fn write(&self, root: &Path) -> io::Result<()> {
-        self.validate()?;
-        let json = serde_json::to_string_pretty(self).map_err(|error| {
+        let mut manifest = self.clone();
+        manifest.sync_guids(root);
+        manifest.validate()?;
+        let json = serde_json::to_string_pretty(&manifest).map_err(|error| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("序列化场景清单失败: {error}"),
@@ -96,6 +104,30 @@ impl SceneManifest {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(path, format!("{json}\n"))
+    }
+
+    /// Fill missing GUIDs from the scene source's `.rmeta` sidecar.
+    ///
+    /// `path` is a logical `.rscn` / `.scene.json` path; the sidecar lives next
+    /// to the authoring `.scene.json`. Existing GUIDs are never overwritten.
+    fn sync_guids(&mut self, root: &Path) {
+        for entry in &mut self.scenes {
+            if entry
+                .guid
+                .as_deref()
+                .is_some_and(|guid| !guid.trim().is_empty())
+            {
+                continue;
+            }
+            let Some(doc_rel) = doc_relative_path(&entry.path) else {
+                continue;
+            };
+            if let Some(meta) =
+                crate::asset_meta::AssetMeta::read(root, &format!("assets/{doc_rel}"))
+            {
+                entry.guid = Some(meta.guid);
+            }
+        }
     }
 
     fn validate(&self) -> io::Result<()> {
@@ -308,6 +340,7 @@ mod tests {
                     name: "default".into(),
                     path: "scenes/default.rscn".into(),
                     enabled: false,
+                    guid: None,
                 },
             ],
         };
@@ -317,6 +350,27 @@ mod tests {
         let read = SceneManifest::read(&dir).unwrap();
         assert_eq!(read, manifest);
         assert_eq!(read.active().unwrap().name, "intro");
+    }
+
+    #[test]
+    fn write_fills_and_preserves_scene_guid() {
+        let dir = temp_dir("guid");
+        std::fs::create_dir_all(dir.join("assets/scenes")).unwrap();
+        let meta = crate::asset_meta::AssetMeta::ensure(
+            &dir,
+            "assets/scenes/intro.scene.json",
+            "SceneImporter",
+        )
+        .unwrap();
+        let manifest = SceneManifest {
+            scenes: vec![SceneEntry::new("intro", "scenes/intro.rscn")],
+        };
+        manifest.write(&dir).unwrap();
+
+        let text = std::fs::read_to_string(dir.join(MANIFEST_FILE)).unwrap();
+        assert!(text.contains(&meta.guid), "{text}");
+        let read = SceneManifest::read(&dir).unwrap();
+        assert_eq!(read.scenes[0].guid.as_deref(), Some(meta.guid.as_str()));
     }
 
     #[test]
