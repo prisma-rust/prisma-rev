@@ -920,6 +920,52 @@ pub fn set_parameter_default(document: &mut Value, name: &str, default: f32) -> 
     Ok(())
 }
 
+/// 样本点围成的多边形面积（鞋带公式，绝对值）；少于 3 个点或坐标非有限时返回 0。
+///
+/// 面板用它判断二维混合空间是否**退化**：所有样本共线时运行时三角化会失败、
+/// 悄悄退回一维 / 单剪辑，作者很难从数字上看出来。
+pub fn blend_space_2d_area(positions: &[[f32; 2]]) -> f32 {
+    if positions.len() < 3 {
+        return 0.0;
+    }
+    if positions
+        .iter()
+        .any(|position| !position[0].is_finite() || !position[1].is_finite())
+    {
+        return 0.0;
+    }
+    let mut twice = 0.0f64;
+    for (index, position) in positions.iter().enumerate() {
+        let next = positions[(index + 1) % positions.len()];
+        twice += position[0] as f64 * next[1] as f64 - next[0] as f64 * position[1] as f64;
+    }
+    (twice * 0.5).abs() as f32
+}
+
+/// 二维样本是否退化（面积相对包围盒接近 0）。
+///
+/// 阈值按包围盒面积缩放：`area <= 1e-5 * max(1, width * height)`，所以速度轴
+/// 0..10 和 0..1 两套坐标都能用同一套判断。
+pub fn blend_space_2d_degenerate(positions: &[[f32; 2]]) -> bool {
+    if positions.len() < 3 {
+        return false;
+    }
+    let area = blend_space_2d_area(positions);
+    let (mut min_x, mut max_x) = (f32::INFINITY, f32::NEG_INFINITY);
+    let (mut min_y, mut max_y) = (f32::INFINITY, f32::NEG_INFINITY);
+    for position in positions {
+        if !position[0].is_finite() || !position[1].is_finite() {
+            return true;
+        }
+        min_x = min_x.min(position[0]);
+        max_x = max_x.max(position[0]);
+        min_y = min_y.min(position[1]);
+        max_y = max_y.max(position[1]);
+    }
+    let extent = ((max_x - min_x) * (max_y - min_y)).max(1.0);
+    area <= 1e-5 * extent
+}
+
 /// 改混合空间的参数名：一维只写 `parameter`，二维同时写 `parameter_y`。
 pub fn set_blend_space_parameter(
     document: &mut Value,
@@ -1439,6 +1485,46 @@ mod parameter_tests {
         assert!(set_parameter_default(&mut doc, "missing", 0.0).is_err());
         assert!(set_parameter_default(&mut doc, "speed", f32::INFINITY).is_err());
         assert!(remove_parameter(&mut doc, "missing").is_err());
+    }
+}
+
+#[cfg(test)]
+mod blend_space_area_tests {
+    use super::*;
+
+    #[test]
+    fn the_area_uses_the_shoelace_formula() {
+        let square = [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]];
+        assert!((blend_space_2d_area(&square) - 4.0).abs() < 1e-6);
+        assert!((blend_space_2d_area(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]) - 0.5).abs() < 1e-6);
+        assert_eq!(blend_space_2d_area(&[[0.0, 0.0], [1.0, 1.0]]), 0.0);
+        assert_eq!(
+            blend_space_2d_area(&[[0.0, 0.0], [f32::NAN, 1.0], [1.0, 0.0]]),
+            0.0
+        );
+    }
+
+    #[test]
+    fn degenerate_sample_sets_are_flagged() {
+        assert!(blend_space_2d_degenerate(&[
+            [0.0, 0.0],
+            [1.0, 1.0],
+            [2.0, 2.0]
+        ]));
+        assert!(blend_space_2d_degenerate(&[
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [f32::INFINITY, 1.0]
+        ]));
+        assert!(!blend_space_2d_degenerate(&[
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [0.0, 1.0]
+        ]));
+        assert!(
+            !blend_space_2d_degenerate(&[[0.0, 0.0], [1.0, 1.0]]),
+            "两点还不够判断退化"
+        );
     }
 }
 

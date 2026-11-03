@@ -6217,6 +6217,8 @@ pub struct AnimGraphEditState {
     pub notify_draft: Option<(String, f32, String)>,
     /// 正在拖拽的 Notify 标记：(剪辑, 下标)。
     pub notify_drag: Option<(String, usize)>,
+    /// 正在拖拽的二维混合空间样本：(节点, 下标)。
+    pub graph_sample_drag: Option<(String, usize)>,
 }
 
 fn is_clip_player(kind: &str) -> bool {
@@ -6575,6 +6577,124 @@ fn draw_anim_graph_view(
                                 sample_removals.push((node.name.clone(), index));
                             }
                         });
+                    }
+                    if two_d
+                        && node.positions.len() >= 2
+                        && node.positions.iter().all(|position| {
+                            position[0].is_finite() && position[1].is_finite()
+                        })
+                    {
+                        let positions = &node.positions;
+                        let mut min_x = positions.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min);
+                        let mut max_x = positions
+                            .iter()
+                            .map(|p| p[0])
+                            .fold(f32::NEG_INFINITY, f32::max);
+                        let mut min_y = positions.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
+                        let mut max_y = positions
+                            .iter()
+                            .map(|p| p[1])
+                            .fold(f32::NEG_INFINITY, f32::max);
+                        if (max_x - min_x).abs() < 1e-3 {
+                            min_x -= 0.5;
+                            max_x += 0.5;
+                        }
+                        if (max_y - min_y).abs() < 1e-3 {
+                            min_y -= 0.5;
+                            max_y += 0.5;
+                        }
+                        let pad_x = (max_x - min_x) * 0.15;
+                        let pad_y = (max_y - min_y) * 0.15;
+                        min_x -= pad_x;
+                        max_x += pad_x;
+                        min_y -= pad_y;
+                        max_y += pad_y;
+
+                        let (canvas, painter) = ui.allocate_painter(
+                            Vec2::new(180.0, 120.0),
+                            egui::Sense::click_and_drag(),
+                        );
+                        let rect = canvas.rect;
+                        painter.rect_filled(rect, 3.0, Color32::from_rgb(28, 30, 34));
+                        let left = rect.left() + 8.0;
+                        let width = rect.width() - 16.0;
+                        let bottom = rect.bottom() - 8.0;
+                        let height = rect.height() - 16.0;
+                        let sx = |x: f32| {
+                            left + ((x - min_x) / (max_x - min_x)).clamp(0.0, 1.0) * width
+                        };
+                        let sy = |y: f32| {
+                            bottom - ((y - min_y) / (max_y - min_y)).clamp(0.0, 1.0) * height
+                        };
+                        let to_x = |px: f32| {
+                            min_x + ((px - left) / width).clamp(0.0, 1.0) * (max_x - min_x)
+                        };
+                        let to_y = |py: f32| {
+                            min_y + ((bottom - py) / height).clamp(0.0, 1.0) * (max_y - min_y)
+                        };
+
+                        if canvas.drag_started() {
+                            edit.graph_sample_drag = canvas
+                                .interact_pointer_pos()
+                                .and_then(|pos| {
+                                    positions
+                                        .iter()
+                                        .enumerate()
+                                        .map(|(index, position)| {
+                                            (
+                                                index,
+                                                (sx(position[0]) - pos.x)
+                                                    .hypot(sy(position[1]) - pos.y),
+                                            )
+                                        })
+                                        .filter(|(_, distance)| *distance <= 10.0)
+                                        .min_by(|a, b| a.1.total_cmp(&b.1))
+                                        .map(|(index, _)| (node.name.clone(), index))
+                                });
+                        }
+                        if canvas.dragged() {
+                            if let (Some(pos), Some((owner, index))) = (
+                                canvas.interact_pointer_pos(),
+                                edit.graph_sample_drag.as_ref(),
+                            ) {
+                                if owner == &node.name && *index < positions.len() {
+                                    position_edits.push((
+                                        node.name.clone(),
+                                        *index,
+                                        [to_x(pos.x), to_y(pos.y)],
+                                    ));
+                                }
+                            }
+                        }
+                        if canvas.drag_stopped() {
+                            edit.graph_sample_drag = None;
+                        }
+                        for (index, position) in positions.iter().enumerate() {
+                            let active = edit.graph_sample_drag.as_ref().is_some_and(
+                                |(owner, slot)| owner == &node.name && *slot == index,
+                            );
+                            painter.circle_filled(
+                                egui::pos2(sx(position[0]), sy(position[1])),
+                                if active { 5.0 } else { 3.5 },
+                                Color32::from_rgb(120, 170, 230),
+                            );
+                        }
+                        if prism_editor_core::blend_space_2d_degenerate(positions) {
+                            ui.label(
+                                RichText::new(
+                                    "degenerate: samples are collinear — runtime falls back to 1D/clip",
+                                )
+                                .color(Color32::from_rgb(232, 160, 96))
+                                .size(9.0),
+                            );
+                        }
+                        ui.label(
+                            RichText::new(format!(
+                                "x {min_x:.2}..{max_x:.2} · y {min_y:.2}..{max_y:.2} — drag a point"
+                            ))
+                            .weak()
+                            .size(9.0),
+                        );
                     }
                     let draft_here = edit
                         .graph_sample
