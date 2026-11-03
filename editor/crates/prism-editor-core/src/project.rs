@@ -471,7 +471,31 @@ pub fn rename_path(root: &Path, from: &str, to: &str) -> io::Result<()> {
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::rename(source, target)
+    let is_file = source.is_file();
+    fs::rename(source, target)?;
+    if is_file {
+        // #466: 资产身份在 `<path>.rmeta` 里，重命名时 sidecar 必须跟着走，
+        // 否则 GUID 会指向一个不存在的旧文件，零改写引用就解析不到了。
+        let source_meta = asset_sidecar_path(&root.join(from));
+        if source_meta.is_file() {
+            let target_meta = asset_sidecar_path(&root.join(to));
+            let _ = fs::remove_file(&target_meta);
+            if let Err(error) = fs::rename(&source_meta, &target_meta) {
+                log::warn!(
+                    "asset meta: failed to move {} to {}: {error}",
+                    source_meta.display(),
+                    target_meta.display()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn asset_sidecar_path(path: &Path) -> std::path::PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(crate::asset_meta::META_SUFFIX);
+    path.with_file_name(name)
 }
 
 /// 新建资产目录（只允许 `assets/` 内）。

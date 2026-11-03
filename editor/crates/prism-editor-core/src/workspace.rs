@@ -24,7 +24,7 @@ use crate::viewport_math::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -1078,7 +1078,8 @@ impl Workspace {
                 format!("{path} 不存在"),
             ));
         }
-        std::fs::remove_file(full)?;
+        std::fs::remove_file(&full)?;
+        remove_asset_sidecar(&full);
         self.refresh_project_files();
         self.log(LogSource::Editor, LogLevel::Info, format!("已删除 {path}"));
         Ok(())
@@ -1106,7 +1107,8 @@ impl Workspace {
                 format!("{path} 不存在"),
             ));
         }
-        std::fs::remove_file(full)?;
+        std::fs::remove_file(&full)?;
+        remove_asset_sidecar(&full);
 
         let removed = self
             .docs
@@ -1172,6 +1174,7 @@ impl Workspace {
         root: &Path,
         moves: &[(String, String)],
     ) -> (usize, Vec<String>) {
+        let protected_guids = moved_guids(root, moves);
         let mut references = 0;
         let mut affected = Vec::new();
         let mut ambiguous: Vec<String> = Vec::new();
@@ -1180,7 +1183,12 @@ impl Workspace {
         for document in &mut self.docs {
             let doc_dir = document_dir(document.path.as_deref());
             for (from, to) in moves {
-                let rewrite = document.doc.rewrite_asset_references(&doc_dir, from, to);
+                let rewrite = document.doc.rewrite_asset_references_with_guids(
+                    &doc_dir,
+                    from,
+                    to,
+                    &protected_guids,
+                );
                 ambiguous.extend(rewrite.ambiguous);
                 if rewrite.rewritten > 0 {
                     document.dirty = true;
@@ -1214,7 +1222,8 @@ impl Workspace {
             let doc_dir = document_dir(Some(&path));
             let mut rewritten = 0;
             for (from, to) in moves {
-                let rewrite = doc.rewrite_asset_references(&doc_dir, from, to);
+                let rewrite =
+                    doc.rewrite_asset_references_with_guids(&doc_dir, from, to, &protected_guids);
                 ambiguous.extend(rewrite.ambiguous);
                 rewritten += rewrite.rewritten;
             }
@@ -1263,19 +1272,36 @@ impl Workspace {
     /// 「解析不到」= 文件被删 / 改名 / 拼错。引擎侧只会往日志里写一句，
     /// 画面表现是物体消失或贴图变白，所以编辑器要主动标出来（#467）。
     pub fn missing_references(&self, index: usize) -> Vec<(String, String)> {
-        let doc = &self.document().doc;
-        if doc.entities.get(index).is_none() {
-            return Vec::new();
-        }
-        let dir = self.document_dir();
-        let paths = self.asset_paths();
-        doc.reference_values()
+        self.broken_references()
             .into_iter()
             .filter(|(entity, _, _)| *entity == index)
-            .filter_map(|(_, field, value)| {
-                crate::assets::resolve_reference(&paths, &dir, &value)
-                    .is_none()
-                    .then_some((field, value))
+            .map(|(_, field, value)| (field, value))
+            .collect()
+    }
+
+    /// Every broken asset reference in the active document:
+    /// `(entity, field, value)`.
+    ///
+    /// A slot whose sibling `*_guid` still resolves to an existing asset is
+    /// **not** broken even if its stored path is stale (#466); path resolution
+    /// remains the fallback for legacy references.
+    pub fn broken_references(&self) -> Vec<(usize, String, String)> {
+        let doc = &self.document().doc;
+        let dir = self.document_dir();
+        let paths = self.asset_paths();
+        let live_guids: BTreeSet<String> = self
+            .assets
+            .iter()
+            .filter_map(|asset| asset.guid.as_deref())
+            .map(str::to_ascii_lowercase)
+            .collect();
+        doc.reference_values()
+            .into_iter()
+            .filter(|(entity, field, value)| {
+                if reference_has_live_guid(doc, *entity, field, &live_guids) {
+                    return false;
+                }
+                crate::assets::resolve_reference(&paths, &dir, value).is_none()
             })
             .collect()
     }
@@ -1701,9 +1727,14 @@ impl Workspace {
         let root = self.project_root.as_deref();
         let preview = crate::assets::asset_preview(root, &asset, 32 * 1024);
 
+        let target_guids: BTreeSet<String> = asset
+            .guid
+            .iter()
+            .map(|guid| guid.to_ascii_lowercase())
+            .collect();
         let mut references = Vec::new();
         let collect = |document: &str, doc: &SceneDoc, out: &mut Vec<AssetReference>| {
-            for (entity, field, _) in doc.field_references(&asset.path) {
+            for (entity, field, _) in doc.field_references_with_guids(&asset.path, &target_guids) {
                 out.push(AssetReference {
                     document: document.to_string(),
                     entity: doc
@@ -1752,6 +1783,16 @@ impl Workspace {
             preview,
             references,
         })
+    }
+
+    /// Lower-case GUIDs of an asset, for GUID-aware reference lookups.
+    pub fn asset_guids(&self, path: &str) -> BTreeSet<String> {
+        self.assets
+            .iter()
+            .filter(|asset| asset.path == path)
+            .filter_map(|asset| asset.guid.as_deref())
+            .map(str::to_ascii_lowercase)
+            .collect()
     }
 
     /// 打开（或切到）磁盘上的文档。
@@ -5474,6 +5515,78 @@ fn document_dir(path: Option<&str>) -> String {
         .unwrap_or_else(|| "assets".to_string())
 }
 
+fn remove_asset_sidecar(path: &Path) {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".rmeta");
+    let meta = path.with_file_name(name);
+    if let Err(error) = std::fs::remove_file(&meta) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            log::warn!("asset meta: failed to remove {}: {error}", meta.display());
+        }
+    }
+}
+
+/// GUIDs of the assets moved by a rename (file or directory subtree).
+fn moved_guids(root: &Path, moves: &[(String, String)]) -> BTreeSet<String> {
+    let assets = project::scan_assets(root);
+    let mut out = BTreeSet::new();
+    for (from, to) in moves {
+        let from_prefix = format!("{from}/");
+        let to_prefix = format!("{to}/");
+        for asset in &assets {
+            // `rewrite_moved_references` runs after the filesystem move, so the
+            // assets are already under `to`; match both sides for robustness.
+            if asset.path == *from
+                || asset.path == *to
+                || asset.path.starts_with(&from_prefix)
+                || asset.path.starts_with(&to_prefix)
+            {
+                if let Some(guid) = &asset.guid {
+                    out.insert(guid.to_ascii_lowercase());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Does the path slot behind `field` have a sibling GUID that still exists?
+fn reference_has_live_guid(
+    doc: &SceneDoc,
+    entity: usize,
+    field: &str,
+    live_guids: &BTreeSet<String>,
+) -> bool {
+    let Some((component, path_field)) = field.split_once('.') else {
+        return false;
+    };
+    let Some(payload) = doc
+        .entities
+        .get(entity)
+        .and_then(|entity| entity.components.get(component))
+        .and_then(Value::as_object)
+    else {
+        return false;
+    };
+    let leaf = path_field.split(['.', '[']).next().unwrap_or(path_field);
+    let Some(guid_field) = crate::assets::guid_field_for_path(component, leaf) else {
+        return false;
+    };
+    let Some(value) = payload.get(&guid_field) else {
+        return false;
+    };
+    let index = path_field
+        .split_once('[')
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .and_then(|(number, _)| number.parse::<usize>().ok());
+    let guid = match (index, value) {
+        (Some(index), Value::Array(items)) => items.get(index).and_then(Value::as_str),
+        (None, Value::String(guid)) => Some(guid.as_str()),
+        _ => None,
+    };
+    guid.is_some_and(|guid| live_guids.contains(&guid.to_ascii_lowercase()))
+}
+
 fn hydrate_doc(schema: &Schema, doc: &mut SceneDoc) {
     for entity in &mut doc.entities {
         for (component_name, value) in entity.components.iter_mut() {
@@ -8676,6 +8789,87 @@ mod tests {
         assert!(workspace
             .rename_asset("assets/textures/b.png", "outside.png")
             .is_err());
+    }
+
+    /// #466: a GUID-backed reference is not rewritten and still resolves.
+    #[test]
+    fn rename_asset_with_guid_leaves_document_untouched() {
+        let guid = "11111111111111111111111111111111";
+        let project = TempProject::new("rename-guid");
+        std::fs::create_dir_all(project.root.join("assets/textures")).unwrap();
+        std::fs::write(project.root.join("assets/textures/a.png"), b"png").unwrap();
+        std::fs::write(
+            project.root.join("assets/textures/a.png.rmeta"),
+            format!(r#"{{"guid":"{guid}","importer":"TextureImporter"}}"#),
+        )
+        .unwrap();
+        let scene = r#"{"version":3,"entities":[
+            {"id":1,"name":"Sprite","parent":null,
+             "transform":{"position":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
+             "components":{"prism_engine::scene::SpriteRenderer":{
+                "sprite_path":"assets/textures/a.png","sprite_guid":"11111111111111111111111111111111"}}}
+        ]}"#;
+        let scene_path = project.root.join("assets/scenes/main.scene.json");
+        std::fs::write(&scene_path, scene).unwrap();
+
+        let mut workspace = Workspace::load_fixture(&fixture());
+        workspace.load_project(project.root.clone()).unwrap();
+        let assets_before = workspace.assets.clone();
+        let (references, affected) = workspace
+            .rename_asset("assets/textures/a.png", "assets/textures/b.png")
+            .unwrap();
+        println!("DEBUG assets_before={assets_before:?}");
+        println!("DEBUG assets_after={:?}", workspace.assets);
+        println!(
+            "DEBUG components={:?}",
+            workspace.document().doc.entities[0].components
+        );
+        assert_eq!(references, 0);
+        assert!(affected.is_empty());
+        assert!(!workspace.document().dirty, "文档不应被改写");
+        assert_eq!(std::fs::read_to_string(&scene_path).unwrap(), scene);
+        assert!(project.root.join("assets/textures/b.png.rmeta").is_file());
+        assert!(!project.root.join("assets/textures/a.png.rmeta").exists());
+        assert!(workspace.broken_references().is_empty());
+
+        let details = workspace.asset_details("assets/textures/b.png").unwrap();
+        assert!(
+            details
+                .references
+                .iter()
+                .any(|reference| reference.field.ends_with("sprite_path")),
+            "asset details must find the stale-path GUID reference"
+        );
+    }
+
+    /// Broken-reference detection must not flag a live GUID with a stale path.
+    #[test]
+    fn missing_references_ignores_guid_backed_stale_paths() {
+        let guid = "22222222222222222222222222222222";
+        let mut workspace = Workspace::sample();
+        workspace.assets = vec![AssetInfo {
+            path: "assets/models/new.gltf".to_string(),
+            size_bytes: 1,
+            kind: AssetKind::Model,
+            importer: "GltfImporter".to_string(),
+            guid: Some(guid.to_string()),
+        }];
+        workspace.document_mut().doc.entities[0].components.insert(
+            "prism_engine::scene::MeshRenderer".to_string(),
+            json!({
+                "mesh_path": "assets/models/old.gltf",
+                "mesh_guid": guid
+            }),
+        );
+
+        assert!(workspace.broken_references().is_empty());
+        assert!(workspace.missing_references(0).is_empty());
+
+        workspace.document_mut().doc.entities[0].components.insert(
+            "prism_engine::scene::MeshRenderer".to_string(),
+            json!({ "mesh_path": "assets/models/gone.gltf" }),
+        );
+        assert_eq!(workspace.broken_references().len(), 1);
     }
 
     #[test]

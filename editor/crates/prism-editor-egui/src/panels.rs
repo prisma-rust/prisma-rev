@@ -927,21 +927,12 @@ pub fn hierarchy(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
         .map(|(index, _)| *index)
         .collect();
     // 引用断掉的实体（文件被删 / 改名 / 拼错）：行尾标一个警告图标。
-    // 每帧只算一次——`resolve_reference` 要扫资产表，放在行循环里是 O(实体 × 资产)（#467）。
-    let broken: std::collections::HashSet<usize> = {
-        let dir = workspace.document_dir();
-        let paths = workspace.asset_paths();
-        workspace
-            .document()
-            .doc
-            .reference_values()
-            .into_iter()
-            .filter(|(_, _, value)| {
-                prism_editor_core::assets::resolve_reference(&paths, &dir, value).is_none()
-            })
-            .map(|(entity, _, _)| entity)
-            .collect()
-    };
+    // 每帧只算一次；GUID 仍能解析的引用不算断（#466 / #467）。
+    let broken: std::collections::HashSet<usize> = workspace
+        .broken_references()
+        .into_iter()
+        .map(|(entity, _, _)| entity)
+        .collect();
     let mut action: Option<TreeAction> = None;
     // 资产拖到实体上 = 实例化预制体（引擎的 Project → Hierarchy 拖拽）。
     let mut asset_drop: Option<(usize, String)> = None;
@@ -4917,13 +4908,19 @@ struct AssetActions {
 /// 选中它并在 Scene / Hierarchy 里一起高亮。找不到时只写状态栏，不改选择。
 fn ping_asset(workspace: &mut Workspace, state: &mut UiState, path: &str) {
     let active = workspace.active_index();
+    let target_guids = workspace.asset_guids(path);
     let mut found: Option<(usize, usize)> = None;
     for offset in 0..workspace.docs.len() {
         let index = (active + offset) % workspace.docs.len().max(1);
         let Some(doc) = workspace.docs.get(index) else {
             continue;
         };
-        if let Some((entity, _, _)) = doc.doc.field_references(path).into_iter().next() {
+        if let Some((entity, _, _)) = doc
+            .doc
+            .field_references_with_guids(path, &target_guids)
+            .into_iter()
+            .next()
+        {
             found = Some((index, entity));
             break;
         }
