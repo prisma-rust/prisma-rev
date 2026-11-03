@@ -2233,6 +2233,27 @@ pub fn move_state_transition(
     Ok(target as usize)
 }
 
+/// 复制一条转移并插入到原转移之后，返回新下标。
+///
+/// 允许复制出完全相同的 `(from, to)`：作者通常会紧接着改起点 / 终点或条件。
+/// 运行时按数组顺序取第一条命中的转移，所以改之前重复项不会改变行为。
+pub fn duplicate_state_transition(document: &mut Value, index: usize) -> Result<usize, String> {
+    let transitions = document
+        .get_mut("transitions")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "state machine has no editable `transitions` array".to_string())?;
+    if index >= transitions.len() {
+        return Err(format!("state machine has no transition #{index}"));
+    }
+    if !transitions[index].is_object() {
+        return Err(format!("transition #{index} is malformed"));
+    }
+    let copy = transitions[index].clone();
+    let target = index + 1;
+    transitions.insert(target, copy);
+    Ok(target)
+}
+
 /// 删除状态机 `transitions` 数组里的第 `index` 条转移。
 pub fn remove_state_transition(document: &mut Value, index: usize) -> Result<(), String> {
     let Some(transitions) = document
@@ -3166,6 +3187,33 @@ mod transition_tests {
         remove_state_transition(&mut doc, 0).expect("removes");
         assert_eq!(doc["transitions"].as_array().unwrap().len(), 1);
         assert_eq!(doc["transitions"][0]["to"], "Jump");
+    }
+
+    #[test]
+    fn transitions_can_be_duplicated_with_their_conditions() {
+        let mut doc = document();
+        add_state_transition(&mut doc, Some("Run"), "Jump").expect("adds");
+        add_state_condition(&mut doc, 0, "trigger", "jump", 0.0, false).expect("adds condition");
+        set_transition_timing(&mut doc, 0, 0.3, 0.5).expect("sets timing");
+
+        let new_index = duplicate_state_transition(&mut doc, 0).expect("duplicates");
+        assert_eq!(new_index, 1);
+        assert_eq!(doc["transitions"].as_array().unwrap().len(), 3);
+        assert_eq!(doc["transitions"][0], doc["transitions"][1]);
+        assert_eq!(doc["transitions"][2]["to"], "Jump", "原第二条后移");
+    }
+
+    #[test]
+    fn duplicating_transitions_rejects_bad_indices_and_malformed_input() {
+        let mut doc = document();
+        assert!(duplicate_state_transition(&mut doc, 9).is_err());
+        assert!(duplicate_state_transition(&mut json!({}), 0).is_err());
+        assert!(duplicate_state_transition(&mut json!({ "transitions": ["bad"] }), 0).is_err());
+        assert_eq!(
+            doc["transitions"].as_array().unwrap().len(),
+            1,
+            "失败不改文档"
+        );
     }
 
     #[test]
