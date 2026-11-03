@@ -1362,24 +1362,37 @@ impl Workspace {
         self.asset_edits.can_redo()
     }
 
+    /// 把多个文件的改动记成同一步（例如参数改名连带状态机条件）。
+    pub fn record_asset_edit_group(&mut self, edits: Vec<crate::asset_edit::AssetEdit>) {
+        self.asset_edits.record_group(edits);
+    }
+
     /// 撤销一步资产编辑；返回被写回的文件（没有可撤销步骤时 `Ok(None)`）。
-    pub fn undo_asset_edit(&mut self) -> Result<Option<String>, String> {
-        let Some(edit) = self.asset_edits.undo() else {
+    pub fn undo_asset_edit(&mut self) -> Result<Option<Vec<String>>, String> {
+        let Some(edits) = self.asset_edits.undo() else {
             return Ok(None);
         };
-        self.write_asset_json(&edit.path, &edit.before)
-            .map_err(|error| format!("write {} failed: {error}", edit.path))?;
-        Ok(Some(edit.path))
+        let mut written = Vec::with_capacity(edits.len());
+        for edit in edits {
+            self.write_asset_json(&edit.path, &edit.before)
+                .map_err(|error| format!("write {} failed: {error}", edit.path))?;
+            written.push(edit.path);
+        }
+        Ok(Some(written))
     }
 
     /// 重做一步资产编辑；返回被写回的文件。
-    pub fn redo_asset_edit(&mut self) -> Result<Option<String>, String> {
-        let Some(edit) = self.asset_edits.redo() else {
+    pub fn redo_asset_edit(&mut self) -> Result<Option<Vec<String>>, String> {
+        let Some(edits) = self.asset_edits.redo() else {
             return Ok(None);
         };
-        self.write_asset_json(&edit.path, &edit.after)
-            .map_err(|error| format!("write {} failed: {error}", edit.path))?;
-        Ok(Some(edit.path))
+        let mut written = Vec::with_capacity(edits.len());
+        for edit in edits {
+            self.write_asset_json(&edit.path, &edit.after)
+                .map_err(|error| format!("write {} failed: {error}", edit.path))?;
+            written.push(edit.path);
+        }
+        Ok(Some(written))
     }
 
     /// 重命名动画图参数，并同步改写图引用的状态机侧车里的条件名（#560）。
@@ -1428,14 +1441,31 @@ impl Workspace {
             }
         }
 
-        self.write_asset_json(graph_path, &graph)
-            .map_err(|error| format!("write {graph_path} failed: {error}"))?;
+        let graph_before = self
+            .read_asset_json(graph_path)
+            .map_err(|error| format!("read {graph_path} failed: {error}"))?;
+        let mut group = Vec::new();
         let mut written = Vec::new();
         for (path, document) in updates {
+            if let Ok(before) = self.read_asset_json(&path) {
+                group.push(crate::asset_edit::AssetEdit {
+                    path: path.clone(),
+                    before,
+                    after: document.clone(),
+                });
+            }
             self.write_asset_json(&path, &document)
                 .map_err(|error| format!("write {path} failed: {error}"))?;
             written.push(path);
         }
+        group.push(crate::asset_edit::AssetEdit {
+            path: graph_path.to_string(),
+            before: graph_before,
+            after: graph.clone(),
+        });
+        self.write_asset_json(graph_path, &graph)
+            .map_err(|error| format!("write {graph_path} failed: {error}"))?;
+        self.record_asset_edit_group(group);
         Ok(written)
     }
 
@@ -7691,14 +7721,20 @@ mod tests {
         assert!(workspace.can_undo_asset_edit());
         assert!(!workspace.can_redo_asset_edit());
 
-        assert_eq!(workspace.undo_asset_edit().unwrap(), Some(path.to_string()));
+        assert_eq!(
+            workspace.undo_asset_edit().unwrap(),
+            Some(vec![path.to_string()])
+        );
         let on_disk: Value =
             serde_json::from_str(&std::fs::read_to_string(project.root.join(path)).unwrap())
                 .unwrap();
         assert_eq!(on_disk, before);
         assert!(workspace.can_redo_asset_edit());
 
-        assert_eq!(workspace.redo_asset_edit().unwrap(), Some(path.to_string()));
+        assert_eq!(
+            workspace.redo_asset_edit().unwrap(),
+            Some(vec![path.to_string()])
+        );
         let on_disk: Value =
             serde_json::from_str(&std::fs::read_to_string(project.root.join(path)).unwrap())
                 .unwrap();
@@ -7768,11 +7804,35 @@ mod tests {
             machine["transitions"][0]["conditions"][0]["name"],
             "velocity"
         );
-        assert!(
+        // 一次改名（图 + 状态机）只占一步：undo 同时恢复两个文件。
+        assert_eq!(
             workspace
                 .rename_anim_graph_parameter("assets/anim/hero.animgraph.json", "velocity", "speed")
-                .is_ok(),
+                .unwrap(),
+            vec!["assets/anim/hero.statemachine.json".to_string()],
             "改回原名也走同一条路径"
+        );
+        let undone = workspace.undo_asset_edit().unwrap().expect("one step");
+        assert_eq!(
+            undone,
+            vec![
+                "assets/anim/hero.statemachine.json".to_string(),
+                "assets/anim/hero.animgraph.json".to_string(),
+            ]
+        );
+        let graph: Value = serde_json::from_str(
+            &std::fs::read_to_string(project.root.join("assets/anim/hero.animgraph.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(graph["parameters"][0]["name"], "velocity");
+        let machine: Value = serde_json::from_str(
+            &std::fs::read_to_string(project.root.join("assets/anim/hero.statemachine.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            machine["transitions"][0]["conditions"][0]["name"],
+            "velocity"
         );
     }
 
