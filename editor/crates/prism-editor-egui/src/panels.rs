@@ -5922,7 +5922,7 @@ pub fn anim_graph(
                         state.status = match workspace.write_asset_json(&path, &value) {
                             Ok(()) => {
                                 workspace.record_asset_edit(&path, &before, &value);
-                                format!("saved transitions in {path}")
+                                format!("saved state machine in {path}")
                             }
                             Err(error) => format!("save transitions failed: {error}"),
                         };
@@ -6347,6 +6347,8 @@ pub struct AnimGraphEditState {
     /// 正在编辑的状态名 / 剪辑：(状态下标, 文本)，同样失焦才写回。
     pub sm_state_name: Option<(usize, String)>,
     pub sm_state_clip: Option<(usize, String)>,
+    /// 「+ State」草稿：(名字, 剪辑路径)。
+    pub sm_new_state: Option<(String, String)>,
     /// 正在编辑的图节点剪辑：(节点名, 文本)。
     pub graph_node_clip: Option<(String, String)>,
     /// 正在编辑的图节点名字：(旧名字, 文本)。
@@ -7172,6 +7174,9 @@ fn draw_state_machine_view(
     let mut speed_edits = Vec::new();
     let mut loop_edits = Vec::new();
     let mut duplicate_states = Vec::new();
+    let mut remove_states = Vec::new();
+    let mut add_state_draft = None;
+    let mut cancel_new_state = false;
     for (index, state) in machine.states.iter().enumerate() {
         ui.horizontal(|ui| {
             let mut name_text = edit
@@ -7239,6 +7244,15 @@ fn draw_state_machine_view(
             {
                 duplicate_states.push(state.name.clone());
             }
+            ui.add_enabled_ui(machine.states.len() > 1, |ui| {
+                if ui
+                    .small_button("×")
+                    .on_hover_text("remove state and its transitions")
+                    .clicked()
+                {
+                    remove_states.push(state.name.clone());
+                }
+            });
         });
     }
     for (index, name) in name_edits {
@@ -7260,6 +7274,43 @@ fn draw_state_machine_view(
     for name in duplicate_states {
         prism_editor_core::duplicate_state(document, &name)?;
         changed = true;
+    }
+    for name in remove_states {
+        prism_editor_core::remove_state(document, &name)?;
+        changed = true;
+    }
+
+    if let Some(draft) = edit.sm_new_state.as_mut() {
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut draft.0)
+                    .hint_text("state")
+                    .desired_width(80.0),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut draft.1)
+                    .hint_text("clip.ranim")
+                    .desired_width(130.0),
+            );
+        });
+        ui.horizontal(|ui| {
+            if ui.button("Add state").clicked() {
+                add_state_draft = Some(draft.clone());
+            }
+            if ui.button("Cancel").clicked() {
+                cancel_new_state = true;
+            }
+        });
+    } else if ui.button("+ State").clicked() {
+        edit.sm_new_state = Some((String::new(), String::new()));
+    }
+    if let Some((name, clip)) = add_state_draft {
+        prism_editor_core::add_state(document, &name, &clip)?;
+        edit.sm_new_state = None;
+        changed = true;
+    }
+    if cancel_new_state {
+        edit.sm_new_state = None;
     }
 
     ui.separator();
