@@ -16,6 +16,7 @@
 //! | [`workspace`] | 上面所有东西的宿主状态 |
 
 pub mod anim_graph_view;
+pub mod asset_edit;
 pub mod asset_meta;
 pub mod assets;
 pub mod build;
@@ -55,6 +56,7 @@ pub use anim_graph_view::{
     AnimGraphLayout, AnimGraphView, AnimInputView, AnimNodeView, AnimParameterView,
     AnimStateMachineView, AnimStateView, AnimTransitionView,
 };
+pub use asset_edit::{AssetEdit, AssetEditHistory};
 pub use asset_meta::{AssetMeta, META_SUFFIX};
 pub use assets::{
     format_bytes, AssetDetails, AssetInfo, AssetKind, AssetPreview, AssetQuery, AssetTree,
