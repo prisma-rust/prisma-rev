@@ -451,6 +451,29 @@ mod tests {
     }
 
     #[test]
+    fn states_can_be_duplicated_with_unique_names() {
+        let mut doc = json!({
+            "states": [
+                { "name": "Idle", "clip": "idle.ranim" },
+                { "name": "Run", "clip": "run.ranim", "speed": 1.5, "looped": false }
+            ],
+            "transitions": [{ "from": "Idle", "to": "Run", "duration": 0.2 }]
+        });
+        let copy = duplicate_state(&mut doc, "Run").expect("copies");
+        assert_eq!(copy, "Run_copy");
+        assert_eq!(doc["states"][2]["name"], "Run_copy");
+        assert_eq!(doc["states"][2]["clip"], "run.ranim");
+        assert_eq!(doc["states"][2]["speed"].as_f64(), Some(1.5));
+        assert_eq!(doc["states"][2]["looped"], false);
+        assert_eq!(doc["transitions"][0]["to"], "Run", "转移表不变");
+        assert_eq!(
+            duplicate_state(&mut doc, "Run").expect("again"),
+            "Run_copy2"
+        );
+        assert!(duplicate_state(&mut doc, "Missing").is_err());
+    }
+
+    #[test]
     fn a_state_machine_view_lists_states_and_readable_conditions() {
         let view = parse_state_machine_view(&json!({
             "states": [
@@ -2164,6 +2187,44 @@ pub fn set_state_speed(document: &mut Value, index: usize, speed: f32) -> Result
 pub fn set_state_looped(document: &mut Value, index: usize, looped: bool) -> Result<(), String> {
     find_state_mut(document, index)?["looped"] = json!(looped);
     Ok(())
+}
+
+/// 复制一个状态，返回新名字。
+///
+/// 新名字自动加 `_copy` / `_copy2`；转移表原样保留（复制出来的状态暂时没有
+/// 任何转移，作者再连线）。名字唯一性跟其它状态一致。
+pub fn duplicate_state(document: &mut Value, name: &str) -> Result<String, String> {
+    let states = document
+        .get("states")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "state machine needs a `states` array".to_string())?;
+    let Some(source) = states
+        .iter()
+        .find(|state| state.get("name").and_then(Value::as_str) == Some(name))
+    else {
+        return Err(format!("unknown state '{name}'"));
+    };
+    if !source.is_object() {
+        return Err(format!("state '{name}' is malformed"));
+    }
+    let existing: std::collections::HashSet<&str> = states
+        .iter()
+        .filter_map(|state| state.get("name").and_then(Value::as_str))
+        .collect();
+    let base = format!("{name}_copy");
+    let mut candidate = base.clone();
+    let mut suffix = 2;
+    while existing.contains(candidate.as_str()) {
+        candidate = format!("{base}{suffix}");
+        suffix += 1;
+    }
+    let mut copy = source.clone();
+    copy["name"] = json!(candidate);
+    let Some(states) = document.get_mut("states").and_then(Value::as_array_mut) else {
+        return Err("state machine needs a `states` array".to_string());
+    };
+    states.push(copy);
+    Ok(candidate)
 }
 
 /// 重命名一个状态，并同步改写转移里的 `from` / `to`。

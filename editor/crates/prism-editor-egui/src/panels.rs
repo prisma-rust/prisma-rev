@@ -7038,6 +7038,7 @@ fn draw_state_machine_view(
     let mut clip_edits = Vec::new();
     let mut speed_edits = Vec::new();
     let mut loop_edits = Vec::new();
+    let mut duplicate_states = Vec::new();
     for (index, state) in machine.states.iter().enumerate() {
         ui.horizontal(|ui| {
             let mut name_text = edit
@@ -7098,6 +7099,13 @@ fn draw_state_machine_view(
             if ui.checkbox(&mut looped, "loop").changed() {
                 loop_edits.push((index, looped));
             }
+            if ui
+                .small_button("⧉")
+                .on_hover_text("duplicate state")
+                .clicked()
+            {
+                duplicate_states.push(state.name.clone());
+            }
         });
     }
     for (index, name) in name_edits {
@@ -7114,6 +7122,10 @@ fn draw_state_machine_view(
     }
     for (index, looped) in loop_edits {
         prism_editor_core::set_state_looped(document, index, looped)?;
+        changed = true;
+    }
+    for name in duplicate_states {
+        prism_editor_core::duplicate_state(document, &name)?;
         changed = true;
     }
 
