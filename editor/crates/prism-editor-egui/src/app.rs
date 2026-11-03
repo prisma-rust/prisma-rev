@@ -484,14 +484,11 @@ impl EditorApp {
             "Scale" => crate::viewport::GizmoTool::Scale,
             _ => crate::viewport::GizmoTool::Translate,
         };
-        let render_settings = restored_scene
-            .render
-            .as_ref()
-            .map(|value| render_settings_from_json(value, workspace.show_grid))
-            .unwrap_or_else(|| prism_engine::render_settings::RenderSettings {
-                show_grid: workspace.show_grid,
-                ..Default::default()
-            });
+        let render_settings = seeded_render_settings(
+            restored_scene.render.as_ref(),
+            project_render_settings(project_root.as_deref()),
+            workspace.show_grid,
+        );
         workspace.show_grid = render_settings.show_grid;
 
         let mut app = Self {
@@ -6159,6 +6156,60 @@ mod tests {
     use super::*;
     use prism_editor_core::{KeyChord, SHORTCUTS, SHORTCUT_ALIASES};
 
+    /// #979：第一次打开工程时 Scene 视图要拿工程 `[render]` 的设置，而不是引擎默认值。
+    #[test]
+    fn first_open_seeds_scene_view_from_project_settings() {
+        let mut project = prism_engine::render_settings::RenderSettings::default();
+        project.tonemap_mode = 2;
+        project.bloom_intensity = 0.75;
+
+        let seeded = seeded_render_settings(None, Some(project.clone()), true);
+        assert_eq!(seeded.tonemap_mode, 2);
+        assert!((seeded.bloom_intensity - 0.75).abs() < 1e-6);
+        assert!(seeded.show_grid, "网格仍是编辑器开关");
+
+        // 状态文件里有 `render` 段时尊重用户上次的选择，不被工程配置覆盖。
+        let restored = serde_json::json!({ "tonemapMode": 0, "showGrid": false });
+        let seeded = seeded_render_settings(Some(&restored), Some(project.clone()), true);
+        assert_eq!(seeded.tonemap_mode, 0);
+        assert!(!seeded.show_grid);
+
+        // 没有工程配置就退回引擎默认值，不 panic。
+        let seeded = seeded_render_settings(None, None, false);
+        assert_eq!(
+            seeded.tonemap_mode,
+            prism_engine::render_settings::RenderSettings::default().tonemap_mode
+        );
+    }
+
+    /// 工程 `settings.ini` 的 `[render]` 段真的会被读进来；文件不存在时返回 `None`。
+    #[test]
+    fn project_render_settings_reads_the_ini_section() {
+        let dir = std::env::temp_dir().join(format!("prism-app-979-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        std::fs::write(
+            dir.join("assets/settings.ini"),
+            "[render]
+tonemap_mode = 2
+bloom_intensity = 0.5
+",
+        )
+        .unwrap();
+        let settings = project_render_settings(Some(&dir)).expect("settings.ini");
+        assert_eq!(settings.tonemap_mode, 2);
+        assert!((settings.bloom_intensity - 0.5).abs() < 1e-6);
+
+        let empty =
+            std::env::temp_dir().join(format!("prism-app-979-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&empty);
+        std::fs::create_dir_all(&empty).unwrap();
+        assert!(project_render_settings(Some(&empty)).is_none());
+        assert!(project_render_settings(None).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&empty);
+    }
+
     #[test]
     fn the_scene_overlay_stays_inside_the_viewport() {
         let viewport = Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(800.0, 600.0));
@@ -6643,27 +6694,69 @@ fn project_window_resolution(project_root: Option<&Path>) -> Option<(u32, u32)> 
         .then_some((config.window.width, config.window.height))
 }
 
-fn apply_project_render_defaults(
-    host: &mut crate::engine_host::EngineHost,
-    project_root: Option<&Path>,
-) {
-    let Some(root) = project_root else {
-        return;
+/// 编辑器启动时 Scene 视图用哪份渲染设置（#979）。
+///
+/// - 状态文件里有 `render` 段：那是用户上次调好的，尊重它；
+/// - 没有（第一次打开这个工程）：用工程 `assets/settings.ini [render]`，
+///   没有工程配置才退回引擎默认值。
+///
+/// 之前这条分支直接拿引擎默认值，于是同一个工程在 Scene 视图里色调映射 / 曝光
+/// 和 Game 视图、和最终产物完全不是一回事。
+fn seeded_render_settings(
+    restored: Option<&serde_json::Value>,
+    project: Option<prism_engine::render_settings::RenderSettings>,
+    show_grid: bool,
+) -> prism_engine::render_settings::RenderSettings {
+    if let Some(value) = restored {
+        return render_settings_from_json(value, show_grid);
+    }
+    let (mut settings, source) = match project {
+        Some(settings) => (settings, "project settings.ini"),
+        None => (
+            prism_engine::render_settings::RenderSettings::default(),
+            "engine defaults",
+        ),
     };
+    settings.show_grid = show_grid;
+    log::info!("scene view render defaults: {source}");
+    settings
+}
+
+/// 工程 `assets/settings.ini [render]` 里的渲染设置；文件缺失返回 `None`。
+///
+/// 只读，不改任何东西 —— Game 视图和「首次打开工程的 Scene 视图」共用同一份解析。
+fn project_render_settings(
+    root: Option<&Path>,
+) -> Option<prism_engine::render_settings::RenderSettings> {
+    let root = root?;
     let path = root.join("assets").join("settings.ini");
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(error) => {
-            log::debug!(
-                "game view: no project render settings at {}: {error}",
-                path.display()
-            );
-            return;
+            log::debug!("no project render settings at {}: {error}", path.display());
+            return None;
         }
     };
     let config = prism_engine::config::AppConfig::from_ini(&text);
-    config.render.apply(host.settings_mut());
-    log::info!("game view render defaults: {}", path.display());
+    let mut settings = prism_engine::render_settings::RenderSettings::default();
+    config.render.apply(&mut settings);
+    Some(settings)
+}
+
+fn apply_project_render_defaults(
+    host: &mut crate::engine_host::EngineHost,
+    project_root: Option<&Path>,
+) {
+    let Some(settings) = project_render_settings(project_root) else {
+        return;
+    };
+    *host.settings_mut() = settings;
+    log::info!(
+        "game view render defaults: {}",
+        project_root
+            .map(|root| root.join("assets/settings.ini").display().to_string())
+            .unwrap_or_default()
+    );
 }
 
 /// 控制通道排进 `pending_input` 的一个输入事件。
