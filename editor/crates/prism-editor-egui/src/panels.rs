@@ -5867,12 +5867,29 @@ pub struct AnimGraphEditState {
     pub graph_node_clip: Option<(String, String)>,
     /// 正在编辑的图节点名字：(旧名字, 文本)。
     pub graph_node_name: Option<(String, String)>,
+    /// 正在编辑的混合空间参数名：(节点名, 文本)；`parameter_y` 单独一份。
+    pub graph_node_parameter: Option<(String, String)>,
+    pub graph_node_parameter_y: Option<(String, String)>,
 }
 
 fn is_clip_player(kind: &str) -> bool {
     matches!(
         kind.to_ascii_lowercase().as_str(),
         "clip" | "clip_player" | "clipplayer"
+    )
+}
+
+fn is_blend_space(kind: &str) -> bool {
+    matches!(
+        kind.to_ascii_lowercase().as_str(),
+        "blend_space" | "blend_space_1d" | "blendspace1d" | "blend_space_2d" | "blendspace2d"
+    )
+}
+
+fn is_blend_space_2d(kind: &str) -> bool {
+    matches!(
+        kind.to_ascii_lowercase().as_str(),
+        "blend_space_2d" | "blendspace2d"
     )
 }
 
@@ -5913,6 +5930,8 @@ fn draw_anim_graph_view(
     let mut node_weight_edits = Vec::new();
     let mut node_loop_edits = Vec::new();
     let mut node_name_edits = Vec::new();
+    let mut parameter_edits = Vec::new();
+    let mut position_edits = Vec::new();
     for node in &graph.nodes {
         let title = if node.is_output() {
             format!("{} · {} (output)", node.name, node.kind)
@@ -6020,6 +6039,96 @@ fn draw_anim_graph_view(
                         node_loop_edits.push((node.name.clone(), looped));
                     }
                 });
+                if is_blend_space(&node.kind) {
+                    let two_d = is_blend_space_2d(&node.kind);
+                    ui.horizontal(|ui| {
+                        let editing_x = edit
+                            .graph_node_parameter
+                            .as_ref()
+                            .filter(|(owner, _)| owner == &node.name);
+                        let mut x = editing_x
+                            .map(|(_, text)| text.clone())
+                            .unwrap_or_else(|| node.parameter.clone());
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut x)
+                                .hint_text("parameter")
+                                .desired_width(100.0),
+                        );
+                        if response.changed() {
+                            edit.graph_node_parameter = Some((node.name.clone(), x));
+                        } else if response.lost_focus() {
+                            if let Some((owner, text)) = edit.graph_node_parameter.take() {
+                                if owner == node.name {
+                                    parameter_edits.push((owner, text, node.parameter_y.clone()));
+                                }
+                            }
+                        }
+                        if two_d {
+                            let editing_y = edit
+                                .graph_node_parameter_y
+                                .as_ref()
+                                .filter(|(owner, _)| owner == &node.name);
+                            let mut y = editing_y
+                                .map(|(_, text)| text.clone())
+                                .unwrap_or_else(|| node.parameter_y.clone());
+                            let response = ui.add(
+                                egui::TextEdit::singleline(&mut y)
+                                    .hint_text("parameter y")
+                                    .desired_width(100.0),
+                            );
+                            if response.changed() {
+                                edit.graph_node_parameter_y = Some((node.name.clone(), y));
+                            } else if response.lost_focus() {
+                                if let Some((owner, text)) = edit.graph_node_parameter_y.take() {
+                                    if owner == node.name {
+                                        parameter_edits.push((owner, node.parameter.clone(), text));
+                                    }
+                                }
+                            }
+                        }
+                    });
+                    for (index, clip) in node.clips.iter().enumerate() {
+                        let position = node.positions.get(index).copied().unwrap_or([0.0, 0.0]);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(format!("#{index} {clip}"))
+                                    .monospace()
+                                    .size(10.0),
+                            );
+                            let mut x = position[0];
+                            if ui
+                                .add(egui::DragValue::new(&mut x).speed(0.01).prefix("x "))
+                                .changed()
+                            {
+                                position_edits.push((node.name.clone(), index, [x, position[1]]));
+                            }
+                            if two_d {
+                                let mut y = position[1];
+                                if ui
+                                    .add(egui::DragValue::new(&mut y).speed(0.01).prefix("y "))
+                                    .changed()
+                                {
+                                    position_edits.push((
+                                        node.name.clone(),
+                                        index,
+                                        [position[0], y],
+                                    ));
+                                }
+                            }
+                        });
+                    }
+                    if node.clips.len() != node.positions.len() {
+                        ui.label(
+                            RichText::new(format!(
+                                "{} clips vs {} positions — cooker rejects this",
+                                node.clips.len(),
+                                node.positions.len()
+                            ))
+                            .color(Color32::from_rgb(232, 160, 96))
+                            .size(10.0),
+                        );
+                    }
+                }
                 if !node.state_machine.is_empty() {
                     ui.label(
                         RichText::new(format!("state machine: {}", node.state_machine))
@@ -6157,6 +6266,14 @@ fn draw_anim_graph_view(
     }
     for (old, new) in node_name_edits {
         prism_editor_core::rename_graph_node(document, &old, &new)?;
+        changed = true;
+    }
+    for (node, x, y) in parameter_edits {
+        prism_editor_core::set_blend_space_parameter(document, &node, &x, &y)?;
+        changed = true;
+    }
+    for (node, index, position) in position_edits {
+        prism_editor_core::set_blend_space_position(document, &node, index, position)?;
         changed = true;
     }
     for (node, clip) in node_clip_edits {

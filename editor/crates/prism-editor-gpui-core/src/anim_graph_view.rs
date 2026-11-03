@@ -30,9 +30,13 @@ pub struct AnimNodeView {
     pub name: String,
     pub kind: String,
     pub clips: Vec<String>,
+    /// 混合空间的样本坐标；一维节点的 y 恒为 0。
+    pub positions: Vec<[f32; 2]>,
     pub inputs: Vec<AnimInputView>,
     pub state_machine: String,
     pub parameter: String,
+    /// 二维混合空间的第二个参数名；其它节点为空。
+    pub parameter_y: String,
     pub speed: f32,
     pub weight: f32,
     pub looped: bool,
@@ -175,6 +179,11 @@ pub fn parse_anim_graph_view(document: &Value) -> Result<AnimGraphView, String> 
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
+        let parameter_y = node
+            .get("parameter_y")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         nodes.push(AnimNodeView {
             name,
             kind: node
@@ -183,6 +192,7 @@ pub fn parse_anim_graph_view(document: &Value) -> Result<AnimGraphView, String> 
                 .unwrap_or("unknown")
                 .to_string(),
             clips,
+            positions: parse_positions(node),
             inputs,
             state_machine: node
                 .get("state_machine")
@@ -190,6 +200,7 @@ pub fn parse_anim_graph_view(document: &Value) -> Result<AnimGraphView, String> 
                 .unwrap_or("")
                 .to_string(),
             parameter,
+            parameter_y,
             speed: node.get("speed").and_then(Value::as_f64).unwrap_or(1.0) as f32,
             weight: node.get("weight").and_then(Value::as_f64).unwrap_or(1.0) as f32,
             looped: node.get("looped").and_then(Value::as_bool).unwrap_or(true),
@@ -205,6 +216,23 @@ pub fn parse_anim_graph_view(document: &Value) -> Result<AnimGraphView, String> 
         nodes,
         output,
     })
+}
+
+fn parse_positions(node: &Value) -> Vec<[f32; 2]> {
+    node.get("positions")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .map(|position| match position {
+            Value::Number(number) => [number.as_f64().unwrap_or(0.0) as f32, 0.0],
+            Value::Array(pair) => [
+                pair.first().and_then(Value::as_f64).unwrap_or(0.0) as f32,
+                pair.get(1).and_then(Value::as_f64).unwrap_or(0.0) as f32,
+            ],
+            _ => [0.0, 0.0],
+        })
+        .collect()
 }
 
 fn parse_input(value: &Value) -> Option<AnimInputView> {
@@ -766,6 +794,88 @@ pub fn set_graph_node_clip(document: &mut Value, name: &str, clip: &str) -> Resu
     Ok(())
 }
 
+/// 节点是几维混合空间：`Some(1)` / `Some(2)`，其它节点返回 `None`。
+fn blend_space_dims(node: &Value) -> Option<usize> {
+    match node
+        .get("type")
+        .and_then(Value::as_str)?
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "blend_space_1d" | "blendspace1d" | "blend_space" => Some(1),
+        "blend_space_2d" | "blendspace2d" => Some(2),
+        _ => None,
+    }
+}
+
+/// 改混合空间的参数名：一维只写 `parameter`，二维同时写 `parameter_y`。
+pub fn set_blend_space_parameter(
+    document: &mut Value,
+    name: &str,
+    x: &str,
+    y: &str,
+) -> Result<(), String> {
+    let x = x.trim();
+    if x.is_empty() {
+        return Err("a blend space needs a parameter name".to_string());
+    }
+    let Some(node) = find_node_mut(document, name) else {
+        return Err(format!("unknown node '{name}'"));
+    };
+    if !node.is_object() {
+        return Err(format!("node '{name}' is malformed"));
+    }
+    let Some(dims) = blend_space_dims(node) else {
+        return Err(format!("node '{name}' is not a blend space"));
+    };
+    node["parameter"] = json!(x);
+    if dims == 2 {
+        let y = y.trim();
+        if y.is_empty() {
+            return Err("a 2D blend space needs `parameter_y`".to_string());
+        }
+        node["parameter_y"] = json!(y);
+    } else if node.get("parameter_y").is_some() {
+        node.as_object_mut()
+            .expect("checked above")
+            .remove("parameter_y");
+    }
+    Ok(())
+}
+
+/// 改一个混合空间样本的坐标；一维节点只写 x（`positions` 里是数字）。
+pub fn set_blend_space_position(
+    document: &mut Value,
+    name: &str,
+    index: usize,
+    position: [f32; 2],
+) -> Result<(), String> {
+    if !position[0].is_finite() || !position[1].is_finite() {
+        return Err("a blend space position must be finite".to_string());
+    }
+    let Some(node) = find_node_mut(document, name) else {
+        return Err(format!("unknown node '{name}'"));
+    };
+    if !node.is_object() {
+        return Err(format!("node '{name}' is malformed"));
+    };
+    let Some(dims) = blend_space_dims(node) else {
+        return Err(format!("node '{name}' is not a blend space"));
+    };
+    let Some(positions) = node.get_mut("positions").and_then(Value::as_array_mut) else {
+        return Err(format!("node '{name}' has no editable `positions` array"));
+    };
+    let Some(entry) = positions.get_mut(index) else {
+        return Err(format!("node '{name}' has no sample #{index}"));
+    };
+    *entry = if dims == 1 {
+        json!(position[0])
+    } else {
+        json!([position[0], position[1]])
+    };
+    Ok(())
+}
+
 /// 改节点的播放速度（`0` = 冻结，必须有限且非负）。
 pub fn set_graph_node_speed(document: &mut Value, name: &str, speed: f32) -> Result<(), String> {
     if !speed.is_finite() || speed < 0.0 {
@@ -881,6 +991,85 @@ pub fn remove_graph_node(document: &mut Value, name: &str) -> Result<(), String>
     };
     nodes.remove(index);
     Ok(())
+}
+
+#[cfg(test)]
+mod blend_space_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn document() -> Value {
+        json!({
+            "nodes": [
+                { "name": "locomotion", "type": "blend_space_1d",
+                  "clips": ["idle.ranim", "run.ranim"], "positions": [0.0, 5.0],
+                  "parameter": "speed" },
+                { "name": "strafe", "type": "blend_space_2d",
+                  "clips": ["f.ranim", "b.ranim", "l.ranim"],
+                  "positions": [[0.0, 1.0], [0.0, -1.0], [-1.0, 0.0]],
+                  "parameter_x": "forward", "parameter_y": "right" },
+                { "name": "out", "type": "output", "input": "locomotion" }
+            ]
+        })
+    }
+
+    #[test]
+    fn a_view_reads_sample_positions_for_both_dimensions() {
+        let view = parse_anim_graph_view(&document()).expect("parses");
+        assert_eq!(view.nodes[0].positions, [[0.0, 0.0], [5.0, 0.0]]);
+        assert_eq!(view.nodes[0].parameter, "speed");
+        assert!(view.nodes[0].parameter_y.is_empty());
+        assert_eq!(
+            view.nodes[1].positions,
+            [[0.0, 1.0], [0.0, -1.0], [-1.0, 0.0]]
+        );
+        assert_eq!(view.nodes[1].parameter, "forward");
+        assert_eq!(view.nodes[1].parameter_y, "right");
+    }
+
+    #[test]
+    fn blend_space_parameters_can_be_edited() {
+        let mut doc = document();
+        set_blend_space_parameter(&mut doc, "locomotion", " locomotion_speed ", "").expect("1d");
+        assert_eq!(doc["nodes"][0]["parameter"], "locomotion_speed");
+
+        set_blend_space_parameter(&mut doc, "strafe", " fwd ", " side ").expect("2d");
+        assert_eq!(doc["nodes"][1]["parameter"], "fwd");
+        assert_eq!(doc["nodes"][1]["parameter_y"], "side");
+    }
+
+    #[test]
+    fn bad_blend_space_parameters_are_rejected() {
+        let mut doc = document();
+        assert!(set_blend_space_parameter(&mut doc, "locomotion", "  ", "").is_err());
+        assert!(set_blend_space_parameter(&mut doc, "strafe", "fwd", "  ").is_err());
+        assert!(set_blend_space_parameter(&mut doc, "out", "fwd", "side").is_err());
+        assert!(set_blend_space_parameter(&mut doc, "missing", "fwd", "side").is_err());
+    }
+
+    #[test]
+    fn sample_positions_keep_their_dimension() {
+        let mut doc = document();
+        set_blend_space_position(&mut doc, "locomotion", 1, [7.5, 99.0]).expect("1d");
+        assert_eq!(doc["nodes"][0]["positions"][1], json!(7.5));
+        assert_eq!(doc["nodes"][0]["positions"][0], json!(0.0));
+
+        set_blend_space_position(&mut doc, "strafe", 2, [-2.0, 0.5]).expect("2d");
+        assert_eq!(doc["nodes"][1]["positions"][2], json!([-2.0, 0.5]));
+    }
+
+    #[test]
+    fn bad_sample_positions_are_rejected() {
+        let mut doc = document();
+        assert!(set_blend_space_position(&mut doc, "locomotion", 0, [f32::NAN, 0.0]).is_err());
+        assert!(set_blend_space_position(&mut doc, "locomotion", 9, [0.0, 0.0]).is_err());
+        assert!(set_blend_space_position(&mut doc, "out", 0, [0.0, 0.0]).is_err());
+        assert!(set_blend_space_position(&mut doc, "missing", 0, [0.0, 0.0]).is_err());
+        let mut without = json!({
+            "nodes": [{ "name": "space", "type": "blend_space_1d", "parameter": "speed" }]
+        });
+        assert!(set_blend_space_position(&mut without, "space", 0, [0.0, 0.0]).is_err());
+    }
 }
 
 #[cfg(test)]
