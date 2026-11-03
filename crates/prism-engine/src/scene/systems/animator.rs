@@ -581,6 +581,15 @@ fn apply_montage_requests(
     }
 }
 
+/// 根关节（joint 0）相对上一帧的位移增量（#560 P0，先只记录，P2 交给 CharacterMovement）。
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct RootMotionDelta {
+    /// 根关节局部空间的平移增量（米）。
+    pub translation: glam::Vec3,
+    /// 绕 Y 轴的偏航增量（弧度，最短路径）。
+    pub yaw: f32,
+}
+
 /// 播放头（运行时组件，不进场景）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnimatorPlayhead {
@@ -601,6 +610,10 @@ pub struct AnimatorPlayhead {
     /// 这一次过渡自己的时长（状态机转移带的 `duration`）；`None` = 用组件的
     /// `blend_duration`。
     pub blend_total: Option<f32>,
+    /// 这一帧从根关节推导出的位移增量；首帧 / 换播放内容 / 冻结帧为零。
+    pub root_motion: RootMotionDelta,
+    /// 上一帧最终姿态的根关节局部变换，用来算下一帧的 delta。
+    pub root_previous: Option<prism_anim::JointTransform>,
 }
 
 impl AnimatorPlayhead {
@@ -610,6 +623,42 @@ impl AnimatorPlayhead {
             return None;
         }
         Some((self.blend_elapsed / blend_duration).clamp(0.0, 1.0))
+    }
+
+    /// 用这一帧的最终姿态更新 root motion delta（#560 P0）。
+    ///
+    /// 只读根关节的**局部**变换：换播放内容时播放头是新建的，`root_previous` 为空，
+    /// 所以过渡 / 切剪辑的第一帧 delta 为零，不会把旧剪辑的根位移重复计一次。
+    fn record_root_motion(&mut self, pose: &Pose) {
+        let Some(now) = pose.local(0) else {
+            self.root_motion = RootMotionDelta::default();
+            return;
+        };
+        self.root_motion = match self.root_previous {
+            Some(previous) => RootMotionDelta {
+                translation: now.translation - previous.translation,
+                yaw: yaw_delta(previous.rotation, now.rotation),
+            },
+            None => RootMotionDelta::default(),
+        };
+        self.root_previous = Some(now);
+    }
+}
+
+/// 两个四元数之间的绕 Y 偏航差（最短路径，弧度）。
+fn yaw_delta(from: glam::Quat, to: glam::Quat) -> f32 {
+    let relative = to * from.inverse();
+    let mut yaw = 2.0 * relative.y.atan2(relative.w);
+    let tau = std::f32::consts::TAU;
+    if yaw > std::f32::consts::PI {
+        yaw -= tau;
+    } else if yaw < -std::f32::consts::PI {
+        yaw += tau;
+    }
+    if yaw.is_finite() {
+        yaw
+    } else {
+        0.0
     }
 }
 
@@ -802,12 +851,15 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
                             pose: Pose::default(),
                             blend_elapsed: 0.0,
                             blend_total: None,
+                            root_motion: RootMotionDelta::default(),
+                            root_previous: None,
                         },
                     );
                     playhead.clip_path = ANIM_GRAPH_KEY.into();
                     playhead.finished = false;
                     playhead.previous_pose = None;
                     playhead.pose = pose.clone();
+                    playhead.record_root_motion(&pose);
                     let palette = BonePalette::from_matrices(&skeleton.bone_palette(&pose));
                     updates.push((entity, palette, playhead));
                     continue;
@@ -967,6 +1019,8 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
                 pose: Pose::default(),
                 blend_elapsed: 0.0,
                 blend_total: transition_duration,
+                root_motion: RootMotionDelta::default(),
+                root_previous: None,
             },
             None => AnimatorPlayhead {
                 clip_path: playback_key.clone(),
@@ -976,6 +1030,8 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
                 pose: Pose::default(),
                 blend_elapsed: 0.0,
                 blend_total: transition_duration,
+                root_motion: RootMotionDelta::default(),
+                root_previous: None,
             },
         };
         // 混合空间没有自己的时长：取最长的那条剪辑，短的自然会循环追上。
@@ -1139,6 +1195,8 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
             pose = stacked;
         }
 
+        // Root motion（#560 P0）：记录根关节相对上一帧的增量，P2 再交给 CharacterMovement。
+        playhead.record_root_motion(&pose);
         // 这份姿态就是下一次过渡的淡出源（不需要 clone：上面已经用完 `pose`）。
         playhead.pose = pose;
         let palette = BonePalette::from_matrices(&skeleton.bone_palette(&playhead.pose));

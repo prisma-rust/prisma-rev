@@ -147,6 +147,9 @@ FIFO 排队、单次播完自动接下一段，`stop` / `stop_after_current` 清
 `*.skinning/notifies.json` 时同一个面板变成事件表编辑器：按剪辑列出 Notify，可改时间 / 名字、
 删除，或用草稿表单追加（包括新建剪辑键）；每个剪辑的时间轴可以直接拖动金色标记改时间，空白处点击会用该时间打开新增草稿。
 
+运行时每帧还会在 `AnimatorPlayhead.root_motion` 记录根关节相对上一帧的位移 / 偏航增量
+（首帧与换剪辑首帧为零），P2 才消费它驱动位移 —— 当前只记录，不改实体 Transform。
+
 引擎侧项目代码通过 `AnimMontageRequests` 资源发请求（`MontageRequest::play` /
 `enqueue` / `stop` / `stop_after_current`，可带循环 / 速度 / 权重 / 开始时间）；
 `animator_system` 每帧消费一次，把剪辑路径解析成 `Montage` 注入对应实体的 Slot。
