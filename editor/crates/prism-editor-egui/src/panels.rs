@@ -7457,6 +7457,12 @@ fn draw_state_machine_view(
             .strong()
             .size(11.0),
     );
+    ui.label(
+        RichText::new("first state is the initial state — ↑/↓ reorder")
+            .weak()
+            .size(9.0),
+    );
+    let mut move_state = None;
     let mut name_edits = Vec::new();
     let mut clip_edits = Vec::new();
     let mut speed_edits = Vec::new();
@@ -7525,6 +7531,21 @@ fn draw_state_machine_view(
             if ui.checkbox(&mut looped, "loop").changed() {
                 loop_edits.push((index, looped));
             }
+            let last = machine.states.len().saturating_sub(1);
+            ui.add_enabled_ui(index > 0, |ui| {
+                if ui
+                    .small_button("↑")
+                    .on_hover_text("move earlier (closer to the initial state)")
+                    .clicked()
+                {
+                    move_state = Some((index, -1));
+                }
+            });
+            ui.add_enabled_ui(index < last, |ui| {
+                if ui.small_button("↓").on_hover_text("move later").clicked() {
+                    move_state = Some((index, 1));
+                }
+            });
             if ui
                 .small_button("⧉")
                 .on_hover_text("duplicate state")
@@ -7542,6 +7563,10 @@ fn draw_state_machine_view(
                 }
             });
         });
+    }
+    if let Some((index, offset)) = move_state {
+        prism_editor_core::move_state(document, index, offset)?;
+        changed = true;
     }
     for (index, name) in name_edits {
         prism_editor_core::rename_state(document, index, &name)?;

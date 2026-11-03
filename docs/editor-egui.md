@@ -550,6 +550,8 @@ Window → General → Animation Graph，按剪辑列出标记。每条有 `phas
   重复状态名、空的 `clip` / `name`、未知条件种类同样报错并指出是哪一条；
 - 求值是**按作者顺序第一条命中**（条件全真 + 当前状态已播到 `min_state_fraction`），
   一帧只走一条转移；`min_state_fraction` 在剪辑时长未知时视为已播完，否则单次剪辑会卡在最后一帧；
+- `states` 的顺序同时决定初始状态：运行时 `Animator.state` 为空时从第一个状态开始。
+  面板用 `↑` / `↓` 重排状态；转移按状态名引用，重排不会改转移。
 编辑器提供 **Animation Graph** 面板（Window → General）：选中 `.animgraph.json` 或
 `.statemachine.json` 后显示参数、节点 / 连线、输出，以及状态、转移和可读条件。
 面板顶部有 `↶ Undo edit` / `↷ Redo edit`，只针对动画资产（图 / 状态机 / Notify）的
