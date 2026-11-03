@@ -15,7 +15,7 @@ use std::sync::Arc;
 use prism_anim::{
     palette_to_arrays, AnimGraphEvaluator, AnimGraphSource, AnimParameters, BlendLayer,
     BlendSample, BlendSample2D, BlendSpace1D, BlendSpace2D, BlendStack, BoneMask, Clip,
-    GraphEvalError, Montage, Pose, Skeleton, StateMachine,
+    GraphEvalError, GraphNodeSnapshot, Montage, Pose, Skeleton, StateMachine,
 };
 use prism_asset::formats_anim_graph::AnimGraphInfo;
 use prism_ecs::{Entity, World};
@@ -125,6 +125,23 @@ pub struct AnimEvent {
     pub name: String,
     /// 事件在剪辑里的时间（秒）。
     pub time: f32,
+}
+
+/// 每个实体动画图节点的运行时摘要（World 资源，#560 实时调试）。
+///
+/// **opt-in**：世界里有这个资源时引擎才每帧重建它；没有就不做额外的字符串拷贝。
+/// 键是实体，值是 [`GraphNodeSnapshot`] 列表（顺序与图节点一致）。冻结 / 降频的
+/// 实体保留上一次快照，方便面板显示「停在哪」。
+#[derive(Debug, Clone, Default)]
+pub struct AnimGraphDebug {
+    pub entities: HashMap<Entity, Vec<GraphNodeSnapshot>>,
+}
+
+impl AnimGraphDebug {
+    /// 某个实体的节点快照；不是图实体返回 `None`。
+    pub fn states(&self, entity: Entity) -> Option<&[GraphNodeSnapshot]> {
+        self.entities.get(&entity).map(Vec::as_slice)
+    }
 }
 
 /// 一次 `animator_system` 调用里触发的事件（World 资源）。
@@ -838,6 +855,8 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
     let mut graph_runtimes = world
         .remove_resource::<AnimGraphRuntimes>()
         .unwrap_or_default();
+    // 调试快照只在调用方主动插入资源时维护（见 `AnimGraphDebug`）。
+    let mut graph_debug = world.remove_resource::<AnimGraphDebug>();
     let mut graph_entities: HashSet<Entity> = HashSet::new();
     // 状态机参数（项目侧写、引擎每帧读）。克隆一份：`take_trigger` 需要 `&mut`，
     // 而遍历实体时不能继续借用 World。
@@ -1300,7 +1319,18 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
     graph_runtimes
         .runtimes
         .retain(|entity, _| graph_entities.contains(entity));
+    if let Some(debug) = graph_debug.as_mut() {
+        debug.entities.clear();
+        for (entity, runtime) in &graph_runtimes.runtimes {
+            debug
+                .entities
+                .insert(*entity, runtime.evaluator.node_snapshots());
+        }
+    }
     world.insert_resource(graph_runtimes);
+    if let Some(debug) = graph_debug {
+        world.insert_resource(debug);
+    }
     world.insert_resource(AnimEvents { events });
     count
 }

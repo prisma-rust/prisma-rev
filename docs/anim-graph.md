@@ -160,6 +160,26 @@ FIFO 排队、单次播完自动接下一段，`stop` / `stop_after_current` 清
 根**旋转**增量目前仍然只记录、不消费：偏航要连同整条骨骼链一起扣掉才不会双转，
 留给 CharacterMovement 统一处理。
 
+## 实时调试数据（#560）
+
+调试叠加层 / 编辑器工具可以往 World 里插入一个 `AnimGraphDebug` 资源（默认不存在）：
+
+```rust
+world.insert_resource(AnimGraphDebug::default());
+// 每帧 animator_system 之后：
+if let Some(states) = world.get_resource::<AnimGraphDebug>().and_then(|d| d.states(entity)) {
+    for node in states {
+        // node.name / node.kind / node.time / node.state
+        // node.blending / node.blend_weight / node.cached
+    }
+}
+```
+
+资源存在时引擎才每帧重建快照（节点顺序与图一致，字符串会拷贝）；不存在时零开销。
+冻结 / 降频的图实体保留上一次快照，方便看到「停在哪」。`time` 是节点自己的本地时间，
+状态机节点的 `state` 是当前状态下标、`blending` / `blend_weight` 反映交叉淡入，
+`cached` 表示 `cached_pose` 节点是否已有缓存姿态。
+
 引擎侧项目代码通过 `AnimMontageRequests` 资源发请求（`MontageRequest::play` /
 `enqueue` / `stop` / `stop_after_current`，可带循环 / 速度 / 权重 / 开始时间）；
 `animator_system` 每帧消费一次，把剪辑路径解析成 `Montage` 注入对应实体的 Slot。
