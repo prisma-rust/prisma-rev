@@ -386,6 +386,41 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn nodes_can_be_duplicated_with_unique_names() {
+        let mut doc = json!({
+            "parameters": [],
+            "nodes": [
+                { "name": "walk", "type": "clip_player", "clip": "walk.ranim", "speed": 1.5 },
+                { "name": "out", "type": "output", "input": "walk" }
+            ]
+        });
+        let copy = duplicate_graph_node(&mut doc, "walk").expect("copies");
+        assert_eq!(copy, "walk_copy");
+        assert_eq!(doc["nodes"][2]["name"], "walk_copy");
+        assert_eq!(doc["nodes"][2]["clip"], "walk.ranim");
+        assert_eq!(doc["nodes"][2]["speed"].as_f64(), Some(1.5));
+        assert_eq!(doc["nodes"][1]["input"], "walk", "原引用不受影响");
+
+        let second = duplicate_graph_node(&mut doc, "walk").expect("copies again");
+        assert_eq!(second, "walk_copy2");
+        let third = duplicate_graph_node(&mut doc, "walk_copy").expect("copies a copy");
+        assert_eq!(third, "walk_copy_copy");
+    }
+
+    #[test]
+    fn the_output_node_cannot_be_duplicated() {
+        let mut doc = json!({
+            "nodes": [
+                { "name": "walk", "type": "clip_player", "clip": "walk.ranim" },
+                { "name": "out", "type": "output", "input": "walk" }
+            ]
+        });
+        assert!(duplicate_graph_node(&mut doc, "out").is_err());
+        assert!(duplicate_graph_node(&mut doc, "missing").is_err());
+        assert_eq!(doc["nodes"].as_array().unwrap().len(), 2, "失败不改文档");
+    }
+
+    #[test]
     fn a_graph_view_lists_parameters_links_and_the_output() {
         let view = parse_anim_graph_view(&json!({
             "parameters": [{ "name": "speed", "type": "float", "default": 1.5 }],
@@ -1326,6 +1361,54 @@ pub fn add_clip_node(document: &mut Value, name: &str, clip: &str) -> Result<(),
     }
     nodes.push(json!({ "name": name, "type": "clip_player", "clip": clip }));
     Ok(())
+}
+
+/// 复制一个节点，返回新名字。
+///
+/// 新名字在原名后加 `_copy` / `_copy2`…；其它字段（剪辑、坐标、inputs、bone mask）
+/// 原样保留，所以复制出来的节点自己就是合法的，接线仍然指向原来的上游。
+/// 输出节点不能复制（图里只能有一个 output）。
+pub fn duplicate_graph_node(document: &mut Value, name: &str) -> Result<String, String> {
+    let nodes = document
+        .get("nodes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "animation graph needs a `nodes` array".to_string())?;
+    let Some(source) = nodes
+        .iter()
+        .find(|node| node.get("name").and_then(Value::as_str) == Some(name))
+    else {
+        return Err(format!("unknown node '{name}'"));
+    };
+    if source
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind.eq_ignore_ascii_case("output"))
+    {
+        return Err(format!(
+            "node '{name}' is the graph output; a graph has exactly one"
+        ));
+    }
+    let existing: std::collections::HashSet<&str> = nodes
+        .iter()
+        .filter_map(|node| node.get("name").and_then(Value::as_str))
+        .collect();
+    let base = format!("{name}_copy");
+    let mut candidate = base.clone();
+    let mut suffix = 2;
+    while existing.contains(candidate.as_str()) {
+        candidate = format!("{base}{suffix}");
+        suffix += 1;
+    }
+    let mut copy = source.clone();
+    if !copy.is_object() {
+        return Err(format!("node '{name}' is malformed"));
+    }
+    copy["name"] = json!(candidate);
+    let Some(nodes) = document.get_mut("nodes").and_then(Value::as_array_mut) else {
+        return Err("animation graph needs a `nodes` array".to_string());
+    };
+    nodes.push(copy);
+    Ok(candidate)
 }
 
 /// 删除一个节点；输出节点、最后一个节点和被引用的节点不能直接删。
