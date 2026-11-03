@@ -1,59 +1,66 @@
-//! 数据导向作业形状的作业门面。
+//! `.Jobs`-shaped job facade.
 //!
-//! 引擎的 job 是 Burst 编译、由 `JobHandle` 显式 `Complete()` 的并行任务。
-//! Rust 端用标准库线程实现同样的**使用形状**：`Schedule` 立即返回
-//! [`JobHandle`]，`Complete()` 等待所有工作线程结束。
+//! Engine jobs are Burst-compiled parallel tasks completed explicitly through a
+//! `JobHandle`'s `Complete()`. The Rust mirror uses standard library threads to
+//! reproduce the same **usage shape**: `Schedule` returns a [`JobHandle`]
+//! immediately, and `Complete()` waits for all worker threads to finish.
 //!
-//! 命名对应（Rust 用 snake_case，括号内为 原名）：
-//! [`IJob::execute`]（`IJob.Execute`）、[`IJobParallelFor::execute`]
-//! （`IJobParallelFor.Execute(int)`）、[`JobHandle::complete`]（`JobHandle.Complete`）、
-//! [`schedule`]（`IJobExtensions.Schedule`）、
-//! [`schedule_parallel_for`]（`IJobParallelForExtensions.Schedule`）。
+//! Naming (Rust uses snake_case; the original name is in parentheses):
+//! [`IJob::execute`] (`IJob.Execute`), [`IJobParallelFor::execute`]
+//! (`IJobParallelFor.Execute(int)`), [`JobHandle::complete`]
+//! (`JobHandle.Complete`), [`schedule`] (`IJobExtensions.Schedule`),
+//! [`schedule_parallel_for`] (`IJobParallelForExtensions.Schedule`).
 //!
-//! 与引擎的差异：
-//! - 没有 Burst、`JobRanges`、`AtomicSafetyHandle`；并行 job 通过 `&self` 执行，
-//! 需要共享可写状态时用 `Atomic*` / `Mutex`（`NativeArray` + 安全属性）。
-//! - `IJobParallelFor.Execute` 的下标是 `usize`，不是引擎的 `int`。
-//! - 丢弃未 `complete()` 的 [`JobHandle`] 会分离线程（job 仍会跑完），不会自动等待。
+//! Differences from the engine:
+//! - No Burst, `JobRanges`, or `AtomicSafetyHandle`; parallel jobs run through
+//!   `&self`, and shared mutable state must use `Atomic*` / `Mutex`
+//!   (`NativeArray` + safety attributes in the engine).
+//! - `IJobParallelFor.Execute` takes a `usize` index, not the engine's `int`.
+//! - Dropping a [`JobHandle`] without `complete()` detaches the threads (the
+//!   job still runs to completion); it does not wait automatically.
 
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-/// `IJob`：只执行一次的作业。
+/// `IJob`: a job that runs exactly once.
 pub trait IJob {
-    /// 执行作业（`IJob.Execute`）。
+    /// Runs the job (`IJob.Execute`).
     fn execute(&self);
 }
 
-/// `IJobParallelFor`：按下标并行执行的作业。
+/// `IJobParallelFor`: a job run in parallel per index.
 pub trait IJobParallelFor {
-    /// 执行单个下标（`IJobParallelFor.Execute(int index)`）。
+    /// Runs a single index (`IJobParallelFor.Execute(int index)`).
     fn execute(&self, index: usize);
 }
 
-/// `IJobFor`：按下标执行、但不要求固定 batch 的作业。
+/// `IJobFor`: a per-index job that does not require a fixed batch.
 ///
-/// 它是 [`IJobParallelFor`] 的扩展 trait；实现者需要同时实现两者。
+/// It is an extension trait of [`IJobParallelFor`]; implementors must implement
+/// both.
 pub trait IJobFor: IJobParallelFor {}
 
-/// `JobHandle`：作业完成句柄。
+/// `JobHandle`: completion handle for a job.
 ///
-/// 调度函数立即返回该句柄；[`complete`](Self::complete) 等待所有工作线程结束。
-/// 句柄被丢弃而没有 `complete()` 时线程会分离，作业不会取消。
+/// Scheduling functions return it immediately; [`complete`](Self::complete)
+/// waits for all worker threads. Dropping the handle without `complete()`
+/// detaches the threads; the job is not cancelled.
 #[derive(Debug, Default)]
 pub struct JobHandle {
     threads: Vec<JoinHandle<()>>,
 }
 
 impl JobHandle {
-    /// 一个已经完成的空句柄（`default(JobHandle)`，但已处于完成态）。
+    /// An empty handle that is already complete (`default(JobHandle)`, but in
+    /// the completed state).
     pub fn completed() -> Self {
         Self::default()
     }
 
-    /// 等待所有关联作业结束（`JobHandle.Complete`）。
+    /// Waits for all associated jobs to finish (`JobHandle.Complete`).
     ///
-    /// 任一作业线程 panic 时，等其余线程结束后把该 panic 继续抛给调用方。
+    /// If any job thread panics, the remaining threads are joined first and the
+    /// panic is then resumed on the caller.
     pub fn complete(mut self) {
         let mut panic = None;
         for thread in self.threads.drain(..) {
@@ -66,14 +73,15 @@ impl JobHandle {
         }
     }
 
-    /// 合并两个句柄，完成返回的句柄会等待两者（
-    /// `JobHandle.CombineDependencies`）。
+    /// Combines two handles; completing the returned handle waits for both
+    /// (`JobHandle.CombineDependencies`).
     pub fn combine(mut self, other: JobHandle) -> Self {
         self.threads.extend(other.threads);
         self
     }
 
-    /// 合并一组句柄（`JobHandle.CombineDependencies(NativeArray<JobHandle>)`）。
+    /// Combines a set of handles
+    /// (`JobHandle.CombineDependencies(NativeArray<JobHandle>)`).
     pub fn combine_dependencies(handles: impl IntoIterator<Item = JobHandle>) -> Self {
         let mut combined = Self::completed();
         for handle in handles {
@@ -87,7 +95,7 @@ impl JobHandle {
     }
 }
 
-/// 调度一个 [`IJob`] 到工作线程（`IJobExtensions.Schedule`）。
+/// Schedules an [`IJob`] on a worker thread (`IJobExtensions.Schedule`).
 pub fn schedule<J>(job: J) -> JobHandle
 where
     J: IJob + Send + 'static,
@@ -95,15 +103,15 @@ where
     JobHandle::from_threads(vec![std::thread::spawn(move || job.execute())])
 }
 
-/// 按 `batch_size` 分批并行调度 [`IJobParallelFor`]
-/// （`IJobParallelForExtensions.Schedule(job, length, batchSize)`）。
+/// Schedules an [`IJobParallelFor`] in batches of `batch_size`
+/// (`IJobParallelForExtensions.Schedule(job, length, batchSize)`).
 ///
-/// 每个 batch 是分配工作的最小单位；实际工作线程数取
-/// `min(batch 数, 可用并行度)`。
+/// Each batch is the smallest unit of work distribution; the actual worker
+/// count is `min(batch count, available parallelism)`.
 ///
 /// # Panics
 ///
-/// `batch_size == 0` 时 panic（与 抛异常一致）。
+/// Panics when `batch_size == 0` (matching the engine's exception).
 pub fn schedule_parallel_for<J>(job: J, length: usize, batch_size: usize) -> JobHandle
 where
     J: IJobParallelFor + Send + Sync + 'static,
@@ -132,11 +140,11 @@ where
     JobHandle::from_threads(threads)
 }
 
-/// 调度一个 [`IJobFor`]，每个下标独立执行
-/// （`IJobForExtensions.Schedule`）。
+/// Schedules an [`IJobFor`], with each index run independently
+/// (`IJobForExtensions.Schedule`).
 ///
-/// 等价于 `batch_size = 1` 的 [`schedule_parallel_for`]，但保留引擎的
-/// `IJobFor` 入口形状。
+/// Equivalent to [`schedule_parallel_for`] with `batch_size = 1`, but keeps the
+/// engine's `IJobFor` entry shape.
 pub fn schedule_for<J>(job: J, length: usize) -> JobHandle
 where
     J: IJobFor + Send + Sync + 'static,
@@ -150,13 +158,15 @@ fn available_parallelism() -> usize {
         .unwrap_or(1)
 }
 
-/// 用作用域线程把 `items` 按块分给多个线程并行处理。
+/// Splits `items` into chunks processed in parallel by scoped threads.
 ///
-/// 与 [`schedule_parallel_for`] 的区别是**独占**语义：每块拿到自己的
-/// `&mut [T]`，不需要 `Arc<Mutex<_>>` 或原子量，也不可能有两个线程同时碰同一个
-/// 元素。适合「每个元素本来就有独立可变状态」的批处理（例如每个角色自己的
-/// 动画求值器）。`max_threads` 是上限，实际线程数还会被可用并行度和
-/// `items` 长度压住；只有一个线程时直接顺序执行，不建线程。
+/// Unlike [`schedule_parallel_for`], this has **exclusive** semantics: each
+/// chunk gets its own `&mut [T]`, so no `Arc<Mutex<_>>` or atomics are needed
+/// and two threads can never touch the same element. It fits batch work where
+/// each element already owns mutable state (for example, per-character
+/// animation evaluators). `max_threads` is an upper bound; the actual count is
+/// also limited by available parallelism and the length of `items`. With a
+/// single thread it runs sequentially without spawning.
 pub fn scoped_parallel_chunks<T, F>(items: &mut [T], max_threads: usize, work: F)
 where
     T: Send,

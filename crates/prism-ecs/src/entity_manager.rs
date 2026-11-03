@@ -1,108 +1,112 @@
-//! 数据导向（`.Entities.EntityManager`）风格的 [`World`] 门面。
+//! DOTS `.Entities.EntityManager`-shaped [`World`] facade.
 //!
-//! 这是**加法式对齐层**：核心数据结构仍是 [`World`] / [`Entity`]，此模块只是把
-//! 数据导向 的“结构化变更”入口换成一层的命名，方便熟悉 DOTS 的人上手，
-//! 也让未来可能的 `SystemBase` 代码有统一入口。
+//! This is an **additive alignment layer**: the core data structures remain
+//! [`World`] / [`Entity`]; this module only exposes the engine's structural
+//! change entry points under familiar names, so people coming from DOTS have a
+//! consistent entry point and future `SystemBase`-style code has one place to
+//! call.
 //!
-//! 命名对应（Rust 用 snake_case，括号内为 DOTS 原名）：
-//! [`create_entity`](EntityManager::create_entity)（`CreateEntity`）、
-//! [`destroy_entity`](EntityManager::destroy_entity)（`DestroyEntity`）、
-//! [`add_component`](EntityManager::add_component)（`AddComponent`/`AddComponentData`）、
-//! [`set_component_data`](EntityManager::set_component_data)（`SetComponentData`）、
-//! [`get_component_data`](EntityManager::get_component_data)（`GetComponentData`）、
-//! [`has_component`](EntityManager::has_component)（`HasComponent`）、
-//! [`remove_component`](EntityManager::remove_component)（`RemoveComponent`）、
-//! [`exists`](EntityManager::exists)（`Exists`）、
-//! [`set_enabled`](EntityManager::set_enabled)（`SetEnabled`）。
+//! Naming (Rust uses snake_case; the DOTS name is in parentheses):
+//! [`create_entity`](EntityManager::create_entity) (`CreateEntity`),
+//! [`destroy_entity`](EntityManager::destroy_entity) (`DestroyEntity`),
+//! [`add_component`](EntityManager::add_component) (`AddComponent`/`AddComponentData`),
+//! [`set_component_data`](EntityManager::set_component_data) (`SetComponentData`),
+//! [`get_component_data`](EntityManager::get_component_data) (`GetComponentData`),
+//! [`has_component`](EntityManager::has_component) (`HasComponent`),
+//! [`remove_component`](EntityManager::remove_component) (`RemoveComponent`),
+//! [`exists`](EntityManager::exists) (`Exists`),
+//! [`set_enabled`](EntityManager::set_enabled) (`SetEnabled`).
 
 use crate::{Component, Entity, World};
 
-/// [`World`] 的可变借用外观，提供 DOTS `EntityManager` 形状的结构化变更 API。
+/// Mutable borrow facade over [`World`] exposing the DOTS
+/// `EntityManager`-shaped structural-change API.
 ///
-/// `EntityManager` 在 DOTS 里是“结构化变更”（增删组件、创建/销毁实体）的唯一入口；
-/// 这里同样以 `&mut World` 承载，避免与只读查询语义混淆。
+/// In DOTS, `EntityManager` is the only entry point for structural changes
+/// (adding/removing components, creating/destroying entities); here it likewise
+/// holds `&mut World`, keeping it separate from read-only query semantics.
 pub struct EntityManager<'w> {
     world: &'w mut World,
 }
 
 impl<'w> EntityManager<'w> {
-    /// 借用 `world` 构造外观（DOTS：`World.EntityManager`）。
+    /// Borrows `world` to construct the facade (DOTS: `World.EntityManager`).
     pub fn new(world: &'w mut World) -> Self {
         Self { world }
     }
 
-    /// 只读访问底层 [`World`]。
+    /// Read-only access to the underlying [`World`].
     pub fn world(&self) -> &World {
         self.world
     }
 
-    /// 可变访问底层 [`World`]。
+    /// Mutable access to the underlying [`World`].
     pub fn world_mut(&mut self) -> &mut World {
         self.world
     }
 
-    /// 消费外观，取回底层 [`World`] 的借用。
+    /// Consumes the facade and returns the borrow of the underlying [`World`].
     pub fn into_world(self) -> &'w mut World {
         self.world
     }
 
-    // -- 实体生命周期 -------------------------------------------------------
-
-    /// 创建实体（DOTS：`EntityManager.CreateEntity`）。
+    /// Creates an entity (DOTS: `EntityManager.CreateEntity`).
     pub fn create_entity(&mut self) -> Entity {
         self.world.spawn()
     }
 
-    /// 销毁实体（DOTS：`EntityManager.DestroyEntity`）。
+    /// Destroys an entity (DOTS: `EntityManager.DestroyEntity`).
     pub fn destroy_entity(&mut self, entity: Entity) {
         self.world.despawn(entity);
     }
 
-    /// 实体是否存活（DOTS：`EntityManager.Exists`）。
+    /// Whether the entity is alive (DOTS: `EntityManager.Exists`).
     pub fn exists(&self, entity: Entity) -> bool {
         self.world.is_alive(entity)
     }
 
-    /// 实体是否启用（DOTS：`EntityManager.IsEnabled`）。
+    /// Whether the entity is enabled (DOTS: `EntityManager.IsEnabled`).
     ///
-    /// 对应本项目的 [`World::is_active`]；被隐藏的实体会跳过常规渲染查询。
+    /// Maps to this project's [`World::is_active`]; hidden entities are skipped
+    /// by regular render queries.
     pub fn is_enabled(&self, entity: Entity) -> bool {
         self.world.is_active(entity)
     }
 
-    /// 设置实体启用状态（DOTS：`EntityManager.SetEnabled`）。
+    /// Sets the entity's enabled state (DOTS: `EntityManager.SetEnabled`).
     pub fn set_enabled(&mut self, entity: Entity, value: bool) {
         self.world.set_active(entity, value);
     }
 
-    // -- 组件 ---------------------------------------------------------------
-
-    /// 添加/覆盖一个组件（DOTS：`AddComponent` / `AddComponentData`）。
+    /// Adds or overwrites a component (DOTS: `AddComponent` /
+    /// `AddComponentData`).
     pub fn add_component<T: Component>(&mut self, entity: Entity, component: T) {
         self.world.insert(entity, component);
     }
 
-    /// 覆盖已存在实体的组件数据（DOTS：`SetComponentData`）。
+    /// Overwrites the component data of an existing entity (DOTS:
+    /// `SetComponentData`).
     pub fn set_component_data<T: Component>(&mut self, entity: Entity, component: T) {
         self.world.insert(entity, component);
     }
 
-    /// 读取组件（DOTS：`GetComponentData`）。
+    /// Reads a component (DOTS: `GetComponentData`).
     pub fn get_component_data<T: Component>(&self, entity: Entity) -> Option<&T> {
         self.world.get::<T>(entity)
     }
 
-    /// 可变读取组件（DOTS：`GetComponentData` 的引用形式）。
+    /// Mutably reads a component (the reference form of DOTS
+    /// `GetComponentData`).
     pub fn get_component_data_mut<T: Component>(&mut self, entity: Entity) -> Option<&mut T> {
         self.world.get_mut::<T>(entity)
     }
 
-    /// 是否持有该组件（DOTS：`HasComponent`）。
+    /// Whether the entity has this component (DOTS: `HasComponent`).
     pub fn has_component<T: Component>(&self, entity: Entity) -> bool {
         self.world.get::<T>(entity).is_some()
     }
 
-    /// 移除组件并返回其数据（DOTS：`RemoveComponent`）。
+    /// Removes a component and returns its data (DOTS: `RemoveComponent`).
     pub fn remove_component<T: Component>(&mut self, entity: Entity) -> Option<T> {
         self.world.remove::<T>(entity)
     }
