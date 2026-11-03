@@ -426,6 +426,10 @@ cook 阶段把 glTF 的 `skins` / `JOINTS_0` / `WEIGHTS_0` / `animations` 烘成
   相机来自场景里第一个 `enabled` 的 `Camera`（读 `LocalToWorld`，没有就读 `LocalTransform`），
   没有相机时 LOD 不生效（编辑器预览不会因为相机没摆好而停住）。骨骼子集 / root-only 是后续档位。
 - **`SkeletonRoot`**：检查器里画骨骼树（`CollapsingHeader` 按父链缩进，成环有护栏）。
+- **混合参数平滑（`blend_smoothing`，#560 P1）**：默认 `0`，直接使用游戏侧写入的
+  `blend_parameter` / `blend_parameter_y`；大于 0 时按指数 `1 - exp(-dt / tau)` 趋近目标，
+  `tau` 就是该字段（秒）。首帧直接落在目标上，参数非有限或关闭平滑时回到直通。
+  只影响混合空间采样，不改组件里的参数值（游戏侧仍然看到自己写的数）。
 - **一维混合空间**：`Animator` 的 `blend_clip_paths` / `blend_positions` / `blend_parameter`
   是一条参数轴（速度 0 → 走 → 跑 这种）。填了 ≥2 条剪辑、且 `blend_positions` 与之一一对应
   时，姿态由 `blend_parameter` 在轴上插值得到，**优先于** `clip_path`；参数超出范围夹到两端。

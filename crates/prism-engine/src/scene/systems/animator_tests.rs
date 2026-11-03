@@ -568,6 +568,7 @@ fn blend_weights_are_clamped_and_need_both_a_source_and_a_duration() {
         blend_total: None,
         root_motion: RootMotionDelta::default(),
         root_previous: None,
+        smoothed_blend: None,
     };
     assert_eq!(head.blend_weight(1.0), Some(0.0));
     head.blend_elapsed = 0.5;
@@ -603,6 +604,68 @@ fn use_blend_space(world: &mut World, entity: Entity, parameter: f32) {
     animator.blend_parameter = parameter;
     animator.time = 0.0;
     animator.playing = false;
+}
+
+#[test]
+fn blend_parameter_smoothing_eases_towards_the_target() {
+    let (mut world, entity) = world_with_animator("");
+    install_bent90(&mut world);
+    use_blend_space(&mut world, entity, 0.0);
+    world.get_mut::<Animator>(entity).unwrap().blend_smoothing = 0.5;
+
+    animator_system(&mut world, 0.0);
+    assert_eq!(
+        world
+            .get::<AnimatorPlayhead>(entity)
+            .unwrap()
+            .smoothed_blend,
+        Some([0.0, 0.0]),
+        "首帧直接落在目标上"
+    );
+
+    world.get_mut::<Animator>(entity).unwrap().blend_parameter = 1.0;
+    animator_system(&mut world, 0.1);
+    let smoothed = world
+        .get::<AnimatorPlayhead>(entity)
+        .unwrap()
+        .smoothed_blend
+        .expect("smoothing on");
+    assert!(
+        smoothed[0] > 0.0 && smoothed[0] < 1.0,
+        "一帧只走一部分，smoothed {smoothed:?}"
+    );
+    let tip = child_tip(&world, entity);
+    assert!(tip.x > 1.5, "还没到 90°，tip {tip:?}");
+
+    for _ in 0..120 {
+        animator_system(&mut world, 0.1);
+    }
+    let smoothed = world
+        .get::<AnimatorPlayhead>(entity)
+        .unwrap()
+        .smoothed_blend
+        .expect("smoothing on");
+    assert!((smoothed[0] - 1.0).abs() < 0.01, "逼近目标，{smoothed:?}");
+    let tip = child_tip(&world, entity);
+    assert!((tip.x - 1.0).abs() < 0.05, "最终到 90°，tip {tip:?}");
+}
+
+#[test]
+fn smoothing_zero_uses_the_written_parameter_immediately() {
+    let (mut world, entity) = world_with_animator("");
+    install_bent90(&mut world);
+    use_blend_space(&mut world, entity, 1.0);
+    animator_system(&mut world, 0.1);
+    assert_eq!(
+        world
+            .get::<AnimatorPlayhead>(entity)
+            .unwrap()
+            .smoothed_blend,
+        None,
+        "0 = 不平滑"
+    );
+    let tip = child_tip(&world, entity);
+    assert!((tip.x - 1.0).abs() < 1e-3, "参数直接生效，tip {tip:?}");
 }
 
 #[test]

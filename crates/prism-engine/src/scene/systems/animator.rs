@@ -614,6 +614,8 @@ pub struct AnimatorPlayhead {
     pub root_motion: RootMotionDelta,
     /// 上一帧最终姿态的根关节局部变换，用来算下一帧的 delta。
     pub root_previous: Option<prism_anim::JointTransform>,
+    /// 平滑后的混合空间参数（x, y）；`None` = 没开平滑或参数非有限。
+    pub smoothed_blend: Option<[f32; 2]>,
 }
 
 impl AnimatorPlayhead {
@@ -643,6 +645,32 @@ impl AnimatorPlayhead {
         };
         self.root_previous = Some(now);
     }
+}
+
+/// 混合参数的指数平滑（#560 P1）。`dt = 0` 时返回当前值（首帧直接落在目标上）。
+fn smoothed_blend_parameters(
+    playhead: &mut AnimatorPlayhead,
+    animator: &Animator,
+    dt: f32,
+) -> (f32, f32) {
+    let target = [animator.blend_parameter, animator.blend_parameter_y];
+    let tau = animator.blend_smoothing;
+    if !(tau.is_finite() && tau > 0.0) || !target[0].is_finite() || !target[1].is_finite() {
+        playhead.smoothed_blend = None;
+        return (target[0], target[1]);
+    }
+    let current = playhead.smoothed_blend.unwrap_or(target);
+    let alpha = if dt.is_finite() && dt > 0.0 {
+        1.0 - (-dt / tau).exp()
+    } else {
+        0.0
+    };
+    let next = [
+        current[0] + (target[0] - current[0]) * alpha,
+        current[1] + (target[1] - current[1]) * alpha,
+    ];
+    playhead.smoothed_blend = Some(next);
+    (next[0], next[1])
 }
 
 /// 两个四元数之间的绕 Y 偏航差（最短路径，弧度）。
@@ -853,6 +881,7 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
                             blend_total: None,
                             root_motion: RootMotionDelta::default(),
                             root_previous: None,
+                            smoothed_blend: None,
                         },
                     );
                     playhead.clip_path = ANIM_GRAPH_KEY.into();
@@ -1021,6 +1050,7 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
                 blend_total: transition_duration,
                 root_motion: RootMotionDelta::default(),
                 root_previous: None,
+                smoothed_blend: None,
             },
             None => AnimatorPlayhead {
                 clip_path: playback_key.clone(),
@@ -1032,6 +1062,7 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
                 blend_total: transition_duration,
                 root_motion: RootMotionDelta::default(),
                 root_previous: None,
+                smoothed_blend: None,
             },
         };
         // 混合空间没有自己的时长：取最长的那条剪辑，短的自然会循环追上。
@@ -1086,6 +1117,7 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
                 }
             }
         }
+        let (blend_x, blend_y) = smoothed_blend_parameters(&mut playhead, animator, dt);
         let mut pose = skeleton.rest_pose();
         match &clip {
             Some(clip) => {
@@ -1099,15 +1131,11 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
                 };
                 match &mut space_2d {
                     Some(space) => {
-                        space.evaluate_into(
-                            [animator.blend_parameter, animator.blend_parameter_y],
-                            phase,
-                            &mut pose,
-                        );
+                        space.evaluate_into([blend_x, blend_y], phase, &mut pose);
                     }
                     None => {
                         let mut space = BlendSpace1D::new(samples.clone(), skeleton.rest_pose());
-                        space.evaluate_into(animator.blend_parameter, phase, &mut pose);
+                        space.evaluate_into(blend_x, phase, &mut pose);
                     }
                 }
             }
