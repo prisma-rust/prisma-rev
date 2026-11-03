@@ -551,6 +551,42 @@ pub fn add_graph_input(document: &mut Value, target: &str, source: &str) -> Resu
     Ok(())
 }
 
+/// 设置一条连线的权重（0..=1）。
+///
+/// 作者写字符串 `"aim"` 时自动升级成 `{ "node": "aim", "weight": w }`；已经是对象
+/// 的连线只改 `weight`，保留 `bone_mask` 等其它字段。
+pub fn set_graph_input_weight(
+    document: &mut Value,
+    target: &str,
+    index: usize,
+    weight: f32,
+) -> Result<(), String> {
+    if !weight.is_finite() || !(0.0..=1.0).contains(&weight) {
+        return Err("link weight must be finite and between 0 and 1".to_string());
+    }
+    let Some(node) = find_node_mut(document, target) else {
+        return Err(format!("unknown target node '{target}'"));
+    };
+    let Some(inputs) = node.get_mut("inputs").and_then(Value::as_array_mut) else {
+        return Err(format!("node '{target}' has no editable `inputs` array"));
+    };
+    let Some(input) = inputs.get_mut(index) else {
+        return Err(format!("node '{target}' has no input #{index}"));
+    };
+    match input {
+        Value::String(name) => {
+            let name = name.clone();
+            *input = json!({ "node": name, "weight": weight });
+            Ok(())
+        }
+        Value::Object(map) => {
+            map.insert("weight".to_string(), json!(weight));
+            Ok(())
+        }
+        _ => Err(format!("node '{target}' input #{index} is malformed")),
+    }
+}
+
 /// 删除图节点 `inputs` 数组里的第 `index` 条连线。
 pub fn remove_graph_input(document: &mut Value, target: &str, index: usize) -> Result<(), String> {
     let Some(node) = find_node_mut(document, target) else {
@@ -714,5 +750,48 @@ mod transition_tests {
         assert!(add_state_transition(&mut doc, Some("Idle"), "Idle").is_err());
         assert!(add_state_transition(&mut doc, Some("Idle"), "Run").is_err());
         assert!(remove_state_transition(&mut doc, 9).is_err());
+    }
+}
+
+#[cfg(test)]
+mod weight_tests {
+    use super::*;
+
+    fn document() -> Value {
+        json!({
+            "nodes": [
+                { "name": "a", "type": "clip_player", "clip": "a.ranim" },
+                { "name": "b", "type": "clip_player", "clip": "b.ranim" },
+                { "name": "stack", "type": "blend_stack",
+                  "inputs": ["a", { "node": "b", "weight": 0.5, "bone_mask": ["spine"] }] }
+            ]
+        })
+    }
+
+    #[test]
+    fn a_string_link_is_upgraded_to_an_object_with_the_new_weight() {
+        let mut doc = document();
+        set_graph_input_weight(&mut doc, "stack", 0, 0.25).expect("sets");
+        assert_eq!(
+            doc["nodes"][2]["inputs"][0],
+            json!({ "node": "a", "weight": 0.25 })
+        );
+    }
+
+    #[test]
+    fn an_object_link_keeps_its_other_fields() {
+        let mut doc = document();
+        set_graph_input_weight(&mut doc, "stack", 1, 0.75).expect("sets");
+        assert_eq!(doc["nodes"][2]["inputs"][1]["weight"], 0.75);
+        assert_eq!(doc["nodes"][2]["inputs"][1]["bone_mask"], json!(["spine"]));
+    }
+
+    #[test]
+    fn invalid_weights_and_indices_are_rejected() {
+        let mut doc = document();
+        assert!(set_graph_input_weight(&mut doc, "stack", 0, 2.0).is_err());
+        assert!(set_graph_input_weight(&mut doc, "stack", 0, f32::NAN).is_err());
+        assert!(set_graph_input_weight(&mut doc, "stack", 9, 0.5).is_err());
+        assert!(set_graph_input_weight(&mut doc, "missing", 0, 0.5).is_err());
     }
 }

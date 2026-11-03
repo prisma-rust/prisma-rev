@@ -515,7 +515,7 @@ cook 时归一化到 `[0, 1)`、排序去重，写进 `.ranim` v3；运行时
 编辑器提供 **Animation Graph** 面板（Window → General）：选中 `.animgraph.json` 或
 `.statemachine.json` 后显示参数、节点 / 连线、输出，以及状态、转移和可读条件。
 图节点可以在画布上拖动，位置保存到 `<graph>.layout.json`（不改图本身）；节点卡片里可以增删
-`inputs` 连线（`+ Link` / `×`），保存后直接写回 `.animgraph.json`。使用单数 `input` 的链式节点
+`inputs` 连线（`+ Link` / `×`），每条连线的 `w` 可以直接拖拽调 0..1 权重，保存后写回 `.animgraph.json`。使用单数 `input` 的链式节点
 仍需手改 JSON。状态机视图支持 `+ Transition`（任意状态 / 指定 from → to）和 `× Remove transition`，
 保存回 `.statemachine.json`；条件编辑仍是后续。视口里直接拖关节做 IK（P2 的 IK 另立）、Notify 的编写界面
 也还没做。
