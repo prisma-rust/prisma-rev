@@ -477,8 +477,10 @@ for event in world.get_resource::<AnimEvents>().map(|e| e.drain()).unwrap_or_def
   解析失败会让 build 失败**，名字对不上任何动画会 warn —— 打错的事件表不该静默消失。
 - 编辑器可以编辑事件表：在资产面板选中 `assets/<mesh>.skinning/notifies.json` 后打开
   Window → General → Animation Graph，按剪辑列出每条事件（时间 DragValue + 名字文本框，
-  失焦写回），`×` 删除，`+ Notify` 草稿表单可以给已有或新的剪辑追加一条。保存后由松散资产
-  热重载重新 cook，`.ranim` 里的 v3 事件表随之更新。
+  失焦写回），`×` 删除，`+ Notify` 草稿表单可以给已有或新的剪辑追加一条。每个剪辑上方还有
+  一条时间轴：金色圆点是事件，悬停显示「名字 @ 秒数」，左右拖动直接改时间（量化到 0.01s，
+  夹在 0..=窗口长度，窗口长度按最晚事件自动取 ≥2s），和 DragValue 共用同一个写回路径。
+  保存后由松散资产热重载重新 cook，`.ranim` 里的 v3 事件表随之更新。
 
 **同步标记（Sync marker）**：走路 / 跑步循环的脚落地相位不同，混合时可以按标记对齐。
 作者写侧车 `assets/<mesh>.skinning/sync_markers.json`，键是 glTF 动画名，值是归一化相位：

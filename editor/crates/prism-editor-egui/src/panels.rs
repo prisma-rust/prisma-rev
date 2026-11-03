@@ -5920,6 +5920,89 @@ fn draw_notifies_view(
                 .strong()
                 .size(10.0),
         );
+        let span = clip
+            .entries
+            .iter()
+            .map(|entry| entry.time)
+            .fold(2.0_f32, f32::max)
+            .max(2.0)
+            * 1.1;
+        let width = ui.available_width().clamp(140.0, 520.0);
+        let (track, painter) =
+            ui.allocate_painter(Vec2::new(width, 20.0), egui::Sense::click_and_drag());
+        let rect = track.rect;
+        painter.rect_filled(rect, 3.0, Color32::from_rgb(26, 28, 32));
+        let inset = 5.0;
+        let left = rect.left() + inset;
+        let usable = (rect.width() - inset * 2.0).max(1.0);
+        let y = rect.center().y;
+        painter.line_segment(
+            [egui::pos2(left, y), egui::pos2(left + usable, y)],
+            egui::Stroke::new(1.0, Color32::from_rgb(58, 63, 72)),
+        );
+        painter.text(
+            egui::pos2(left + usable, rect.top() + 1.0),
+            egui::Align2::RIGHT_TOP,
+            format!("{span:.1}s"),
+            egui::FontId::monospace(8.0),
+            Color32::from_rgb(110, 116, 126),
+        );
+        let x_of = |time: f32| left + (time / span).clamp(0.0, 1.0) * usable;
+        if track.drag_started() {
+            edit.notify_drag = track
+                .interact_pointer_pos()
+                .and_then(|pos| {
+                    prism_editor_core::nearest_notify_index(
+                        &clip.entries,
+                        pos.x,
+                        left,
+                        usable,
+                        span,
+                        8.0,
+                    )
+                })
+                .map(|index| (clip.clip.clone(), index));
+        }
+        if track.dragged() {
+            if let (Some(pos), Some((owner, index))) =
+                (track.interact_pointer_pos(), edit.notify_drag.as_ref())
+            {
+                if owner == &clip.clip {
+                    if let Some(entry) = clip.entries.get(*index) {
+                        let time = prism_editor_core::notify_time_at(pos.x, left, usable, span);
+                        time_edits.push((clip.clip.clone(), *index, time, entry.name.clone()));
+                    }
+                }
+            }
+        }
+        if track.drag_stopped() {
+            edit.notify_drag = None;
+        }
+        let hovered = track.hover_pos().and_then(|pos| {
+            prism_editor_core::nearest_notify_index(&clip.entries, pos.x, left, usable, span, 8.0)
+        });
+        for (index, entry) in clip.entries.iter().enumerate() {
+            let active = edit
+                .notify_drag
+                .as_ref()
+                .is_some_and(|(owner, slot)| owner == &clip.clip && *slot == index);
+            let radius = if active || hovered == Some(index) {
+                4.5
+            } else {
+                3.5
+            };
+            painter.circle_filled(
+                egui::pos2(x_of(entry.time), y),
+                radius,
+                Color32::from_rgb(214, 178, 74),
+            );
+        }
+        if let Some(entry) = hovered.and_then(|index| clip.entries.get(index)) {
+            track.clone().on_hover_text(format!(
+                "{} @ {:.2}s — drag to retime",
+                entry.name, entry.time
+            ));
+        }
         for (index, entry) in clip.entries.iter().enumerate() {
             ui.horizontal(|ui| {
                 let mut time = entry.time;
@@ -6136,6 +6219,8 @@ pub struct AnimGraphEditState {
     pub notify_name: Option<(String, usize, String)>,
     /// 新增 Notify 草稿：(剪辑, time, 名字)。
     pub notify_draft: Option<(String, f32, String)>,
+    /// 正在拖拽的 Notify 标记：(剪辑, 下标)。
+    pub notify_drag: Option<(String, usize)>,
 }
 
 fn is_clip_player(kind: &str) -> bool {
