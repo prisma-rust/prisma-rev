@@ -1557,6 +1557,65 @@ pub fn add_state_transition(
     Ok(())
 }
 
+/// 改一条转移的起点 / 终点状态；`from = None` 表示任意状态。
+///
+/// 状态名必须存在、不能自连，也不能改出一条与现有转移完全相同的 `(from, to)`
+/// （重复转移在运行时只会永远命中第一条，没有意义）。其它字段原样保留。
+pub fn set_transition_states(
+    document: &mut Value,
+    index: usize,
+    from: Option<&str>,
+    to: &str,
+) -> Result<(), String> {
+    let states: Vec<String> = document
+        .get("states")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|state| state.get("name").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect();
+    if !states.iter().any(|name| name == to) {
+        return Err(format!("unknown target state '{to}'"));
+    }
+    if let Some(from) = from {
+        if !states.iter().any(|name| name == from) {
+            return Err(format!("unknown source state '{from}'"));
+        }
+        if from == to {
+            return Err("a transition cannot start and end on the same state".to_string());
+        }
+    }
+    let transitions = document
+        .get("transitions")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "state machine has no editable `transitions` array".to_string())?;
+    if index >= transitions.len() {
+        return Err(format!("state machine has no transition #{index}"));
+    }
+    for (other_index, transition) in transitions.iter().enumerate() {
+        if other_index == index {
+            continue;
+        }
+        let other_from = transition
+            .get("from")
+            .and_then(Value::as_str)
+            .filter(|from| *from != "*" && !from.eq_ignore_ascii_case("any"));
+        let other_to = transition.get("to").and_then(Value::as_str);
+        if other_to == Some(to) && other_from == from {
+            return Err(format!(
+                "a transition from '{}' to '{to}' already exists",
+                from.unwrap_or("any")
+            ));
+        }
+    }
+    let transition = find_transition_mut(document, index)?;
+    transition["from"] = json!(from.unwrap_or("*"));
+    transition["to"] = json!(to);
+    Ok(())
+}
+
 /// 删除状态机 `transitions` 数组里的第 `index` 条转移。
 pub fn remove_state_transition(document: &mut Value, index: usize) -> Result<(), String> {
     let Some(transitions) = document
@@ -2041,6 +2100,32 @@ mod transition_tests {
         assert!(add_state_transition(&mut doc, Some("Idle"), "Idle").is_err());
         assert!(add_state_transition(&mut doc, Some("Idle"), "Run").is_err());
         assert!(remove_state_transition(&mut doc, 9).is_err());
+    }
+
+    #[test]
+    fn transitions_can_be_retargeted() {
+        let mut doc = document();
+        set_transition_states(&mut doc, 0, Some("Run"), "Jump").expect("retargets");
+        assert_eq!(doc["transitions"][0]["from"], "Run");
+        assert_eq!(doc["transitions"][0]["to"], "Jump");
+        assert_eq!(doc["transitions"][0]["duration"].as_f64(), Some(0.2));
+
+        set_transition_states(&mut doc, 0, None, "Idle").expect("any state");
+        assert_eq!(doc["transitions"][0]["from"], "*");
+        assert_eq!(doc["transitions"][0]["to"], "Idle");
+    }
+
+    #[test]
+    fn retargeting_rejects_bad_names_self_links_and_duplicates() {
+        let mut doc = document();
+        add_state_transition(&mut doc, Some("Run"), "Jump").expect("adds");
+        assert!(set_transition_states(&mut doc, 0, Some("Idle"), "Missing").is_err());
+        assert!(set_transition_states(&mut doc, 0, Some("Missing"), "Run").is_err());
+        assert!(set_transition_states(&mut doc, 0, Some("Run"), "Run").is_err());
+        assert!(set_transition_states(&mut doc, 1, Some("Idle"), "Run").is_err());
+        assert!(set_transition_states(&mut doc, 9, None, "Run").is_err());
+        set_transition_states(&mut doc, 0, Some("Idle"), "Run").expect("same pair is fine");
+        assert_eq!(doc["transitions"][0]["from"], "Idle");
     }
 }
 
