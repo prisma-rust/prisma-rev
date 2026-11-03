@@ -287,8 +287,10 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
   sidecar 的资产生成 `<path>.rmeta`（`{ "guid": "<32 hex>", "importer": "..." }`）；
   已有且有效的 GUID 永不重写，损坏的按缺失处理。扫描会跳过 `.rmeta`（它不是可导入
   资产），资产详情里的 GUID 优先显示 sidecar 的值，没有才回落到旧的路径哈希；
-  重命名 / 移动文件时 sidecar 跟着走，删除时一起删。`.scene.json` 里的 `*_guid`
-  字段是下一步，当前文档仍然按路径引用。
+  重命名 / 移动文件时 sidecar 跟着走，删除时一起删。`.scene.json` / `.prefab.json`
+  里现在会同时写路径和 `*_guid`：打开文档时 GUID 优先解析成路径（解析不到则回退
+  路径），保存时按 sidecar 补写 / 刷新 GUID；cooker 与开发期 JSON loader 也走同
+  一套规则，旧文档不需要迁移。
 - **纹理导入设置（#514）**：资产检查器选中纹理时多出 `Import Settings`
   （`Max Size` 0 = 不限、`Mips` 开关）。`Apply` 写旁挂文件
   `<asset>.import.json`（如 `assets/sprites/boat.png.import.json`），`Revert` 重新读盘，

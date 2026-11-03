@@ -10,10 +10,12 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
+use prism_asset::GuidIndex;
 use prism_cooker::cooker::scene::{parse_rscn_header, SceneCooker};
 use prism_cooker::{
     pack_directory_split, pack_directory_with_options, OptionalPackSummary, PackOptions,
 };
+use prism_scene::references::{sync_document, SyncMode};
 
 /// 包内清单文件名——运行时按这个名字在 `.pak` 的路径清单里查找。
 pub const SCENE_MANIFEST_NAME: &str = "scenes.json";
@@ -132,6 +134,7 @@ pub fn build_scene_package_split(
         .with_context(|| format!("create scene staging {}", staging.display()))?;
 
     let cooker = SceneCooker::default();
+    let guid_index = GuidIndex::scan(asset_root);
     let mut scenes = 0usize;
     let mut skipped = 0usize;
     for entry in &manifest.scenes {
@@ -139,7 +142,7 @@ pub fn build_scene_package_split(
             skipped += 1;
             continue;
         }
-        match stage_entry(&cooker, asset_root, staging, &entry.path)? {
+        match stage_entry(&cooker, asset_root, &guid_index, staging, &entry.path)? {
             Some(_) => scenes += 1,
             None => skipped += 1,
         }
@@ -157,17 +160,17 @@ pub fn build_scene_package_split(
     let mut missing: Vec<String> = Vec::new();
 
     // 场景声明的环境贴图必须在包内，否则运行时 IBL 会退回空环境（黑屏）。
-    stage_environment_assets(asset_root, staging, &manifest, &mut missing)?;
+    stage_environment_assets(asset_root, &guid_index, staging, &manifest, &mut missing)?;
 
     // 2D 精灵贴图同理：`SpriteRenderer.sprite_path` 指向的 PNG 必须按
     // 运行时期望的 RTEX 格式烘进包内，否则精灵永远解析不到贴图。
-    stage_sprite_assets(asset_root, staging, &manifest, &mut missing)?;
+    stage_sprite_assets(asset_root, &guid_index, staging, &manifest, &mut missing)?;
     // 3D 网格与材质（#530）：之前只打场景，导入的模型在打包后直接消失。
-    stage_mesh_assets(asset_root, staging, &manifest, &mut missing)?;
-    stage_material_assets(asset_root, staging, &manifest, &mut missing)?;
+    stage_mesh_assets(asset_root, &guid_index, staging, &manifest, &mut missing)?;
+    stage_material_assets(asset_root, &guid_index, staging, &manifest, &mut missing)?;
     // UI 组件的贴图 / 字体（#591 / #583）：`Style.image`、`Tilemap.tileset_path`、
     // `Text.font` 同样得进包，否则打包后图标、瓦片和工程字体全部消失。
-    stage_ui_assets(asset_root, staging, &manifest, &mut missing)?;
+    stage_ui_assets(asset_root, &guid_index, staging, &manifest, &mut missing)?;
     // 运行时生成的精灵（背景层、鱼、特效）不在场景 JSON 里，所以整个
     // `sprites/` 目录都要烘进包内——和引擎的「Assets 目录即内容」一致。
     stage_sprite_folder(asset_root, staging)?;
@@ -210,6 +213,7 @@ pub fn build_scene_package_split(
 fn stage_entry(
     cooker: &SceneCooker,
     asset_root: &Path,
+    guid_index: &GuidIndex,
     staging: &Path,
     entry_path: &str,
 ) -> Result<Option<PathBuf>> {
@@ -219,7 +223,7 @@ fn stage_entry(
             let source = asset_root.join(&relative);
             let source_json = source.with_extension("scene.json");
             let cooked = if source_json.is_file() {
-                cook_scene_file(cooker, asset_root, &source_json, entry_path)?
+                cook_scene_file(cooker, asset_root, guid_index, &source_json, entry_path)?
             } else {
                 if !source.is_file() {
                     bail!(
@@ -241,7 +245,7 @@ fn stage_entry(
 
     safe_relative(entry_path)?;
     let source = asset_root.join(format!("{stem}.scene.json"));
-    let cooked = cook_scene_file(cooker, asset_root, &source, entry_path)?;
+    let cooked = cook_scene_file(cooker, asset_root, guid_index, &source, entry_path)?;
     let target = PathBuf::from(format!("{stem}.rscn"));
     validate_rscn(entry_path, &cooked)?;
     write_staged(staging, &target, &cooked)?;
@@ -258,6 +262,7 @@ fn stage_entry(
 /// 不在包内，运行时 IBL 退回空环境（黑屏）。
 fn stage_environment_assets(
     asset_root: &Path,
+    guid_index: &GuidIndex,
     staging: &Path,
     manifest: &prism_engine::scene::SceneManifest,
     missing: &mut Vec<String>,
@@ -270,9 +275,8 @@ fn stage_environment_assets(
         };
 
         let mut env_values = Vec::new();
-        let doc_path = asset_root.join(&doc_rel);
-        if let Ok(text) = fs::read_to_string(&doc_path) {
-            collect_env_values_from_doc(&text, &mut env_values);
+        if let Some(document) = read_scene_document(asset_root, &doc_rel, guid_index) {
+            collect_env_values_from_doc(&document, &mut env_values);
         } else if let Ok(relative) = safe_relative(&entry.path) {
             if let Ok(cooked) = fs::read(staging.join(&relative)) {
                 let path = prism_engine::scene::loader::read_env_path_from_rscn_bytes(&cooked);
@@ -314,6 +318,7 @@ fn stage_environment_assets(
 /// 必须与组件里的 `sprite_path` 折叠结果一致（`sprites/boat.png`）。
 fn stage_sprite_assets(
     asset_root: &Path,
+    guid_index: &GuidIndex,
     staging: &Path,
     manifest: &prism_engine::scene::SceneManifest,
     missing: &mut Vec<String>,
@@ -329,11 +334,7 @@ fn stage_sprite_assets(
             continue;
         };
 
-        let doc_path = asset_root.join(&doc_rel);
-        let Ok(text) = fs::read_to_string(&doc_path) else {
-            continue;
-        };
-        let Ok(doc) = serde_json::from_str::<serde_json::Value>(&text) else {
+        let Some(doc) = read_scene_document(asset_root, &doc_rel, guid_index) else {
             continue;
         };
         let Some(entities) = doc.get("entities").and_then(|value| value.as_array()) else {
@@ -384,6 +385,7 @@ fn stage_sprite_assets(
 /// 贴图按运行时路径烘成 RTEX（与精灵一致），字体原样拷贝（fontdue 直接读字节）。
 fn stage_ui_assets(
     asset_root: &Path,
+    guid_index: &GuidIndex,
     staging: &Path,
     manifest: &prism_engine::scene::SceneManifest,
     missing: &mut Vec<String>,
@@ -395,10 +397,7 @@ fn stage_ui_assets(
         let Some(doc_rel) = scene_doc_rel(&entry.path) else {
             continue;
         };
-        let Ok(text) = fs::read_to_string(asset_root.join(&doc_rel)) else {
-            continue;
-        };
-        let Ok(doc) = serde_json::from_str::<serde_json::Value>(&text) else {
+        let Some(doc) = read_scene_document(asset_root, &doc_rel, guid_index) else {
             continue;
         };
         let Some(entities) = doc.get("entities").and_then(|value| value.as_array()) else {
@@ -476,13 +475,14 @@ fn stage_ui_assets(
 /// staging 时**保持作者写的相对路径**，因为运行时就是按该路径在 pak 清单里查。
 fn stage_mesh_assets(
     asset_root: &Path,
+    guid_index: &GuidIndex,
     staging: &Path,
     manifest: &prism_engine::scene::SceneManifest,
     missing: &mut Vec<String>,
 ) -> Result<usize> {
     let mut staged = std::collections::BTreeSet::new();
 
-    for (doc_rel, components) in scene_component_maps(asset_root, manifest) {
+    for (doc_rel, components) in scene_component_maps(asset_root, guid_index, manifest) {
         for entity in components {
             let Some(value) =
                 component_string(&entity, "prism_engine::scene::MeshRenderer", "mesh_path")
@@ -534,6 +534,7 @@ fn stage_mesh_assets(
 /// 原因——顺序分配会让烘进去的 ID 在下一个文件出现时全部错位。
 fn stage_material_assets(
     asset_root: &Path,
+    guid_index: &GuidIndex,
     staging: &Path,
     manifest: &prism_engine::scene::SceneManifest,
     missing: &mut Vec<String>,
@@ -549,7 +550,7 @@ fn stage_material_assets(
 
     let mut staged = std::collections::BTreeSet::new();
 
-    for (doc_rel, components) in scene_component_maps(asset_root, manifest) {
+    for (doc_rel, components) in scene_component_maps(asset_root, guid_index, manifest) {
         for entity in components {
             let mut material_paths: Vec<String> = Vec::new();
             if let Some(path) = component_string(
@@ -657,6 +658,7 @@ fn stage_material_assets(
 /// 遍历清单里所有场景文档的组件表（`*.scene.json` 才有作者数据）。
 fn scene_component_maps(
     asset_root: &Path,
+    guid_index: &GuidIndex,
     manifest: &prism_engine::scene::SceneManifest,
 ) -> Vec<(String, Vec<serde_json::Map<String, serde_json::Value>>)> {
     let mut out = Vec::new();
@@ -667,10 +669,7 @@ fn scene_component_maps(
         let Some(doc_rel) = scene_doc_rel(&entry.path) else {
             continue;
         };
-        let Ok(text) = fs::read_to_string(asset_root.join(&doc_rel)) else {
-            continue;
-        };
-        let Ok(doc) = serde_json::from_str::<serde_json::Value>(&text) else {
+        let Some(doc) = read_scene_document(asset_root, &doc_rel, guid_index) else {
             continue;
         };
         let components = doc
@@ -911,10 +910,7 @@ fn scene_doc_rel(entry_path: &str) -> Option<String> {
 }
 
 /// 收集作者文档里每个实体声明的环境贴图路径。
-fn collect_env_values_from_doc(text: &str, out: &mut Vec<String>) {
-    let Ok(doc) = serde_json::from_str::<serde_json::Value>(text) else {
-        return;
-    };
+fn collect_env_values_from_doc(doc: &serde_json::Value, out: &mut Vec<String>) {
     let Some(entities) = doc.get("entities").and_then(|value| value.as_array()) else {
         return;
     };
@@ -1000,20 +996,69 @@ fn resolve_asset_path(asset_root: &Path, scene_rel: &str, value: &str) -> Option
     Some(scene_relative)
 }
 
-/// Cook an authoring scene, first auto-filling `MeshRenderer.material_paths`
-/// for glTF/GLB meshes from their generated side assets (#520).
+/// Cook an authoring scene, first resolving stable GUID references (#466),
+/// then auto-filling `MeshRenderer.material_paths` for glTF/GLB meshes from
+/// their generated side assets (#520).
 fn cook_scene_file(
     cooker: &SceneCooker,
     asset_root: &Path,
+    guid_index: &GuidIndex,
     path: &Path,
     scene_rel: &str,
 ) -> Result<Vec<u8>> {
     let data = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let doc_rel = doc_relative_to(asset_root, path);
+    let data = match serde_json::from_slice::<serde_json::Value>(&data) {
+        Ok(mut document) => {
+            resolve_document_references(&mut document, &doc_rel, guid_index);
+            serde_json::to_vec(&document).unwrap_or(data)
+        }
+        // Let `SceneCooker` produce the canonical parse error.
+        Err(_) => data,
+    };
     let rewritten = rewrite_gltf_material_paths(&data, asset_root, scene_rel)?;
     let rewritten = rewrite_skinned_components(&rewritten, asset_root, scene_rel)?;
     cooker
         .cook_json_bytes(&rewritten)
         .with_context(|| format!("cook {}", path.display()))
+}
+
+/// Apply GUID → path resolution to a parsed authoring document.
+fn resolve_document_references(
+    document: &mut serde_json::Value,
+    doc_rel: &str,
+    guid_index: &GuidIndex,
+) {
+    sync_document(
+        document,
+        doc_rel,
+        SyncMode::Load,
+        |guid| guid_index.path_for_guid(guid).map(str::to_string),
+        |path| guid_index.guid_for_path(path).map(str::to_string),
+    );
+}
+
+/// Read a scene document and resolve its GUID references before staging.
+fn read_scene_document(
+    asset_root: &Path,
+    doc_rel: &str,
+    guid_index: &GuidIndex,
+) -> Option<serde_json::Value> {
+    let text = fs::read_to_string(asset_root.join(doc_rel)).ok()?;
+    let mut document = serde_json::from_str::<serde_json::Value>(&text).ok()?;
+    resolve_document_references(&mut document, doc_rel, guid_index);
+    Some(document)
+}
+
+fn doc_relative_to(asset_root: &Path, path: &Path) -> String {
+    path.strip_prefix(asset_root)
+        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_string()
+        })
 }
 
 /// Fill empty `MeshRenderer.material_paths` on entities that render a
@@ -2066,6 +2111,62 @@ mod tests {
             .map(|asset| asset["path"].as_str().unwrap())
             .collect();
         assert!(paths.contains(&"env/valley.hdr"), "paths = {paths:?}");
+    }
+
+    /// #466: a stale `hdr_path` with a valid `hdr_guid` is resolved before
+    /// staging, and the cooked RSCN carries the resolved path.
+    #[test]
+    fn guid_reference_wins_over_stale_path_during_build() {
+        let temp = tempfile::tempdir().unwrap();
+        let assets = temp.path().join("assets");
+        fs::create_dir_all(assets.join("scenes")).unwrap();
+        fs::create_dir_all(assets.join("env")).unwrap();
+        fs::write(assets.join("env/sky.hdr"), b"hdr-with-guid").unwrap();
+        let meta = prism_asset::AssetMeta::ensure(&assets, "env/sky.hdr", "HdrImporter").unwrap();
+
+        fs::write(
+            assets.join("scenes/valley.scene.json"),
+            format!(
+                r#"{{
+                    "version": 1,
+                    "entities": [{{
+                        "name": "Sky",
+                        "parent": null,
+                        "transform": {{}},
+                        "components": {{
+                            "prism_engine::scene::Skybox": {{
+                                "hdr_path": "../env/gone.hdr",
+                                "hdr_guid": "{}"
+                            }}
+                        }}
+                    }}]
+                }}"#,
+                meta.guid
+            ),
+        )
+        .unwrap();
+        write_manifest(
+            &assets,
+            r#"{"scenes": [{"name": "valley", "path": "scenes/valley.scene.json"}]}"#,
+        );
+
+        let staging = temp.path().join("cooked");
+        let output = temp.path().join("scenes.pak");
+        build_scene_package(assets.join("scenes.json"), &staging, &output, 0).unwrap();
+
+        assert!(staging.join("env/sky.hdr").is_file());
+        let rscn = fs::read(staging.join("scenes/valley.rscn")).unwrap();
+        assert!(
+            rscn.windows(b"../env/sky.hdr".len())
+                .any(|window| window == b"../env/sky.hdr"),
+            "cooked scene must contain the resolved path"
+        );
+        assert!(
+            !rscn
+                .windows(b"gone.hdr".len())
+                .any(|window| window == b"gone.hdr"),
+            "the stale path must not survive cooking"
+        );
     }
 
     /// `.scene.json` entries keep working, and each HDR is staged once.

@@ -6,7 +6,7 @@
 //! - 重命名/移动先扫描并计划引用改写，再执行文件系统操作，最后写回文档；
 //! - 引用保持作者原来的书写风格（场景目录相对 / 项目根相对），
 //!   因此 `../valley.hdr` 与 `assets/valley.hdr` 都会被改写成等价的新路径；
-//! - 只有 schema 里**确实是资产路径**的字段（[`ASSET_PATH_FIELDS`]）会被改写，
+//! - 只有 schema 里**确实是资产路径**的字段（[`prism_scene::references::ASSET_PATH_FIELDS`]）会被改写，
 //!   实体名、UI 文本等恰好写着同一段路径的字符串保持原样。
 
 use std::collections::BTreeSet;
@@ -17,6 +17,7 @@ use serde::Serialize;
 
 use crate::assets::assets_dir;
 use crate::scene::{list_docs, read_doc, write_doc, DocKind};
+use prism_scene::references::is_asset_path_field;
 
 /// 与 [`crate::assets`] 保持一致：构建产物目录不参与编辑。
 const SKIP_DIRS: [&str; 3] = ["cooked", "heightmaps", "target"];
@@ -354,37 +355,10 @@ impl Renamer {
 /// 只有这些字段的字符串值参与引用改写：`.scene.json` 里其它字符串（`Name`、UI
 /// `Text.content`、材质/标签里恰好写着路径的文本）不是引用，改它们就是数据损坏。
 ///
-/// 新增带路径的组件字段时要同步补进来 —— `asset_path_fields_cover_string_paths_in_schema`
+/// 清单的真源在 `prism-scene::references`（cooker / 引擎 / 编辑器共用），
+/// 新增带路径的组件字段时只改那里；`asset_path_fields_cover_string_paths_in_schema`
 /// 会用 `prism-scene` 的注册表挡住漏加（不覆盖 `env_map` / `volume` / `prefab`
 /// 这类不以 `_path` 结尾的名字，所以别只靠测试）。
-const ASSET_PATH_FIELDS: [&str; 20] = [
-    "mesh_path",           // MeshRenderer
-    "material_path",       // MeshRenderer
-    "material_paths",      // MeshRenderer（Vec<String>，多 submesh 材质）
-    "sprite_path",         // SpriteRenderer
-    "tileset_path",        // Tilemap
-    "hdr_path",            // Skybox
-    "sound_path",          // AudioSource
-    "heightmap",           // Terrain（不以 _path 结尾，必须显式登记）
-    "skeleton_path",       // SkeletonRoot
-    "default_clip_path",   // SkeletonRoot
-    "skinned_mesh_path",   // SkinnedMeshRenderer
-    "clip_path",           // Animator
-    "state_machine_path",  // Animator（.rasm）
-    "blend_clip_paths",    // Animator（Vec<String>，一维混合空间）
-    "blend_2d_clip_paths", // Animator（Vec<String>，二维混合空间）
-    "additive_clip_path",  // Animator（叠加层剪辑）
-    "env_map",             // EnvironmentLighting
-    "volume",              // GiConfig
-    "prefab",              // PrefabInstance
-    "font",                // UI Text（工程自带字体，#583）
-];
-
-/// 作者 JSON 的字段名是否表示资产路径。
-fn is_asset_path_field(name: &str) -> bool {
-    ASSET_PATH_FIELDS.contains(&name)
-}
-
 struct RewritePlan {
     /// `(旧文档绝对路径, 改写后的 JSON)`。
     documents: Vec<(PathBuf, serde_json::Value)>,

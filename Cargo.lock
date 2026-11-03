@@ -2720,6 +2720,7 @@ dependencies = [
  "prism-ecs",
  "prism-engine",
  "prism-render",
+ "prism-scene",
  "rand",
  "rayon",
  "serde_json",
@@ -2816,6 +2817,7 @@ dependencies = [
  "rustc-hash",
  "serde",
  "serde_json",
+ "tempfile",
  "windows-sys 0.61.2",
 ]
 
