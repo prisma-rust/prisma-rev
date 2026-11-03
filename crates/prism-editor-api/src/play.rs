@@ -115,6 +115,7 @@ mod tests {
             name: name.into(),
             path: path.into(),
             enabled: true,
+            guid: None,
         }
     }
 

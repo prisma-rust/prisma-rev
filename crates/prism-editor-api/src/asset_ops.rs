@@ -735,6 +735,7 @@ mod tests {
                 name: (*name).to_string(),
                 path: (*path).to_string(),
                 enabled: true,
+                guid: None,
             })
             .collect();
         crate::scene_manifest::write(root, &scenes).unwrap();

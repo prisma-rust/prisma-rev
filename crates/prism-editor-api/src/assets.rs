@@ -664,6 +664,7 @@ mod tests {
                 name: "intro".into(),
                 path: "scenes/intro.rscn".into(),
                 enabled: true,
+                guid: None,
             }],
         )
         .unwrap();

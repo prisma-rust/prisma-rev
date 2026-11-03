@@ -122,9 +122,11 @@ pub fn build_scene_package_split(
 
     let manifest_text = fs::read_to_string(manifest_path)
         .with_context(|| format!("read {}", manifest_path.display()))?;
-    let manifest = prism_engine::scene::SceneManifest::parse(&manifest_text)
+    let mut manifest = prism_engine::scene::SceneManifest::parse(&manifest_text)
         .map_err(|error| anyhow::anyhow!("parse {}: {error}", manifest_path.display()))?;
     let asset_root = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+    let guid_index = GuidIndex::scan(asset_root);
+    resolve_manifest_guids(&mut manifest, &guid_index);
 
     if staging.exists() {
         fs::remove_dir_all(staging)
@@ -134,7 +136,6 @@ pub fn build_scene_package_split(
         .with_context(|| format!("create scene staging {}", staging.display()))?;
 
     let cooker = SceneCooker::default();
-    let guid_index = GuidIndex::scan(asset_root);
     let mut scenes = 0usize;
     let mut skipped = 0usize;
     for entry in &manifest.scenes {
@@ -181,6 +182,7 @@ pub fn build_scene_package_split(
     // Rewrite authoring `.scene.json` paths to the cooked `.rscn` names.
     let mut packaged = manifest.clone();
     for entry in &mut packaged.scenes {
+        entry.guid = None;
         if let Some(stem) = entry.path.strip_suffix(".scene.json") {
             entry.path = format!("{stem}.rscn");
         }
@@ -1059,6 +1061,18 @@ fn doc_relative_to(asset_root: &Path, path: &Path) -> String {
                 .unwrap_or_default()
                 .to_string()
         })
+}
+
+/// Resolve `scenes.json` GUIDs before staging/cooking.
+fn resolve_manifest_guids(manifest: &mut prism_engine::scene::SceneManifest, index: &GuidIndex) {
+    for entry in &mut manifest.scenes {
+        let Some(guid) = entry.guid.as_deref() else {
+            continue;
+        };
+        if let Some(resolved) = index.path_for_guid(guid) {
+            entry.path = resolved.to_string();
+        }
+    }
 }
 
 /// Fill empty `MeshRenderer.material_paths` on entities that render a
@@ -2166,6 +2180,40 @@ mod tests {
                 .windows(b"gone.hdr".len())
                 .any(|window| window == b"gone.hdr"),
             "the stale path must not survive cooking"
+        );
+    }
+
+    /// #466: `scenes.json` entries can carry a stable GUID; the build resolves
+    /// it before staging and strips it from the packaged manifest.
+    #[test]
+    fn manifest_guid_resolves_before_staging() {
+        let temp = tempfile::tempdir().unwrap();
+        let assets = temp.path().join("assets");
+        fs::create_dir_all(assets.join("scenes")).unwrap();
+        write_minimal_scene(&assets.join("scenes/renamed.scene.json"));
+        let meta =
+            prism_asset::AssetMeta::ensure(&assets, "scenes/renamed.scene.json", "SceneImporter")
+                .unwrap();
+        write_manifest(
+            &assets,
+            &format!(
+                r#"{{"scenes":[{{"name":"valley","path":"scenes/old.rscn","guid":"{}"}}]}}"#,
+                meta.guid
+            ),
+        );
+
+        let staging = temp.path().join("cooked");
+        let output = temp.path().join("scenes.pak");
+        build_scene_package(assets.join("scenes.json"), &staging, &output, 0).unwrap();
+
+        assert!(staging.join("scenes/renamed.rscn").is_file());
+        let packaged: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(staging.join("scenes.json")).unwrap())
+                .unwrap();
+        assert_eq!(packaged["scenes"][0]["path"], "scenes/renamed.rscn");
+        assert!(
+            packaged["scenes"][0].get("guid").is_none(),
+            "packaged manifests must not point at authoring-only GUIDs"
         );
     }
 
