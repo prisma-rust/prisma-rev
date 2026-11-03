@@ -430,6 +430,8 @@ fn node_snapshots_report_time_state_and_blend() {
     evaluator.evaluate(&source, &skeleton, 0.05).expect("walk");
     let snapshot = &evaluator.node_snapshots()[0];
     assert_eq!(snapshot.state, 1);
+    assert_eq!(snapshot.state_name, "walk");
+    assert_eq!(snapshot.state_clip, "walk.ranim");
     assert!(snapshot.blending, "转移中");
     assert!(
         snapshot.blend_weight > 0.0 && snapshot.blend_weight < 1.0,
