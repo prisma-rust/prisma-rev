@@ -848,7 +848,7 @@ fn animation_frame_plans(
         let distance = entity_position(world, entity).distance(eye);
         if distance > far {
             throttle.skipped.remove(&entity);
-            if animator.lod_root_only
+            if (animator.lod_root_only || !animator.lod_bones.is_empty())
                 && animator.anim_graph_path.trim().is_empty()
                 && animator.state_machine_path.trim().is_empty()
                 && !animator.uses_blend_space()
@@ -1210,8 +1210,8 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
                 }
             }
         }
-        // 动画 LOD「仅根骨」：保住上一帧姿态，只推进时间 + 采样根关节。
-        // 首次进入（没有姿态快照）先完整求值一帧，避免远看时突然变成 T-pose。
+        // 动画 LOD 子集档：保住上一帧姿态，只推进时间 + 采样根关节（和 `lod_bones`）。
+        // 没有名单时就是「仅根骨」；首次进入先完整求值一帧，避免 T-pose 突变。
         if root_only_entities.contains(&entity)
             && playhead.pose.len() == skeleton.joints().len()
             && playhead.pose.len() > 0
@@ -1219,6 +1219,17 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
             let mut pose = playhead.pose.clone();
             if let Some(clip) = clip.as_ref() {
                 clip.sample_joint_into(local, 0, &mut pose);
+                let mut seen = vec![false; skeleton.joints().len()];
+                for name in &animator.lod_bones {
+                    let Some(joint) = skeleton.joint_index(name.trim()) else {
+                        continue;
+                    };
+                    if joint == 0 || seen[joint] {
+                        continue;
+                    }
+                    seen[joint] = true;
+                    clip.sample_joint_into(local, joint, &mut pose);
+                }
             }
             playhead.previous_pose = None;
             playhead.blend_elapsed = 0.0;

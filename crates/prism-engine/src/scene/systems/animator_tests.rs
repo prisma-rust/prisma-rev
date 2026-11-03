@@ -206,6 +206,30 @@ fn distant_root_only_lod_keeps_bones_frozen_while_time_advances() {
 }
 
 #[test]
+fn distant_bone_subset_lod_updates_only_the_listed_bones() {
+    let (mut world, entity) = world_with_animator("");
+    {
+        let animator = world.get_mut::<Animator>(entity).unwrap();
+        animator.lod_enabled = true;
+        animator.lod_bones = vec!["child".into(), "missing".into()];
+    }
+    add_camera(&mut world, Vec3::new(0.0, 0.0, 100.0));
+
+    animator_system(&mut world, 0.0);
+    let tip = child_tip(&world, entity);
+    assert!((tip.x - 2.0).abs() < 1e-4, "首帧完整求值 {tip:?}");
+
+    animator_system(&mut world, 0.5);
+    let head = world.get::<AnimatorPlayhead>(entity).unwrap();
+    assert!((head.time - 0.5).abs() < 1e-5, "时间照常推进");
+    let tip = child_tip(&world, entity);
+    assert!(
+        (tip.x - (2.0 - std::f32::consts::FRAC_PI_4.sin())).abs() < 1e-3,
+        "child 在名单里，转到 45°；{tip:?}"
+    );
+}
+
+#[test]
 fn root_only_lod_still_consumes_root_motion() {
     let (mut world, entity) = world_with_animator("");
     install_forward(&mut world);
