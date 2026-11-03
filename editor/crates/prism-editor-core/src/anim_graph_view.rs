@@ -1445,6 +1445,77 @@ pub fn add_clip_node(document: &mut Value, name: &str, clip: &str) -> Result<(),
     Ok(())
 }
 
+/// 追加一个动画图节点。
+///
+/// 只接受能当场通过 cooker 校验的节点：`clip_player` / `blend_stack` / `slot` /
+/// `layered_blend` / `cached_pose` / `state_machine`。blend space 需要 >=2/3 个剪辑
+/// 与坐标，仍由作者手写或复制现有节点。`source`：
+/// - `clip_player`：剪辑路径；
+/// - `state_machine`：状态机路径；
+/// - 其它：单个上游节点名（cooker 要求 slot / cached pose 恰好一条输入，
+///   blend stack / layered blend 至少一条）。
+pub fn add_graph_node(
+    document: &mut Value,
+    name: &str,
+    kind: &str,
+    source: &str,
+) -> Result<(), String> {
+    let name = name.trim();
+    let source = source.trim();
+    if name.is_empty() {
+        return Err("a node needs a non-empty name".to_string());
+    }
+    let kind = match kind.trim().to_ascii_lowercase().as_str() {
+        "clip" | "clip_player" | "clipplayer" => "clip_player",
+        "blend_stack" | "blendstack" => "blend_stack",
+        "slot" => "slot",
+        "layered_blend" | "layeredblend" => "layered_blend",
+        "cached_pose" | "cachedpose" => "cached_pose",
+        "state_machine" | "statemachine" => "state_machine",
+        other => return Err(format!("unsupported node type '{other}'")),
+    };
+    let Some(nodes) = document.get_mut("nodes").and_then(Value::as_array_mut) else {
+        return Err("animation graph needs a `nodes` array".to_string());
+    };
+    if nodes
+        .iter()
+        .any(|node| node.get("name").and_then(Value::as_str) == Some(name))
+    {
+        return Err(format!("a node named '{name}' already exists"));
+    }
+    match kind {
+        "clip_player" => {
+            if source.is_empty() {
+                return Err("a clip node needs a clip path".to_string());
+            }
+            nodes.push(json!({ "name": name, "type": kind, "clip": source }));
+        }
+        "state_machine" => {
+            if source.is_empty() {
+                return Err("a state machine node needs a machine path".to_string());
+            }
+            nodes.push(json!({ "name": name, "type": kind, "state_machine": source }));
+        }
+        _ => {
+            if source.is_empty() {
+                return Err(format!("a {kind} node needs an input node"));
+            }
+            if !nodes
+                .iter()
+                .any(|node| node.get("name").and_then(Value::as_str) == Some(source))
+            {
+                return Err(format!("unknown input node '{source}'"));
+            }
+            if kind == "blend_stack" {
+                nodes.push(json!({ "name": name, "type": kind, "inputs": [source] }));
+            } else {
+                nodes.push(json!({ "name": name, "type": kind, "input": source }));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// 复制一个节点，返回新名字。
 ///
 /// 新名字在原名后加 `_copy` / `_copy2`…；其它字段（剪辑、坐标、inputs、bone mask）
@@ -2029,6 +2100,42 @@ mod node_tests {
         assert!(add_clip_node(&mut doc, "  ", "a.ranim").is_err());
         assert!(add_clip_node(&mut doc, "aim", "  ").is_err());
         assert!(add_clip_node(&mut json!({}), "aim", "a.ranim").is_err());
+    }
+
+    #[test]
+    fn simple_nodes_can_be_added_with_required_wiring() {
+        let mut doc = document();
+        add_graph_node(&mut doc, " aim ", "clip_player", " aim.ranim ").expect("adds clip");
+        assert_eq!(doc["nodes"][4]["clip"], "aim.ranim");
+        add_graph_node(&mut doc, "sm", "state_machine", "anim/hero.rasm").expect("adds machine");
+        assert_eq!(doc["nodes"][5]["state_machine"], "anim/hero.rasm");
+        add_graph_node(&mut doc, "stack2", "blend_stack", "a").expect("adds stack");
+        assert_eq!(doc["nodes"][6]["inputs"], json!(["a"]));
+        add_graph_node(&mut doc, "slot", "slot", "a").expect("adds slot");
+        assert_eq!(doc["nodes"][7]["input"], "a");
+        add_graph_node(&mut doc, "layer", "layered_blend", "b").expect("adds layer");
+        assert_eq!(doc["nodes"][8]["input"], "b");
+        add_graph_node(&mut doc, "cached", "cached_pose", "stack").expect("adds cached pose");
+        assert_eq!(doc["nodes"][9]["input"], "stack");
+        let view = parse_anim_graph_view(&doc).expect("still parses");
+        assert_eq!(view.nodes.len(), 10);
+    }
+
+    #[test]
+    fn adding_nodes_validates_names_kinds_and_sources() {
+        let mut doc = document();
+        assert!(add_graph_node(&mut doc, "  ", "clip_player", "a.ranim").is_err());
+        assert!(add_graph_node(&mut doc, "a", "clip_player", "a.ranim").is_err());
+        assert!(add_graph_node(&mut doc, "x", "clip_player", "").is_err());
+        assert!(add_graph_node(&mut doc, "x", "state_machine", "").is_err());
+        assert!(add_graph_node(&mut doc, "x", "blend_space_1d", "a").is_err());
+        assert!(add_graph_node(&mut doc, "x", "blend_stack", "missing").is_err());
+        assert!(add_graph_node(&mut doc, "x", "blend_stack", "").is_err());
+        assert!(add_graph_node(&mut doc, "x", "slot", "").is_err());
+        assert!(add_graph_node(&mut doc, "x", "layered_blend", "").is_err());
+        assert!(add_graph_node(&mut doc, "x", "cached_pose", "").is_err());
+        assert!(add_graph_node(&mut json!({}), "x", "slot", "a").is_err());
+        assert_eq!(doc["nodes"].as_array().unwrap().len(), 4, "失败不改文档");
     }
 
     #[test]

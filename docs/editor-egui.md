@@ -600,10 +600,11 @@ cook 前会拒绝的形状问题 —— 节点名 / 类型、剪辑与坐标数�
 名字自动加 `_copy` / `_copy2`；复制出的节点接线仍指向原来的上游，输出节点不能复制。
 `clips` 与 `positions` 数量对不上时用橙色提示，cooker 会拒绝这种节点。样本行尾的 `×` 删除样本、
 `+ Sample` 打开草稿表单（剪辑 + x/y），一维至少留 2 个、二维至少留 3 个；节点带每样本 `speeds`
-时增删会同步维护那张表。`+ Clip Node` 追加一个 `clip_player` 节点（必需字段只有剪辑路径，当帧就能通过
-cooker 校验）；`× Remove node` 删除节点，输出节点和仍被引用的节点会被拒绝并说明原因，先断线再删。
-其它节点类型（blend space / 状态机 / blend stack）需要剪辑坐标、机器路径或至少一条输入才合法，
-仍然手写 JSON。状态机视图支持 `+ Transition`（任意状态 / 指定 from → to）和 `× Remove transition`，
+时增删会同步维护那张表。`+ Node` 追加节点：类型下拉 `clip` / `blend stack` / `slot` /
+`layered blend` / `cached pose` / `state machine`；clip 填剪辑路径、state machine 填机器路径，
+其它类型填一个上游节点（自动写成 `input` / `inputs[0]`）。blend space 需要 >=2/3 个
+剪辑与坐标，仍然手写或复制现有节点。`× Remove node` 删除节点，输出节点和仍被引用的节点会被
+拒绝并说明原因，先断线再删。状态机视图支持 `+ Transition`（任意状态 / 指定 from → to）和 `× Remove transition`，
 保存回 `.statemachine.json`。展开一条转移后 `from` / `to` 是下拉框（`from` 可选 `any`），
 重连会拒绝重名状态、自连和与现有转移完全重复的 `(from, to)`；`↑` / `↓` 调整转移顺序，
 顺序就是优先级（运行时取第一条条件命中的转移，列表上也写了这句提示）；`⧉ Duplicate` 复制整条转移

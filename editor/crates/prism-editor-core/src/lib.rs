@@ -47,10 +47,10 @@ pub mod viewport_math;
 pub mod workspace;
 
 pub use anim_graph_view::{
-    add_blend_space_sample, add_clip_node, add_graph_input, add_parameter, add_state,
-    add_state_condition, add_state_transition, blend_space_2d_area, blend_space_2d_degenerate,
-    duplicate_graph_node, duplicate_state, duplicate_state_transition, move_state,
-    move_state_transition, parse_anim_graph_view, parse_state_machine_view,
+    add_blend_space_sample, add_clip_node, add_graph_input, add_graph_node, add_parameter,
+    add_state, add_state_condition, add_state_transition, blend_space_2d_area,
+    blend_space_2d_degenerate, duplicate_graph_node, duplicate_state, duplicate_state_transition,
+    move_state, move_state_transition, parse_anim_graph_view, parse_state_machine_view,
     remove_blend_space_sample, remove_graph_input, remove_graph_node, remove_parameter,
     remove_state, remove_state_condition, remove_state_transition, rename_graph_node, rename_state,
     set_blend_space_parameter, set_blend_space_position, set_blend_space_sample_clip,
