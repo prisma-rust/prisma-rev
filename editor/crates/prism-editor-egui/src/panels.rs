@@ -5746,6 +5746,7 @@ pub fn anim_graph(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
                 ui,
                 &machine,
                 &mut value,
+                &mut state.anim_graph_edit,
                 &mut state.anim_sm_condition,
             ) {
                 Ok(true) => {
@@ -5859,6 +5860,9 @@ pub struct AnimGraphEditState {
     ///
     /// 失焦时才写回：边打字边规范化会把还没打完的逗号吃掉。
     pub mask: Option<(String, usize, String)>,
+    /// 正在编辑的状态名 / 剪辑：(状态下标, 文本)，同样失焦才写回。
+    pub sm_state_name: Option<(usize, String)>,
+    pub sm_state_clip: Option<(usize, String)>,
 }
 
 fn draw_anim_graph_view(
@@ -6126,6 +6130,7 @@ fn draw_state_machine_view(
     ui: &mut Ui,
     machine: &prism_editor_core::AnimStateMachineView,
     document: &mut Value,
+    edit: &mut AnimGraphEditState,
     draft_slot: &mut Option<StateConditionDraft>,
 ) -> Result<bool, String> {
     let mut changed = false;
@@ -6134,18 +6139,87 @@ fn draw_state_machine_view(
             .strong()
             .size(11.0),
     );
-    for state in &machine.states {
-        ui.label(
-            RichText::new(format!(
-                "{} → {}  speed {}  {}",
-                state.name,
-                state.clip,
-                state.speed,
-                if state.looped { "loop" } else { "once" }
-            ))
-            .monospace()
-            .size(10.0),
-        );
+    let mut name_edits = Vec::new();
+    let mut clip_edits = Vec::new();
+    let mut speed_edits = Vec::new();
+    let mut loop_edits = Vec::new();
+    for (index, state) in machine.states.iter().enumerate() {
+        ui.horizontal(|ui| {
+            let mut name_text = edit
+                .sm_state_name
+                .as_ref()
+                .filter(|(slot, _)| *slot == index)
+                .map(|(_, text)| text.clone())
+                .unwrap_or_else(|| state.name.clone());
+            let name_response = ui.add(
+                egui::TextEdit::singleline(&mut name_text)
+                    .hint_text("state")
+                    .desired_width(80.0),
+            );
+            if name_response.changed() {
+                edit.sm_state_name = Some((index, name_text));
+            } else if name_response.lost_focus() {
+                if let Some((slot, text)) = edit.sm_state_name.take() {
+                    if slot == index {
+                        name_edits.push((index, text));
+                    }
+                }
+            }
+
+            let mut clip_text = edit
+                .sm_state_clip
+                .as_ref()
+                .filter(|(slot, _)| *slot == index)
+                .map(|(_, text)| text.clone())
+                .unwrap_or_else(|| state.clip.clone());
+            let clip_response = ui.add(
+                egui::TextEdit::singleline(&mut clip_text)
+                    .hint_text("clip.ranim")
+                    .desired_width(130.0),
+            );
+            if clip_response.changed() {
+                edit.sm_state_clip = Some((index, clip_text));
+            } else if clip_response.lost_focus() {
+                if let Some((slot, text)) = edit.sm_state_clip.take() {
+                    if slot == index {
+                        clip_edits.push((index, text));
+                    }
+                }
+            }
+
+            let mut speed = state.speed;
+            if ui
+                .add(
+                    egui::DragValue::new(&mut speed)
+                        .speed(0.01)
+                        .range(0.0..=5.0)
+                        .prefix("speed "),
+                )
+                .changed()
+            {
+                speed_edits.push((index, speed));
+            }
+            let mut looped = state.looped;
+            if ui.checkbox(&mut looped, "loop").changed() {
+                loop_edits.push((index, looped));
+            }
+        });
+    }
+    for (index, name) in name_edits {
+        prism_editor_core::rename_state(document, index, &name)?;
+        changed = true;
+    }
+    for (index, clip) in clip_edits {
+        prism_editor_core::set_state_clip(document, index, &clip)?;
+        changed = true;
+    }
+    for (index, speed) in speed_edits {
+        prism_editor_core::set_state_speed(document, index, speed)?;
+        changed = true;
+    }
+    for (index, looped) in loop_edits {
+        prism_editor_core::set_state_looped(document, index, looped)?;
+        changed = true;
     }
 
     ui.separator();
