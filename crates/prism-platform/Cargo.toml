@@ -6,11 +6,13 @@ license.workspace = true
 description = "Platform abstraction — window system, Vulkan surface, input routing"
 
 [features]
-# 窗口后端（显式选择，不再隐式拉 winit）：
-# - `winit-backend`：桌面 / Android 的 winit 窗口 + 事件循环。
-# - `win32-native`：Windows 专用，直接用 Win32 API 开窗口，**不链接 winit**。
-# Linux 上 x11 / wayland 只是 winit 的子后端开关，默认全开（两种会话都能启动）；
-# 体积敏感的分发可以只留一个：`--no-default-features --features x11`。
+# Window backends (chosen explicitly; winit is no longer pulled in implicitly):
+# - `winit-backend`: winit window + event loop for desktop / Android.
+# - `win32-native`: Windows only; opens a window with the Win32 API directly and
+#   does **not** link winit.
+# On Linux, x11 / wayland are only winit sub-backend switches and are both on by
+# default (either session can start); size-sensitive distributions can keep just
+# one: `--no-default-features --features x11`.
 default = ["winit-backend", "x11", "wayland"]
 winit-backend = ["dep:winit"]
 x11 = ["winit-backend", "winit/x11"]
@@ -20,7 +22,7 @@ wayland = [
     "winit/wayland-dlopen",
     "winit/wayland-csd-adwaita",
 ]
-# 仅 Windows 生效（无 winit）。见 `src/win32.rs` 的模块文档。
+# Only takes effect on Windows (no winit). See the module docs in `src/win32.rs`.
 win32-native = []
 
 [dependencies]
@@ -31,7 +33,7 @@ log = { workspace = true }
 anyhow = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
-# 只给 `win32-native` 用；signed 常量与 `GetMessageW` 都在这里。
+# Used only by `win32-native`; the signed constants and `GetMessageW` live here.
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",

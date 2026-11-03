@@ -1,44 +1,55 @@
-//! Win32 原生窗口后端（`feature = "win32-native"`，仅 Windows）。
+//! Win32 native window backend (`feature = "win32-native"`, Windows only).
 //!
-//! 目标：Windows 发布包不链接 winit。做法是最小化的 Win32 窗口 +
-//! 消息循环——`RegisterClassExW` / `CreateWindowExW` / `PeekMessageW`
-//! 家族，外加一个 `WndProc` 把 `WM_*` 翻译成 [`PlatformEvent`]。
+//! Goal: keep winit out of Windows release builds. The approach is a minimal Win32
+//! window + message loop — the `RegisterClassExW` / `CreateWindowExW` /
+//! `PeekMessageW` family, plus a `WndProc` that translates `WM_*` into
+//! [`PlatformEvent`].
 //!
-//! # 消息循环为什么不是阻塞的 `GetMessageW`
+//! # Why the message loop is not a blocking `GetMessageW`
 //!
-//! 主线程必须**在没有窗口消息时也继续推进模拟**（否则静止画面会冻住：
-//! winit 后端为此用 `ControlFlow::Poll`）。`GetMessageW` 在队列空时会无限
-//! 阻塞，只有 `SetTimer` + `WM_TIMER` 能给它超时——而 `WM_TIMER` 的
-//! 分辨率是系统时钟粒度（~15.6 ms），会把主循环钉在 ~64 Hz，直接给渲染
-//! 帧率封顶。
+//! The main thread must keep advancing the simulation even when no window message
+//! arrives (otherwise a static image freezes; the winit backend uses
+//! `ControlFlow::Poll` for this). `GetMessageW` blocks indefinitely on an empty
+//! queue, and only `SetTimer` + `WM_TIMER` can give it a timeout — but `WM_TIMER`
+//! has the system clock resolution (~15.6 ms), which pins the main loop at ~64 Hz
+//! and caps the render frame rate.
 //!
-//! 所以这里用 MSDN 推荐给游戏循环的组合：
-//! [`PlatformWindow::poll_events`]（`PeekMessageW` 泵，不阻塞）+
-//! [`PlatformWindow::wait_events`]（`MsgWaitForMultipleObjectsEx`，有消息
-//! 立即返回、否则最多等 `timeout_ms`）。
+//! So this uses the combination MSDN recommends for game loops:
+//! [`PlatformWindow::poll_events`] (a non-blocking `PeekMessageW` pump) +
+//! [`PlatformWindow::wait_events`] (`MsgWaitForMultipleObjectsEx`: returns
+//! immediately when a message arrives, otherwise waits up to `timeout_ms`).
 //!
-//! # 明确不做（体积与风险换来的边界，别当 bug 报）
+//! # Explicitly out of scope (boundaries traded for size and risk; not bugs)
 //!
-//! - **无 IME / 文本输入**：`WM_CHAR` / `WM_IME_*` 全部忽略，[`Key`] 只表达物理键。
-//! - **无拖放**：不注册 `DragAcceptFiles`，不会有 `WM_DROPFILES`。
-//! - **无多显示器 DPI 平滑**：进程声明 Per-Monitor-V2，`WM_DPICHANGED` 只按系统
-//!   建议的矩形调整窗口位置/大小（`scale_factor()` 读 `GetDpiForWindow`），
-//!   但引擎不据此重排 ECS UI。
-//! - **无任务栏进度 / 缩略图工具栏 / 跳转列表**：不碰 `ITaskbarList3`。
-//! - **无触摸**：不产生 [`PlatformEvent::Touch`]，只有鼠标与键盘。
-//! - **左右修饰键**：`WM_KEYDOWN` 报通用 `VK_SHIFT` / `VK_CONTROL` / `VK_MENU`，
-//!   左右一律按左侧处理（见 [`crate::Key::from_vk`]）。
-//! - **指针锁定**用「隐藏光标 + `ClipCursor` + 每圈把光标拉回客户区中心」
-//!   实现：`WM_MOUSEMOVE` 的偏移就是 [`PlatformEvent::MouseMotion`]。
-//!   没有 `WM_INPUT`（Raw Input），所以锁定期间不再产生 `CursorMoved`。
-//! - **全屏**是 `WS_POPUP` + 主显示器尺寸，不做独占全屏模式切换。
-//! - `min_width` / `max_width` 这类限制按**窗口**尺寸生效（`WM_GETMINMAXINFO`），
-//!   而 winit 的对应配置是**客户区**尺寸——两者差一圈标题栏/边框。
+//! - **No IME / text input**: `WM_CHAR` / `WM_IME_*` are all ignored and [`Key`]
+//!   expresses physical keys only.
+//! - **No drag and drop**: `DragAcceptFiles` is not registered, so there is no
+//!   `WM_DROPFILES`.
+//! - **No multi-monitor DPI smoothing**: the process declares Per-Monitor-V2 and
+//!   `WM_DPICHANGED` only adjusts the window position/size to the rectangle the
+//!   system suggests (`scale_factor()` reads `GetDpiForWindow`), but the engine does
+//!   not relayout the ECS UI from it.
+//! - **No taskbar progress / thumbnail toolbar / jump list**: `ITaskbarList3` is
+//!   untouched.
+//! - **No touch**: [`PlatformEvent::Touch`] is never produced; only mouse and
+//!   keyboard.
+//! - **Left/right modifiers**: `WM_KEYDOWN` reports the generic `VK_SHIFT` /
+//!   `VK_CONTROL` / `VK_MENU`, and both sides are treated as the left one (see
+//!   [`crate::Key::from_vk`]).
+//! - **Pointer lock** is implemented with "hide the cursor + `ClipCursor` + recenter
+//!   the cursor in the client area every frame": the `WM_MOUSEMOVE` offset becomes
+//!   [`PlatformEvent::MouseMotion`]. There is no `WM_INPUT` (Raw Input), so
+//!   `CursorMoved` is no longer produced while locked.
+//! - **Fullscreen** is `WS_POPUP` at the primary monitor size, with no exclusive
+//!   fullscreen mode switch.
+//! - Limits such as `min_width` / `max_width` apply to the **window** size
+//!   (`WM_GETMINMAXINFO`), whereas the corresponding winit setting is the **client
+//!   area** size — a title bar / border apart.
 //!
-//! # 已验证程度
+//! # Verification status
 //!
-//! 本模块**只做过交叉编译验证**（`--target x86_64-pc-windows-gnu`），
-//! 没有在真实 Windows 设备上跑过。
+//! This module has been **cross-compile verified only**
+//! (`--target x86_64-pc-windows-gnu`); it has never run on a real Windows device.
 
 use std::collections::VecDeque;
 use std::ffi::c_void;
@@ -81,21 +92,23 @@ use crate::window::PlatformWindow;
 
 const WHEEL_DELTA: f32 = 120.0;
 const CLASS_NAME: &str = "PrismaRevWindow";
-/// 事件队列上限：窗口消息洪水（高 DPI 鼠标）时也不吃穿内存。
+/// Event-queue cap, so a flood of window messages (high-DPI mouse) cannot exhaust
+/// memory.
 const MAX_QUEUED_EVENTS: usize = 4096;
 
-/// 传给 `WndProc` 的动作——这些 API 会**同步再入** `WndProc`，
-/// 所以必须在放开状态锁之后再调用。
+/// An action deferred out of `WndProc`: these APIs **re-enter** `WndProc`
+/// synchronously, so they must be called after the state lock is released.
 enum PostAction {
     Capture,
     ReleaseCapture,
     ApplyDpiRect(RECT),
-    /// 把光标拉回客户区中心（指针锁定的「回中」）。
+    /// Recenters the cursor in the client area (pointer-lock "recenter").
     Recenter(POINT),
 }
 
-/// 指针锁定时的客户区中心：`client` 用来算增量（`WM_MOUSEMOVE` 给的是
-/// **客户区**坐标），`screen` 用来 `SetCursorPos` 回中（屏幕坐标）。
+/// Client-area center while pointer-locked: `client` is used to compute the delta
+/// (`WM_MOUSEMOVE` reports **client-area** coordinates) and `screen` is used to
+/// recenter with `SetCursorPos` (screen coordinates).
 #[derive(Clone, Copy)]
 struct Grab {
     client: POINT,
@@ -105,9 +118,10 @@ struct Grab {
 struct WindowState {
     events: VecDeque<PlatformEvent>,
     close_requested: bool,
-    /// 指针锁定状态：`Some(..)` 表示「隐藏 + 回中」模式。
+    /// Pointer-lock state: `Some(..)` means "hide + recenter" mode.
     grab: Option<Grab>,
-    /// 光标是否由我们隐藏（`ShowCursor` 是计数器语义，只在翻转时调一次）。
+    /// Whether the cursor is hidden by us (`ShowCursor` is a counter, called only on
+    /// a flip).
     cursor_hidden: bool,
     dpi: u32,
     min_size: Option<(i32, i32)>,
@@ -141,7 +155,8 @@ impl WindowState {
         }
     }
 
-    /// `GetKeyState` 的实时修饰键快照（`WM_KEYDOWN` 自身不带修饰键）。
+    /// Live modifier snapshot from `GetKeyState` (`WM_KEYDOWN` carries no modifiers
+    /// itself).
     fn modifiers(&self) -> Modifiers {
         unsafe {
             Modifiers {
@@ -158,7 +173,8 @@ unsafe fn key_down(vk: u16) -> bool {
 }
 
 fn lock(state: &Mutex<WindowState>) -> MutexGuard<'_, WindowState> {
-    // `WndProc` 里没有会 panic 的逻辑；万一毒化了也继续用（丢掉窗口更糟）。
+    // No logic in `WndProc` can panic; even if the mutex is poisoned, keep going
+    // (losing the window is worse).
     state.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -174,7 +190,8 @@ fn hiword(value: usize) -> u16 {
     ((value >> 16) & 0xffff) as u16
 }
 
-/// 鼠标消息里的有符号客户区坐标（等价于 `GET_X_LPARAM` / `GET_Y_LPARAM`）。
+/// Signed client-area coordinate in a mouse message (equivalent to `GET_X_LPARAM` /
+/// `GET_Y_LPARAM`).
 fn signed_x(lparam: isize) -> i32 {
     (lparam as usize & 0xffff) as u16 as i16 as i32
 }
@@ -183,14 +200,15 @@ fn signed_y(lparam: isize) -> i32 {
     ((lparam as usize >> 16) & 0xffff) as u16 as i16 as i32
 }
 
-/// 从 `GWLP_USERDATA` 取回窗口状态（`WM_NCCREATE` 时写入）。
+/// Retrieves the window state from `GWLP_USERDATA` (written during `WM_NCCREATE`).
 unsafe fn state_of(hwnd: HWND) -> Option<&'static Mutex<WindowState>> {
     let raw = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const Mutex<WindowState>;
     unsafe { raw.as_ref() }
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    // 创建期：把 `CreateWindowExW` 的 `lpCreateParams`（Arc 的裸指针）存进 USERDATA。
+    // Creation: store `CreateWindowExW`'s `lpCreateParams` (a raw pointer to the Arc)
+    // in USERDATA.
     if msg == WM_NCCREATE {
         let create = unsafe { &*(lparam as *const CREATESTRUCTW) };
         unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, create.lpCreateParams as isize) };
@@ -221,11 +239,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 }
             }
             WM_PAINT => {
-                // 画面由 Vulkan 直接呈现，GDI 只需把脏区域标为有效。
+                // Vulkan presents directly; GDI only needs to mark the dirty region
+                // valid.
                 unsafe { ValidateRect(hwnd, std::ptr::null()) };
             }
             WM_ERASEBKGND => {
-                // 已处理（等同返回 1）：不画背景，避免闪白。
+                // Handled (equivalent to returning 1): do not paint the background,
+                // avoiding a white flash.
             }
             WM_SETFOCUS => st.push(PlatformEvent::Focused(true)),
             WM_KILLFOCUS => st.push(PlatformEvent::Focused(false)),
@@ -242,17 +262,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 let y = signed_y(lparam);
                 match st.grab {
                     Some(grab) => {
-                        // 锁定态：光标被按在客户区中心，偏移量就是原始增量
-                        // （两边都是客户区坐标）。
+                        // Locked: the cursor is pinned to the client-area center, so
+                        // the offset is the raw delta (both are client-area coords).
                         let (dx, dy) = (x - grab.client.x, y - grab.client.y);
                         if dx != 0 || dy != 0 {
                             st.push(PlatformEvent::MouseMotion {
                                 dx: dx as f64,
                                 dy: dy as f64,
                             });
-                            // 回中要放在放开状态锁之后：`SetCursorPos` 可能派发
-                            // 新的鼠标消息，同线程重入 `WndProc` 会二次加锁。
-                            // （回中会再发一条 dx = dy = 0 的移动，被上面的判断吃掉。）
+                            // Recentring must happen after the state lock is released:
+                            // `SetCursorPos` may dispatch a new mouse message, and
+                            // re-entering `WndProc` on the same thread would lock the
+                            // mutex again. (The recenter itself emits another move with
+                            // dx = dy = 0, which the check above swallows.)
                             post = Some(PostAction::Recenter(grab.screen));
                         }
                     }
@@ -287,7 +309,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 post = Some(PostAction::ReleaseCapture);
             }
             WM_XBUTTONDOWN | WM_XBUTTONUP => {
-                // XBUTTON1 = 后退键, XBUTTON2 = 前进键。
+                // XBUTTON1 = back button, XBUTTON2 = forward button.
                 let button = if hiword(wparam) == 1 { 3 } else { 4 };
                 st.push(PlatformEvent::MouseButton {
                     button,
@@ -296,14 +318,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 post = Some(PostAction::Capture);
             }
             WM_MOUSEWHEEL => {
-                // HIWORD(wParam) 是一格 120 的有符号整数倍。
+                // HIWORD(wParam) is a signed multiple of 120 per notch.
                 let notches = hiword(wparam) as i16 as f32 / WHEEL_DELTA;
                 st.push(PlatformEvent::MouseWheel {
                     delta: notches as f64,
                 });
             }
             WM_SETCURSOR => {
-                // 隐藏光标时别让 DC 把类光标画回来（返回 1 = 已处理）。
+                // While the cursor is hidden, do not let the DC paint the class cursor
+                // back (return 1 = handled).
                 if !st.cursor_hidden {
                     handled = false;
                 }
@@ -321,7 +344,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             }
             WM_DPICHANGED => {
                 st.dpi = hiword(wparam) as u32;
-                // 按系统建议的矩形走（不做内容缩放，见模块文档）。
+                // Follow the system-suggested rectangle (no content scaling; see the
+                // module docs).
                 post = Some(PostAction::ApplyDpiRect(unsafe {
                     *(lparam as *const RECT)
                 }));
@@ -358,7 +382,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         None => {}
     }
 
-    // `WM_SETCURSOR` / `WM_ERASEBKGND` 的返回值是约定：1 = 已处理。
+    // The return value of `WM_SETCURSOR` / `WM_ERASEBKGND` is a convention: 1 =
+    // handled.
     if msg == WM_SETCURSOR || msg == WM_ERASEBKGND {
         1
     } else {
@@ -366,7 +391,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     }
 }
 
-/// 客户区中心，同时给出客户区与屏幕两种坐标。
+/// Client-area center, given in both client-area and screen coordinates.
 unsafe fn grab_center(hwnd: HWND) -> Option<Grab> {
     let mut rect = RECT::default();
     if unsafe { GetClientRect(hwnd, &mut rect) } == 0 {
@@ -383,18 +408,20 @@ unsafe fn grab_center(hwnd: HWND) -> Option<Grab> {
     Some(Grab { client, screen })
 }
 
-/// 一个已创建的 Win32 窗口。
+/// A created Win32 window.
 pub(crate) struct Win32Window {
     hwnd: HWND,
     hinstance: HINSTANCE,
-    /// 与 `GWLP_USERDATA` 共享的窗口状态（`WndProc` 侧用裸指针访问）。
+    /// Window state shared with `GWLP_USERDATA` (accessed as a raw pointer from
+    /// `WndProc`).
     state: Arc<Mutex<WindowState>>,
-    /// `Arc::into_raw` 的指针；`Drop` 时用 `Arc::from_raw` 回收这份引用。
+    /// Pointer from `Arc::into_raw`; `Drop` reclaims this reference with
+    /// `Arc::from_raw`.
     state_ptr: *mut Mutex<WindowState>,
 }
 
-// HWND 是进程级句柄；本类型只在创建它的主线程上使用（跨线程只传
-// `SendWindowHandles`）。
+// HWND is a process-level handle; this type is used only on the main thread that
+// created it (only `SendWindowHandles` crosses threads).
 unsafe impl Send for Win32Window {}
 unsafe impl Sync for Win32Window {}
 
@@ -402,7 +429,8 @@ impl Drop for Win32Window {
     fn drop(&mut self) {
         unsafe {
             if !self.hwnd.is_null() {
-                // 先销毁窗口（`WndProc` 还会访问状态），再回收 Arc。
+                // Destroy the window first (`WndProc` still touches the state), then
+                // reclaim the Arc.
                 DestroyWindow(self.hwnd);
             }
             drop(Arc::from_raw(self.state_ptr));
@@ -411,7 +439,8 @@ impl Drop for Win32Window {
 }
 
 fn window_styles(cfg: &WindowConfig) -> (u32, u32) {
-    // 无边框 / 全屏：标题栏与可调整大小都不适用，直接用 popup。
+    // Borderless / fullscreen: title bar and resizing do not apply, so use a popup
+    // directly.
     if cfg.fullscreen || !cfg.decorations {
         return (WS_POPUP | WS_VISIBLE, 0);
     }
@@ -422,11 +451,12 @@ fn window_styles(cfg: &WindowConfig) -> (u32, u32) {
     (style, 0)
 }
 
-/// 用 Win32 API 创建窗口（不经过 winit）。
+/// Creates a window with the Win32 API (bypassing winit).
 pub(crate) fn create_window(cfg: &WindowConfig) -> anyhow::Result<PlatformWindow> {
     unsafe {
-        // Per-Monitor-V2：不声明的话进程被当成 DPI-unaware，Windows 会把整块
-        // 画面位图拉伸（糊）。重复设置会失败，忽略即可。
+        // Per-Monitor-V2: without this declaration the process is treated as
+        // DPI-unaware and Windows stretches the whole frame bitmap (blurry). Setting
+        // it twice fails, which is fine to ignore.
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
         let hinstance = GetModuleHandleW(std::ptr::null());
@@ -442,7 +472,8 @@ pub(crate) fn create_window(cfg: &WindowConfig) -> anyhow::Result<PlatformWindow
             hInstance: hinstance,
             hIcon: std::ptr::null_mut(),
             hCursor: LoadCursorW(std::ptr::null_mut(), IDC_ARROW),
-            // 不画背景：画面完全由 Vulkan 呈现，GDI 重绘只会闪。
+            // No background: Vulkan presents the whole frame, and a GDI repaint would
+            // only flicker.
             hbrBackground: std::ptr::null_mut(),
             lpszMenuName: std::ptr::null(),
             lpszClassName: class_name.as_ptr(),
@@ -451,12 +482,14 @@ pub(crate) fn create_window(cfg: &WindowConfig) -> anyhow::Result<PlatformWindow
         let atom = RegisterClassExW(&class);
         if atom == 0 {
             let error = GetLastError();
-            // ERROR_CLASS_ALREADY_EXISTS = 1410：同进程第二次开窗口，正常。
+            // ERROR_CLASS_ALREADY_EXISTS = 1410: a second window in the same process
+            // is normal.
             anyhow::ensure!(error == 1410, "RegisterClassExW failed ({error})");
         }
 
-        // 配置里的宽高按 winit 的 `LogicalSize` 语义解释（逻辑像素），
-        // 这里按系统 DPI 折算成客户区物理像素，两个后端开出来的窗口一样大。
+        // The configured width/height follow winit's `LogicalSize` semantics (logical
+        // pixels); here they are scaled by the system DPI into client-area physical
+        // pixels so both backends open a window of the same size.
         let scale = GetDpiForSystem() as f32 / 96.0;
         let client_w = ((cfg.width.max(1) as f32) * scale).round() as i32;
         let client_h = ((cfg.height.max(1) as f32) * scale).round() as i32;
@@ -469,7 +502,8 @@ pub(crate) fn create_window(cfg: &WindowConfig) -> anyhow::Result<PlatformWindow
             bottom: client_h,
         };
         if cfg.fullscreen {
-            // 无边框全屏：直接铺满主显示器（不做独占全屏）。
+            // Borderless fullscreen: fill the primary monitor directly (no exclusive
+            // fullscreen).
             rect.right = GetSystemMetrics(SM_CXSCREEN);
             rect.bottom = GetSystemMetrics(SM_CYSCREEN);
         } else {
@@ -500,7 +534,8 @@ pub(crate) fn create_window(cfg: &WindowConfig) -> anyhow::Result<PlatformWindow
             state_ptr as *const c_void,
         );
         if hwnd.is_null() {
-            // 窗口没建成：收回传出去的 Arc 引用，避免泄漏。
+            // Window creation failed: reclaim the Arc reference handed out, avoiding a
+            // leak.
             drop(Arc::from_raw(state_ptr));
             anyhow::bail!("CreateWindowExW failed ({})", GetLastError());
         }
@@ -558,8 +593,9 @@ impl Win32Window {
         let mut handle = Win32WindowHandle::new(
             NonZeroIsize::new(self.hwnd as isize).expect("HWND must be non-zero"),
         );
-        // 必须给 `hinstance`：缺它时 `create_surface` 返回
-        // `ERROR_INITIALIZATION_FAILED`（editor 原生视口踩过的坑）。
+        // `hinstance` must be set: without it `create_surface` returns
+        // `ERROR_INITIALIZATION_FAILED` (a pitfall hit by the editor's native
+        // viewport).
         handle.hinstance = NonZeroIsize::new(self.hinstance as isize);
         RawWindowHandle::Win32(handle)
     }
@@ -569,8 +605,9 @@ impl Win32Window {
     }
 
     pub(crate) fn set_cursor_visible(&self, visible: bool) {
-        // `ShowCursor` 是计数器语义：只在状态翻转时调一次。调用放在放开
-        // 状态锁之后（它可能触发 `WM_SETCURSOR`，同线程重入会二次加锁）。
+        // `ShowCursor` is a counter: call it once per state flip. The call is made
+        // after releasing the state lock (it may trigger `WM_SETCURSOR`, and
+        // re-entering on the same thread would lock the mutex again).
         let flip = {
             let mut st = lock(&self.state);
             let hidden = st.cursor_hidden;
@@ -631,7 +668,8 @@ impl Win32Window {
         lock(&self.state).close_requested
     }
 
-    /// 取出自上次调用以来排队的事件（`PeekMessageW` 泵 + `WndProc` 收集）。
+    /// Drains events queued since the last call (the `PeekMessageW` pump plus
+    /// `WndProc` collection).
     pub(crate) fn poll_events(&self) -> Vec<PlatformEvent> {
         loop {
             let mut msg = MSG::default();
@@ -639,7 +677,7 @@ impl Win32Window {
             if has == 0 {
                 break;
             }
-            // WM_QUIT 不走 `DispatchMessageW`。
+            // WM_QUIT does not go through `DispatchMessageW`.
             if msg.message == WM_QUIT {
                 lock(&self.state).close_requested = true;
                 break;
@@ -653,7 +691,8 @@ impl Win32Window {
         st.events.drain(..).collect()
     }
 
-    /// 阻塞直到有消息到达或 `timeout_ms` 到期（消息留给 `poll_events` 取走）。
+    /// Blocks until a message arrives or `timeout_ms` elapses (the message is left
+    /// for `poll_events` to drain).
     pub(crate) fn wait_events(&self, timeout_ms: u32) {
         unsafe {
             MsgWaitForMultipleObjectsEx(
@@ -677,10 +716,10 @@ mod tests {
         assert_eq!(hiword(0x0001_0002), 1);
         assert_eq!(signed_x(0x0000_0002), 2);
         assert_eq!(signed_y(0x0001_0002), 1);
-        // 负坐标（鼠标移到客户区左上角外）。
+        // Negative coordinates (mouse moved outside the client area's top-left).
         assert_eq!(signed_x(0x0000_FFFE), -2);
         assert_eq!(signed_y(0xFFFF_0000u64 as isize), -1);
-        // 滚轮一格 = 1.0 行。
+        // One wheel notch = 1.0 line.
         assert_eq!(hiword(120usize) as i16 as f32 / WHEEL_DELTA, 1.0);
         assert_eq!(
             hiword((-120i16 as u16) as usize) as i16 as f32 / WHEEL_DELTA,
