@@ -1,7 +1,9 @@
-//! 文档 / 反射字段工具：全部落在 `prism-editor-api` 上，这里只做参数解析。
+//! Document and reflection-field tools: all work happens in
+//! `prism-editor-api`; this module only parses arguments.
 //!
-//! 设计约束：**写入一律经过反射**（`set_component_field`），所以非法类型、
-//! 只读字段、未知枚举变体都会被拒，不会写坏 `.scene.json`。
+//! Design constraint: **every write goes through reflection**
+//! (`set_component_field`), so invalid types, read-only fields and unknown
+//! enum variants are rejected and `.scene.json` cannot be corrupted.
 
 use std::path::{Path, PathBuf};
 
@@ -135,7 +137,7 @@ pub fn definitions() -> Vec<ToolDef> {
     ]
 }
 
-/// 执行一个工具；`Err` 会转成 MCP 的 `isError: true`。
+/// Dispatches a tool call; an `Err` becomes MCP's `isError: true`.
 pub fn call(root: &Path, name: &str, args: &Value) -> Result<String, String> {
     match name {
         "documents_list" => documents_list(root, args),
@@ -197,7 +199,8 @@ fn documents_list(root: &Path, args: &Value) -> Result<String, String> {
     for kind in kinds {
         let entries = scene::list_docs(root, *kind)?;
         for entry in entries {
-            // 对外一律用项目相对路径，agent 拼 `path` 时不用关心绝对前缀。
+            // Always expose project-relative paths so agents do not have to
+            // deal with an absolute prefix when building `path`.
             let root_prefix = root.to_string_lossy();
             let relative = entry
                 .path
@@ -248,7 +251,8 @@ fn schema_list(args: &Value) -> Result<String, String> {
     serde_json::to_string_pretty(&types).map_err(|err| err.to_string())
 }
 
-/// 实体定位：纯数字按 `id`，否则按 `name`（取第一个同名实体）。
+/// Locates an entity: a plain number matches `id`, otherwise `name` (first
+/// match wins).
 fn locate<'a>(doc: &'a mut Value, key: &str) -> Result<&'a mut Map<String, Value>, String> {
     let entities = doc
         .get_mut("entities")
@@ -292,8 +296,9 @@ fn field_set(root: &Path, args: &Value) -> Result<String, String> {
         .cloned()
         .ok_or_else(|| format!("实体 '{entity_key}' 上没有组件 '{component}'"))?;
 
-    // `set_component_field` 从「改后」对象里读新值，所以先按路径打补丁；
-    // 类型不合法会在它内部的 `object_from_json` 处被拒。
+    // `set_component_field` reads the new value from the "after" object, so
+    // patch the path first; an invalid type is rejected inside its
+    // `object_from_json`.
     let mut after = before.clone();
     patch_path(&mut after, &field, value)?;
     let updated = set_component_field(&component, &before, &field, &after)?;
@@ -356,7 +361,8 @@ fn component_remove(root: &Path, args: &Value) -> Result<String, String> {
     Ok(format!("已移除 {component}"))
 }
 
-/// 按 `a.b[2].c` 写入 JSON；只用于给 `set_component_field` 准备「改后」值。
+/// Writes a value into JSON by path such as `a.b[2].c`; only used to build the
+/// "after" value for `set_component_field`.
 fn patch_path(target: &mut Value, path: &str, value: Value) -> Result<(), String> {
     let mut cursor = target;
     for segment in parse_path(path)? {
