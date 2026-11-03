@@ -147,6 +147,9 @@ FIFO 排队、单次播完自动接下一段，`stop` / `stop_after_current` 清
 `*.skinning/notifies.json` 时同一个面板变成事件表编辑器：按剪辑列出 Notify，可改时间 / 名字、
 删除，或用草稿表单追加（包括新建剪辑键）；每个剪辑的时间轴可以直接拖动金色标记改时间，空白处点击会用该时间打开新增草稿。
 
+`Animator.blend_smoothing`（秒）开启后，混合空间参数按指数平滑趋近目标，避免速度跳变
+让姿态弹一下；默认 0 = 直通。
+
 运行时每帧还会在 `AnimatorPlayhead.root_motion` 记录根关节相对上一帧的位移 / 偏航增量
 （首帧与换剪辑首帧为零），P2 才消费它驱动位移 —— 当前只记录，不改实体 Transform。
 

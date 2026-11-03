@@ -2318,6 +2318,10 @@ pub struct Animator {
     pub blend_positions: Vec<f32>,
     /// 混合参数（游戏侧每帧写，通常就是速度）。范围外夹到两端。
     pub blend_parameter: f32,
+    /// 混合参数的平滑时间常数（秒，#560 P1）。`0` = 直接使用写入值；
+    /// `> 0` 时按指数趋近目标（每帧 `1 - exp(-dt / tau)`），避免游戏侧速度
+    /// 跳变让姿态弹一下。只作用于混合空间的参数轴，不改组件里的值。
+    pub blend_smoothing: f32,
     /// 二维混合空间的剪辑路径（#560 P1）。至少 3 项且 `blend_2d_positions`
     /// 长度一致时**优先于**一维混合空间与 `clip_path`：姿态由参数平面上的
     /// 位置在样本点之间三角化插值得到。
@@ -2373,6 +2377,7 @@ impl Default for Animator {
             blend_clip_paths: Vec::new(),
             blend_positions: Vec::new(),
             blend_parameter: 0.0,
+            blend_smoothing: 0.0,
             blend_2d_clip_paths: Vec::new(),
             blend_2d_positions: Vec::new(),
             blend_parameter_y: 0.0,
