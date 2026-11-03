@@ -75,8 +75,8 @@ pub use keys::{
 pub use logbuf::{LogBuffer, LogFilter, LogLevel, LogLine, LogSource, LOG_ROW_HEIGHT};
 pub use manifest::{doc_relative_path, SceneEntry, SceneManifest};
 pub use notify_view::{
-    add_notify, nearest_notify_index, notify_time_at, parse_notifies_view, remove_notify,
-    set_notify, ClipNotifiesView, NotifiesView, NotifyEntryView,
+    add_notify, nearest_notify_index, notify_time_at, notify_timeline_span, parse_notifies_view,
+    remove_notify, set_notify, ClipNotifiesView, NotifiesView, NotifyEntryView,
 };
 pub use project::{find_project_root, scan_documents, ProjectFile};
 pub use recovery::{RecoveredDocument, RECOVERY_DIR, RECOVERY_FILE};

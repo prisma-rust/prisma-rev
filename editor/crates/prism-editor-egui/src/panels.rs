@@ -5916,13 +5916,7 @@ fn draw_notifies_view(
                 .strong()
                 .size(10.0),
         );
-        let span = clip
-            .entries
-            .iter()
-            .map(|entry| entry.time)
-            .fold(2.0_f32, f32::max)
-            .max(2.0)
-            * 1.1;
+        let span = prism_editor_core::notify_timeline_span(&clip.entries);
         let width = ui.available_width().clamp(140.0, 520.0);
         let (track, painter) =
             ui.allocate_painter(Vec2::new(width, 20.0), egui::Sense::click_and_drag());
@@ -5974,6 +5968,26 @@ fn draw_notifies_view(
         if track.drag_stopped() {
             edit.notify_drag = None;
         }
+        if track.clicked() {
+            if let Some(pos) = track.interact_pointer_pos() {
+                let hit = prism_editor_core::nearest_notify_index(
+                    &clip.entries,
+                    pos.x,
+                    left,
+                    usable,
+                    span,
+                    8.0,
+                );
+                if hit.is_none() {
+                    // 空白处点一下 = 在那个时间打开新增草稿，名字留空等作者填。
+                    edit.notify_draft = Some((
+                        clip.clip.clone(),
+                        prism_editor_core::notify_time_at(pos.x, left, usable, span),
+                        String::new(),
+                    ));
+                }
+            }
+        }
         let hovered = track.hover_pos().and_then(|pos| {
             prism_editor_core::nearest_notify_index(&clip.entries, pos.x, left, usable, span, 8.0)
         });
@@ -5998,6 +6012,10 @@ fn draw_notifies_view(
                 "{} @ {:.2}s — drag to retime",
                 entry.name, entry.time
             ));
+        } else if track.hovered() {
+            track
+                .clone()
+                .on_hover_text("click to add a notify at this time");
         }
         for (index, entry) in clip.entries.iter().enumerate() {
             ui.horizontal(|ui| {

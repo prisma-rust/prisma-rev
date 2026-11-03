@@ -145,7 +145,7 @@ FIFO 排队、单次播完自动接下一段，`stop` / `stop_after_current` 清
 骨骼掩码；状态机侧可以改状态的名字 / 剪辑 / speed / looped、增删转移、重连转移的 `from` / `to`、
 用 `↑` / `↓` 调整转移顺序（顺序即优先级，运行时取第一条命中的转移）、拖转移的 `blend` / `min` 时长，以及增删条件和改 float 阈值 / bool 期望值。选中
 `*.skinning/notifies.json` 时同一个面板变成事件表编辑器：按剪辑列出 Notify，可改时间 / 名字、
-删除，或用草稿表单追加（包括新建剪辑键）；每个剪辑的时间轴可以直接拖动金色标记改时间。
+删除，或用草稿表单追加（包括新建剪辑键）；每个剪辑的时间轴可以直接拖动金色标记改时间，空白处点击会用该时间打开新增草稿。
 
 引擎侧项目代码通过 `AnimMontageRequests` 资源发请求（`MontageRequest::play` /
 `enqueue` / `stop` / `stop_after_current`，可带循环 / 速度 / 权重 / 开始时间）；

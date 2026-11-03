@@ -175,6 +175,19 @@ pub fn notify_time_at(x: f32, left: f32, width: f32, span: f32) -> f32 {
     ((fraction * span) * 100.0).round() / 100.0
 }
 
+/// 剪辑时间轴的窗口跨度：最晚事件 × 1.1，至少 2 秒（再留 10%）。
+///
+/// 作者侧 JSON 不知道 cook 后的 `.ranim` 时长，只能用已有事件推一个够用的范围；
+/// 空剪辑 / 全是坏值时退回 2 秒窗口。
+pub fn notify_timeline_span(entries: &[NotifyEntryView]) -> f32 {
+    let latest = entries
+        .iter()
+        .map(|entry| entry.time)
+        .filter(|time| time.is_finite() && *time > 0.0)
+        .fold(2.0_f32, f32::max);
+    latest * 1.1
+}
+
 /// 时间轴命中：返回离 `x` 最近、且像素距离不超过 `radius` 的事件下标。
 pub fn nearest_notify_index(
     entries: &[NotifyEntryView],
@@ -247,6 +260,33 @@ mod tests {
         assert_eq!(notify_time_at(33.0, 0.0, 100.0, 2.0), 0.66);
         assert_eq!(notify_time_at(f32::NAN, 0.0, 100.0, 2.0), 0.0);
         assert_eq!(notify_time_at(10.0, 0.0, 0.0, 2.0), 0.0);
+    }
+
+    #[test]
+    fn the_timeline_span_tracks_the_latest_event_with_a_two_second_floor() {
+        assert!((notify_timeline_span(&[]) - 2.2).abs() < 1e-6);
+        let entries = vec![
+            NotifyEntryView {
+                time: 1.0,
+                name: "A".to_string(),
+            },
+            NotifyEntryView {
+                time: 3.0,
+                name: "B".to_string(),
+            },
+        ];
+        assert!((notify_timeline_span(&entries) - 3.3).abs() < 1e-6);
+        let bad = vec![
+            NotifyEntryView {
+                time: f32::NAN,
+                name: "bad".to_string(),
+            },
+            NotifyEntryView {
+                time: -5.0,
+                name: "negative".to_string(),
+            },
+        ];
+        assert!((notify_timeline_span(&bad) - 2.2).abs() < 1e-6);
     }
 
     #[test]
