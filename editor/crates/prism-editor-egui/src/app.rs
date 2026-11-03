@@ -4492,9 +4492,14 @@ impl EditorApp {
             "material" => panels::material(ui, &mut self.workspace, &mut self.state),
             "animGraph" => {
                 let runtime = self.game_view.as_ref().and_then(|view| {
-                    view.host
-                        .world()
-                        .get_resource::<prism_engine::scene::systems::animator::AnimGraphDebug>()
+                    let world = view.host.world();
+                    let graph = world
+                        .get_resource::<prism_engine::scene::systems::animator::AnimGraphDebug>()?;
+                    Some(panels::AnimRuntimeView {
+                        graph,
+                        events: world
+                            .get_resource::<prism_engine::scene::systems::animator::AnimEvents>(),
+                    })
                 });
                 panels::anim_graph(ui, &mut self.workspace, &mut self.state, runtime)
             }

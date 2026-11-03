@@ -2595,6 +2595,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "prism-editor-core"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "prism-editor-egui"
 version = "0.1.0"
 dependencies = [
@@ -2616,15 +2625,6 @@ dependencies = [
  "prism-runtime-host",
  "prism-scene",
  "raw-window-handle",
- "serde_json",
-]
-
-[[package]]
-name = "prism-editor-core"
-version = "0.1.0"
-dependencies = [
- "log",
- "serde",
  "serde_json",
 ]
 
