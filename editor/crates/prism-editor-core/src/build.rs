@@ -221,7 +221,7 @@ mod tests {
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir =
-            std::env::temp_dir().join(format!("prism-gpui-build-{name}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("prism-editor-build-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -307,7 +307,7 @@ version = \"0.1.0\"
         let root = temp_dir("plan-release");
         std::fs::create_dir_all(root.join("projects/prisma")).unwrap();
         std::fs::write(root.join("projects/prisma/Cargo.toml"), "[package]\n").unwrap();
-        let out = std::env::temp_dir().join("prism-gpui-build-abs-out");
+        let out = std::env::temp_dir().join("prism-editor-build-abs-out");
         let plan = plan_build(&root, &settings("release", out.to_str().unwrap()));
         assert!(plan.steps[0].args.iter().any(|arg| arg == "--release"));
         assert_eq!(

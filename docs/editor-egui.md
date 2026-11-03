@@ -657,9 +657,8 @@ cooker 校验）；`× Remove node` 删除节点，输出节点和仍被引用�
 
 ## 5. 数据层
 
-`editor/crates/prism-editor-gpui-core` 是与 UI 框架无关的数据层（历史包名，不依赖
-GPUI）：文档模型、schema、撤销栈、dock 树、日志缓冲、资产树、i18n、项目读写。
-egui 壳通过路径依赖直接使用它；将来可以改名为 `prism-editor-core`。
+`editor/crates/prism-editor-core` 是与 UI 框架无关的数据层：文档模型、schema、撤销栈、dock 树、日志缓冲、资产树、i18n、项目读写。
+egui 壳通过路径依赖直接使用它。
 
 ## 6. 未完成 / 风险
 

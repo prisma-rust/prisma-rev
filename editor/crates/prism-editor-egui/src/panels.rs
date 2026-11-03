@@ -1,6 +1,6 @@
 //! 面板主体：层级 / 检查器 / 资产 / 文档 / 日志 / 撤销历史 / 设置类窗口。
 //!
-//! 数据与命令全部走 `prism-editor-core`（与 Web 编辑器、GPUI 编辑器同一份
+//! 数据与命令全部走 `prism-editor-core`（与 Web 编辑器同一份
 //! 文档模型 / schema / 撤销栈），这里只负责画 egui 控件。
 
 use egui::{Align, Color32, Layout, RichText, Sense, Ui, Vec2};

@@ -88,7 +88,7 @@ deviating from those conventions is a bug. (`README.md` is the human-facing over
 - `editor/` — **egui 编辑器（唯一）**，Rust-only、独立 workspace、不挂根成员：
   菜单栏 / 主工具栏 / 状态栏 + split-tree docking（拖 splitter、tab 切换、浮动窗口）+
   层级 / 检查器 / 资产 / 文档 / 日志 / 历史 / 设置类面板；数据层直接复用
-  `editor/crates/prism-editor-gpui-core`（历史包名，与 UI 框架无关）。
+  `editor/crates/prism-editor-core`（与 UI 框架无关）。
   **Scene / Game 视图零拷贝**：`prism-render` 渲染到自己的离屏 `VkImage`，egui-ash 与
   引擎共用同一个 `VkDevice` / 队列，`ImageRegistry::register_user_texture` 注册
   `offscreen_image_view()` 后由 `painter.image()` 直接采样 —— 没有
@@ -154,7 +154,7 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   立体声按 L/R 缩放），所以混音器仍然只需要 `set_volume`；`spatial_blend = 0` 保持纯 2D，
   移动中的声源保留首次播放时的声像。总线 / 编辑器试听仍未接（#508）。
 - The only editor is the egui editor (`editor/`, Rust + egui + ash). Its data layer lives in
-  `editor/crates/prism-editor-gpui-core`; the engine side must stay generic: no editor-only
+  `editor/crates/prism-editor-core`; the engine side must stay generic: no editor-only
   concepts (panels, docks, selection) may leak into `prism-app` / `prism-engine` / `prism-render`.
 - Never add a UI framework (egui/egui-winit/egui-ash-renderer) to `prism-app` /
   `prism-engine` / `prism-render`. Verify with
@@ -544,7 +544,7 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
 - 解析器有三份**同方言**实现，改一处必须同步另外两处：
   `crates/prism-engine/src/config/ini.rs`（引擎读取）、
   `crates/prism-editor-api/src/ini.rs`（MCP / 工具，需保留未知段）、
-  `editor/crates/prism-editor-gpui-core/src/ini.rs`（编辑器数据层）。
+  `editor/crates/prism-editor-core/src/ini.rs`（编辑器数据层）。
 - `[render] internal_resolution`（`640x360` / `off`）与 `internal_scale_mode`
   （`stretch` / `integer`）把场景渲染分辨率与窗口分辨率分开（#613）：中间目标按内部
   尺寸渲染、相机按内部宽高比投影、`PostPass` 再放大到窗口（`integer` = 最近邻 +

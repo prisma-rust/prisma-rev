@@ -2505,7 +2505,7 @@ impl ViewKind {
     }
 }
 
-/// 文档实体的世界代理（单位立方体）：与 GPUI / Tauri 编辑器的点选规则一致。
+/// 文档实体的世界代理（单位立方体）：与 Web 编辑器的点选规则一致。
 /// 拖放标签里的动作说明（#646）。
 fn drop_hint(path: &str) -> String {
     if path.ends_with(".prefab.json") {

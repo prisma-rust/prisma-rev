@@ -1,6 +1,6 @@
 //! 编辑器工作区状态：打开的文档、选择、dock 布局、主题、日志、Play 状态。
 //!
-//! 这一层**不依赖任何 UI 框架**，GPUI 只是它的一个视图。因此同一份状态可以
+//! 这一层**不依赖任何 UI 框架**，egui 只是它的一个视图。因此同一份状态可以
 //! 单测，也可以在将来喂给别的宿主（例如自动化脚本）。
 
 use crate::anim_graph_view::AnimGraphLayout;
@@ -709,7 +709,7 @@ impl Workspace {
         workspace.log(
             LogSource::Editor,
             LogLevel::Info,
-            "PrismaRev GPUI 编辑器已启动",
+            "PrismaRev egui 编辑器已启动",
         );
         workspace
     }
@@ -840,7 +840,7 @@ impl Workspace {
 
     /// 用 schema 的 `defaultJson` 补齐组件缺失字段。
     ///
-    /// Web 编辑器先 `from_object` 再回填，所以字段永远齐全；GPUI 直接操作作者 JSON，
+    /// Web 编辑器先 `from_object` 再回填，所以字段永远齐全；egui 直接操作作者 JSON，
     /// 必须在加载后补默认值，否则「拖动一个旧文档里没写过的字段」会静默失败。
     pub fn hydrate_documents(&mut self) {
         let schema = self.schema.clone();
@@ -4978,7 +4978,7 @@ impl Workspace {
                 self.log(
                     LogSource::Editor,
                     LogLevel::Warn,
-                    "重命名 / 删除请在资产面板或文件系统里做（GPUI 壳暂不提供破坏性操作）",
+                    "重命名 / 删除请在资产面板或文件系统里做（编辑器暂不提供破坏性操作）",
                 );
             }
             Command::Undo => self.undo(),
@@ -7684,7 +7684,7 @@ mod tests {
     impl TempProject {
         fn new(tag: &str) -> Self {
             let root = std::env::temp_dir().join(format!(
-                "prism-editor-gpui-ws-{}-{}",
+                "prism-editor-core-ws-{}-{}",
                 std::process::id(),
                 tag
             ));

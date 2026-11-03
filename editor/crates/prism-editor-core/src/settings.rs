@@ -456,7 +456,7 @@ mod tests {
     impl TempRoot {
         fn new() -> Self {
             let root = std::env::temp_dir().join(format!(
-                "prism-editor-gpui-settings-{}-{}",
+                "prism-editor-core-settings-{}-{}",
                 std::process::id(),
                 SEQ.fetch_add(1, Ordering::Relaxed)
             ));

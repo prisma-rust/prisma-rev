@@ -1,8 +1,8 @@
 //! 编辑器本地状态持久化（对应 Web 编辑器的 localStorage 键）。
 //!
 //! Web 侧存三份：`prisma-editor.dock.v4` / `prisma-editor.theme.v1` /
-//! `prisma-editor.locale.v1`（外加 preferences）。GPUI 壳把它们合并成**一个**
-//! JSON 文件（默认 `<project>/target/editor-gpui/state.json`），方便备份与排查。
+//! `prisma-editor.locale.v1`（外加 preferences）。egui 壳把它们合并成**一个**
+//! JSON 文件（默认 `<project>/target/editor-egui/state.json`），方便备份与排查。
 //!
 //! 语义与前端一致：主题只存「预设 + 被改过的 token」；布局走 `DockLayout`
 //! 的 sanitize；未知面板 / 非法颜色 / 不存在的预设都静默回退。

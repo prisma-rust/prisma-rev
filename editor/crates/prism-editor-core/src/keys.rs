@@ -405,7 +405,7 @@ impl KeyChord {
         Some(chord)
     }
 
-    /// gpui 的按键事件直接喂进来；`key` 是平台键名（`a` / `Delete` / `Home`）。
+    /// egui 的按键事件直接喂进来；`key` 是平台键名（`a` / `Delete` / `Home`）。
     pub fn from_event(ctrl: bool, shift: bool, alt: bool, key: &str) -> KeyChord {
         KeyChord {
             ctrl,

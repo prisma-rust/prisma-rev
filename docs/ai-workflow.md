@@ -353,10 +353,10 @@ PRISM_UPDATE_GOLDENS=1 cargo test -p prism-render --test golden_frame
 diff 再决定是修代码还是更新基准。
 
 编辑器数据层测试优先复用
-`editor/crates/prism-editor-gpui-core/tests/support` 的 `EditorHarness`：它创建临时项目
+`editor/crates/prism-editor-core/tests/support` 的 `EditorHarness`：它创建临时项目
 （scene + prefab + 最小 schema），测试通过 `Workspace` 的公开 API 执行选择、编辑、撤销、
 保存和重载，并同时断言内存与磁盘状态。示例见
-`editor/crates/prism-editor-gpui-core/tests/workspace_harness.rs`。
+`editor/crates/prism-editor-core/tests/workspace_harness.rs`。
 
 MCP 文档工具测试优先复用
 `crates/prism-editor-mcp/tests/support` 的 `McpHarness`：临时项目 + `tools::call` 直连

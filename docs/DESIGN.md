@@ -1055,7 +1055,7 @@ internal_scale_mode = integer
 
 - `crates/prism-engine/src/config/ini.rs` —— 引擎读取（`AppConfig::from_ini`）；
 - `crates/prism-editor-api/src/ini.rs` —— MCP / 工具的文档模型（保留未知段）；
-- `editor/crates/prism-editor-gpui-core/src/ini.rs` —— 编辑器数据层（独立 workspace）。
+- `editor/crates/prism-editor-core/src/ini.rs` —— 编辑器数据层（独立 workspace）。
 
 #### 加载顺序与迁移
 
