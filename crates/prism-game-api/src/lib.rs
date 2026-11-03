@@ -1,24 +1,29 @@
-//! # prism-game-api —— 与引擎实现无关的 gameplay API 层
+//! # prism-game-api — the gameplay API layer that is independent of the engine
 //!
-//! 对齐引擎的脚本绑定层：**同一份 gameplay 代码**既能被静态链接进
-//! Player，也能被编译成动态库由编辑器宿主加载。区别只在 [`GameWorld`]
-//! 背后接的是谁：
+//! Mirrors the engine's script binding layer: **the same gameplay code** can be
+//! statically linked into the Player or compiled into a dynamic library loaded by
+//! the editor host. The only difference is who sits behind [`GameWorld`]:
 //!
-//! - [`GameWorld::host`]：直接借用宿主自己的 `prism_ecs::World`，零序列化。
-//! - [`GameWorld::plugin`]：通过宿主下发的 [`HostApi`] 函数表读写，组件数据
-//!   以 RTTIBin 字节流跨边界。
+//! - [`GameWorld::host`]: borrows the host's own `prism_ecs::World` directly, with
+//!   zero serialization.
+//! - [`GameWorld::plugin`]: reads and writes through the [`HostApi`] function table
+//!   the host hands down; component data crosses the boundary as RTTIBin byte
+//!   streams.
 //!
-//! 两条路径暴露**完全相同的函数签名**，所以项目代码不需要写两套。
+//! Both paths expose **exactly the same function signatures**, so project code does
+//! not need two implementations.
 //!
-//! ## 边界规则（不要破坏）
+//! ## Boundary rules (do not break)
 //!
-//! - 本 crate **不依赖** `prism-engine` / `prism-render` / `prism-app`。
-//!   一旦这里出现它们的依赖，插件就必须链接第二份引擎，`World` 类型身份
-//!   分裂，ABI 立刻变成 UB。
-//! - 组件类型不在这里镜像：`Style` / `Text` / `Name` / `Transform` 等直接来自
-//!   `prism-scene`（纯数据 crate），项目自己依赖即可。
-//! - 跨边界只传 [`EntityHandle`] 这类 `#[repr(C)]` POD 与字节流，不传引用、
-//!   不传 `&mut World`、不传 trait object。
+//! - This crate does **not** depend on `prism-engine` / `prism-render` /
+//!   `prism-app`. The moment one of those appears here, the plugin must link a
+//!   second copy of the engine, `World` type identity splits, and the ABI becomes
+//!   UB immediately.
+//! - Component types are not mirrored here: `Style` / `Text` / `Name` /
+//!   `Transform` and friends come straight from `prism-scene` (a pure-data crate),
+//!   which projects can depend on themselves.
+//! - Only `#[repr(C)]` PODs such as [`EntityHandle`] and byte streams cross the
+//!   boundary; never references, `&mut World`, or trait objects.
 
 #[cfg(feature = "host")]
 use prism_ecs::World;
@@ -32,13 +37,14 @@ use prism_project_api::{HostApi, HOST_CAP_PHYSICS, HOST_CAP_SCENE, SUCCESS};
 #[cfg(feature = "plugin")]
 use prism_reflect::{rtti_bin, TypeRegistry};
 
-/// 一条 2D UI 四边形（定义在 ABI crate，这里重新导出）。
+/// A 2D UI quad (defined in the ABI crate, re-exported here).
 pub use prism_project_api::UiQuad;
 
-/// 一次射线命中的结果（#522）。
+/// The result of a single raycast hit (#522).
 ///
-/// 两个后端返回同一形状：`point` / `normal` 是世界空间，`distance` 从射线起点
-/// 算起；`is_trigger` 的碰撞体参与查询但不阻挡移动。
+/// Both backends return the same shape: `point` / `normal` are in world space and
+/// `distance` is measured from the ray origin; `is_trigger` colliders take part in
+/// queries but do not block movement.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RaycastHit {
     pub entity: EntityHandle,
@@ -48,7 +54,7 @@ pub struct RaycastHit {
     pub is_trigger: bool,
 }
 
-/// 把 ECS 句柄转成跨边界句柄。
+/// Converts an ECS handle into a cross-boundary handle.
 pub fn handle_from_entity(entity: Entity) -> EntityHandle {
     EntityHandle {
         id: entity.id(),
@@ -56,21 +62,24 @@ pub fn handle_from_entity(entity: Entity) -> EntityHandle {
     }
 }
 
-/// 把跨边界句柄还原成 ECS 句柄（宿主侧使用；插件侧无从构造真实 `Entity`）。
+/// Restores a cross-boundary handle into an ECS handle (used on the host side; the
+/// plugin side cannot construct a real `Entity`).
 pub fn entity_from_handle(handle: EntityHandle) -> Entity {
     Entity::from_raw(handle.id, handle.generation)
 }
 
-/// gameplay 代码看到的世界。
+/// The world as gameplay code sees it.
 ///
-/// 所有方法都在**宿主的**世界上操作；插件后端会把同样的调用翻译成宿主
-/// 回调，所以调用方无需区分自己是怎么被编译的。
+/// Every method operates on the **host's** world; the plugin backend translates the
+/// same calls into host callbacks, so callers do not need to know how they were
+/// compiled.
 pub struct GameWorld<'a> {
     backend: Backend<'a>,
-    /// 仅 host 后端使用：插件后端的输入来自 `HostApi::input`。
+    /// Host backend only: the plugin backend takes its input from `HostApi::input`.
     ///
-    /// 正常情况下 `input()` 优先读世界里的 `InputSnapshot` resource（引擎每帧
-    /// 写入）；这个字段是资源还没写时的兜底与 `set_input` 的镜像。
+    /// Normally `input()` prefers the `InputSnapshot` resource in the world (written
+    /// by the engine each frame); this field is the fallback for when the resource
+    /// has not been written yet, and the mirror for `set_input`.
     #[cfg_attr(not(feature = "host"), allow(dead_code))]
     input: InputSnapshot,
     #[cfg_attr(not(feature = "host"), allow(dead_code))]
@@ -85,7 +94,7 @@ enum Backend<'a> {
 }
 
 impl<'a> GameWorld<'a> {
-    /// 直接借用宿主世界（静态 Player / 编辑器宿主内）。
+    /// Borrows the host world directly (static Player / inside the editor host).
     #[cfg(feature = "host")]
     pub fn host(world: &'a mut World) -> Self {
         Self {
@@ -95,10 +104,11 @@ impl<'a> GameWorld<'a> {
         }
     }
 
-    /// 通过宿主下发的函数表操作宿主世界（动态库内）。
+    /// Operates on the host world through the function table the host hands down
+    /// (inside the dynamic library).
     ///
-    /// `registry` 只用于把组件编码成 RTTIBin 的类型表；解码端自描述，
-    /// 所以读取路径不需要它。
+    /// `registry` is only used to encode components into RTTIBin's type table; the
+    /// decode side is self-describing, so the read path does not need it.
     #[cfg(feature = "plugin")]
     pub fn plugin(api: &'a HostApi, registry: &'a TypeRegistry) -> Self {
         Self {
@@ -108,13 +118,10 @@ impl<'a> GameWorld<'a> {
         }
     }
 
-    // ------------------------------------------------------------------
-    // 输入
-    // ------------------------------------------------------------------
-
     pub fn input(&self) -> InputSnapshot {
         match &self.backend {
-            // 静态 Player：引擎每帧把这一份写进 World resource（#589）。
+            // Static Player: the engine writes this copy into the World resource
+            // each frame (#589).
             #[cfg(feature = "host")]
             Backend::Host(world) => world
                 .get_resource::<InputSnapshot>()
@@ -125,12 +132,13 @@ impl<'a> GameWorld<'a> {
         }
     }
 
-    /// 覆盖本帧输入（host 后端）。
+    /// Overrides this frame's input (host backend).
     ///
-    /// 正常运行时不需要调用：`Engine::update` 每帧把
-    /// [`prism_engine::input::input_snapshot`] 写进世界。这个入口留给测试与
-    /// 自己驱动世界的宿主；写入后同一帧的 `input()` 立即读到新值。
-    /// 插件后端的输入由宿主每 tick 通过 `HostApi::input` 下发。
+    /// Not needed during normal operation: `Engine::update` writes
+    /// [`prism_engine::input::input_snapshot`] into the world every frame. This entry
+    /// point is for tests and for hosts that drive the world themselves; after the
+    /// write, `input()` on the same frame reads the new value immediately. The plugin
+    /// backend's input is handed down by the host every tick through `HostApi::input`.
     #[cfg(feature = "host")]
     pub fn set_input(&mut self, input: InputSnapshot) {
         self.input = input;
@@ -143,14 +151,12 @@ impl<'a> GameWorld<'a> {
         self.input().screen
     }
 
-    // ------------------------------------------------------------------
-    // 资产（松散文件；`.pak` 内容仍由运行时资源包负责）
-    // ------------------------------------------------------------------
-
-    /// 松散资产是否存在（关卡 JSON、按时段回落的贴图等）。
+    /// Whether a loose asset exists (level JSON, textures with time-of-day
+    /// variants, and so on).
     ///
-    /// 插件后端还没有资产能力位，因此模块里恒为 `false`：需要资产的逻辑
-    /// 目前只在静态 Player 里跑。
+    /// Loose files only; `.pak` contents are still handled by the runtime package.
+    /// The plugin backend forwards this to the host and returns `false` when the
+    /// host provides no asset callback.
     pub fn asset_exists(&self, relative: &str) -> bool {
         match &self.backend {
             #[cfg(feature = "host")]
@@ -160,10 +166,12 @@ impl<'a> GameWorld<'a> {
         }
     }
 
-    /// 保存引擎自带的场景存档（相机 / 灯光 / 变换，`scene_state.json`）。
+    /// Saves the engine's built-in scene state (camera / lights / transforms,
+    /// `scene_state.json`).
     ///
-    /// 存档路径由宿主决定（宿主按工程 `[app] company/name` 设置）；返回是否成功。
-    /// 没有宿主回调时返回 `false` 并 warn 一次（#484）。
+    /// The save path is chosen by the host (from the project's `[app] company/name`
+    /// settings); returns whether it succeeded. Returns `false` and warns once when
+    /// there is no host callback (#484).
     pub fn save_scene_state(&self) -> bool {
         match &self.backend {
             #[cfg(feature = "host")]
@@ -176,7 +184,8 @@ impl<'a> GameWorld<'a> {
         }
     }
 
-    /// 读取场景存档：`true` = 已恢复，`false` = 没有存档或宿主不支持。
+    /// Loads the scene state: `true` = restored, `false` = no save exists or the
+    /// host does not support it.
     pub fn load_scene_state(&mut self) -> bool {
         match &mut self.backend {
             #[cfg(feature = "host")]
@@ -186,10 +195,13 @@ impl<'a> GameWorld<'a> {
         }
     }
 
-    /// 请求切换场景（#482）：`additive = true` 保留旧场景（`LoadSceneMode::Additive`）。
+    /// Requests a scene switch (#482): `additive = true` keeps the old scene
+    /// (`LoadSceneMode::Additive`).
     ///
-    /// 返回 `true` 只表示**请求已交给宿主**；真正换场发生在本 tick 结束后，
-    /// 下一帧的 [`Self::scene_generation`] 会递增。旧实体句柄全部失效。
+    /// Returning `true` only means the **request reached the host**; the actual
+    /// switch happens after this tick ends, and the next frame's
+    /// [`Self::scene_generation`] is incremented. All old entity handles become
+    /// invalid.
     pub fn load_scene(&mut self, path: &str, additive: bool) -> bool {
         match &mut self.backend {
             #[cfg(feature = "host")]
@@ -204,7 +216,8 @@ impl<'a> GameWorld<'a> {
         }
     }
 
-    /// 请求卸载当前场景（`Persistent` 子树保留）；同样是延迟执行。
+    /// Requests unloading the current scene (a `Persistent` subtree is kept); also
+    /// deferred.
     pub fn unload_scene(&mut self) -> bool {
         match &mut self.backend {
             #[cfg(feature = "host")]
@@ -219,9 +232,10 @@ impl<'a> GameWorld<'a> {
         }
     }
 
-    /// 场景代数：宿主每次换场 / 卸载 +1。项目代码用它判断缓存的实体句柄是否失效。
+    /// Scene generation: incremented by the host on every scene switch / unload.
+    /// Project code uses it to tell whether cached entity handles are stale.
     ///
-    /// 静态 Player（host 后端）没有跨场景切换，恒为 `0`。
+    /// The static Player (host backend) never switches scenes, so it is always `0`.
     pub fn scene_generation(&self) -> u64 {
         match &self.backend {
             #[cfg(feature = "host")]
@@ -231,14 +245,15 @@ impl<'a> GameWorld<'a> {
         }
     }
 
-    /// 射线查询（#522）：返回最近的命中。
+    /// Raycast query (#522): returns the closest hit.
     ///
-    /// - host 后端直接调用 `prism_engine::physics::raycast`（与编辑器点选 / 玩法
-    ///   查询是同一套几何）；
-    /// - plugin 后端走 `HostApi::raycast`；宿主没有注入实现（没有
-    ///   `HOST_CAP_PHYSICS`）时返回 `None`。
+    /// - The host backend calls `prism_engine::physics::raycast` directly (the same
+    ///   geometry used by editor picking and gameplay queries);
+    /// - the plugin backend goes through `HostApi::raycast`; returns `None` when the
+    ///   host has not injected an implementation (no `HOST_CAP_PHYSICS`).
     ///
-    /// `layer_mask` 与碰撞体的 `layer` 相与非 0 才参与；`max_distance` 之外不算命中。
+    /// A collider takes part only when `layer_mask` AND its `layer` is non-zero;
+    /// hits beyond `max_distance` do not count.
     pub fn raycast(
         &self,
         origin: [f32; 3],
@@ -286,7 +301,7 @@ impl<'a> GameWorld<'a> {
         }
     }
 
-    /// 读取松散文本资产。
+    /// Reads a loose text asset.
     pub fn read_asset_text(&self, relative: &str) -> std::io::Result<String> {
         match &self.backend {
             #[cfg(feature = "host")]
@@ -295,10 +310,6 @@ impl<'a> GameWorld<'a> {
             Backend::Plugin(backend) => backend.read_asset_text(relative),
         }
     }
-
-    // ------------------------------------------------------------------
-    // 实体
-    // ------------------------------------------------------------------
 
     pub fn spawn(&mut self) -> EntityHandle {
         match &mut self.backend {
@@ -327,7 +338,8 @@ impl<'a> GameWorld<'a> {
         }
     }
 
-    /// 拥有组件 `T` 的全部实体（与宿主 `World::query` 的 `Active` 语义一致）。
+    /// All entities that have component `T` (same `Active` semantics as the host's
+    /// `World::query`).
     pub fn query<T: Component + Reflect>(&self) -> Vec<EntityHandle> {
         match &self.backend {
             #[cfg(feature = "host")]
@@ -339,10 +351,6 @@ impl<'a> GameWorld<'a> {
             Backend::Plugin(backend) => backend.query(T::type_desc().name),
         }
     }
-
-    // ------------------------------------------------------------------
-    // 组件
-    // ------------------------------------------------------------------
 
     pub fn get<T: Component + Reflect + Clone>(&self, entity: EntityHandle) -> Option<T> {
         match &self.backend {
@@ -357,7 +365,8 @@ impl<'a> GameWorld<'a> {
         }
     }
 
-    /// 写入（无则新增）组件。句柄失效时返回 `false`。
+    /// Writes a component (inserting it if absent). Returns `false` when the handle
+    /// is dead.
     pub fn set<T: Component + Reflect>(&mut self, entity: EntityHandle, value: T) -> bool {
         match &mut self.backend {
             #[cfg(feature = "host")]
@@ -383,7 +392,7 @@ impl<'a> GameWorld<'a> {
         }
     }
 
-    /// 移除组件，返回是否确实存在过。
+    /// Removes a component, returning whether it existed.
     pub fn remove<T: Component + Reflect>(&mut self, entity: EntityHandle) -> bool {
         match &mut self.backend {
             #[cfg(feature = "host")]
@@ -393,11 +402,8 @@ impl<'a> GameWorld<'a> {
         }
     }
 
-    // ------------------------------------------------------------------
-    // 2D 绘制
-    // ------------------------------------------------------------------
-
-    /// 提交一条 UI 四边形；宿主在本帧 UI 渲染前取走并合并进绘制列表。
+    /// Submits a UI quad; the host takes the quads before this frame's UI render and
+    /// merges them into its draw list.
     pub fn draw_quad(&mut self, quad: UiQuad) {
         match &mut self.backend {
             #[cfg(feature = "host")]
@@ -407,7 +413,8 @@ impl<'a> GameWorld<'a> {
         }
     }
 
-    /// 取走本帧累积的四边形（宿主侧调用；插件后端由宿主自行取走）。
+    /// Takes the quads accumulated this frame (called by the host side; the plugin
+    /// backend's quads are taken by the host itself).
     #[cfg(feature = "host")]
     pub fn take_quads(&mut self) -> Vec<UiQuad> {
         std::mem::take(&mut self.quads)
@@ -420,11 +427,8 @@ struct PluginBackend<'a> {
     registry: &'a TypeRegistry,
 }
 
-// ---------------------------------------------------------------------------
-// 模块日志 → 宿主日志
-// ---------------------------------------------------------------------------
-
-/// 模块里 `log!` 记录的转发目标（宿主下发的 `HostApi::log`）。
+/// The forwarding target for `log!` records in a module (the host-provided
+/// `HostApi::log`).
 #[cfg(feature = "plugin")]
 #[derive(Clone, Copy)]
 struct LogSink {
@@ -438,8 +442,8 @@ static LOG_SINK: std::sync::OnceLock<LogSink> = std::sync::OnceLock::new();
 #[cfg(feature = "plugin")]
 struct HostLogger;
 
-/// `log::set_logger` 要 `&'static`：workspace 的 `log` 关了 `alloc` feature，
-/// 用静态实例而不是 `set_boxed_logger`。
+/// `log::set_logger` requires a `&'static`: the workspace's `log` has the `alloc`
+/// feature disabled, so use a static instance instead of `set_boxed_logger`.
 #[cfg(feature = "plugin")]
 static HOST_LOGGER: HostLogger = HostLogger;
 
@@ -453,7 +457,8 @@ impl log::Log for HostLogger {
         if LOG_SINK.get().is_none() {
             return;
         }
-        // 与 `prism-runtime-host::host_log` 的约定一致：0 error / 1 warn / 2 debug / 3 info。
+        // Kept in sync with `prism-runtime-host::host_log`: 0 error / 1 warn /
+        // 2 debug / 3 info.
         let level = match record.level() {
             log::Level::Error => 0,
             log::Level::Warn => 1,
@@ -467,44 +472,50 @@ impl log::Log for HostLogger {
     fn flush(&self) {}
 }
 
-/// 把工程模块里的 **panic**（连同调用栈）送进宿主的日志。
+/// Sends **panics** from the project module (with their backtrace) to the host log.
 ///
-/// 模块是独立动态库，`std` 也是它自己的一份：宿主 `set_hook` 装的钩子收不到模块里的
-/// panic，默认行为只是往 stderr 打一行（编辑器 Console 一片空白，而且每帧 panic 会把
-/// stderr 刷爆）。这里在模块自己的 `std` 上装钩子，把 `panicked at …` + `Backtrace`
-/// 经 [`install_host_logger`] 的同一条通路发出去。
+/// A module is its own dynamic library with its own copy of `std`: the hook the host
+/// installs through `set_hook` never sees panics inside the module, and the default
+/// behavior only prints one line to stderr (the editor Console stays empty, and a
+/// panic every frame floods stderr). This installs a hook on the module's own `std`
+/// and sends `panicked at …` plus the `Backtrace` through the same path as
+/// [`install_host_logger`].
 ///
-/// 调用栈里工程帧的符号要靠 `.pdb`：编辑器把模块复制到 `staged/` 时会连 `.pdb`
-/// 一起复制（见 `prism-editor-egui::project_module::stage_module`）。
+/// Resolving project frames in the backtrace needs the `.pdb`: when the editor copies
+/// the module into `staged/` it copies the `.pdb` along with it (see
+/// `prism-editor-egui::project_module::stage_module`).
 ///
-/// 与 [`install_host_logger`] 一样，重复调用是 no-op。必须在 `create` 里调用，
-/// 且要在 [`install_host_logger`] 之后（否则日志还没有出口）。
+/// Like [`install_host_logger`], repeated calls are a no-op. It must be called in
+/// `create`, and after [`install_host_logger`] (otherwise the log has no outlet yet).
 #[cfg(feature = "plugin")]
 pub fn install_host_panic_hook() {
     static INSTALL: std::sync::Once = std::sync::Once::new();
     INSTALL.call_once(|| {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            // `Backtrace::force_capture` 不依赖 `RUST_BACKTRACE`，Play 时默认就要有栈。
+            // `Backtrace::force_capture` does not depend on `RUST_BACKTRACE`; a stack
+            // is wanted by default while playing.
             let text = format!(
                 "{info}
 {}",
                 std::backtrace::Backtrace::force_capture()
             );
             forward_log(0, &text);
-            // 保留原行为（stderr），终端排查仍然可用。
+            // Keep the original behavior (stderr) so terminal debugging still works.
             previous(info);
         }));
     });
 }
 
-/// 按 ABI 的级别约定把一行文本发给宿主（0 error / 1 warn / 2 debug / 3 info）。
+/// Sends one line of text to the host using the ABI's level convention
+/// (0 error / 1 warn / 2 debug / 3 info).
 #[cfg(feature = "plugin")]
 fn forward_log(level: u32, text: &str) {
     let Some(sink) = LOG_SINK.get() else {
         return;
     };
-    // SAFETY: 同 `HostLogger::log`；宿主日志回调不使用 `user_data`，字符串只在本调用内有效。
+    // SAFETY: as in `HostLogger::log`; the host log callback does not use
+    // `user_data`, and the string is only valid for this call.
     unsafe {
         (sink.log)(
             sink.user_data as *mut core::ffi::c_void,
@@ -515,16 +526,18 @@ fn forward_log(level: u32, text: &str) {
     }
 }
 
-/// 把工程模块自己的 `log!` 接到宿主的 `HostApi::log` 上。
+/// Wires the project module's own `log!` records to the host's `HostApi::log`.
 ///
-/// 模块是独立动态库，链接的是**它自己那份** `log` crate —— 宿主在编辑器进程里
-/// 装的 logger 收不到模块里的记录。工程只要在 `create` 里调一次这个函数，
-/// `log::info!` / `log::error!` 就会经 ABI 送进编辑器的 Console（与宿主日志同一条
-/// 通路，来源标 `Game`）。
+/// A module is its own dynamic library that links **its own copy** of the `log`
+/// crate — the logger the host installs in the editor process never sees records
+/// from the module. A project just calls this once in `create`, and `log::info!` /
+/// `log::error!` are sent through the ABI into the editor Console (the same path as
+/// host logs, labeled with source `Game`).
 ///
-/// 重复调用是 no-op（只取第一次的 `log` 回调）。`user_data` 每次调用都会更新，
-/// 因为宿主每个 tick 都会换一个新的命令上下文；但宿主实现（`prism-runtime-host`）
-/// 的日志回调并不依赖它。
+/// Repeated calls are a no-op (only the first `log` callback is taken). `user_data`
+/// is refreshed on every call because the host swaps in a new command context each
+/// tick; but the host's logging callback (`prism-runtime-host`) does not depend on
+/// it.
 #[cfg(feature = "plugin")]
 pub fn install_host_logger(host: &HostApi) {
     static INSTALL: std::sync::Once = std::sync::Once::new();
@@ -535,7 +548,8 @@ pub fn install_host_logger(host: &HostApi) {
         user_data: host.user_data as usize,
         log,
     };
-    // 第一次安装 logger；之后只刷新 sink（`OnceLock::set` 失败说明已经有了）。
+    // Install the logger the first time; afterwards just refresh the sink
+    // (`OnceLock::set` failing means it is already there).
     let fresh = LOG_SINK.set(sink).is_ok();
     if fresh {
         INSTALL.call_once(|| {
@@ -575,7 +589,8 @@ impl PluginBackend<'_> {
     fn is_alive(&self, entity: EntityHandle) -> bool {
         match self.api.is_alive {
             Some(is_alive) => unsafe { is_alive(self.api.user_data, entity) == 1 },
-            // 宿主没有提供存活查询时退回「句柄非空」；读写仍会各自校验。
+            // Fall back to "handle is non-empty" when the host provides no liveness
+            // query; reads and writes still validate separately.
             None => !entity.is_placeholder(),
         }
     }
@@ -645,7 +660,8 @@ impl PluginBackend<'_> {
         if status != SUCCESS || ptr.is_null() {
             return None;
         }
-        // 指针只在下一次宿主调用前有效：立刻拷走。
+        // The pointer is only valid until the next host call: copy it out
+        // immediately.
         Some(unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec())
     }
 
@@ -666,7 +682,8 @@ impl PluginBackend<'_> {
         status == SUCCESS
     }
 
-    /// 走宿主的 `HOST_CAP_ASSET`：项目不自己拼 `assets/` 路径。
+    /// Goes through the host's `HOST_CAP_ASSET`: the project does not assemble
+    /// `assets/` paths itself.
     fn asset_exists(&self, relative: &str) -> bool {
         let Some(callback) = self.api.asset_exists else {
             return false;
@@ -759,8 +776,9 @@ impl PluginBackend<'_> {
 mod tests {
     use super::*;
 
-    /// #589：静态 Player 的输入来自引擎每帧写进世界的 `InputSnapshot`，
-    /// 不是 `GameWorld::host()` 构造时的默认值。
+    /// #589: the static Player's input comes from the `InputSnapshot` the engine
+    /// writes into the world each frame, not from the default value at
+    /// `GameWorld::host()` construction time.
     #[cfg(feature = "host")]
     #[test]
     fn host_input_reads_the_world_resource() {
@@ -777,7 +795,8 @@ mod tests {
         assert_eq!(api.screen_size(), [0.0, 0.0]);
     }
 
-    /// `set_input` 必须写穿到世界：同一个世界上的下一个 `GameWorld` 也能读到。
+    /// `set_input` must write through to the world: the next `GameWorld` over the
+    /// same world can read it too.
     #[cfg(feature = "host")]
     #[test]
     fn set_input_writes_through_to_the_world() {
@@ -822,7 +841,8 @@ mod tests {
         }
     }
 
-    /// #484：宿主没注入存档实现时，`save/load_scene_state` 明确返回 `false`。
+    /// #484: when the host injects no scene-state implementation,
+    /// `save/load_scene_state` clearly return `false`.
     #[cfg(feature = "plugin")]
     #[test]
     fn scene_state_is_unavailable_without_a_host_callback() {
@@ -837,7 +857,8 @@ mod tests {
         assert!(!api.load_scene_state());
     }
 
-    /// #482：换场请求走宿主回调，tick 结束后由宿主取走执行。
+    /// #482: a scene switch request goes through the host callback; the host takes
+    /// it after the tick ends and executes it.
     #[cfg(feature = "plugin")]
     #[test]
     fn scene_requests_are_forwarded_to_the_host() {
@@ -880,7 +901,8 @@ mod tests {
         );
     }
 
-    /// 静态 Player 没有换场：明确返回 false，而不是假装成功。
+    /// The static Player never switches scenes: it clearly returns false rather than
+    /// pretending to succeed.
     #[cfg(feature = "host")]
     #[test]
     fn host_backend_reports_scene_switching_unavailable() {
@@ -891,7 +913,8 @@ mod tests {
         assert_eq!(api.scene_generation(), 0);
     }
 
-    /// #522：host 后端直接用引擎的纯几何查询（不需要 ABI）。
+    /// #522: the host backend uses the engine's pure geometry query directly (no ABI
+    /// needed).
     #[cfg(feature = "host")]
     #[test]
     fn host_backend_raycasts_against_colliders() {
@@ -912,13 +935,14 @@ mod tests {
         assert_eq!(hit.normal, [0.0, 0.0, 1.0]);
         assert!(!hit.is_trigger);
 
-        // 朝反方向射不中。
+        // Casting in the opposite direction misses.
         assert!(api
             .raycast([0.0, 0.0, -5.0], [0.0, 0.0, -1.0], 10.0, u32::MAX)
             .is_none());
     }
 
-    /// #522：plugin 后端把查询转发给宿主；宿主没注入实现时返回 `None`。
+    /// #522: the plugin backend forwards the query to the host; returns `None` when
+    /// the host injected no implementation.
     #[cfg(feature = "plugin")]
     #[test]
     fn plugin_backend_forwards_raycast_to_the_host() {
@@ -965,7 +989,7 @@ mod tests {
         assert_eq!(hit.normal, [0.0, 1.0, 0.0]);
         assert!(hit.is_trigger);
 
-        // 宿主没声明能力位时不要调用回调。
+        // Do not call the callback when the host did not declare the capability bit.
         let mut plain = prism_runtime_host::WorldCommands::new(&mut world, &components, 1);
         let host = plain.api();
         let api = GameWorld::plugin(&host, components.type_registry());
@@ -974,7 +998,8 @@ mod tests {
             .is_none());
     }
 
-    /// 插件后端通过 `HOST_CAP_ASSET` 读松散资产，签名与 host 后端一致。
+    /// The plugin backend reads loose assets through `HOST_CAP_ASSET`, with the same
+    /// signature as the host backend.
     #[cfg(feature = "plugin")]
     #[test]
     fn plugin_backend_reads_assets_through_the_host() {
@@ -1032,7 +1057,8 @@ mod tests {
         api.despawn(stale);
         let fresh = api.spawn();
 
-        // 同一个槽位被复用，但代数不同：旧句柄必须仍然失效。
+        // The same slot is reused, but with a different generation: the old handle
+        // must stay invalid.
         assert_eq!(stale.id, fresh.id);
         assert_ne!(stale.generation, fresh.generation);
         assert!(!api.is_alive(stale));
