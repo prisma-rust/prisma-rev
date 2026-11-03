@@ -123,6 +123,8 @@ feat: 改了很多东西             # 范围太大，应该拆
 - 关联 issue：`Refs #123`；修完：`Fixes #123`。
 - 生成物更新单独提交，例如 `chore(render): regenerate shader bindings`。
 - 纯格式化单独提交：`chore: apply rustfmt`，不要混进功能提交。
+- 纯注释单独提交：`chore(comments): ...`，跑
+  `python scripts/check_comment_only.py --base origin/master`，不要混进逻辑改动。
 
 ### 3.5 完整示例
 

@@ -25,6 +25,8 @@ deviating from those conventions is a bug. (`README.md` is the human-facing over
   再提 issue（`needs/triage` + `area/*`）；不要塞进当前 PR。
 - **接手 issue 先认领再调查**：评论 `🤖 Agent: claiming` + 加 `agent/working`，之后才去读代码 / 复现 /
   翻日志；完成、阻塞或放弃都切换标签（[`docs/ai-workflow.md`](docs/ai-workflow.md) §6）。
+- **代码注释只用英文**，删掉复述代码的注释；规范见 [`docs/code-style.md`](docs/code-style.md)。
+  注释-only PR 必须跑 `python scripts/check_comment_only.py --base origin/master`，不要夹带逻辑改动。
 - **不猜**：改公开 API、存档格式（RSCN / RTTIBin / `.pak`）、坐标约定、workspace 分层，或要加依赖
   → 先改文档或先问人，再写代码。
 - **并行 agent 各用独立 worktree**；禁止未经确认的 `reset --hard` / `checkout -- .` / 覆盖他人未提交改动。
