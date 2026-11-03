@@ -5930,7 +5930,23 @@ pub fn anim_graph(
                         };
                     }
                     Ok(false) => {}
-                    Err(error) => state.status = format!("state machine: {error}"),
+                    Err(error) => {
+                        state.anim_graph_edit.sm_state_rename = None;
+                        state.status = format!("state machine: {error}");
+                    }
+                }
+                if let Some((index, new_name)) = state.anim_graph_edit.sm_state_rename.take() {
+                    state.status =
+                        match workspace.rename_state_machine_state(&path, index, &new_name) {
+                            Ok(updated) if updated.is_empty() => {
+                                format!("renamed state to '{new_name}'")
+                            }
+                            Ok(updated) => format!(
+                                "renamed state to '{new_name}', updated {}",
+                                updated.join(", ")
+                            ),
+                            Err(error) => format!("state machine: {error}"),
+                        };
                 }
             }
             Err(error) => {
@@ -6605,6 +6621,8 @@ pub struct AnimGraphEditState {
     pub sm_state_clip: Option<(usize, String)>,
     /// 「+ State」草稿：(名字, 剪辑路径)。
     pub sm_new_state: Option<(String, String)>,
+    /// 待执行的状态改名：(状态下标, 新名字)，由工作区同步场景 / 预制体引用。
+    pub sm_state_rename: Option<(usize, String)>,
     /// 正在编辑的图节点剪辑：(节点名, 文本)。
     pub graph_node_clip: Option<(String, String)>,
     /// 正在编辑的图节点名字：(旧名字, 文本)。
@@ -7463,7 +7481,7 @@ fn draw_state_machine_view(
             .size(9.0),
     );
     let mut move_state = None;
-    let mut name_edits = Vec::new();
+    let mut state_rename = None;
     let mut clip_edits = Vec::new();
     let mut speed_edits = Vec::new();
     let mut loop_edits = Vec::new();
@@ -7489,7 +7507,7 @@ fn draw_state_machine_view(
             } else if name_response.lost_focus() {
                 if let Some((slot, text)) = edit.sm_state_name.take() {
                     if slot == index {
-                        name_edits.push((index, text));
+                        state_rename = Some((index, text));
                     }
                 }
             }
@@ -7568,9 +7586,8 @@ fn draw_state_machine_view(
         prism_editor_core::move_state(document, index, offset)?;
         changed = true;
     }
-    for (index, name) in name_edits {
-        prism_editor_core::rename_state(document, index, &name)?;
-        changed = true;
+    if state_rename.is_some() {
+        edit.sm_state_rename = state_rename;
     }
     for (index, clip) in clip_edits {
         prism_editor_core::set_state_clip(document, index, &clip)?;
