@@ -24,6 +24,7 @@ pub mod components;
 pub mod doc;
 pub mod dock;
 pub mod expr;
+pub mod graph_validation;
 pub mod i18n;
 pub mod ini;
 pub mod keys;
@@ -68,6 +69,7 @@ pub use doc::{EntityJson, SceneDoc, TransformJson};
 pub use dock::{
     DockDirection, DockEdge, DockLayout, DockNode, DockZone, FloatPanel, LAYOUT_PRESETS,
 };
+pub use graph_validation::validate_anim_graph;
 pub use i18n::{I18n, Locale};
 pub use keys::{
     command_for, conflicting_command, default_keys, effective_bindings, effective_keys, Command,

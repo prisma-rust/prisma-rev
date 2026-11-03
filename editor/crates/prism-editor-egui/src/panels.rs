@@ -5708,6 +5708,27 @@ pub fn anim_graph(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
     if graph_asset {
         match prism_editor_core::parse_anim_graph_view(&value) {
             Ok(graph) => {
+                let validation = prism_editor_core::validate_anim_graph(&value);
+                if validation.is_empty() {
+                    ui.label(RichText::new("shape check: ok").weak().size(9.0));
+                } else {
+                    egui::CollapsingHeader::new(
+                        RichText::new(format!("Shape issues ({})", validation.len()))
+                            .color(Color32::from_rgb(232, 160, 96))
+                            .size(10.0),
+                    )
+                    .id_salt("anim-graph-shape-issues")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        for issue in &validation {
+                            ui.label(
+                                RichText::new(issue)
+                                    .color(Color32::from_rgb(232, 160, 96))
+                                    .size(9.0),
+                            );
+                        }
+                    });
+                }
                 let stale = state
                     .anim_graph_layout
                     .as_ref()
