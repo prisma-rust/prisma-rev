@@ -429,6 +429,10 @@ pub enum MontageAction {
     Stop,
     /// 当前段播完后停止，不接下一段。
     StopAfterCurrent,
+    /// 暂停 Slot 的活动段（保留时间 / 队列 / 权重）。
+    Pause,
+    /// 恢复 Slot 的活动段。
+    Resume,
 }
 
 /// 项目侧对某个实体 Slot 发起的 Montage 请求（#560 P1）。
@@ -468,6 +472,22 @@ impl MontageRequest {
         Self {
             action: MontageAction::Enqueue,
             ..Self::play(entity, slot, clip_path)
+        }
+    }
+
+    /// 暂停 Slot 的活动段。
+    pub fn pause(entity: Entity, slot: impl Into<String>) -> Self {
+        Self {
+            action: MontageAction::Pause,
+            ..Self::play(entity, slot, "")
+        }
+    }
+
+    /// 恢复 Slot 的活动段。
+    pub fn resume(entity: Entity, slot: impl Into<String>) -> Self {
+        Self {
+            action: MontageAction::Resume,
+            ..Self::play(entity, slot, "")
         }
     }
 
@@ -577,6 +597,16 @@ fn apply_montage_requests(
         match request.action {
             MontageAction::Stop => evaluator.stop_montage(slot),
             MontageAction::StopAfterCurrent => evaluator.stop_montage_after_current(slot),
+            MontageAction::Pause => {
+                if !evaluator.pause_montage(slot) {
+                    log::warn!("animator: montage pause on unknown slot '{slot}'");
+                }
+            }
+            MontageAction::Resume => {
+                if !evaluator.resume_montage(slot) {
+                    log::warn!("animator: montage resume on unknown slot '{slot}'");
+                }
+            }
             MontageAction::PlayNow | MontageAction::Enqueue => {
                 let path = request.clip_path.trim();
                 let Some(clip) = clips.get(path).cloned() else {

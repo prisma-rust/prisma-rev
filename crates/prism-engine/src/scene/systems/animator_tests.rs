@@ -1932,6 +1932,46 @@ fn montage_clip(notify: &str, time: f32) -> Clip {
 }
 
 #[test]
+fn a_pause_request_freezes_the_montage_until_resumed() {
+    let (mut world, entity) = setup_slot_world();
+    world
+        .get_resource_mut::<SkeletonLibrary>()
+        .unwrap()
+        .insert_clip("montage.ranim", montage_clip("MontageStep", 0.5));
+    world
+        .get_resource_mut::<AnimMontageRequests>()
+        .unwrap()
+        .push(MontageRequest::play(entity, "slot", "montage.ranim"));
+    animator_system(&mut world, 0.2);
+    assert!(world.get_resource::<AnimEvents>().unwrap().is_empty());
+
+    world
+        .get_resource_mut::<AnimMontageRequests>()
+        .unwrap()
+        .push(MontageRequest::pause(entity, "slot"));
+    animator_system(&mut world, 0.5);
+    assert!(
+        world.get_resource::<AnimEvents>().unwrap().is_empty(),
+        "暂停期间不推进、不发 Notify"
+    );
+
+    world
+        .get_resource_mut::<AnimMontageRequests>()
+        .unwrap()
+        .push(MontageRequest::resume(entity, "slot"));
+    animator_system(&mut world, 0.5);
+    assert_eq!(
+        world
+            .get_resource::<AnimEvents>()
+            .unwrap()
+            .names_for(entity)
+            .collect::<Vec<_>>(),
+        ["MontageStep"],
+        "恢复后继续推进到 Notify"
+    );
+}
+
+#[test]
 fn a_montage_request_plays_on_the_named_slot_and_emits_notifies() {
     let (mut world, entity) = setup_slot_world();
     world

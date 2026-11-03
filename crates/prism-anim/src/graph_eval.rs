@@ -244,6 +244,28 @@ impl AnimGraphEvaluator {
         }
     }
 
+    /// 暂停 Slot 的活动 Montage（队列 / 权重不变）；Slot 不存在返回 `false`。
+    pub fn pause_montage(&mut self, slot: &str) -> bool {
+        match self.montages.get_mut(slot) {
+            Some(player) => {
+                player.set_paused(true);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 恢复 Slot 的活动 Montage；Slot 不存在返回 `false`。
+    pub fn resume_montage(&mut self, slot: &str) -> bool {
+        match self.montages.get_mut(slot) {
+            Some(player) => {
+                player.set_paused(false);
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn montage_player(&self, slot: &str) -> Option<&MontagePlayer> {
         self.montages.get(slot)
     }
