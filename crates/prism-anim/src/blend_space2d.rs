@@ -85,10 +85,12 @@ impl BlendSpace2D {
     }
 
     /// 样本 `index` 实际使用的归一化相位（同 [`BlendSpace1D`](crate::blend::BlendSpace1D)）。
-    fn phase_for(&self, index: usize, phase: f32) -> f32 {
+    /// `leader` 是当前权重最大的样本。
+    fn phase_for(&self, leader: usize, index: usize, phase: f32) -> f32 {
         self.sync
             .as_ref()
-            .map_or(phase, |group| group.map_phase(0, index, phase))
+            .filter(|group| leader < group.len() && index < group.len())
+            .map_or(phase, |group| group.map_phase(leader, index, phase))
     }
 
     pub fn reference(&self) -> &Pose {
@@ -130,10 +132,17 @@ impl BlendSpace2D {
         };
 
         // 先把三个样本姿态都采样到 scratch，再按权重合成。
+        let leader_slot = weights
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.total_cmp(b))
+            .map(|(slot, _)| slot)
+            .unwrap_or(0);
+        let leader = vertices[leader_slot];
         for (slot, vertex) in vertices.iter().enumerate() {
             self.scratch[slot].copy_from(&self.reference);
             let sample = &self.samples[*vertex];
-            let phase = self.phase_for(*vertex, phase);
+            let phase = self.phase_for(leader, *vertex, phase);
             if !sample_at_phase(&sample.clip, phase, &mut self.scratch[slot]) {
                 return false;
             }

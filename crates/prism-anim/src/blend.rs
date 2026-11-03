@@ -195,12 +195,13 @@ impl BlendSpace1D {
 
     /// 样本 `index` 实际使用的归一化相位。
     ///
-    /// 有同步组时以第一个样本为领跑剪辑，把 phase 映射到每个样本自己的步幅；
-    /// 没有标记 / 标记结构不一致时所有样本共用同一个 phase。
-    fn phase_for(&self, index: usize, phase: f32) -> f32 {
+    /// 有同步组时以当前权重最大的样本（`leader`）为领跑剪辑，把 phase 映射到
+    /// 每个样本自己的步幅；没有标记 / 标记结构不一致时所有样本共用同一个 phase。
+    fn phase_for(&self, leader: usize, index: usize, phase: f32) -> f32 {
         self.sync
             .as_ref()
-            .map_or(phase, |group| group.map_phase(0, index, phase))
+            .filter(|group| leader < group.len() && index < group.len())
+            .map_or(phase, |group| group.map_phase(leader, index, phase))
     }
 
     /// 采样前重置用的姿态。
@@ -238,10 +239,11 @@ impl BlendSpace1D {
         let Some((left, right, t)) = blend_space_weights(&self.positions, at) else {
             return false;
         };
+        let leader = self.dominant_sample(at).unwrap_or(0);
 
         if left == right {
             self.scratch[0].copy_from(&self.reference);
-            let phase = self.phase_for(left, phase);
+            let phase = self.phase_for(leader, left, phase);
             if !sample_at_phase(&self.samples[left].clip, phase, &mut self.scratch[0]) {
                 return false;
             }
@@ -251,8 +253,8 @@ impl BlendSpace1D {
 
         self.scratch[0].copy_from(&self.reference);
         self.scratch[1].copy_from(&self.reference);
-        let left_phase = self.phase_for(left, phase);
-        let right_phase = self.phase_for(right, phase);
+        let left_phase = self.phase_for(leader, left, phase);
+        let right_phase = self.phase_for(leader, right, phase);
         if !sample_at_phase(&self.samples[left].clip, left_phase, &mut self.scratch[0]) {
             return false;
         }
