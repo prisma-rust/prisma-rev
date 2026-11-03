@@ -2658,6 +2658,91 @@ pub fn set_condition_value(
     Ok(())
 }
 
+/// 切换一条条件的类型，并补齐 / 删除该类型需要的载荷。
+///
+/// 保留参数名；`float_greater` / `float_less` 保留已有阈值（没有就补 `0.0`），
+/// `bool_is` 保留已有布尔值（没有就补 `false`），`trigger` 删除 `threshold` /
+/// `value`。切换后如果与同一转移里的另一条 `(type, name)` 重复则拒绝，避免
+/// 写出一条运行时永远走不到的冗余条件。
+pub fn set_condition_kind(
+    document: &mut Value,
+    index: usize,
+    condition: usize,
+    kind: &str,
+) -> Result<(), String> {
+    let kind = match kind.trim() {
+        kind @ ("float_greater" | "float_less" | "bool_is" | "trigger") => kind,
+        other => {
+            return Err(format!(
+                "unknown condition type '{other}' \
+                 (expected float_greater / float_less / bool_is / trigger)"
+            ))
+        }
+    };
+    let transition = find_transition_mut(document, index)?;
+    let Some(conditions) = transition
+        .get_mut("conditions")
+        .and_then(Value::as_array_mut)
+    else {
+        return Err(format!(
+            "transition #{index} has no editable `conditions` array"
+        ));
+    };
+    if condition >= conditions.len() {
+        return Err(format!("transition #{index} has no condition #{condition}"));
+    }
+    if !conditions[condition].is_object() {
+        return Err(format!(
+            "transition #{index} condition #{condition} is malformed"
+        ));
+    }
+    let name = conditions[condition]
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            format!("transition #{index} condition #{condition} needs a non-empty name")
+        })?
+        .to_string();
+    if conditions.iter().enumerate().any(|(other_index, other)| {
+        other_index != condition
+            && other.get("type").and_then(Value::as_str) == Some(kind)
+            && other.get("name").and_then(Value::as_str) == Some(name.as_str())
+    }) {
+        return Err(format!(
+            "transition #{index} already has the condition '{name} ({kind})'"
+        ));
+    }
+    let entry = &mut conditions[condition];
+    entry["type"] = json!(kind);
+    match kind {
+        "float_greater" | "float_less" => {
+            if entry.get("threshold").and_then(Value::as_f64).is_none() {
+                entry["threshold"] = json!(0.0);
+            }
+            if let Some(object) = entry.as_object_mut() {
+                object.remove("value");
+            }
+        }
+        "bool_is" => {
+            if entry.get("value").and_then(Value::as_bool).is_none() {
+                entry["value"] = json!(false);
+            }
+            if let Some(object) = entry.as_object_mut() {
+                object.remove("threshold");
+            }
+        }
+        _ => {
+            if let Some(object) = entry.as_object_mut() {
+                object.remove("threshold");
+                object.remove("value");
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod state_tests {
     use super::*;
@@ -2911,6 +2996,56 @@ mod condition_tests {
         assert!(set_condition_threshold(&mut doc, 0, 1, 0.5).is_err());
         assert!(set_condition_threshold(&mut doc, 0, 9, 0.5).is_err());
         assert!(set_condition_value(&mut doc, 9, 0, true).is_err());
+    }
+
+    #[test]
+    fn condition_kinds_can_be_switched_and_payloads_are_normalized() {
+        let mut doc = document();
+        set_condition_kind(&mut doc, 0, 0, "bool_is").expect("switches to bool");
+        assert_eq!(
+            doc["transitions"][0]["conditions"][0],
+            json!({ "type": "bool_is", "name": "speed", "value": false })
+        );
+
+        set_condition_value(&mut doc, 0, 0, true).expect("sets bool");
+        set_condition_kind(&mut doc, 0, 0, "trigger").expect("switches to trigger");
+        assert_eq!(
+            doc["transitions"][0]["conditions"][0],
+            json!({ "type": "trigger", "name": "speed" })
+        );
+
+        set_condition_kind(&mut doc, 0, 0, "float_less").expect("switches back to float");
+        assert_eq!(
+            doc["transitions"][0]["conditions"][0],
+            json!({ "type": "float_less", "name": "speed", "threshold": 0.0 })
+        );
+        set_condition_threshold(&mut doc, 0, 0, 0.5).expect("threshold works again");
+        assert_eq!(doc["transitions"][0]["conditions"][0]["threshold"], 0.5);
+    }
+
+    #[test]
+    fn switching_condition_kind_rejects_duplicates_and_bad_input() {
+        let mut doc = document();
+        add_state_condition(&mut doc, 0, "bool_is", "speed", 0.0, false).expect("adds bool");
+        assert!(
+            set_condition_kind(&mut doc, 0, 0, "bool_is").is_err(),
+            "切换后与已有条件重复"
+        );
+        assert_eq!(
+            doc["transitions"][0]["conditions"][0]["type"], "float_greater",
+            "失败不改文档"
+        );
+
+        assert!(set_condition_kind(&mut doc, 0, 0, "nope").is_err());
+        assert!(set_condition_kind(&mut doc, 9, 0, "trigger").is_err());
+        assert!(set_condition_kind(&mut doc, 0, 9, "trigger").is_err());
+
+        let mut blank = json!({
+            "transitions": [{ "conditions": [{ "type": "trigger", "name": " " }] }]
+        });
+        assert!(set_condition_kind(&mut blank, 0, 0, "bool_is").is_err());
+        let mut malformed = json!({ "transitions": [{ "conditions": ["bad"] }] });
+        assert!(set_condition_kind(&mut malformed, 0, 0, "trigger").is_err());
     }
 }
 

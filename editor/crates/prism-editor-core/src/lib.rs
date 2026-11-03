@@ -53,7 +53,7 @@ pub use anim_graph_view::{
     remove_graph_node, remove_parameter, remove_state, remove_state_condition,
     remove_state_transition, rename_graph_node, rename_state, set_blend_space_parameter,
     set_blend_space_position, set_blend_space_sample_clip, set_blend_space_sample_speed,
-    set_condition_threshold, set_condition_value, set_graph_input_bone_mask,
+    set_condition_kind, set_condition_threshold, set_condition_value, set_graph_input_bone_mask,
     set_graph_input_weight, set_graph_node_clip, set_graph_node_looped, set_graph_node_speed,
     set_graph_node_weight, set_parameter_default, set_state_clip, set_state_looped,
     set_state_speed, set_transition_states, set_transition_timing, AnimConditionView,

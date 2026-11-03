@@ -7657,6 +7657,7 @@ fn draw_state_machine_view(
     let mut move_transition = None;
     let mut remove = None;
     let mut timing_edits = Vec::new();
+    let mut kind_edits = Vec::new();
     let mut threshold_edits = Vec::new();
     let mut value_edits = Vec::new();
     let mut remove_condition = None;
@@ -7768,6 +7769,27 @@ fn draw_state_machine_view(
                 }
                 for (condition_index, condition) in transition.conditions.iter().enumerate() {
                     ui.horizontal(|ui| {
+                        let mut kind = condition.kind.clone();
+                        egui::ComboBox::from_id_salt((
+                            "anim-sm-condition-kind-edit",
+                            index,
+                            condition_index,
+                        ))
+                        .selected_text(condition_kind_label(&condition.kind))
+                        .show_ui(ui, |ui| {
+                            for (value, label) in STATE_CONDITION_KINDS {
+                                if ui
+                                    .selectable_label(condition.kind.as_str() == value, label)
+                                    .clicked()
+                                {
+                                    kind = value.to_string();
+                                    ui.close();
+                                }
+                            }
+                        });
+                        if kind != condition.kind {
+                            kind_edits.push((index, condition_index, kind));
+                        }
                         ui.label(
                             RichText::new(format!("if {}", condition.summary))
                                 .monospace()
@@ -7864,6 +7886,10 @@ fn draw_state_machine_view(
     }
     for (index, duration, fraction) in timing_edits {
         prism_editor_core::set_transition_timing(document, index, duration, fraction)?;
+        changed = true;
+    }
+    for (index, condition, kind) in kind_edits {
+        prism_editor_core::set_condition_kind(document, index, condition, &kind)?;
         changed = true;
     }
     for (index, condition, threshold) in threshold_edits {
