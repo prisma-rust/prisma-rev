@@ -29,6 +29,8 @@ deviating from those conventions is a bug. (`README.md` is the human-facing over
   注释-only PR 必须跑 `python scripts/check_comment_only.py --base origin/master`，不要夹带逻辑改动。
 - **不猜**：改公开 API、存档格式（RSCN / RTTIBin / `.pak`）、坐标约定、workspace 分层，或要加依赖
   → 先改文档或先问人，再写代码。
+- **版本号只改根 `Cargo.toml`**，其他清单由 `python scripts/version.py` 同步；规则与发版流程见
+  [`docs/versioning.md`](docs/versioning.md)。
 - **并行 agent 各用独立 worktree**；禁止未经确认的 `reset --hard` / `checkout -- .` / 覆盖他人未提交改动。
 - **推送前先拉主干、本地解冲突**：`git fetch origin && git rebase origin/master`，冲突在本分支内解决
   并重新跑 `pr_ready.py` 再 push。**不要把「PR 冲突了」留给维护者或下一个 agent**——

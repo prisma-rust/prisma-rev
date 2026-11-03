@@ -32,6 +32,7 @@
 | 给 agent 提 issue | [`agent-issues.md`](agent-issues.md) |
 | 看渲染效果灵感笔记 | [`shadertoy-inspirations.md`](shadertoy-inspirations.md) |
 | 看示例游戏（Cozy Fishing）设计 | [`../projects/fishing/DESIGN.md`](../projects/fishing/DESIGN.md) |
+| 发版 / 版本号规则 | [`versioning.md`](versioning.md) |
 
 ## 文档约定
 

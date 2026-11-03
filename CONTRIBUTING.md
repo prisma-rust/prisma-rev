@@ -52,6 +52,13 @@ cargo test --manifest-path editor/Cargo.toml   # 编辑器数据层 + 壳
 - 注释-only PR 跑 `python scripts/check_comment_only.py --base origin/master`，不要夹带逻辑改动。
 - 完整规则见 [`docs/code-style.md`](docs/code-style.md)。
 
+## 版本号
+
+- 唯一版本源是根 `Cargo.toml` 的 `[workspace.package] version`。
+- 用 `python scripts/version.py bump major|minor|patch` 或 `set X.Y.Z` 更新所有同步点；
+  不要手改 `editor/`、`launcher/` 里的版本号。
+- 规则、tag 与发布流程见 [`docs/versioning.md`](docs/versioning.md)。
+
 ## 提交前自检
 
 ```bash
