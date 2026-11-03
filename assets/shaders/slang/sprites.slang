@@ -127,6 +127,40 @@ SpriteVaryings vertexMain(SpriteVertexIn in, uint vertexId : SV_VertexID)
     return out;
 }
 
+// Accumulates the 2D lights that reach a sprite at `world`. Kept separate so
+// the fragment entry point stays readable; the loop bound is the light count
+// the engine pushed with this draw (`lightParams.x`).
+float3 shadeSprite(float2 world)
+{
+    uint count = (uint)pc.lightParams.x;
+    float3 light = float3(0.0, 0.0, 0.0);
+    for (uint i = 0u; i < count; i++)
+    {
+        SpriteLight l = spriteLights[i];
+        uint kind = (uint)l.colorKind.w;
+        float3 tint = l.colorKind.rgb * l.positionRange.w;
+        if (kind == LIGHT_KIND_AMBIENT)
+        {
+            light += tint;
+            continue;
+        }
+        if (kind == LIGHT_KIND_POINT)
+        {
+            // `z` = 0 means "no falloff", which lights the whole 2D layer.
+            float radius = l.positionRange.z;
+            float atten = 1.0;
+            if (radius > 0.0)
+                atten = saturate(1.0 - distance(world, l.positionRange.xy) / radius);
+            light += tint * atten;
+            continue;
+        }
+        // Directional (kind 2) has no position; a flat sprite has no normal to
+        // face it with, so it simply adds over the whole layer.
+        light += tint;
+    }
+    return light;
+}
+
 [shader("fragment")]
 float4 fragmentMain(SpriteVaryings in) : SV_Target0
 {
@@ -148,6 +182,12 @@ float4 fragmentMain(SpriteVaryings in) : SV_Target0
     float4 texel = bindlessSrvs[NonUniformResourceIndex(in.textureIndex)]
         .SampleLevel(globalSamplers[NonUniformResourceIndex(SAMPLER_NEAREST)], in.uv, 0.0);
     float4 color = texel * in.color;
+    // 2D lighting: only sprites that opted in are shaded, and only when the
+    // draw actually carries lights (`lightParams.x == 0` keeps them unlit).
+    // Outside every point light's radius a lit sprite goes black unless an
+    // ambient light contributes — that is what makes lamps and campfires read.
+    if ((in.flags & SPRITE_FLAG_RECEIVE_LIGHTS) != 0u && pc.lightParams.x > 0.0)
+        color.rgb *= shadeSprite(in.worldPos.xy);
     // Straight alpha: the pipeline blends SRC_ALPHA / ONE_MINUS_SRC_ALPHA.
     return color;
 }
