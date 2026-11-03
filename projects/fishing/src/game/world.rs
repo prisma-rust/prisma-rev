@@ -16,7 +16,9 @@
 //! 关卡逻辑既能编译进静态 Player，也能原样作为编辑器加载的动态模块运行。
 
 use prism_game_api::GameWorld;
-use prism_scene::components::{Active, Camera, LocalTransform, SpriteRenderer};
+use prism_scene::components::{
+    Active, Camera, LocalTransform, SpriteRenderer, TimeOfDay, TimeOfDayPhase,
+};
 use serde::Deserialize;
 
 /// 每世界单位的像素数：1 像素 = 1 世界单位，相机正交半高 180 → 视口 360
@@ -72,6 +74,10 @@ pub struct LakeWorld {
     tods: Vec<String>,
     current_tod: usize,
     elapsed: f32,
+    /// 距离上次写「当前时刻」到存档的秒数（#984：重开游戏昼夜不会跳回早上）。
+    clock_save_timer: f32,
+    /// 本次运行是否已经从存档恢复过时刻。
+    clock_restored: bool,
     /// 视差原点（编排时的相机位置）。
     camera_origin: glam::Vec2,
     /// 水面世界 y（反射镜像轴）。
@@ -124,6 +130,7 @@ impl LakeWorld {
                     // 底边中心对齐 `y`（轴心约定：(0.5, 0.0) = 底边）。
                     pivot: [0.5, 0.0],
                     sorting_layer: def.sorting.unwrap_or(order as i32),
+                    receive_lights: true,
                     ..SpriteRenderer::default()
                 },
             );
@@ -151,6 +158,7 @@ impl LakeWorld {
                         // 镜像要压在水面之上才有反射感：水面在 20，船在 50。
                         sorting_layer: def.sorting.unwrap_or(order as i32) + 30,
                         color: [0.45, 0.6, 0.85, 0.5],
+                        receive_lights: true,
                         ..SpriteRenderer::default()
                     },
                 );
@@ -179,6 +187,8 @@ impl LakeWorld {
             tods,
             current_tod,
             elapsed: 0.0,
+            clock_save_timer: 0.0,
+            clock_restored: false,
             camera_origin,
             water_line,
         }
@@ -232,6 +242,20 @@ fn load_layers(world: &GameWorld<'_>) -> Result<LayersFile, String> {
 }
 
 /// 每帧：推进昼夜、平移各层。
+/// 引擎 `TimeOfDay` 的阶段 → `lake_layers.json` 里 `time_of_day` 的名字。
+fn lake_phase(world: &mut GameWorld<'_>) -> Option<&'static str> {
+    let clock = world
+        .query::<TimeOfDay>()
+        .into_iter()
+        .find_map(|entity| world.get::<TimeOfDay>(entity))?;
+    Some(match clock.phase() {
+        TimeOfDayPhase::Dawn => "dawn",
+        TimeOfDayPhase::Day => "day",
+        TimeOfDayPhase::Dusk => "dusk",
+        TimeOfDayPhase::Night => "night",
+    })
+}
+
 pub fn tick(state: &mut Option<LakeWorld>, world: &mut GameWorld<'_>, dt: f32) {
     if state.is_none() {
         *state = Some(LakeWorld::build(world));
@@ -240,17 +264,61 @@ pub fn tick(state: &mut Option<LakeWorld>, world: &mut GameWorld<'_>, dt: f32) {
         return;
     };
 
+    // #984：首次进入时把存档里的时刻写回 `TimeOfDay`（重开继续上次的昼夜）。
+    if !current.clock_restored {
+        current.clock_restored = true;
+        if let Some(saved) = world
+            .load_data("hours")
+            .and_then(|value| value.parse::<f32>().ok())
+        {
+            if let Some(entity) = world
+                .query::<TimeOfDay>()
+                .into_iter()
+                .find(|entity| world.get::<TimeOfDay>(*entity).is_some())
+            {
+                let mut clock = world.get::<TimeOfDay>(entity).expect("clock");
+                clock.hours = saved.rem_euclid(24.0);
+                world.set(entity, clock);
+                log::info!("time of day restored: {}", clock.clock_text());
+            }
+        }
+    }
+
     current.elapsed += dt;
 
     // --- 昼夜轮换 -------------------------------------------------------
+    //
+    // #983：时刻来自引擎的 `TimeOfDay` 组件，工程不再自己算 48 秒一圈 ——
+    // 环境光（同一实体上的 `Light2D`）也由引擎系统按同一个时钟推进，
+    // 所以「换背景图」和「变暗」永远同步。
     if !current.tods.is_empty() {
-        let step = (current.elapsed / CYCLE_SECONDS).floor() as usize;
-        let tod = step % current.tods.len();
-        if tod != current.current_tod {
-            current.current_tod = tod;
-            let name = current.tods[tod].clone();
-            log::info!("time of day -> {name}");
-            current.apply_time_of_day(world, &name);
+        if let Some(phase) = lake_phase(world) {
+            let tod = current
+                .tods
+                .iter()
+                .position(|name| name.eq_ignore_ascii_case(phase))
+                .unwrap_or(current.current_tod)
+                .min(current.tods.len().saturating_sub(1));
+            if tod != current.current_tod {
+                current.current_tod = tod;
+                let name = current.tods[tod].clone();
+                log::info!("time of day -> {name}");
+                current.apply_time_of_day(world, &name);
+            }
+        }
+    }
+
+    // --- 保存时刻（每 2 秒一次，退出不会丢昼夜）-----------------------------
+    current.clock_save_timer += dt;
+    if current.clock_save_timer >= 2.0 {
+        current.clock_save_timer = 0.0;
+        if let Some(clock) = world
+            .query::<TimeOfDay>()
+            .into_iter()
+            .find_map(|entity| world.get::<TimeOfDay>(entity))
+        {
+            let hours = format!("{:.3}", clock.normalized_hours());
+            world.save_data("hours", &hours);
         }
     }
 
