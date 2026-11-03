@@ -1463,6 +1463,180 @@ impl Light2D {
     }
 }
 
+/// 昼夜时钟（#983）：一个组件就是一天，不用每个工程自己写计时代码。
+///
+/// 系统每帧推进 `hours`，并把它换算成**环境光**写回同一实体上的
+/// [`Light2D`]（`kind = Ambient`）。因此「夜晚灯笼」只需要两样东西：
+///
+/// ```json
+/// "prism_engine::scene::TimeOfDay": { "hours": 8.0, "day_length_seconds": 600.0 },
+/// "prism_engine::scene::Light2D": { "kind": "Ambient" }
+/// ```
+///
+/// 点光（灯笼、篝火）自己不动，靠环境光变暗自然显出对比。
+/// 阅读当前时间用 [`TimeOfDay::clock_text`]，判断阶段用 [`TimeOfDay::phase`]。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Reflect)]
+#[reflect(name = "prism_engine::scene::TimeOfDay")]
+#[serde(default)]
+pub struct TimeOfDay {
+    /// 当前时刻，`0.0..24.0`（小数部分就是分钟）。
+    pub hours: f32,
+    /// 游戏里一天多少秒；`<= 0` 表示时间冻结（只读 `hours`）。
+    pub day_length_seconds: f32,
+    /// 暂停推进（`hours` 仍可被脚本直接写）。
+    pub paused: bool,
+    /// 日出小时，晨昏过渡以它为中心。
+    pub sunrise_hour: f32,
+    /// 日落小时，晨昏过渡以它为中心。
+    pub sunset_hour: f32,
+    /// 晨昏过渡的半宽（小时）：`sunrise ± twilight_hours` 之间是渐变。
+    pub twilight_hours: f32,
+    /// 白天的环境光颜色（线性 RGB）。
+    pub day_color: [f32; 3],
+    /// 白天的环境光强度。
+    pub day_intensity: f32,
+    /// 夜晚的环境光颜色（线性 RGB）。
+    pub night_color: [f32; 3],
+    /// 夜晚的环境光强度。
+    pub night_intensity: f32,
+}
+
+/// 一天里的四个阶段（给游戏逻辑 / HUD 用，不影响环境光计算）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeOfDayPhase {
+    /// 日出前后（含晨昏过渡）。
+    Dawn,
+    /// 白天。
+    Day,
+    /// 日落前后（含晨昏过渡）。
+    Dusk,
+    /// 夜晚。
+    Night,
+}
+
+impl Default for TimeOfDay {
+    fn default() -> Self {
+        Self {
+            hours: 8.0,
+            day_length_seconds: 600.0,
+            paused: false,
+            sunrise_hour: 6.0,
+            sunset_hour: 18.0,
+            twilight_hours: 1.5,
+            day_color: [1.0, 1.0, 1.0],
+            day_intensity: 1.0,
+            night_color: [0.18, 0.2, 0.34],
+            night_intensity: 1.0,
+        }
+    }
+}
+
+impl TimeOfDay {
+    /// 推进时间；`dt` 是秒。暂停 / `day_length_seconds <= 0` 时不动。
+    pub fn advance(&mut self, dt: f32) {
+        if self.paused || !(dt.is_finite() && dt > 0.0) {
+            return;
+        }
+        let length = self.day_length_seconds;
+        if !(length.is_finite() && length > 0.0) {
+            return;
+        }
+        let hours = self.normalized_hours() + dt / length * 24.0;
+        self.hours = hours.rem_euclid(24.0);
+    }
+
+    /// `hours` 归一化到 `0..24`（作者写了 `-3` 或 `30` 也能用）。
+    pub fn normalized_hours(&self) -> f32 {
+        let hours = if self.hours.is_finite() {
+            self.hours
+        } else {
+            0.0
+        };
+        hours.rem_euclid(24.0)
+    }
+
+    /// `HH:MM`，给 HUD 直接显示。
+    pub fn clock_text(&self) -> String {
+        let hours = self.normalized_hours();
+        let whole = hours.floor();
+        let minutes = ((hours - whole) * 60.0).floor();
+        format!("{:02}:{:02}", whole as u32 % 24, (minutes as u32).min(59))
+    }
+
+    /// 当前阶段。晨昏过渡区间算 `Dawn` / `Dusk`。
+    pub fn phase(&self) -> TimeOfDayPhase {
+        let h = self.normalized_hours();
+        let twilight = self.twilight_hours.max(0.0);
+        let sunrise = self.sunrise_hour.rem_euclid(24.0);
+        let sunset = self.sunset_hour.rem_euclid(24.0);
+        if within(h, sunrise, twilight) {
+            TimeOfDayPhase::Dawn
+        } else if within(h, sunset, twilight) {
+            TimeOfDayPhase::Dusk
+        } else if day_side(h, sunrise, sunset) {
+            TimeOfDayPhase::Day
+        } else {
+            TimeOfDayPhase::Night
+        }
+    }
+
+    /// 当前环境光：`(color, intensity)`。晨昏之间线性插值，其余时间取白/夜值。
+    pub fn ambient(&self) -> ([f32; 3], f32) {
+        let h = self.normalized_hours();
+        let twilight = self.twilight_hours.max(0.0);
+        let sunrise = self.sunrise_hour.rem_euclid(24.0);
+        let sunset = self.sunset_hour.rem_euclid(24.0);
+        // 0 = 夜, 1 = 昼；日出 / 日落各有一半的过渡。
+        let daylight = if twilight <= 0.0 {
+            if day_side(h, sunrise, sunset) {
+                1.0
+            } else {
+                0.0
+            }
+        } else if within(h, sunrise, twilight) {
+            smoothstep(0.0, 1.0, (h - (sunrise - twilight)) / (2.0 * twilight))
+        } else if within(h, sunset, twilight) {
+            smoothstep(0.0, 1.0, ((sunset + twilight) - h) / (2.0 * twilight))
+        } else if day_side(h, sunrise, sunset) {
+            1.0
+        } else {
+            0.0
+        };
+        let mix = |day: f32, night: f32| night + (day - night) * daylight;
+        (
+            [
+                mix(self.day_color[0], self.night_color[0]),
+                mix(self.day_color[1], self.night_color[1]),
+                mix(self.day_color[2], self.night_color[2]),
+            ],
+            mix(self.day_intensity, self.night_intensity),
+        )
+    }
+}
+
+/// `hour` 是否落在 `center ± width` 内（跨零点也算）。
+fn within(hour: f32, center: f32, width: f32) -> bool {
+    let delta = (hour - center).rem_euclid(24.0);
+    delta <= width || delta >= 24.0 - width
+}
+
+/// `hour` 是否在日出与日落之间的白天一侧（支持日出晚于日落的多夜昼配置）。
+fn day_side(hour: f32, sunrise: f32, sunset: f32) -> bool {
+    if sunrise <= sunset {
+        hour >= sunrise && hour < sunset
+    } else {
+        hour >= sunrise || hour < sunset
+    }
+}
+
+fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    if (edge1 - edge0).abs() <= f32::EPSILON {
+        return if x < edge0 { 0.0 } else { 1.0 };
+    }
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 /// Directional 无限 光源
 ///
 /// Orientation is stored as XYZ Euler angles 角度 so it round-trips

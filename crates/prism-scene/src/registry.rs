@@ -481,6 +481,10 @@ pub fn register_builtin_components(registry: &mut ComponentRegistry) {
         registry.register_reflect_serde::<Tilemap>("prism_engine::scene::Tilemap");
         // #611：2D 精灵光照（与 SpriteRenderer 同组，没有精灵就没有意义）。
         registry.register_reflect_serde::<Light2D>("prism_engine::scene::Light2D");
+        // #983：昼夜时钟。它只是往同一实体的环境光里写颜色，2D 场景用得上，
+        // 但也可能在纯 3D 工程里做逻辑计时，所以不受 `group-2d` 限制更合理；
+        // 目前与 Light2D 一起登记，保持「没有 2D 就没有昼夜表现」的一致。
+        registry.register_reflect_serde::<TimeOfDay>("prism_engine::scene::TimeOfDay");
     }
 
     // ── 本地变换 ──
