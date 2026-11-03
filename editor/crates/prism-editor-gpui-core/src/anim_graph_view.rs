@@ -33,6 +33,9 @@ pub struct AnimNodeView {
     pub inputs: Vec<AnimInputView>,
     pub state_machine: String,
     pub parameter: String,
+    pub speed: f32,
+    pub weight: f32,
+    pub looped: bool,
 }
 
 impl AnimNodeView {
@@ -187,6 +190,9 @@ pub fn parse_anim_graph_view(document: &Value) -> Result<AnimGraphView, String> 
                 .unwrap_or("")
                 .to_string(),
             parameter,
+            speed: node.get("speed").and_then(Value::as_f64).unwrap_or(1.0) as f32,
+            weight: node.get("weight").and_then(Value::as_f64).unwrap_or(1.0) as f32,
+            looped: node.get("looped").and_then(Value::as_bool).unwrap_or(true),
         });
     }
 
@@ -674,6 +680,65 @@ pub fn set_graph_input_bone_mask(
     }
 }
 
+/// 改一个剪辑节点（`clip_player`）的剪辑路径：写单数 `clip`，并删掉 `clips` 数组。
+///
+/// cooker 会把 `clip` 和 `clips` 拼在一起，两者同时存在就变成「多于一个剪辑」，
+/// 剪辑节点会被拒绝，所以设置单个剪辑时必须清掉数组。
+pub fn set_graph_node_clip(document: &mut Value, name: &str, clip: &str) -> Result<(), String> {
+    let clip = clip.trim();
+    if clip.is_empty() {
+        return Err("a clip node needs a clip path".to_string());
+    }
+    let Some(node) = find_node_mut(document, name) else {
+        return Err(format!("unknown node '{name}'"));
+    };
+    if !node.is_object() {
+        return Err(format!("node '{name}' is malformed"));
+    }
+    node["clip"] = json!(clip);
+    if node.get("clips").is_some() {
+        node.as_object_mut().expect("checked above").remove("clips");
+    }
+    Ok(())
+}
+
+/// 改节点的播放速度（`0` = 冻结，必须有限且非负）。
+pub fn set_graph_node_speed(document: &mut Value, name: &str, speed: f32) -> Result<(), String> {
+    if !speed.is_finite() || speed < 0.0 {
+        return Err("node speed must be finite and >= 0".to_string());
+    }
+    set_node_field(document, name, "speed", json!(speed))
+}
+
+/// 改节点自身权重（0..=1；cooker 也会夹在这个范围）。
+pub fn set_graph_node_weight(document: &mut Value, name: &str, weight: f32) -> Result<(), String> {
+    if !weight.is_finite() || !(0.0..=1.0).contains(&weight) {
+        return Err("node weight must be finite and between 0 and 1".to_string());
+    }
+    set_node_field(document, name, "weight", json!(weight))
+}
+
+/// 改节点是否循环播放。
+pub fn set_graph_node_looped(document: &mut Value, name: &str, looped: bool) -> Result<(), String> {
+    set_node_field(document, name, "looped", json!(looped))
+}
+
+fn set_node_field(
+    document: &mut Value,
+    name: &str,
+    field: &str,
+    value: Value,
+) -> Result<(), String> {
+    let Some(node) = find_node_mut(document, name) else {
+        return Err(format!("unknown node '{name}'"));
+    };
+    if !node.is_object() {
+        return Err(format!("node '{name}' is malformed"));
+    }
+    node[field] = value;
+    Ok(())
+}
+
 /// 追加一个剪辑节点（`clip_player`，单剪辑）。
 ///
 /// 只创建**当帧就能通过 cooker 校验**的形状：剪辑节点的必需字段只有剪辑路径，
@@ -752,6 +817,57 @@ pub fn remove_graph_node(document: &mut Value, name: &str) -> Result<(), String>
     };
     nodes.remove(index);
     Ok(())
+}
+
+#[cfg(test)]
+mod node_prop_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn document() -> Value {
+        json!({
+            "nodes": [
+                { "name": "a", "type": "clip_player", "clip": "a.ranim", "clips": ["a.ranim"] },
+                { "name": "out", "type": "output", "input": "a" }
+            ]
+        })
+    }
+
+    #[test]
+    fn a_clip_node_can_point_at_another_clip() {
+        let mut doc = document();
+        set_graph_node_clip(&mut doc, "a", " b.ranim ").expect("sets");
+        assert_eq!(doc["nodes"][0]["clip"], "b.ranim");
+        assert!(
+            doc["nodes"][0].get("clips").is_none(),
+            "单个剪辑不能同时留 clips 数组：{:?}",
+            doc["nodes"][0]
+        );
+    }
+
+    #[test]
+    fn node_speed_weight_and_loop_can_be_edited() {
+        let mut doc = document();
+        set_graph_node_speed(&mut doc, "a", 1.5).expect("speed");
+        set_graph_node_weight(&mut doc, "a", 0.25).expect("weight");
+        set_graph_node_looped(&mut doc, "a", false).expect("looped");
+        assert_eq!(doc["nodes"][0]["speed"].as_f64(), Some(1.5));
+        assert_eq!(doc["nodes"][0]["weight"].as_f64(), Some(0.25));
+        assert_eq!(doc["nodes"][0]["looped"], false);
+    }
+
+    #[test]
+    fn bad_node_properties_are_rejected() {
+        let mut doc = document();
+        assert!(set_graph_node_clip(&mut doc, "a", "  ").is_err());
+        assert!(set_graph_node_clip(&mut doc, "missing", "b.ranim").is_err());
+        assert!(set_graph_node_speed(&mut doc, "a", -1.0).is_err());
+        assert!(set_graph_node_speed(&mut doc, "a", f32::NAN).is_err());
+        assert!(set_graph_node_weight(&mut doc, "a", 1.5).is_err());
+        assert!(set_graph_node_weight(&mut doc, "a", f32::NAN).is_err());
+        assert!(set_graph_node_looped(&mut doc, "missing", true).is_err());
+        assert!(set_graph_node_clip(&mut json!({ "nodes": ["bad"] }), "a", "b.ranim").is_err());
+    }
 }
 
 #[cfg(test)]
