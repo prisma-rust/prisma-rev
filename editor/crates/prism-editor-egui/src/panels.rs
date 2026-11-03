@@ -5775,11 +5775,12 @@ pub fn anim_graph(
         return;
     };
     let notify_asset = is_notify_sidecar(&path);
+    let sync_marker_asset = is_sync_markers_sidecar(&path);
     let graph_asset = path.ends_with(".animgraph.json");
     let machine_asset = path.ends_with(".statemachine.json");
-    if !notify_asset && !graph_asset && !machine_asset {
+    if !notify_asset && !sync_marker_asset && !graph_asset && !machine_asset {
         ui.label(
-            RichText::new("select an .animgraph.json / .statemachine.json asset")
+            RichText::new("select an animation graph / state machine / notify / sync marker asset")
                 .weak()
                 .size(11.0),
         );
@@ -5797,6 +5798,10 @@ pub fn anim_graph(
 
     if notify_asset {
         draw_notifies_asset(ui, workspace, state, &path);
+        return;
+    }
+    if sync_marker_asset {
+        draw_sync_markers_asset(ui, workspace, state, &path);
         return;
     }
 
@@ -5974,6 +5979,11 @@ fn is_notify_sidecar(path: &str) -> bool {
         .ends_with(".skinning/notifies.json")
 }
 
+fn is_sync_markers_sidecar(path: &str) -> bool {
+    path.to_ascii_lowercase()
+        .ends_with(".skinning/sync_markers.json")
+}
+
 /// `*.skinning/notifies.json`：按剪辑列出事件，可改时间 / 名字、增删。
 fn draw_notifies_asset(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState, path: &str) {
     ui.label(
@@ -6017,6 +6027,255 @@ fn draw_notifies_asset(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiSta
     }
 }
 
+/// `*.skinning/sync_markers.json`：按剪辑列出归一化相位，可改 / 增删。
+fn draw_sync_markers_asset(
+    ui: &mut Ui,
+    workspace: &mut Workspace,
+    state: &mut UiState,
+    path: &str,
+) {
+    let mut value = match workspace.read_asset_json(path) {
+        Ok(value) => value,
+        Err(error) => {
+            ui.label(
+                RichText::new(format!("read {path} failed: {error}"))
+                    .color(Color32::from_rgb(232, 96, 96)),
+            );
+            return;
+        }
+    };
+    let view = match prism_editor_core::parse_sync_markers_view(&value) {
+        Ok(view) => view,
+        Err(error) => {
+            ui.label(RichText::new(error).color(Color32::from_rgb(232, 96, 96)));
+            return;
+        }
+    };
+    let before = value.clone();
+    match draw_sync_markers_view(ui, &view, &mut value, &mut state.anim_graph_edit) {
+        Ok(true) => {
+            state.status = match workspace.write_asset_json(path, &value) {
+                Ok(()) => {
+                    workspace.record_asset_edit(path, &before, &value);
+                    format!("saved sync markers in {path}")
+                }
+                Err(error) => format!("save sync markers failed: {error}"),
+            };
+        }
+        Ok(false) => {}
+        Err(error) => state.status = format!("sync markers: {error}"),
+    }
+}
+
+fn draw_sync_markers_view(
+    ui: &mut Ui,
+    view: &prism_editor_core::SyncMarkersView,
+    document: &mut Value,
+    edit: &mut AnimGraphEditState,
+) -> Result<bool, String> {
+    let mut changed = false;
+    ui.label(
+        RichText::new(format!("Sync markers ({})", view.len()))
+            .strong()
+            .size(11.0),
+    );
+    if view.is_empty() {
+        ui.label(
+            RichText::new("no sync markers yet — add one below")
+                .weak()
+                .size(10.0),
+        );
+    }
+
+    let mut phase_edits = Vec::new();
+    let mut removals = Vec::new();
+    for clip in &view.clips {
+        ui.label(
+            RichText::new(format!("{} ({})", clip.clip, clip.phases.len()))
+                .strong()
+                .size(10.0),
+        );
+        let width = ui.available_width().clamp(140.0, 520.0);
+        let (track, painter) =
+            ui.allocate_painter(Vec2::new(width, 20.0), egui::Sense::click_and_drag());
+        let rect = track.rect;
+        painter.rect_filled(rect, 3.0, Color32::from_rgb(26, 28, 32));
+        let inset = 5.0;
+        let left = rect.left() + inset;
+        let usable = (rect.width() - inset * 2.0).max(1.0);
+        let y = rect.center().y;
+        painter.line_segment(
+            [egui::pos2(left, y), egui::pos2(left + usable, y)],
+            egui::Stroke::new(1.0_f32, Color32::from_rgb(58, 63, 72)),
+        );
+        for tick in [0.25, 0.5, 0.75] {
+            let x = left + tick * usable;
+            painter.line_segment(
+                [egui::pos2(x, y - 3.0), egui::pos2(x, y + 3.0)],
+                egui::Stroke::new(1.0_f32, Color32::from_rgb(48, 52, 60)),
+            );
+        }
+        painter.text(
+            egui::pos2(left, rect.top() + 1.0),
+            egui::Align2::LEFT_TOP,
+            "0",
+            egui::FontId::monospace(8.0),
+            Color32::from_rgb(110, 116, 126),
+        );
+        painter.text(
+            egui::pos2(left + usable, rect.top() + 1.0),
+            egui::Align2::RIGHT_TOP,
+            "1",
+            egui::FontId::monospace(8.0),
+            Color32::from_rgb(110, 116, 126),
+        );
+        let x_of = |phase: f32| left + phase.clamp(0.0, 1.0) * usable;
+        if track.drag_started() {
+            edit.sync_marker_drag = track
+                .interact_pointer_pos()
+                .and_then(|pos| {
+                    prism_editor_core::nearest_sync_marker_index(
+                        &clip.phases,
+                        pos.x,
+                        left,
+                        usable,
+                        8.0,
+                    )
+                })
+                .map(|index| (clip.clip.clone(), index));
+        }
+        if track.dragged() {
+            if let (Some(pos), Some((owner, index))) =
+                (track.interact_pointer_pos(), edit.sync_marker_drag.as_ref())
+            {
+                if owner == &clip.clip && *index < clip.phases.len() {
+                    phase_edits.push((
+                        clip.clip.clone(),
+                        *index,
+                        prism_editor_core::sync_marker_phase_at(pos.x, left, usable),
+                    ));
+                }
+            }
+        }
+        if track.drag_stopped() {
+            edit.sync_marker_drag = None;
+        }
+        if track.clicked() {
+            if let Some(pos) = track.interact_pointer_pos() {
+                let hit = prism_editor_core::nearest_sync_marker_index(
+                    &clip.phases,
+                    pos.x,
+                    left,
+                    usable,
+                    8.0,
+                );
+                if hit.is_none() {
+                    edit.sync_marker_draft = Some((
+                        clip.clip.clone(),
+                        prism_editor_core::sync_marker_phase_at(pos.x, left, usable),
+                    ));
+                }
+            }
+        }
+        let hovered = track.hover_pos().and_then(|pos| {
+            prism_editor_core::nearest_sync_marker_index(&clip.phases, pos.x, left, usable, 8.0)
+        });
+        for (index, phase) in clip.phases.iter().enumerate() {
+            let active = edit
+                .sync_marker_drag
+                .as_ref()
+                .is_some_and(|(owner, slot)| owner == &clip.clip && *slot == index);
+            let radius = if active || hovered == Some(index) {
+                4.5
+            } else {
+                3.5
+            };
+            painter.circle_filled(
+                egui::pos2(x_of(*phase), y),
+                radius,
+                Color32::from_rgb(112, 196, 168),
+            );
+        }
+        if let Some(phase) = hovered.and_then(|index| clip.phases.get(index)) {
+            track
+                .clone()
+                .on_hover_text(format!("phase {phase:.3} — drag to move"));
+        } else if track.hovered() {
+            track
+                .clone()
+                .on_hover_text("click to add a sync marker at this phase");
+        }
+        for (index, phase) in clip.phases.iter().enumerate() {
+            ui.horizontal(|ui| {
+                let mut phase = *phase;
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut phase)
+                            .speed(0.001)
+                            .range(0.0..=1.0)
+                            .max_decimals(3)
+                            .prefix("phase "),
+                    )
+                    .changed()
+                {
+                    phase_edits.push((clip.clip.clone(), index, phase));
+                }
+                if ui.small_button("×").clicked() {
+                    removals.push((clip.clip.clone(), index));
+                }
+            });
+        }
+    }
+
+    ui.separator();
+    let mut add = None;
+    let mut cancel = false;
+    if let Some(draft) = edit.sync_marker_draft.as_mut() {
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut draft.0)
+                    .hint_text("clip (glTF name)")
+                    .desired_width(120.0),
+            );
+            ui.add(
+                egui::DragValue::new(&mut draft.1)
+                    .speed(0.001)
+                    .range(0.0..=1.0)
+                    .max_decimals(3)
+                    .prefix("phase "),
+            );
+        });
+        ui.horizontal(|ui| {
+            if ui.button("Add marker").clicked() {
+                add = Some(draft.clone());
+            }
+            if ui.button("Cancel").clicked() {
+                cancel = true;
+            }
+        });
+    } else if ui.button("+ Marker").clicked() {
+        edit.sync_marker_draft = Some((String::new(), 0.0));
+    }
+
+    for (clip, index, phase) in phase_edits {
+        prism_editor_core::set_sync_marker(document, &clip, index, phase)?;
+        changed = true;
+    }
+    for (clip, index) in removals {
+        prism_editor_core::remove_sync_marker(document, &clip, index)?;
+        changed = true;
+    }
+    if let Some((clip, phase)) = add {
+        prism_editor_core::add_sync_marker(document, &clip, phase)?;
+        edit.sync_marker_draft = None;
+        changed = true;
+    }
+    if cancel {
+        edit.sync_marker_draft = None;
+    }
+    Ok(changed)
+}
+
 fn draw_notifies_view(
     ui: &mut Ui,
     view: &prism_editor_core::NotifiesView,
@@ -6058,7 +6317,7 @@ fn draw_notifies_view(
         let y = rect.center().y;
         painter.line_segment(
             [egui::pos2(left, y), egui::pos2(left + usable, y)],
-            egui::Stroke::new(1.0, Color32::from_rgb(58, 63, 72)),
+            egui::Stroke::new(1.0_f32, Color32::from_rgb(58, 63, 72)),
         );
         painter.text(
             egui::pos2(left + usable, rect.top() + 1.0),
@@ -6367,6 +6626,10 @@ pub struct AnimGraphEditState {
     pub notify_draft: Option<(String, f32, String)>,
     /// 正在拖拽的 Notify 标记：(剪辑, 下标)。
     pub notify_drag: Option<(String, usize)>,
+    /// 正在拖拽的同步标记：(剪辑, 下标)。
+    pub sync_marker_drag: Option<(String, usize)>,
+    /// 新增同步标记草稿：(剪辑, 相位)。
+    pub sync_marker_draft: Option<(String, f32)>,
     /// 正在拖拽的二维混合空间样本：(节点, 下标)。
     pub graph_sample_drag: Option<(String, usize)>,
 }

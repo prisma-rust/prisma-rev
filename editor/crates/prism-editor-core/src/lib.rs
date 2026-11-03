@@ -38,6 +38,7 @@ pub mod render_graph;
 pub mod schema;
 pub mod settings;
 pub mod state;
+pub mod sync_marker_view;
 pub mod textinput;
 pub mod theme;
 pub mod undo;
@@ -89,6 +90,10 @@ pub use schema::{
 };
 pub use settings::ProjectSettings;
 pub use state::{EditorState, Preferences};
+pub use sync_marker_view::{
+    add_sync_marker, nearest_sync_marker_index, parse_sync_markers_view, remove_sync_marker,
+    set_sync_marker, sync_marker_phase_at, SyncMarkerClipView, SyncMarkersView,
+};
 pub use textinput::TextInput;
 pub use theme::{Rgba, ThemeColors, ThemePreset, ThemeState, ThemeToken, THEME_PRESETS};
 pub use undo::UndoStack;
