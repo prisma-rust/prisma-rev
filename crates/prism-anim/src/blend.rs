@@ -264,6 +264,41 @@ impl BlendSpace1D {
         blend_into(out, &self.scratch[0], &self.scratch[1], t);
         true
     }
+
+    /// 每个样本用**自己的相位**求值（独立播放头，每样本速度不同时用）。
+    ///
+    /// `phases[i]` 是样本 `i` 的归一化相位；缺失的样本按 0 采样。这个入口不做
+    /// SyncGroup 相位映射——调用方已经为每个样本算好了自己的时间。
+    pub fn evaluate_into_with_phases(&mut self, at: f32, phases: &[f32], out: &mut Pose) -> bool {
+        let Some((left, right, t)) = blend_space_weights(&self.positions, at) else {
+            return false;
+        };
+        let phase = |index: usize| phases.get(index).copied().unwrap_or(0.0);
+
+        if left == right {
+            self.scratch[0].copy_from(&self.reference);
+            if !sample_at_phase(&self.samples[left].clip, phase(left), &mut self.scratch[0]) {
+                return false;
+            }
+            out.copy_from(&self.scratch[0]);
+            return true;
+        }
+
+        self.scratch[0].copy_from(&self.reference);
+        self.scratch[1].copy_from(&self.reference);
+        if !sample_at_phase(&self.samples[left].clip, phase(left), &mut self.scratch[0]) {
+            return false;
+        }
+        if !sample_at_phase(
+            &self.samples[right].clip,
+            phase(right),
+            &mut self.scratch[1],
+        ) {
+            return false;
+        }
+        blend_into(out, &self.scratch[0], &self.scratch[1], t);
+        true
+    }
 }
 
 /// 一维混合空间的位置插值：返回 `(左样本下标, 右样本下标, t)`。

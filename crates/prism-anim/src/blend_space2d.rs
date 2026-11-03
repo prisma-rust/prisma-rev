@@ -151,6 +151,30 @@ impl BlendSpace2D {
         true
     }
 
+    /// 每个样本用**自己的相位**求值（独立播放头）。
+    ///
+    /// `phases[i]` 是 `samples[i]` 的归一化相位；缺失的样本按 0 采样。不做
+    /// SyncGroup 相位映射——调用方已经为每个样本算好了自己的时间。
+    pub fn evaluate_into_with_phases(
+        &mut self,
+        at: [f32; 2],
+        phases: &[f32],
+        out: &mut Pose,
+    ) -> bool {
+        let Some((vertices, weights)) = self.weights_at(at) else {
+            return false;
+        };
+        for (slot, vertex) in vertices.iter().enumerate() {
+            self.scratch[slot].copy_from(&self.reference);
+            let phase = phases.get(*vertex).copied().unwrap_or(0.0);
+            let sample = &self.samples[*vertex];
+            if !sample_at_phase(&sample.clip, phase, &mut self.scratch[slot]) {
+                return false;
+            }
+        }
+        blend_weighted_into(out, &mut self.scratch, &weights);
+        true
+    }
     /// 查询点对应的三角形与三个重心权重。
     ///
     /// 点落在某个三角形内时直接用它的重心坐标；所有三角形都不包含时，取**离
