@@ -199,6 +199,96 @@ fn a_near_threshold_past_the_far_threshold_disables_the_middle_tier() {
     assert!((time - 0.2).abs() < 1e-5, "每帧都更新，time {time}");
 }
 
+/// 根关节在 1s 内平移 +2m、绕 Y 转 90° 的剪辑。
+fn root_motion_clip() -> Clip {
+    Clip {
+        name: "root_motion".into(),
+        duration: 1.0,
+        fps: 30.0,
+        looped: false,
+        additive: false,
+        tracks: vec![Track {
+            joint: 0,
+            translation: vec![
+                Vec3Key {
+                    time: 0.0,
+                    value: Vec3::ZERO,
+                },
+                Vec3Key {
+                    time: 1.0,
+                    value: Vec3::new(2.0, 0.0, 0.0),
+                },
+            ],
+            rotation: vec![
+                prism_anim::QuatKey {
+                    time: 0.0,
+                    value: Quat::IDENTITY,
+                },
+                prism_anim::QuatKey {
+                    time: 1.0,
+                    value: Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+                },
+            ],
+            scale: Vec::new(),
+        }],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn root_motion_records_the_root_joint_delta_per_frame() {
+    let (mut world, entity) = world_with_animator("root.ranim");
+    world
+        .get_resource_mut::<SkeletonLibrary>()
+        .unwrap()
+        .insert_clip("root.ranim", root_motion_clip());
+
+    animator_system(&mut world, 0.0);
+    let delta = world.get::<AnimatorPlayhead>(entity).unwrap().root_motion;
+    assert_eq!(delta, RootMotionDelta::default(), "首帧没有上一帧可比");
+
+    animator_system(&mut world, 0.25);
+    let delta = world.get::<AnimatorPlayhead>(entity).unwrap().root_motion;
+    assert!((delta.translation.x - 0.5).abs() < 1e-4, "delta {delta:?}");
+    assert!(
+        (delta.yaw - std::f32::consts::FRAC_PI_8).abs() < 1e-4,
+        "delta {delta:?}"
+    );
+
+    animator_system(&mut world, 0.25);
+    let delta = world.get::<AnimatorPlayhead>(entity).unwrap().root_motion;
+    assert!((delta.translation.x - 0.5).abs() < 1e-4, "delta {delta:?}");
+    assert!(
+        (delta.yaw - std::f32::consts::FRAC_PI_8).abs() < 1e-4,
+        "delta {delta:?}"
+    );
+}
+
+#[test]
+fn switching_clips_resets_the_recorded_root_delta() {
+    let (mut world, entity) = world_with_animator("root.ranim");
+    world
+        .get_resource_mut::<SkeletonLibrary>()
+        .unwrap()
+        .insert_clip("root.ranim", root_motion_clip());
+    animator_system(&mut world, 0.0);
+    animator_system(&mut world, 0.5);
+    assert!(
+        world
+            .get::<AnimatorPlayhead>(entity)
+            .unwrap()
+            .root_motion
+            .translation
+            .length()
+            > 0.5
+    );
+
+    world.get_mut::<Animator>(entity).unwrap().clip_path = "bend.ranim".into();
+    animator_system(&mut world, 0.1);
+    let delta = world.get::<AnimatorPlayhead>(entity).unwrap().root_motion;
+    assert_eq!(delta, RootMotionDelta::default(), "换剪辑首帧清零");
+}
+
 /// 把 bind 姿态下一个**离关节有距离**的顶点（局部 `(2, 1, 0)`）变换到世界。
 ///
 /// 关节原点本身在旋转下是不动的，所以必须取一个偏置点才看得出动画。
@@ -476,6 +566,8 @@ fn blend_weights_are_clamped_and_need_both_a_source_and_a_duration() {
         pose: Pose::default(),
         blend_elapsed: 0.0,
         blend_total: None,
+        root_motion: RootMotionDelta::default(),
+        root_previous: None,
     };
     assert_eq!(head.blend_weight(1.0), Some(0.0));
     head.blend_elapsed = 0.5;
