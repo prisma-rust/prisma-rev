@@ -522,7 +522,9 @@ cook 时归一化到 `[0, 1)`、排序去重，写进 `.ranim` v3；运行时
 节点名也是文本框：重命名会同步改写其它节点的 `inputs` / `input` 与顶层 `output`，但布局 sidecar
 里还是旧名字，节点会回到画布的默认网格位置。
 混合空间节点额外显示参数名文本框（二维各一个）和每个样本的 `x` / `y` DragValue（一维只写 `x`）；
-`clips` 与 `positions` 数量对不上时用橙色提示，cooker 会拒绝这种节点。`+ Clip Node` 追加一个 `clip_player` 节点（必需字段只有剪辑路径，当帧就能通过
+`clips` 与 `positions` 数量对不上时用橙色提示，cooker 会拒绝这种节点。样本行尾的 `×` 删除样本、
+`+ Sample` 打开草稿表单（剪辑 + x/y），一维至少留 2 个、二维至少留 3 个；节点带每样本 `speeds`
+时增删会同步维护那张表。`+ Clip Node` 追加一个 `clip_player` 节点（必需字段只有剪辑路径，当帧就能通过
 cooker 校验）；`× Remove node` 删除节点，输出节点和仍被引用的节点会被拒绝并说明原因，先断线再删。
 其它节点类型（blend space / 状态机 / blend stack）需要剪辑坐标、机器路径或至少一条输入才合法，
 仍然手写 JSON。状态机视图支持 `+ Transition`（任意状态 / 指定 from → to）和 `× Remove transition`，

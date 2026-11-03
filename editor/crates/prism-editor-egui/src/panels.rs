@@ -5870,6 +5870,8 @@ pub struct AnimGraphEditState {
     /// 正在编辑的混合空间参数名：(节点名, 文本)；`parameter_y` 单独一份。
     pub graph_node_parameter: Option<(String, String)>,
     pub graph_node_parameter_y: Option<(String, String)>,
+    /// 「+ Sample」草稿：(节点名, 剪辑, x, y)。
+    pub graph_sample: Option<(String, String, f32, f32)>,
 }
 
 fn is_clip_player(kind: &str) -> bool {
@@ -5932,6 +5934,9 @@ fn draw_anim_graph_view(
     let mut node_name_edits = Vec::new();
     let mut parameter_edits = Vec::new();
     let mut position_edits = Vec::new();
+    let mut sample_removals = Vec::new();
+    let mut sample_adds = Vec::new();
+    let mut sample_draft_cancel = false;
     for node in &graph.nodes {
         let title = if node.is_output() {
             format!("{} · {} (output)", node.name, node.kind)
@@ -6115,7 +6120,39 @@ fn draw_anim_graph_view(
                                     ));
                                 }
                             }
+                            if ui.small_button("×").clicked() {
+                                sample_removals.push((node.name.clone(), index));
+                            }
                         });
+                    }
+                    let draft_here = edit
+                        .graph_sample
+                        .as_ref()
+                        .is_some_and(|(owner, ..)| owner == &node.name);
+                    if draft_here {
+                        if let Some(draft) = edit.graph_sample.as_mut() {
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut draft.1)
+                                        .hint_text("clip.ranim")
+                                        .desired_width(120.0),
+                                );
+                                ui.add(egui::DragValue::new(&mut draft.2).speed(0.01).prefix("x "));
+                                if two_d {
+                                    ui.add(
+                                        egui::DragValue::new(&mut draft.3).speed(0.01).prefix("y "),
+                                    );
+                                }
+                                if ui.small_button("Add").clicked() {
+                                    sample_adds.push(draft.clone());
+                                }
+                                if ui.small_button("Cancel").clicked() {
+                                    sample_draft_cancel = true;
+                                }
+                            });
+                        }
+                    } else if ui.small_button("+ Sample").clicked() {
+                        edit.graph_sample = Some((node.name.clone(), String::new(), 0.0, 0.0));
                     }
                     if node.clips.len() != node.positions.len() {
                         ui.label(
@@ -6275,6 +6312,18 @@ fn draw_anim_graph_view(
     for (node, index, position) in position_edits {
         prism_editor_core::set_blend_space_position(document, &node, index, position)?;
         changed = true;
+    }
+    for (node, index) in sample_removals {
+        prism_editor_core::remove_blend_space_sample(document, &node, index)?;
+        changed = true;
+    }
+    for (node, clip, x, y) in sample_adds {
+        prism_editor_core::add_blend_space_sample(document, &node, &clip, [x, y])?;
+        edit.graph_sample = None;
+        changed = true;
+    }
+    if sample_draft_cancel {
+        edit.graph_sample = None;
     }
     for (node, clip) in node_clip_edits {
         prism_editor_core::set_graph_node_clip(document, &node, &clip)?;

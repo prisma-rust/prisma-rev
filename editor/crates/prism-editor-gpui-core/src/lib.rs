@@ -42,10 +42,11 @@ pub mod viewport_math;
 pub mod workspace;
 
 pub use anim_graph_view::{
-    add_clip_node, add_graph_input, add_state_condition, add_state_transition,
-    parse_anim_graph_view, parse_state_machine_view, remove_graph_input, remove_graph_node,
-    remove_state_condition, remove_state_transition, rename_graph_node, rename_state,
-    set_blend_space_parameter, set_blend_space_position, set_condition_threshold,
+    add_blend_space_sample, add_clip_node, add_graph_input, add_state_condition,
+    add_state_transition, parse_anim_graph_view, parse_state_machine_view,
+    remove_blend_space_sample, remove_graph_input, remove_graph_node, remove_state_condition,
+    remove_state_transition, rename_graph_node, rename_state, set_blend_space_parameter,
+    set_blend_space_position, set_blend_space_sample_clip, set_condition_threshold,
     set_condition_value, set_graph_input_bone_mask, set_graph_input_weight, set_graph_node_clip,
     set_graph_node_looped, set_graph_node_speed, set_graph_node_weight, set_state_clip,
     set_state_looped, set_state_speed, set_transition_timing, AnimConditionView, AnimGraphLayout,
