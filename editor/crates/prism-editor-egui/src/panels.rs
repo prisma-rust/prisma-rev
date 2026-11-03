@@ -5659,7 +5659,96 @@ pub fn delete_asset_now(workspace: &mut Workspace, state: &mut UiState, path: &s
 /// 图侧可以改连线（增删 / 权重）、增删剪辑节点，并把布局写进 sidecar；状态机侧
 /// 可以增删转移，其余字段仍手改 JSON。选中 `*.skinning/notifies.json` 时切换到
 /// 事件表编辑器（#560 Notify）。
-pub fn anim_graph(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
+/// 运行中的图节点一行（Play 模式下由 [`draw_runtime_debug`] 使用）。
+fn runtime_node_summary(node: &prism_anim::GraphNodeSnapshot) -> String {
+    let detail = if node.state_name.is_empty() {
+        format!("{:.2}s", node.time)
+    } else {
+        format!("{} · {:.2}s", node.state_name, node.time)
+    };
+    format!(
+        "{} [{:?}] w={:.2} {detail}",
+        node.name, node.kind, node.weight
+    )
+}
+
+/// 运行中的 Montage Slot 一行。
+fn runtime_montage_summary(montage: &prism_anim::MontageSnapshot) -> String {
+    let clip = montage.clip.as_deref().unwrap_or("-");
+    let time = montage
+        .time
+        .map(|time| format!("{time:.2}s"))
+        .unwrap_or_else(|| "-".to_string());
+    let mut flags = String::new();
+    if montage.paused {
+        flags.push_str(" paused");
+    }
+    if montage.finished {
+        flags.push_str(" finished");
+    }
+    if montage.queued > 0 {
+        flags.push_str(&format!(" +{} queued", montage.queued));
+    }
+    format!(
+        "slot {} · {clip} {time} w={:.2}{flags}",
+        montage.slot, montage.weight
+    )
+}
+
+/// Play 模式下的动画图实时快照（#560 编辑器-运行时桥）。
+///
+/// 数据由引擎在资源存在时每帧重建；这里只读。没有图实体时给一行提示，
+/// 不会因为「还没按 Play」而隐藏整个面板。
+fn draw_runtime_debug(
+    ui: &mut Ui,
+    runtime: Option<&prism_engine::scene::systems::animator::AnimGraphDebug>,
+) {
+    let Some(runtime) = runtime else {
+        return;
+    };
+    if runtime.entities.is_empty() {
+        ui.label(
+            RichText::new("runtime: no animated graph entities (press Play)")
+                .weak()
+                .size(9.0),
+        );
+        return;
+    }
+    egui::CollapsingHeader::new(
+        RichText::new(format!("Runtime · {} entities", runtime.entities.len()))
+            .color(Color32::from_rgb(120, 200, 160))
+            .size(10.0),
+    )
+    .id_salt("anim-graph-runtime")
+    .default_open(true)
+    .show(ui, |ui| {
+        let mut entities: Vec<_> = runtime.entities.iter().collect();
+        entities.sort_by_key(|(entity, _)| format!("{entity:?}"));
+        for (entity, nodes) in entities {
+            let path = runtime.path(*entity).unwrap_or("?");
+            ui.label(
+                RichText::new(format!("{entity:?} · {path}"))
+                    .weak()
+                    .size(9.0),
+            );
+            for node in nodes {
+                ui.label(RichText::new(runtime_node_summary(node)).size(9.0));
+            }
+            if let Some(montages) = runtime.montages(*entity) {
+                for montage in montages {
+                    ui.label(RichText::new(runtime_montage_summary(montage)).size(9.0));
+                }
+            }
+        }
+    });
+}
+
+pub fn anim_graph(
+    ui: &mut Ui,
+    workspace: &mut Workspace,
+    state: &mut UiState,
+    runtime: Option<&prism_engine::scene::systems::animator::AnimGraphDebug>,
+) {
     let Some(path) = state.asset_primary().cloned() else {
         ui.label(
             RichText::new("select an .animgraph.json / .statemachine.json asset")
@@ -5693,6 +5782,9 @@ pub fn anim_graph(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
         draw_notifies_asset(ui, workspace, state, &path);
         return;
     }
+
+    draw_runtime_debug(ui, runtime);
+    ui.separator();
 
     let mut value = match workspace.read_asset_json(&path) {
         Ok(value) => value,
@@ -10549,6 +10641,43 @@ mod window_smoke_tests {
     }
 
     #[test]
+    fn runtime_debug_lines_name_states_and_montage_slots() {
+        let node = prism_anim::GraphNodeSnapshot {
+            name: "sm".into(),
+            kind: prism_anim::GraphNodeKind::StateMachine,
+            time: 0.5,
+            state: 1,
+            blending: false,
+            blend_weight: 1.0,
+            cached: false,
+            weight: 1.0,
+            state_name: "walk".into(),
+            state_clip: "walk.ranim".into(),
+        };
+        let line = runtime_node_summary(&node);
+        assert!(line.contains("sm"), "{line}");
+        assert!(line.contains("StateMachine"), "{line}");
+        assert!(line.contains("walk"), "{line}");
+        assert!(line.contains("0.50s"), "{line}");
+
+        let montage = prism_anim::MontageSnapshot {
+            slot: "hit".into(),
+            clip: Some("hit.anim".into()),
+            time: Some(0.25),
+            weight: 0.5,
+            playing: true,
+            paused: true,
+            finished: false,
+            queued: 2,
+        };
+        let line = runtime_montage_summary(&montage);
+        assert!(line.contains("hit"), "{line}");
+        assert!(line.contains("0.25s"), "{line}");
+        assert!(line.contains("paused"), "{line}");
+        assert!(line.contains("+2 queued"), "{line}");
+    }
+
+    #[test]
     fn per_pass_budget_splits_the_frame_budget_and_handles_zero() {
         assert_eq!(per_pass_budget_ms(0), 0.0);
         assert!((per_pass_budget_ms(1) - FRAME_BUDGET_MS).abs() < 1e-6);
@@ -10583,7 +10712,7 @@ mod window_smoke_tests {
     #[test]
     fn every_editor_panel_builds_a_frame() {
         run_frame(|ui, workspace, state| hierarchy(ui, workspace, state));
-        run_frame(|ui, workspace, state| anim_graph(ui, workspace, state));
+        run_frame(|ui, workspace, state| anim_graph(ui, workspace, state, None));
         run_frame(|ui, workspace, state| inspector(ui, workspace, state));
         run_frame(|ui, workspace, state| assets(ui, workspace, state));
         run_frame(|ui, workspace, state| docs(ui, workspace, state));

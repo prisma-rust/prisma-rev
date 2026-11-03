@@ -575,6 +575,16 @@ impl EngineHost {
 
     pub fn set_simulate(&mut self, simulate: bool) {
         if self.simulate != simulate {
+            // 动画图调试快照只在 Play 时维护（#560 编辑器-运行时桥）。
+            if simulate {
+                self.engine.world_mut().insert_resource(
+                    prism_engine::scene::systems::animator::AnimGraphDebug::default(),
+                );
+            } else {
+                self.engine
+                    .world_mut()
+                    .remove_resource::<prism_engine::scene::systems::animator::AnimGraphDebug>();
+            }
             self.accumulator = Duration::ZERO;
             self.last_tick = Instant::now();
             self.paused = false;

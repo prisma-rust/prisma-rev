@@ -2608,6 +2608,7 @@ dependencies = [
  "glam 0.33.12",
  "gpu-allocator",
  "log",
+ "prism-anim",
  "prism-audio",
  "prism-editor-gpui-core",
  "prism-engine",

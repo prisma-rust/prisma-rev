@@ -24,6 +24,7 @@ raw-window-handle = { workspace = true }
 serde_json = { workspace = true }
 
 prism-render = { path = "../../../crates/prism-render" }
+prism-anim = { path = "../../../crates/prism-anim" }
 prism-engine = { path = "../../../crates/prism-engine" }
 # Project 面板的音频试听（#508）：与玩家共用同一套解码 / 混音器。
 prism-audio = { path = "../../../crates/prism-audio" }
