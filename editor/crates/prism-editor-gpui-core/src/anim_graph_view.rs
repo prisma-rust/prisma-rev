@@ -600,3 +600,119 @@ mod link_tests {
         assert!(remove_graph_input(&mut doc, "stack", 9).is_err());
     }
 }
+
+/// 给状态机追加一条转移（写回作者的 `transitions` 数组）。
+///
+/// `from = None` 表示任意状态。状态名必须存在，不能自连，同一 `(from, to)`
+/// 不能重复；新转移默认 `duration = 0`、无条件的硬切。
+pub fn add_state_transition(
+    document: &mut Value,
+    from: Option<&str>,
+    to: &str,
+) -> Result<(), String> {
+    let states: Vec<String> = document
+        .get("states")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|state| state.get("name").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect();
+    if !states.iter().any(|name| name == to) {
+        return Err(format!("unknown target state '{to}'"));
+    }
+    if let Some(from) = from {
+        if !states.iter().any(|name| name == from) {
+            return Err(format!("unknown source state '{from}'"));
+        }
+        if from == to {
+            return Err("a transition cannot start and end on the same state".to_string());
+        }
+    }
+    if document.get("transitions").is_none() {
+        document["transitions"] = json!([]);
+    }
+    let Some(transitions) = document
+        .get_mut("transitions")
+        .and_then(Value::as_array_mut)
+    else {
+        return Err("state machine has an invalid `transitions` field".to_string());
+    };
+    if transitions.iter().any(|transition| {
+        let existing_from = transition
+            .get("from")
+            .and_then(Value::as_str)
+            .filter(|from| *from != "*" && !from.eq_ignore_ascii_case("any"));
+        let existing_to = transition.get("to").and_then(Value::as_str);
+        existing_to == Some(to) && existing_from == from
+    }) {
+        return Err(format!(
+            "a transition from '{}' to '{to}' already exists",
+            from.unwrap_or("any")
+        ));
+    }
+    transitions.push(json!({ "from": from.unwrap_or("*"), "to": to, "duration": 0.0 }));
+    Ok(())
+}
+
+/// 删除状态机 `transitions` 数组里的第 `index` 条转移。
+pub fn remove_state_transition(document: &mut Value, index: usize) -> Result<(), String> {
+    let Some(transitions) = document
+        .get_mut("transitions")
+        .and_then(Value::as_array_mut)
+    else {
+        return Err("state machine has no editable `transitions` array".to_string());
+    };
+    if index >= transitions.len() {
+        return Err(format!("state machine has no transition #{index}"));
+    }
+    transitions.remove(index);
+    Ok(())
+}
+
+#[cfg(test)]
+mod transition_tests {
+    use super::*;
+
+    fn document() -> Value {
+        json!({
+            "states": [
+                { "name": "Idle", "clip": "idle.ranim" },
+                { "name": "Run", "clip": "run.ranim" },
+                { "name": "Jump", "clip": "jump.ranim" }
+            ],
+            "transitions": [
+                { "from": "Idle", "to": "Run", "duration": 0.2 }
+            ]
+        })
+    }
+
+    #[test]
+    fn transitions_can_be_added_from_a_state_or_any_state() {
+        let mut doc = document();
+        add_state_transition(&mut doc, Some("Run"), "Jump").expect("adds");
+        add_state_transition(&mut doc, None, "Idle").expect("adds any");
+        assert_eq!(doc["transitions"][1]["from"], "Run");
+        assert_eq!(doc["transitions"][2]["from"], "*");
+    }
+
+    #[test]
+    fn transitions_can_be_removed() {
+        let mut doc = document();
+        add_state_transition(&mut doc, Some("Run"), "Jump").expect("adds");
+        remove_state_transition(&mut doc, 0).expect("removes");
+        assert_eq!(doc["transitions"].as_array().unwrap().len(), 1);
+        assert_eq!(doc["transitions"][0]["to"], "Jump");
+    }
+
+    #[test]
+    fn bad_transition_names_duplicates_and_self_links_are_rejected() {
+        let mut doc = document();
+        assert!(add_state_transition(&mut doc, Some("Idle"), "Missing").is_err());
+        assert!(add_state_transition(&mut doc, Some("Missing"), "Run").is_err());
+        assert!(add_state_transition(&mut doc, Some("Idle"), "Idle").is_err());
+        assert!(add_state_transition(&mut doc, Some("Idle"), "Run").is_err());
+        assert!(remove_state_transition(&mut doc, 9).is_err());
+    }
+}

@@ -5736,7 +5736,14 @@ pub fn anim_graph(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
         }
     } else {
         match prism_editor_core::parse_state_machine_view(&value) {
-            Ok(machine) => draw_state_machine_view(ui, &machine),
+            Ok(machine) => {
+                if draw_state_machine_view(ui, &machine, &mut value) {
+                    state.status = match workspace.write_asset_json(&path, &value) {
+                        Ok(()) => format!("saved transitions in {path}"),
+                        Err(error) => format!("save transitions failed: {error}"),
+                    };
+                }
+            }
             Err(error) => {
                 ui.label(RichText::new(error).color(Color32::from_rgb(232, 96, 96)));
             }
@@ -5974,7 +5981,12 @@ fn draw_anim_graph_view(
     changed
 }
 
-fn draw_state_machine_view(ui: &mut Ui, machine: &prism_editor_core::AnimStateMachineView) {
+fn draw_state_machine_view(
+    ui: &mut Ui,
+    machine: &prism_editor_core::AnimStateMachineView,
+    document: &mut Value,
+) -> bool {
+    let mut changed = false;
     ui.label(
         RichText::new(format!("States ({})", machine.states.len()))
             .strong()
@@ -6000,7 +6012,8 @@ fn draw_state_machine_view(ui: &mut Ui, machine: &prism_editor_core::AnimStateMa
             .strong()
             .size(11.0),
     );
-    for transition in &machine.transitions {
+    let mut remove = None;
+    for (index, transition) in machine.transitions.iter().enumerate() {
         let from = transition.from.as_deref().unwrap_or("*");
         let title = format!(
             "{} → {}  ({}s, min {:.2})",
@@ -6009,6 +6022,9 @@ fn draw_state_machine_view(ui: &mut Ui, machine: &prism_editor_core::AnimStateMa
         egui::CollapsingHeader::new(RichText::new(title).monospace().size(10.0))
             .id_salt(("anim-sm-transition", from, &transition.to))
             .show(ui, |ui| {
+                if ui.small_button("× Remove transition").clicked() {
+                    remove = Some(index);
+                }
                 if transition.conditions.is_empty() {
                     ui.label(RichText::new("no conditions").weak().size(10.0));
                 }
@@ -6021,6 +6037,39 @@ fn draw_state_machine_view(ui: &mut Ui, machine: &prism_editor_core::AnimStateMa
                 }
             });
     }
+    if let Some(index) = remove {
+        if prism_editor_core::remove_state_transition(document, index).is_ok() {
+            changed = true;
+        }
+    }
+
+    ui.menu_button("+ Transition", |ui| {
+        for from in
+            std::iter::once(None).chain(machine.states.iter().map(|state| Some(&state.name)))
+        {
+            let label = from.map(String::as_str).unwrap_or("any");
+            ui.menu_button(label, |ui| {
+                for to in &machine.states {
+                    if from.is_some_and(|from| from == &to.name) {
+                        continue;
+                    }
+                    if ui.button(&to.name).clicked() {
+                        if prism_editor_core::add_state_transition(
+                            document,
+                            from.map(String::as_str),
+                            &to.name,
+                        )
+                        .is_ok()
+                        {
+                            changed = true;
+                        }
+                        ui.close();
+                    }
+                }
+            });
+        }
+    });
+    changed
 }
 
 // ---------------------------------------------------------------------------
