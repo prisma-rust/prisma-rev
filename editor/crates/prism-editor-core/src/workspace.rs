@@ -1327,6 +1327,15 @@ impl Workspace {
         project::read_json_asset(&root, path)
     }
 
+    /// 读一个资产的原始字节（`.ranim` 等二进制资产用；只读）。
+    pub fn read_asset_bytes(&self, path: &str) -> io::Result<Vec<u8>> {
+        let root = self
+            .project_root
+            .clone()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "没有绑定项目根"))?;
+        std::fs::read(root.join(path))
+    }
+
     /// 读动画图节点布局；文件不存在或内容坏掉时返回空布局。
     pub fn read_anim_graph_layout(&self, graph_path: &str) -> AnimGraphLayout {
         let Some(root) = self.project_root.as_deref() else {

@@ -20,6 +20,7 @@ pub mod asset_edit;
 pub mod asset_meta;
 pub mod assets;
 pub mod build;
+pub mod clip_view;
 pub mod components;
 pub mod doc;
 pub mod dock;
@@ -66,6 +67,7 @@ pub use assets::{
     format_bytes, AssetDetails, AssetInfo, AssetKind, AssetPreview, AssetQuery, AssetTree,
 };
 pub use build::{copy_artifacts, plan_build, ArtifactCopy, BuildPlan, BuildStep};
+pub use clip_view::{root_motion_delta, timeline_time_at, timeline_x};
 pub use components::ComponentMap;
 pub use doc::{EntityJson, SceneDoc, TransformJson};
 pub use dock::{

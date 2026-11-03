@@ -42,6 +42,9 @@ pub use graph_eval::{
 pub use montage::{Montage, MontageNotify, MontagePlayer, MAX_MONTAGE_QUEUE};
 pub use pose::Pose;
 pub use prism_asset::formats_anim_graph::GraphNodeKind;
+pub use prism_asset::formats_skinned::{
+    decode_ranim, AnimClipInfo, AnimNotifyInfo, AnimTrackInfo, QuatKeyInfo, Vec3KeyInfo,
+};
 pub use skeleton::{Joint, JointTransform, Skeleton};
 pub use skinning::{palette_to_arrays, skin_matrices, skin_normals, skin_positions};
 pub use state_machine::{
