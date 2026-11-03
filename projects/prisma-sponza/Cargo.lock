@@ -1403,6 +1403,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "prism-anim"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "prism-asset",
+]
+
+[[package]]
 name = "prism-app"
 version = "0.1.0"
 dependencies = [
@@ -1417,6 +1425,7 @@ dependencies = [
  "prism-engine",
  "prism-platform",
  "prism-render",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "winit",
@@ -1452,8 +1461,10 @@ dependencies = [
  "glam",
  "jni",
  "log",
+ "prism-anim",
  "prism-asset",
  "prism-ecs",
+ "prism-project-api",
  "prism-reflect",
  "prism-render",
  "prism-scene",
@@ -1480,8 +1491,13 @@ dependencies = [
  "ash-window",
  "log",
  "raw-window-handle",
+ "windows-sys 0.61.2",
  "winit",
 ]
+
+[[package]]
+name = "prism-project-api"
+version = "0.1.0"
 
 [[package]]
 name = "prism-reflect"
@@ -1512,6 +1528,8 @@ dependencies = [
  "log",
  "prism-gfx",
  "raw-window-handle",
+ "serde",
+ "serde_json",
  "slotmap",
 ]
 
