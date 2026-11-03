@@ -137,6 +137,8 @@ pub struct AnimGraphDebug {
     pub entities: HashMap<Entity, Vec<GraphNodeSnapshot>>,
     /// 每个图实体的 Slot Montage 摘要（按 Slot 名排序）。
     pub montages: HashMap<Entity, Vec<MontageSnapshot>>,
+    /// 每个图实体当前使用的图资产路径（面板按资产过滤用）。
+    pub paths: HashMap<Entity, String>,
 }
 
 impl AnimGraphDebug {
@@ -148,6 +150,11 @@ impl AnimGraphDebug {
     /// 某个实体的 Slot Montage 摘要；没有播放过 Montage 时是空列表。
     pub fn montages(&self, entity: Entity) -> Option<&[MontageSnapshot]> {
         self.montages.get(&entity).map(Vec::as_slice)
+    }
+
+    /// 某个图实体当前使用的图资产路径。
+    pub fn path(&self, entity: Entity) -> Option<&str> {
+        self.paths.get(&entity).map(String::as_str)
     }
 }
 
@@ -1407,6 +1414,7 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
     if let Some(debug) = graph_debug.as_mut() {
         debug.entities.clear();
         debug.montages.clear();
+        debug.paths.clear();
         for (entity, runtime) in &graph_runtimes.runtimes {
             debug
                 .entities
@@ -1414,6 +1422,7 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
             debug
                 .montages
                 .insert(*entity, runtime.evaluator.montage_snapshots());
+            debug.paths.insert(*entity, runtime.path.clone());
         }
     }
     world.insert_resource(graph_runtimes);

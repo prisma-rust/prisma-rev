@@ -4490,7 +4490,14 @@ impl EditorApp {
             }
             "prefabOverrides" => panels::prefab_overrides(ui, &mut self.workspace, &mut self.state),
             "material" => panels::material(ui, &mut self.workspace, &mut self.state),
-            "animGraph" => panels::anim_graph(ui, &mut self.workspace, &mut self.state),
+            "animGraph" => {
+                let runtime = self.game_view.as_ref().and_then(|view| {
+                    view.host
+                        .world()
+                        .get_resource::<prism_engine::scene::systems::animator::AnimGraphDebug>()
+                });
+                panels::anim_graph(ui, &mut self.workspace, &mut self.state, runtime)
+            }
             "tools" => {
                 panels::tools(ui, &mut self.workspace, &mut self.state);
                 if let Some(kind) = self.state.pending_build.take() {
