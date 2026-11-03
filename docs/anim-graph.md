@@ -175,6 +175,10 @@ if let Some(states) = world.get_resource::<AnimGraphDebug>().and_then(|d| d.stat
 }
 ```
 
+`AnimGraphDebug` 还提供 `montages(entity)`：每个 Slot 一份 `MontageSnapshot`
+（`slot` / `clip` / `time` / `weight` / `playing` / `paused` / `finished` / `queued`），
+按 Slot 名排序，只包含被 `play` / `enqueue` 过的 Slot，用来在调试面板里看覆盖动画卡在哪。
+
 资源存在时引擎才每帧重建快照（节点顺序与图一致，字符串会拷贝）；不存在时零开销。
 冻结 / 降频的图实体保留上一次快照，方便看到「停在哪」。`time` 是节点自己的本地时间，
 状态机节点的 `state` 是当前状态下标、`blending` / `blend_weight` 反映交叉淡入，
