@@ -3,6 +3,7 @@
 //! 这一层**不依赖任何 UI 框架**，GPUI 只是它的一个视图。因此同一份状态可以
 //! 单测，也可以在将来喂给别的宿主（例如自动化脚本）。
 
+use crate::anim_graph_view::AnimGraphLayout;
 use crate::assets::{AssetDetails, AssetInfo, AssetKind, AssetQuery, AssetReference, AssetTree};
 use crate::doc::{EntityJson, SceneDoc, TransformJson, PREFAB_LINK_COMPONENT};
 use crate::dock::{
@@ -1295,6 +1296,38 @@ impl Workspace {
             .clone()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "没有绑定项目根"))?;
         project::read_json_asset(&root, path)
+    }
+
+    /// 读动画图节点布局；文件不存在或内容坏掉时返回空布局。
+    pub fn read_anim_graph_layout(&self, graph_path: &str) -> AnimGraphLayout {
+        let Some(root) = self.project_root.as_deref() else {
+            return AnimGraphLayout::default();
+        };
+        let path = AnimGraphLayout::path_for(graph_path);
+        let Ok(text) = std::fs::read_to_string(root.join(path)) else {
+            return AnimGraphLayout::default();
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&text) else {
+            return AnimGraphLayout::default();
+        };
+        AnimGraphLayout::from_json(&value).unwrap_or_default()
+    }
+
+    /// 写动画图节点布局（原子写，不刷新资产表 / 不写材质日志）。
+    pub fn write_anim_graph_layout(
+        &mut self,
+        graph_path: &str,
+        layout: &AnimGraphLayout,
+    ) -> io::Result<()> {
+        let root = self
+            .project_root
+            .clone()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "没有绑定项目根"))?;
+        project::write_json_asset(
+            &root,
+            &AnimGraphLayout::path_for(graph_path),
+            &layout.to_json(),
+        )
     }
 
     /// 写回一个 JSON 资产（原子写 + 回读校验），并刷新资产表。

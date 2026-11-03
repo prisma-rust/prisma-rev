@@ -4,7 +4,8 @@
 //! 结构：参数、节点类型、剪辑、连线、输出，以及状态机的状态 / 转移 / 条件。
 //! 错误信息保留到第一个坏字段，面板可以直接显示。
 
-use serde_json::Value;
+use serde_json::{json, Value};
+use std::collections::BTreeMap;
 
 /// 动画图中的一个参数。
 #[derive(Debug, Clone, PartialEq)]
@@ -386,5 +387,105 @@ mod tests {
         assert_eq!(view.transitions[0].conditions[0].summary, "speed > 1.5");
         assert_eq!(view.transitions[0].conditions[1].summary, "jump (trigger)");
         assert!(view.transitions[1].from.is_none());
+    }
+}
+
+/// 动画图节点的画布位置（`<graph>.layout.json`）。
+///
+/// 与图本身分开存：改布局不会改动画数据，也不会让 cook 缓存失效。坐标是面板内的
+/// 逻辑像素，原点在画布左上角。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct AnimGraphLayout {
+    pub positions: BTreeMap<String, [f32; 2]>,
+}
+
+impl AnimGraphLayout {
+    /// 布局文件路径：紧挨着图资产，例如 `graphs/hero.animgraph.json.layout.json`。
+    pub fn path_for(graph_path: &str) -> String {
+        format!("{graph_path}.layout.json")
+    }
+
+    pub fn position(&self, node: &str) -> Option<[f32; 2]> {
+        self.positions.get(node).copied()
+    }
+
+    pub fn set_position(&mut self, node: impl Into<String>, position: [f32; 2]) {
+        if position[0].is_finite() && position[1].is_finite() {
+            self.positions.insert(node.into(), position);
+        }
+    }
+
+    pub fn to_json(&self) -> Value {
+        let nodes: serde_json::Map<String, Value> = self
+            .positions
+            .iter()
+            .map(|(name, position)| (name.clone(), json!(position)))
+            .collect();
+        json!({ "version": 1, "nodes": nodes })
+    }
+
+    /// 解析布局；缺文件 / 空对象得到空布局，坏 JSON 返回错误。
+    pub fn from_json(document: &Value) -> Result<Self, String> {
+        let Some(nodes) = document.get("nodes") else {
+            return Ok(Self::default());
+        };
+        let Some(nodes) = nodes.as_object() else {
+            return Err("animation graph layout needs a `nodes` object".to_string());
+        };
+        let mut positions = BTreeMap::new();
+        for (name, position) in nodes {
+            let Some(values) = position.as_array() else {
+                continue;
+            };
+            let (Some(x), Some(y)) = (
+                values.first().and_then(Value::as_f64),
+                values.get(1).and_then(Value::as_f64),
+            ) else {
+                continue;
+            };
+            if x.is_finite() && y.is_finite() {
+                positions.insert(name.clone(), [x as f32, y as f32]);
+            }
+        }
+        Ok(Self { positions })
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    #[test]
+    fn a_layout_round_trips_node_positions() {
+        let mut layout = AnimGraphLayout::default();
+        layout.set_position("locomotion", [40.0, 80.0]);
+        layout.set_position("out", [320.5, 12.0]);
+        let json = layout.to_json();
+        let parsed = AnimGraphLayout::from_json(&json).expect("parses");
+        assert_eq!(parsed.position("locomotion"), Some([40.0, 80.0]));
+        assert_eq!(parsed.position("out"), Some([320.5, 12.0]));
+    }
+
+    #[test]
+    fn a_missing_or_malformed_layout_falls_back_to_empty() {
+        assert!(AnimGraphLayout::from_json(&json!({}))
+            .unwrap()
+            .positions
+            .is_empty());
+        assert!(AnimGraphLayout::from_json(&json!({ "nodes": [] })).is_err());
+        let layout = AnimGraphLayout::from_json(&json!({
+            "nodes": { "a": [1.0, 2.0], "b": "bad", "c": [3.0] }
+        }))
+        .expect("tolerates bad entries");
+        assert_eq!(layout.positions.len(), 1);
+        assert_eq!(layout.position("a"), Some([1.0, 2.0]));
+    }
+
+    #[test]
+    fn the_layout_path_sits_next_to_the_graph() {
+        assert_eq!(
+            AnimGraphLayout::path_for("graphs/hero.animgraph.json"),
+            "graphs/hero.animgraph.json.layout.json"
+        );
     }
 }
