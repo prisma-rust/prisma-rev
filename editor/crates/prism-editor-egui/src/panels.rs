@@ -4261,6 +4261,16 @@ mod keyframe_editor_tests {
     }
 
     #[test]
+    fn clip_runtime_paths_strip_only_the_assets_prefix() {
+        assert_eq!(
+            clip_runtime_path("assets/char/walk.ranim"),
+            "char/walk.ranim"
+        );
+        assert_eq!(clip_runtime_path("char/walk.ranim"), "char/walk.ranim");
+        assert_eq!(clip_runtime_path("walk.ranim"), "walk.ranim");
+    }
+
+    #[test]
     fn appending_a_key_lands_one_second_after_the_last_one() {
         let mut keys = vec![json!({"time": 0.0, "value": [0.0, 0.0, 0.0]})];
         append_key(&mut keys, [1.0, 1.0, 1.0]);
@@ -6048,10 +6058,48 @@ fn draw_notifies_asset(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiSta
     }
 }
 
-/// `.ranim`：只读检查器（时长、轨道、Notify / 同步标记、根运动）。
+const ANIMATOR_COMPONENT: &str = "prism_engine::scene::Animator";
+
+/// 资产路径 → `Animator.clip_path` 使用的、相对 `assets/` 的运行时路径。
+fn clip_runtime_path(asset_path: &str) -> &str {
+    asset_path.strip_prefix("assets/").unwrap_or(asset_path)
+}
+
+/// 当前场景选择里第一个带 Animator 的实体下标。
+fn selected_animator_index(workspace: &Workspace) -> Option<usize> {
+    workspace.selection.iter().rev().copied().find(|index| {
+        workspace
+            .document()
+            .doc
+            .entities
+            .get(*index)
+            .is_some_and(|entity| entity.components.contains_key(ANIMATOR_COMPONENT))
+    })
+}
+
+fn edit_animator(
+    workspace: &mut Workspace,
+    index: usize,
+    label: &str,
+    mutate: impl FnOnce(&mut Value),
+) {
+    workspace.edit(label, |document| {
+        if let Some(animator) = document
+            .doc
+            .entities
+            .get_mut(index)
+            .and_then(|entity| entity.components.get_mut(ANIMATOR_COMPONENT))
+        {
+            mutate(animator);
+        }
+    });
+}
+
+/// `.ranim`：剪辑检查器（时长、轨道、Notify / 同步标记、根运动）。
 ///
-/// 事件 / 标记的编辑走作者侧侧车；这里不写二进制资产。
-fn draw_clip_asset(ui: &mut Ui, workspace: &Workspace, path: &str) {
+/// 事件 / 标记的编辑走作者侧侧车；这里不写二进制资产。选中带 Animator 的实体时，
+/// 还可以把剪辑套到该实体上并做点击 seek / 播放暂停 / 倍速 / loop。
+fn draw_clip_asset(ui: &mut Ui, workspace: &mut Workspace, path: &str) {
     let bytes = match workspace.read_asset_bytes(path) {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -6087,9 +6135,22 @@ fn draw_clip_asset(ui: &mut Ui, workspace: &Workspace, path: &str) {
         .size(10.0),
     );
 
+    let selected = selected_animator_index(workspace);
+    let runtime_path = clip_runtime_path(path).to_string();
+    let current_animator = selected.and_then(|index| {
+        workspace.document().doc.entities[index]
+            .components
+            .get(ANIMATOR_COMPONENT)
+            .cloned()
+    });
+    let matches = current_animator
+        .as_ref()
+        .and_then(|animator| animator.get("clip_path").and_then(Value::as_str))
+        == Some(runtime_path.as_str());
+
     ui.separator();
     let width = ui.available_width().clamp(160.0, 560.0);
-    let (track, painter) = ui.allocate_painter(Vec2::new(width, 44.0), egui::Sense::hover());
+    let (track, painter) = ui.allocate_painter(Vec2::new(width, 44.0), egui::Sense::click());
     let rect = track.rect;
     painter.rect_filled(rect, 3.0, Color32::from_rgb(26, 28, 32));
     let inset = 8.0;
@@ -6233,6 +6294,108 @@ fn draw_clip_asset(ui: &mut Ui, workspace: &Workspace, path: &str) {
             }
         });
     }
+
+    ui.separator();
+    ui.label(RichText::new("Selected Animator").strong().size(11.0));
+    let Some(index) = selected else {
+        ui.label(
+            RichText::new("select an entity with an Animator in the scene")
+                .weak()
+                .size(10.0),
+        );
+        return;
+    };
+    let Some(animator) = current_animator.as_ref() else {
+        return;
+    };
+    if !matches {
+        let current_clip = animator
+            .get("clip_path")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        ui.label(
+            RichText::new(format!(
+                "current clip: {}",
+                if current_clip.is_empty() {
+                    "-"
+                } else {
+                    current_clip
+                }
+            ))
+            .weak()
+            .size(10.0),
+        );
+        if ui
+            .button("Use this clip (clears state machine / graph overrides)")
+            .clicked()
+        {
+            edit_animator(workspace, index, "use animation clip", |animator| {
+                animator["clip_path"] = json!(runtime_path.as_str());
+                animator["time"] = json!(0.0);
+                animator["playing"] = json!(true);
+                animator["looped"] = json!(clip.looped);
+                animator["state_machine_path"] = json!("");
+                animator["anim_graph_path"] = json!("");
+            });
+            ui.label(
+                RichText::new("applied; the scene reloads after the edit debounce")
+                    .weak()
+                    .size(9.0),
+            );
+        }
+        return;
+    }
+
+    let mut speed = animator.get("speed").and_then(Value::as_f64).unwrap_or(1.0) as f32;
+    let playing = animator
+        .get("playing")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let mut looped = animator
+        .get("looped")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let time = animator.get("time").and_then(Value::as_f64).unwrap_or(0.0) as f32;
+    ui.horizontal(|ui| {
+        if ui.button(if playing { "Pause" } else { "Play" }).clicked() {
+            let next = !playing;
+            edit_animator(workspace, index, "toggle animation playback", |animator| {
+                animator["playing"] = json!(next);
+            });
+        }
+        if ui
+            .add(
+                egui::DragValue::new(&mut speed)
+                    .speed(0.01)
+                    .range(-4.0..=4.0)
+                    .prefix("speed "),
+            )
+            .changed()
+        {
+            edit_animator(workspace, index, "set animation speed", |animator| {
+                animator["speed"] = json!(speed);
+            });
+        }
+        if ui.checkbox(&mut looped, "loop").changed() {
+            edit_animator(workspace, index, "toggle animation loop", |animator| {
+                animator["looped"] = json!(looped);
+            });
+        }
+        ui.label(format!("t {time:.2}s"));
+    });
+    if matches && track.clicked() {
+        if let Some(pos) = track.interact_pointer_pos() {
+            let time = prism_editor_core::timeline_time_at(pos.x, left, usable, duration);
+            edit_animator(workspace, index, "scrub animation", |animator| {
+                animator["time"] = json!(time);
+            });
+        }
+    }
+    ui.label(
+        RichText::new("click the timeline to seek · edits are undoable")
+            .weak()
+            .size(9.0),
+    );
 }
 
 /// `*.skinning/sync_markers.json`：按剪辑列出归一化相位，可改 / 增删。
