@@ -516,7 +516,10 @@ cook 时归一化到 `[0, 1)`、排序去重，写进 `.ranim` v3；运行时
 `.statemachine.json` 后显示参数、节点 / 连线、输出，以及状态、转移和可读条件。
 图节点可以在画布上拖动，位置保存到 `<graph>.layout.json`（不改图本身）；节点卡片里可以增删
 `inputs` 连线（`+ Link` / `×`），每条连线的 `w` 可以直接拖拽调 0..1 权重，保存后写回 `.animgraph.json`。使用单数 `input` 的链式节点
-仍需手改 JSON。状态机视图支持 `+ Transition`（任意状态 / 指定 from → to）和 `× Remove transition`，
+仍需手改 JSON。`+ Clip Node` 追加一个 `clip_player` 节点（必需字段只有剪辑路径，当帧就能通过
+cooker 校验）；`× Remove node` 删除节点，输出节点和仍被引用的节点会被拒绝并说明原因，先断线再删。
+其它节点类型（blend space / 状态机 / blend stack）需要剪辑坐标、机器路径或至少一条输入才合法，
+仍然手写 JSON。状态机视图支持 `+ Transition`（任意状态 / 指定 from → to）和 `× Remove transition`，
 保存回 `.statemachine.json`；条件编辑仍是后续。视口里直接拖关节做 IK（P2 的 IK 另立）、Notify 的编写界面
 也还没做。
 
