@@ -217,7 +217,7 @@ fn documents_list(root: &Path, args: &Value) -> Result<String, String> {
 
 fn document_read(root: &Path, args: &Value) -> Result<String, String> {
     let path = doc_path(root, &str_arg(args, "path")?);
-    let doc = scene::read_doc(&path)?;
+    let doc = scene::read_doc_in_project(root, &path)?;
     serde_json::to_string_pretty(&doc).map_err(|err| err.to_string())
 }
 
@@ -227,7 +227,7 @@ fn document_write(root: &Path, args: &Value) -> Result<String, String> {
         .get("doc")
         .ok_or_else(|| "缺少 'doc' 参数".to_string())?;
     scene::validate_doc(doc)?;
-    scene::write_doc(&path, doc)?;
+    scene::write_doc_in_project(root, &path, doc)?;
     Ok(format!("写入 {}", path.display()))
 }
 
@@ -266,7 +266,7 @@ fn locate<'a>(doc: &'a mut Value, key: &str) -> Result<&'a mut Map<String, Value
 
 fn entity_get(root: &Path, args: &Value) -> Result<String, String> {
     let path = doc_path(root, &str_arg(args, "path")?);
-    let mut doc = scene::read_doc(&path)?;
+    let mut doc = scene::read_doc_in_project(root, &path)?;
     let entity = locate(&mut doc, &str_arg(args, "entity")?)?;
     serde_json::to_string_pretty(entity).map_err(|err| err.to_string())
 }
@@ -281,7 +281,7 @@ fn field_set(root: &Path, args: &Value) -> Result<String, String> {
         .ok_or_else(|| "缺少 'value' 参数".to_string())?
         .clone();
 
-    let mut doc = scene::read_doc(&path)?;
+    let mut doc = scene::read_doc_in_project(root, &path)?;
     let entity = locate(&mut doc, &entity_key)?;
     let components = entity
         .get_mut("components")
@@ -300,7 +300,7 @@ fn field_set(root: &Path, args: &Value) -> Result<String, String> {
     components.insert(component.clone(), updated.clone());
 
     scene::validate_doc(&doc)?;
-    scene::write_doc(&path, &doc)?;
+    scene::write_doc_in_project(root, &path, &doc)?;
     serde_json::to_string_pretty(&updated).map_err(|err| err.to_string())
 }
 
@@ -320,7 +320,7 @@ fn component_add(root: &Path, args: &Value) -> Result<String, String> {
         .clone()
         .ok_or_else(|| format!("'{component}' 没有默认值"))?;
 
-    let mut doc = scene::read_doc(&path)?;
+    let mut doc = scene::read_doc_in_project(root, &path)?;
     let entity = locate(&mut doc, &entity_key)?;
     let components = entity
         .get_mut("components")
@@ -332,7 +332,7 @@ fn component_add(root: &Path, args: &Value) -> Result<String, String> {
     components.insert(component.clone(), default.clone());
 
     scene::validate_doc(&doc)?;
-    scene::write_doc(&path, &doc)?;
+    scene::write_doc_in_project(root, &path, &doc)?;
     serde_json::to_string_pretty(&default).map_err(|err| err.to_string())
 }
 
@@ -341,7 +341,7 @@ fn component_remove(root: &Path, args: &Value) -> Result<String, String> {
     let entity_key = str_arg(args, "entity")?;
     let component = str_arg(args, "component")?;
 
-    let mut doc = scene::read_doc(&path)?;
+    let mut doc = scene::read_doc_in_project(root, &path)?;
     let entity = locate(&mut doc, &entity_key)?;
     let components = entity
         .get_mut("components")
@@ -352,7 +352,7 @@ fn component_remove(root: &Path, args: &Value) -> Result<String, String> {
     }
 
     scene::validate_doc(&doc)?;
-    scene::write_doc(&path, &doc)?;
+    scene::write_doc_in_project(root, &path, &doc)?;
     Ok(format!("已移除 {component}"))
 }
 

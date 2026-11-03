@@ -23,3 +23,5 @@ pub use core::guid::AssetGuid;
 pub use core::handle::{AnyAsset, AnyHandle, Handle};
 #[cfg(feature = "core")]
 pub use core::id::AssetId;
+#[cfg(feature = "core")]
+pub use core::meta::{AssetMeta, GuidIndex, META_SUFFIX};

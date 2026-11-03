@@ -77,7 +77,7 @@ pub struct PrefabConnect {
 /// 读取预制体文件。
 pub fn read_prefab(project_root: &Path, prefab_path: &str) -> Result<Value, String> {
     let rel = normalize_asset_path(prefab_path)?;
-    scene::read_doc(&project_root.join(rel))
+    scene::read_doc_in_project(project_root, &project_root.join(rel))
 }
 
 /// 从场景里提取子树作为预制体资产（根的反向链接会被剥掉）= `SaveAsPrefabAsset`。
@@ -109,7 +109,7 @@ pub fn instantiate_prefab(
     parent: Option<u32>,
 ) -> Result<InstantiateResult, String> {
     let rel = normalize_asset_path(prefab_path)?;
-    let prefab = scene::read_doc(&project_root.join(&rel))?;
+    let prefab = scene::read_doc_in_project(project_root, &project_root.join(&rel))?;
     scene::instantiate_prefab(scene_doc, &prefab, parent, Some(&rel))
 }
 
@@ -122,7 +122,9 @@ pub fn apply_prefab_instance(
     let link = link_at(scene_doc, root)?;
     let asset = scene::extract_subtree(scene_doc, root)?;
     let rel = normalize_asset_path(&link.prefab)?;
-    scene::write_doc(&project_root.join(rel), &asset)?;
+    let path = project_root.join(rel);
+    let asset = scene::sync_doc_for_save(project_root, &path, &asset)?;
+    scene::write_doc(&path, &asset)?;
     Ok(asset)
 }
 
@@ -144,7 +146,7 @@ pub fn sync_prefab_instances(
     prefab_path: &str,
 ) -> Result<Value, String> {
     let rel = normalize_asset_path(prefab_path)?;
-    let prefab = scene::read_doc(&project_root.join(&rel))?;
+    let prefab = scene::read_doc_in_project(project_root, &project_root.join(&rel))?;
     scene::sync_prefab_instances(scene_doc, &rel, &prefab)
 }
 

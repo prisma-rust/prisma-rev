@@ -137,18 +137,21 @@ pub fn new_scene(template: Option<&str>) -> Value {
 /// 打开项目里的场景（按逻辑名） = `EditorSceneManager.OpenScene`。
 pub fn open_scene(project_root: &Path, name: &str) -> Result<Value, String> {
     let path = scene::scene_path(project_root, name)?;
-    scene::read_scene_doc(&path)
+    scene::read_doc_in_project(project_root, &path)
 }
 
 /// 按绝对路径打开场景。
 pub fn open_scene_at_path(path: &Path) -> Result<Value, String> {
-    scene::read_doc(path)
+    match scene::project_root_for_doc(path) {
+        Some(root) => scene::read_doc_in_project(&root, path),
+        None => scene::read_doc(path),
+    }
 }
 
 /// 保存场景（按逻辑名） = `EditorSceneManager.SaveScene`。返回写入的路径。
 pub fn save_scene(project_root: &Path, name: &str, doc: &Value) -> Result<PathBuf, String> {
     let path = scene::scene_path(project_root, name)?;
-    scene::write_scene_doc(&path, doc)?;
+    scene::write_doc_in_project(project_root, &path, doc)?;
     Ok(path)
 }
 

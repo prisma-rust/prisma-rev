@@ -11,6 +11,7 @@ pub mod components;
 pub mod helpers;
 pub mod json;
 pub mod migrate;
+pub mod references;
 pub mod registry;
 pub mod render_enums;
 pub mod rscn;
