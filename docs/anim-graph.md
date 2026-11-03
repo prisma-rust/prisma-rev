@@ -139,7 +139,8 @@ FIFO 排队、单次播完自动接下一段，`stop` / `stop_after_current` 清
 后显示结构化视图（参数、节点、连线、状态、转移条件）。图侧可以拖动布局、增删 / 重命名剪辑节点、
 改节点的剪辑 / speed / 权重 / 循环、改混合空间参数名 / 样本坐标 / 样本增删、增删连线并改权重 /
 骨骼掩码；状态机侧可以改状态的名字 / 剪辑 / speed / looped、增删转移、拖转移的 `blend` / `min`
-时长，以及增删条件和改 float 阈值 / bool 期望值。
+时长，以及增删条件和改 float 阈值 / bool 期望值。选中 `*.skinning/notifies.json` 时同一个面板
+变成事件表编辑器：按剪辑列出 Notify，可改时间 / 名字、删除，或用草稿表单追加（包括新建剪辑键）。
 
 引擎侧项目代码通过 `AnimMontageRequests` 资源发请求（`MontageRequest::play` /
 `enqueue` / `stop` / `stop_after_current`，可带循环 / 速度 / 权重 / 开始时间）；

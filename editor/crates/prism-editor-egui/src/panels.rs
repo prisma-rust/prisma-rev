@@ -5657,21 +5657,26 @@ pub fn delete_asset_now(workspace: &mut Workspace, state: &mut UiState, path: &s
 /// 选中 `.animgraph.json` / `.statemachine.json` 时显示结构化视图。
 ///
 /// 图侧可以改连线（增删 / 权重）、增删剪辑节点，并把布局写进 sidecar；状态机侧
-/// 可以增删转移。其余字段（blend space 坐标、bone mask、条件）仍手改 JSON。
+/// 可以增删转移，其余字段仍手改 JSON。选中 `*.skinning/notifies.json` 时切换到
+/// 事件表编辑器（#560 Notify）。
 pub fn anim_graph(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
     let Some(path) = state.asset_primary().cloned() else {
         ui.label(
-            RichText::new("select an .animgraph.json or .statemachine.json asset")
+            RichText::new("select an .animgraph.json / .statemachine.json asset")
                 .weak()
                 .size(11.0),
         );
         return;
     };
+    if is_notify_sidecar(&path) {
+        draw_notifies_asset(ui, workspace, state, &path);
+        return;
+    }
     let graph_asset = path.ends_with(".animgraph.json");
     let machine_asset = path.ends_with(".statemachine.json");
     if !graph_asset && !machine_asset {
         ui.label(
-            RichText::new("select an .animgraph.json or .statemachine.json asset")
+            RichText::new("select an .animgraph.json / .statemachine.json asset")
                 .weak()
                 .size(11.0),
         );
@@ -5763,6 +5768,178 @@ pub fn anim_graph(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
             }
         }
     }
+}
+
+fn is_notify_sidecar(path: &str) -> bool {
+    path.to_ascii_lowercase()
+        .ends_with(".skinning/notifies.json")
+}
+
+/// `*.skinning/notifies.json`：按剪辑列出事件，可改时间 / 名字、增删。
+fn draw_notifies_asset(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState, path: &str) {
+    ui.label(
+        RichText::new(path.rsplit('/').next().unwrap_or(path))
+            .strong()
+            .size(13.0),
+    );
+    ui.label(RichText::new(path).weak().size(10.0));
+    ui.separator();
+
+    let mut value = match workspace.read_asset_json(path) {
+        Ok(value) => value,
+        Err(error) => {
+            ui.label(
+                RichText::new(format!("read {path} failed: {error}"))
+                    .color(Color32::from_rgb(232, 96, 96)),
+            );
+            return;
+        }
+    };
+    let view = match prism_editor_core::parse_notifies_view(&value) {
+        Ok(view) => view,
+        Err(error) => {
+            ui.label(RichText::new(error).color(Color32::from_rgb(232, 96, 96)));
+            return;
+        }
+    };
+    match draw_notifies_view(ui, &view, &mut value, &mut state.anim_graph_edit) {
+        Ok(true) => {
+            state.status = match workspace.write_asset_json(path, &value) {
+                Ok(()) => format!("saved notifies in {path}"),
+                Err(error) => format!("save notifies failed: {error}"),
+            };
+        }
+        Ok(false) => {}
+        Err(error) => state.status = format!("notify file: {error}"),
+    }
+}
+
+fn draw_notifies_view(
+    ui: &mut Ui,
+    view: &prism_editor_core::NotifiesView,
+    document: &mut Value,
+    edit: &mut AnimGraphEditState,
+) -> Result<bool, String> {
+    let mut changed = false;
+    ui.label(
+        RichText::new(format!("Notifies ({})", view.len()))
+            .strong()
+            .size(11.0),
+    );
+    if view.is_empty() {
+        ui.label(
+            RichText::new("no notifies yet — add one below")
+                .weak()
+                .size(10.0),
+        );
+    }
+
+    let mut time_edits = Vec::new();
+    let mut name_edits = Vec::new();
+    let mut removals = Vec::new();
+    for clip in &view.clips {
+        ui.label(
+            RichText::new(format!("{} ({})", clip.clip, clip.entries.len()))
+                .strong()
+                .size(10.0),
+        );
+        for (index, entry) in clip.entries.iter().enumerate() {
+            ui.horizontal(|ui| {
+                let mut time = entry.time;
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut time)
+                            .speed(0.01)
+                            .range(0.0..=60.0)
+                            .prefix("t "),
+                    )
+                    .changed()
+                {
+                    time_edits.push((clip.clip.clone(), index, time, entry.name.clone()));
+                }
+                let editing = edit
+                    .notify_name
+                    .as_ref()
+                    .filter(|(owner, slot, _)| owner == &clip.clip && *slot == index);
+                let mut text = editing
+                    .map(|(_, _, text)| text.clone())
+                    .unwrap_or_else(|| entry.name.clone());
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut text)
+                        .hint_text("Footstep.L")
+                        .desired_width(150.0),
+                );
+                if response.changed() {
+                    edit.notify_name = Some((clip.clip.clone(), index, text));
+                } else if response.lost_focus() {
+                    if let Some((owner, slot, text)) = edit.notify_name.take() {
+                        if owner == clip.clip && slot == index {
+                            name_edits.push((owner, slot, text, entry.time));
+                        }
+                    }
+                }
+                if ui.small_button("×").clicked() {
+                    removals.push((clip.clip.clone(), index));
+                }
+            });
+        }
+    }
+
+    ui.separator();
+    let mut add = None;
+    let mut cancel = false;
+    if let Some(draft) = edit.notify_draft.as_mut() {
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut draft.0)
+                    .hint_text("clip (glTF name)")
+                    .desired_width(120.0),
+            );
+            ui.add(
+                egui::DragValue::new(&mut draft.1)
+                    .speed(0.01)
+                    .range(0.0..=60.0)
+                    .prefix("t "),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut draft.2)
+                    .hint_text("Footstep.L")
+                    .desired_width(140.0),
+            );
+        });
+        ui.horizontal(|ui| {
+            if ui.button("Add notify").clicked() {
+                add = Some(draft.clone());
+            }
+            if ui.button("Cancel").clicked() {
+                cancel = true;
+            }
+        });
+    } else if ui.button("+ Notify").clicked() {
+        edit.notify_draft = Some((String::new(), 0.0, String::new()));
+    }
+
+    for (clip, index, time, name) in time_edits {
+        prism_editor_core::set_notify(document, &clip, index, time, &name)?;
+        changed = true;
+    }
+    for (clip, index, name, time) in name_edits {
+        prism_editor_core::set_notify(document, &clip, index, time, &name)?;
+        changed = true;
+    }
+    for (clip, index) in removals {
+        prism_editor_core::remove_notify(document, &clip, index)?;
+        changed = true;
+    }
+    if let Some((clip, time, name)) = add {
+        prism_editor_core::add_notify(document, &clip, time, &name)?;
+        edit.notify_draft = None;
+        changed = true;
+    }
+    if cancel {
+        edit.notify_draft = None;
+    }
+    Ok(changed)
 }
 
 /// 画布上的节点拖拽；返回这一帧是否有节点移动。
@@ -5872,6 +6049,10 @@ pub struct AnimGraphEditState {
     pub graph_node_parameter_y: Option<(String, String)>,
     /// 「+ Sample」草稿：(节点名, 剪辑, x, y)。
     pub graph_sample: Option<(String, String, f32, f32)>,
+    /// Notify 编辑：(剪辑, 下标, 文本)，失焦写回。
+    pub notify_name: Option<(String, usize, String)>,
+    /// 新增 Notify 草稿：(剪辑, time, 名字)。
+    pub notify_draft: Option<(String, f32, String)>,
 }
 
 fn is_clip_player(kind: &str) -> bool {
