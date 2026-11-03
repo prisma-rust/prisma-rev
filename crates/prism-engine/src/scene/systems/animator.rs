@@ -19,7 +19,7 @@ use prism_anim::{
 };
 use prism_asset::formats_anim_graph::AnimGraphInfo;
 use prism_ecs::{Entity, World};
-use prism_scene::components::{Animator, SkeletonRoot};
+use prism_scene::components::{Animator, Camera, LocalToWorld, LocalTransform, SkeletonRoot};
 
 /// 已解码的骨架与剪辑，按资产路径索引（与 `MeshBounds` 一样是 World 资源）。
 #[derive(Debug, Default)]
@@ -313,6 +313,7 @@ fn evaluate_graph_poses(
     params: &AnimParameters,
     montage_requests: &mut HashMap<Entity, Vec<MontageRequest>>,
     graph_entities: &mut HashSet<Entity>,
+    frozen: &HashSet<Entity>,
     dt: f32,
 ) -> HashMap<Entity, Result<(Pose, Vec<AnimEvent>), GraphEvalError>> {
     let mut jobs: Vec<GraphPoseJob> = Vec::new();
@@ -331,6 +332,10 @@ fn evaluate_graph_poses(
             continue;
         };
         graph_entities.insert(entity);
+        if frozen.contains(&entity) {
+            // 冻结的实体保留求值器（状态机 / Montage 进度回来接着走），这一帧不推进。
+            continue;
+        }
         let evaluator = graph_runtimes.get_or_create(entity, path, graph);
         if let Some(requests) = montage_requests.remove(&entity) {
             apply_montage_requests(evaluator, requests, &library.clips);
@@ -620,6 +625,56 @@ pub const BLEND_SPACE_KEY: &str = "<blend-space>";
 pub const BLEND_SPACE_2D_KEY: &str = "<blend-space-2d>";
 
 /// 推进所有 `Animator` 并重算骨骼矩阵，返回更新过的实体数。
+/// 动画 LOD 的冻结距离；坏值回落到 50m（#560 P6）。
+fn lod_far_distance(animator: &Animator) -> f32 {
+    if animator.lod_far.is_finite() && animator.lod_far > 0.0 {
+        animator.lod_far
+    } else {
+        50.0
+    }
+}
+
+/// 第一个启用相机的世界位置；没有相机时动画 LOD 不生效。
+fn camera_eye(world: &World) -> Option<glam::Vec3> {
+    for (entity, camera) in world.query::<Camera>() {
+        if !camera.enabled {
+            continue;
+        }
+        if let Some(matrix) = world.get::<LocalToWorld>(entity) {
+            return Some(matrix.0.w_axis.truncate());
+        }
+        if let Some(transform) = world.get::<LocalTransform>(entity) {
+            return Some(transform.position);
+        }
+    }
+    None
+}
+
+fn entity_position(world: &World, entity: Entity) -> glam::Vec3 {
+    if let Some(matrix) = world.get::<LocalToWorld>(entity) {
+        return matrix.0.w_axis.truncate();
+    }
+    if let Some(transform) = world.get::<LocalTransform>(entity) {
+        return transform.position;
+    }
+    glam::Vec3::ZERO
+}
+
+/// 需要冻结动画的实体：开启了 LOD 且离相机超过 `lod_far`。
+fn frozen_animators(world: &World, eye: Option<glam::Vec3>) -> HashSet<Entity> {
+    let Some(eye) = eye else {
+        return HashSet::new();
+    };
+    world
+        .query::<Animator>()
+        .filter(|(entity, animator)| {
+            animator.lod_enabled
+                && entity_position(world, *entity).distance(eye) > lod_far_distance(animator)
+        })
+        .map(|(entity, _)| entity)
+        .collect()
+}
+
 pub fn animator_system(world: &mut World, dt: f32) -> usize {
     let Some(library) = world.get_resource::<SkeletonLibrary>() else {
         return 0;
@@ -662,6 +717,8 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
 
     let mut updates: Vec<(Entity, BonePalette, AnimatorPlayhead)> = Vec::new();
     let mut events: Vec<AnimEvent> = Vec::new();
+    // 动画 LOD（#560 P6）：远处实体这一帧完全不推进，图运行时保留状态等回来再续。
+    let frozen = frozen_animators(world, camera_eye(world));
     // 图求值先按实体并行算好（#560 P6）；下面的循环只做顺序的 World 读写。
     let mut graph_results = evaluate_graph_poses(
         world,
@@ -670,6 +727,7 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
         &params,
         &mut montage_requests,
         &mut graph_entities,
+        &frozen,
         dt,
     );
     for (entity, animator) in world.query::<Animator>() {
@@ -679,6 +737,9 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
         let Some(skeleton) = library.skeleton(&root.skeleton_path) else {
             continue;
         };
+        if frozen.contains(&entity) {
+            continue;
+        }
 
         // 动画图（#560 P1）：路径非空且图已加载时优先于状态机 / 混合空间 / 单剪辑。
         // 求值器按实体持久化（状态机节点需要跨帧状态）；图换路径时重建。

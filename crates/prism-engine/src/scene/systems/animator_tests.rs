@@ -83,6 +83,62 @@ fn world_with_animator(clip_path: &str) -> (World, Entity) {
     (world, entity)
 }
 
+fn add_camera(world: &mut World, position: Vec3) -> Entity {
+    let entity = world.spawn();
+    world.insert(entity, Camera::default());
+    world.insert(
+        entity,
+        LocalTransform {
+            position,
+            ..Default::default()
+        },
+    );
+    entity
+}
+
+#[test]
+fn far_animators_freeze_and_resume_when_the_camera_comes_back() {
+    let (mut world, entity) = world_with_animator("");
+    world.get_mut::<Animator>(entity).unwrap().lod_enabled = true;
+    let camera = add_camera(&mut world, Vec3::new(0.0, 0.0, 100.0));
+
+    animator_system(&mut world, 0.2);
+    assert!(
+        world.get::<BonePalette>(entity).is_none(),
+        "冻结的实体不算姿态"
+    );
+    assert!(
+        world.get::<AnimatorPlayhead>(entity).is_none(),
+        "冻结的实体不推进时间"
+    );
+
+    world.get_mut::<LocalTransform>(camera).unwrap().position = Vec3::new(0.0, 0.0, 5.0);
+    animator_system(&mut world, 0.25);
+    let head = world
+        .get::<AnimatorPlayhead>(entity)
+        .expect("回到范围后继续");
+    assert!((head.time - 0.25).abs() < 1e-5, "冻结期间不补时间");
+    assert!(world.get::<BonePalette>(entity).is_some());
+}
+
+#[test]
+fn lod_is_off_by_default_and_bad_distances_fall_back_to_fifty_metres() {
+    let (mut world, entity) = world_with_animator("");
+    add_camera(&mut world, Vec3::new(0.0, 0.0, 400.0));
+    animator_system(&mut world, 0.25);
+    let head = world.get::<AnimatorPlayhead>(entity).expect("默认不做 LOD");
+    assert!((head.time - 0.25).abs() < 1e-5);
+
+    {
+        let animator = world.get_mut::<Animator>(entity).unwrap();
+        animator.lod_enabled = true;
+        animator.lod_far = -1.0;
+    }
+    animator_system(&mut world, 0.5);
+    let head = world.get::<AnimatorPlayhead>(entity).expect("已算出姿态");
+    assert!((head.time - 0.25).abs() < 1e-5, "坏距离按 50m，400m 外冻结");
+}
+
 /// 把 bind 姿态下一个**离关节有距离**的顶点（局部 `(2, 1, 0)`）变换到世界。
 ///
 /// 关节原点本身在旋转下是不动的，所以必须取一个偏置点才看得出动画。
@@ -1240,6 +1296,39 @@ fn an_animator_uses_its_graph_instead_of_the_clip_path() {
     animator_system(&mut world, 0.5);
     let tip = child_tip(&world, entity);
     assert!((tip.x - 1.0).abs() < 1e-3, "tip {tip:?}");
+}
+
+#[test]
+fn a_frozen_graph_animator_keeps_its_evaluator_and_resumes() {
+    let (mut world, entity) = world_with_animator("bend.ranim");
+    world.insert_resource(AnimGraphLibrary::new());
+    world
+        .get_resource_mut::<AnimGraphLibrary>()
+        .unwrap()
+        .insert("hero.rag", single_clip_graph("bend.ranim"));
+    {
+        let animator = world.get_mut::<Animator>(entity).unwrap();
+        animator.anim_graph_path = "hero.rag".into();
+        animator.lod_enabled = true;
+    }
+    let camera = add_camera(&mut world, Vec3::new(0.0, 0.0, 100.0));
+
+    animator_system(&mut world, 0.25);
+    assert!(
+        world.get::<BonePalette>(entity).is_none(),
+        "图实体在远处也不求值"
+    );
+
+    world.get_mut::<LocalTransform>(camera).unwrap().position = Vec3::new(0.0, 0.0, 5.0);
+    animator_system(&mut world, 0.5);
+    let head = world.get::<AnimatorPlayhead>(entity).expect("恢复求值");
+    assert_eq!(head.clip_path, ANIM_GRAPH_KEY);
+    // 冻结期间的 0.25s 不补：恢复后只推进这一帧的 0.5s。
+    let tip = child_tip(&world, entity);
+    assert!(
+        (tip.x - (2.0 - std::f32::consts::FRAC_PI_4.sin())).abs() < 1e-3,
+        "tip {tip:?}"
+    );
 }
 
 #[test]
