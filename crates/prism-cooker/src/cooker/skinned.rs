@@ -268,6 +268,33 @@ pub fn encode_ranim(clip: &AnimClipInfo) -> Option<Vec<u8>> {
         out.extend_from_slice(&phase.to_le_bytes());
     }
 
+    // v4 Montage 段（#560 P4）：按 start 排序写出，名字为空 / 时间非法的段直接
+    // 丢弃；同一份作者数据每次 cook 都得到同样的字节。
+    let mut sections: Vec<&prism_asset::formats_skinned::AnimClipSectionInfo> = clip
+        .sections
+        .iter()
+        .filter(|section| {
+            !section.name.trim().is_empty()
+                && section.name.len() <= u16::MAX as usize
+                && section.start.is_finite()
+                && section.end.is_finite()
+                && section.start >= 0.0
+                && section.end >= section.start
+        })
+        .collect();
+    sections.sort_by(|a, b| {
+        a.start
+            .total_cmp(&b.start)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    out.extend_from_slice(&(sections.len() as u32).to_le_bytes());
+    for section in sections {
+        out.extend_from_slice(&section.start.to_le_bytes());
+        out.extend_from_slice(&section.end.to_le_bytes());
+        out.extend_from_slice(&(section.name.len() as u16).to_le_bytes());
+        out.extend_from_slice(section.name.as_bytes());
+    }
+
     Some(out)
 }
 

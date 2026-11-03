@@ -25,7 +25,7 @@ mod skinned;
 
 use crate::db::{AssetDatabase, AssetRecord, ImportCache};
 use prism_asset::core::{AssetId, AssetType};
-use prism_asset::formats_skinned::AnimNotifyInfo;
+use prism_asset::formats_skinned::{AnimClipSectionInfo, AnimNotifyInfo};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -906,6 +906,102 @@ impl GltfImporter {
         Ok(out)
     }
 
+    /// 读作者侧的 Montage 段表（#560 P4）。
+    ///
+    /// 位置：`assets/models/hero.glb.skinning/montages.json`
+    ///
+    /// ```json
+    /// {
+    ///   "clips": {
+    ///     "vault": {
+    ///       "sections": [
+    ///         { "name": "Start", "start": 0.0, "end": 0.3 },
+    ///         { "name": "Vault", "start": 0.3, "end": 0.8 }
+    ///       ]
+    ///     }
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// 键是 glTF 里的动画**原名**。段名必须非空且同一剪辑内唯一，时间必须有限、
+    /// `start >= 0`、`end >= start`。文件不存在 = 没有段；存在但解析失败 = build
+    /// 失败，避免打错的段被静默忽略。
+    pub fn authored_montages(
+        source: &Path,
+    ) -> Result<std::collections::HashMap<String, Vec<AnimClipSectionInfo>>, ImportError> {
+        let mut side = source.to_path_buf().into_os_string();
+        side.push(".skinning/montages.json");
+        let path = std::path::PathBuf::from(side);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return Ok(std::collections::HashMap::new());
+        };
+
+        #[derive(serde::Deserialize)]
+        struct Entry {
+            #[serde(default)]
+            sections: Vec<Section>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Section {
+            name: String,
+            start: f32,
+            end: f32,
+        }
+        #[derive(serde::Deserialize)]
+        struct File {
+            #[serde(default)]
+            clips: std::collections::HashMap<String, Entry>,
+        }
+
+        let parsed: File = serde_json::from_str(&text).map_err(|error| {
+            ImportError::ImportFailed(format!("{}: invalid montage file: {error}", path.display()))
+        })?;
+        let mut out = std::collections::HashMap::new();
+        for (clip, entry) in parsed.clips {
+            let mut sections = Vec::with_capacity(entry.sections.len());
+            for section in entry.sections {
+                let name = section.name.trim();
+                if name.is_empty() {
+                    return Err(ImportError::ImportFailed(format!(
+                        "{}: clip '{clip}' has a montage section without a name",
+                        path.display()
+                    )));
+                }
+                if !section.start.is_finite()
+                    || !section.end.is_finite()
+                    || section.start < 0.0
+                    || section.end < section.start
+                {
+                    return Err(ImportError::ImportFailed(format!(
+                        "{}: clip '{clip}' section '{name}' needs finite 0 <= start <= end",
+                        path.display()
+                    )));
+                }
+                if sections
+                    .iter()
+                    .any(|existing: &AnimClipSectionInfo| existing.name == name)
+                {
+                    return Err(ImportError::ImportFailed(format!(
+                        "{}: clip '{clip}' has duplicate montage section '{name}'",
+                        path.display()
+                    )));
+                }
+                sections.push(AnimClipSectionInfo {
+                    name: name.to_string(),
+                    start: section.start,
+                    end: section.end,
+                });
+            }
+            sections.sort_by(|a, b| {
+                a.start
+                    .total_cmp(&b.start)
+                    .then_with(|| a.name.cmp(&b.name))
+            });
+            out.insert(clip, sections);
+        }
+        Ok(out)
+    }
+
     /// 只读 glTF、**不 cook** 的蒙皮/动画路径规划（#560 P0-4）。
     ///
     /// 路径规则与 [`Self::side_assets`] 完全一致（同一个源文件 → 同样的路径），
@@ -1096,6 +1192,9 @@ impl GltfImporter {
             let authored_markers = Self::authored_sync_markers(path)?;
             let mut used_markers: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
+            let authored_montages = Self::authored_montages(path)?;
+            let mut used_montages: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
             for (index, clip) in mesh.clips.iter().enumerate() {
                 let mut clip = clip.clone();
                 if let Some(notifies) = authored.get(&clip.name) {
@@ -1105,6 +1204,23 @@ impl GltfImporter {
                 if let Some(markers) = authored_markers.get(&clip.name) {
                     used_markers.insert(clip.name.clone());
                     clip.sync_markers = markers.clone();
+                }
+                if let Some(sections) = authored_montages.get(&clip.name) {
+                    let duration = clip.clip_duration();
+                    for section in sections {
+                        if section.end > duration {
+                            return Err(ImportError::ImportFailed(format!(
+                                "{}: clip '{}' section '{}' ends at {:.3}s, beyond the {:.3}s clip",
+                                path.display(),
+                                clip.name,
+                                section.name,
+                                section.end,
+                                duration
+                            )));
+                        }
+                    }
+                    used_montages.insert(clip.name.clone());
+                    clip.sections = sections.clone();
                 }
                 let clip = &clip;
                 let name = sanitize_asset_name(Some(&clip.name), "clip");
@@ -1134,6 +1250,13 @@ impl GltfImporter {
                 if !used_markers.contains(name) {
                     tracing::warn!(
                         "'{mesh_pak_path}': sync marker file names clip '{name}', but the glTF has no animation with that name"
+                    );
+                }
+            }
+            for name in authored_montages.keys() {
+                if !used_montages.contains(name) {
+                    tracing::warn!(
+                        "'{mesh_pak_path}': montage file names clip '{name}', but the glTF has no animation with that name"
                     );
                 }
             }

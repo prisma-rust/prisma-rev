@@ -3,7 +3,7 @@ use std::sync::Arc;
 use glam::Vec3;
 
 use super::{Montage, MontagePlayer, MAX_MONTAGE_QUEUE};
-use crate::clip::{Clip, ClipNotify, Track, Vec3Key};
+use crate::clip::{Clip, ClipNotify, ClipSection, Track, Vec3Key};
 use crate::pose::Pose;
 use crate::skeleton::JointTransform;
 
@@ -42,7 +42,30 @@ fn clip(name: &str, x: f32, notify: Option<(&str, f32)>) -> Arc<Clip> {
             })
             .unwrap_or_default(),
         sync_markers: Vec::new(),
+        sections: Vec::new(),
     })
+}
+
+fn sectioned_clip() -> Arc<Clip> {
+    let mut clip = (*clip("sectioned", 0.0, Some(("Step", 0.6)))).clone();
+    clip.sections = vec![
+        ClipSection {
+            name: "Start".into(),
+            start: 0.0,
+            end: 0.4,
+        },
+        ClipSection {
+            name: "Vault".into(),
+            start: 0.4,
+            end: 0.8,
+        },
+        ClipSection {
+            name: "Land".into(),
+            start: 0.8,
+            end: 1.0,
+        },
+    ];
+    Arc::new(clip)
 }
 
 fn sample(player: &MontagePlayer) -> f32 {
@@ -173,4 +196,60 @@ fn playing_a_new_montage_resumes_the_player() {
     player.play_now(Montage::new(clip("b", 2.0, None)));
     assert!(!player.is_paused(), "显式播放会解除暂停");
     assert!((player.active_time().unwrap()).abs() < 1e-5);
+}
+
+#[test]
+fn a_montage_can_start_at_a_named_section() {
+    let mut player = MontagePlayer::new();
+    player.play_now(Montage::new(sectioned_clip()).with_start_section("Vault"));
+    assert!((player.active_time().unwrap() - 0.4).abs() < 1e-5);
+    assert_eq!(
+        player.active_section().map(|section| section.name.as_str()),
+        Some("Vault")
+    );
+
+    // 段名不存在时回退到 start_time，而不是卡在 0 或 panic。
+    player.play_now(
+        Montage::new(sectioned_clip())
+            .with_start_section("Missing")
+            .with_start_time(0.9),
+    );
+    assert!((player.active_time().unwrap() - 0.9).abs() < 1e-5);
+    assert_eq!(
+        player.active_section().map(|section| section.name.as_str()),
+        Some("Land")
+    );
+}
+
+#[test]
+fn jumping_to_a_section_moves_the_playhead_and_clears_pending_notifies() {
+    let mut player = MontagePlayer::new();
+    player.play_now(Montage::new(sectioned_clip()).with_looping(false));
+    player.tick(0.5);
+    assert_eq!(
+        player.active_section().map(|section| section.name.as_str()),
+        Some("Vault")
+    );
+
+    assert!(player.jump_to_section("Land"));
+    assert!((player.active_time().unwrap() - 0.8).abs() < 1e-5);
+    assert_eq!(
+        player.active_section().map(|section| section.name.as_str()),
+        Some("Land")
+    );
+    assert!(player.take_notifies().is_empty(), "跳段不应重放中间 Notify");
+    assert!(!player.jump_to_section("Missing"));
+    assert!((player.active_time().unwrap() - 0.8).abs() < 1e-5);
+}
+
+#[test]
+fn section_playback_keeps_the_paused_state() {
+    let mut player = MontagePlayer::new();
+    player.play_now(Montage::new(sectioned_clip()));
+    player.set_paused(true);
+    assert!(player.jump_to_section("Vault"));
+    assert!(player.is_paused());
+    assert!((player.active_time().unwrap() - 0.4).abs() < 1e-5);
+    assert!(player.tick(0.2));
+    assert!((player.active_time().unwrap() - 0.4).abs() < 1e-5);
 }

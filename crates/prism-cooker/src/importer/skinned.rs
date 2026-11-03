@@ -305,6 +305,7 @@ fn read_animations(
             // 导出的剪辑事件表为空。
             notifies: Vec::new(),
             sync_markers: Vec::new(),
+            sections: Vec::new(),
         });
     }
     clips

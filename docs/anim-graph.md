@@ -128,7 +128,14 @@ FIFO 排队、单次播完自动接下一段，`stop` / `stop_after_current` 清
 `enqueue_montage` / `stop_montage` 按节点名操作，活动段按权重覆盖 Slot 输入；
 没有活动段时回退到作者写的 `clips[0]`。
 
-同步标记：`.ranim` v3 的同步标记表通过 `Clip::sync_marker_set()` 转成
+Montage 段（#560 P4）：`.ranim` v4 的段表（作者侧 `*.skinning/montages.json`）在运行时
+解成 `Clip.sections`。`Montage::with_start_section("Vault")` 从段首开始，
+`MontagePlayer::active_section()` 返回当前时间所在段，`jump_to_section` 在播放中跳段；
+段不存在时回退到 `start_time`。引擎的 `MontageRequest::with_section` /
+`AnimMontageRequests::play_section` 把段名带进请求，调试快照的 `MontageSnapshot.section`
+显示当前段。
+
+同步标记：`.ranim` v4 的同步标记表通过 `Clip::sync_marker_set()` 转成
 `SyncMarkerSet`；资产侧来自 `*.skinning/sync_markers.json`。`BlendSpace1D/2D`
 在所有样本都有同结构标记时自动建 `SyncGroup`，以**当前权重最大的样本**为领跑剪辑把
 相位映射到其余样本（参数切换时 leader 跟着换）；标记缺失或数量不一致时退回共用归一化相位。
@@ -177,7 +184,7 @@ if let Some(states) = world.get_resource::<AnimGraphDebug>().and_then(|d| d.stat
 ```
 
 `AnimGraphDebug` 还提供 `montages(entity)`：每个 Slot 一份 `MontageSnapshot`
-（`slot` / `clip` / `time` / `weight` / `playing` / `paused` / `finished` / `queued`），
+（`slot` / `clip` / `section` / `time` / `weight` / `playing` / `paused` / `finished` / `queued`），
 按 Slot 名排序，只包含被 `play` / `enqueue` 过的 Slot，用来在调试面板里看覆盖动画卡在哪。
 
 资源存在时引擎才每帧重建快照（节点顺序与图一致，字符串会拷贝）；不存在时零开销。
@@ -190,8 +197,9 @@ LayeredBlend 的连线权重就是层权重）。`weight` 只用于显示，不�
 
 引擎侧项目代码通过 `AnimMontageRequests` 资源发请求（`MontageRequest::play` /
 `enqueue` / `stop` / `stop_after_current` / `pause` / `resume`，可带循环 / 速度 / 权重 /
-开始时间）；`animator_system` 每帧消费一次，把剪辑路径解析成 `Montage` 注入对应实体的
-Slot。请求只活一帧；剪辑未加载、实体没有图或 Slot 名不存在时忽略并告警。
+开始时间 / 段名）；`animator_system` 每帧消费一次，把剪辑路径解析成 `Montage` 注入对应实体的
+Slot。请求只活一帧；剪辑未加载、实体没有图或 Slot 名不存在时忽略并告警；段名不存在时
+记录警告并回退到 `start_time`。
 
 `pause` 只冻结该 Slot 的活动段：时间、队列、权重都不变，暂停期间不产生 Notify；
 `resume` 从原时间继续。显式 `play` / `play_now` 会解除暂停，`stop` 清零暂停状态。

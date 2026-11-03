@@ -31,6 +31,7 @@ pub mod ini;
 pub mod keys;
 pub mod logbuf;
 pub mod manifest;
+pub mod montage_view;
 pub mod notify_view;
 pub mod palette;
 pub mod project;
@@ -81,6 +82,10 @@ pub use keys::{
 };
 pub use logbuf::{LogBuffer, LogFilter, LogLevel, LogLine, LogSource, LOG_ROW_HEIGHT};
 pub use manifest::{doc_relative_path, SceneEntry, SceneManifest};
+pub use montage_view::{
+    add_montage_section, montage_section_at, parse_montages_view, remove_montage_section,
+    set_montage_section, ClipMontageView, MontageSectionView, MontagesView,
+};
 pub use notify_view::{
     add_notify, nearest_notify_index, notify_time_at, notify_timeline_span, parse_notifies_view,
     remove_notify, set_notify, ClipNotifiesView, NotifiesView, NotifyEntryView,

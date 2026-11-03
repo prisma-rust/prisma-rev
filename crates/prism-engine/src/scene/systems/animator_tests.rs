@@ -1,8 +1,8 @@
 use super::*;
 use glam::{Mat4, Quat, Vec3};
 use prism_anim::{
-    AnimState, AnimTransition, ClipNotify, Joint, JointTransform, Pose, StateMachine, Track,
-    TransitionCondition, Vec3Key,
+    AnimState, AnimTransition, ClipNotify, ClipSection, Joint, JointTransform, Pose, StateMachine,
+    Track, TransitionCondition, Vec3Key,
 };
 use prism_asset::formats_anim_graph::{
     AnimGraphInfo, GraphInputInfo, GraphNodeInfo, GraphNodeKind,
@@ -2075,6 +2075,39 @@ fn a_pause_request_freezes_the_montage_until_resumed() {
         ["MontageStep"],
         "恢复后继续推进到 Notify"
     );
+}
+
+#[test]
+fn a_montage_request_can_start_at_a_named_section() {
+    let (mut world, entity) = setup_slot_world();
+    let mut clip = montage_clip("MontageStep", 0.5);
+    clip.sections = vec![
+        ClipSection {
+            name: "Start".into(),
+            start: 0.0,
+            end: 0.3,
+        },
+        ClipSection {
+            name: "Impact".into(),
+            start: 0.6,
+            end: 1.0,
+        },
+    ];
+    world
+        .get_resource_mut::<SkeletonLibrary>()
+        .unwrap()
+        .insert_clip("montage.ranim", clip);
+    world.insert_resource(AnimGraphDebug::default());
+    world
+        .get_resource_mut::<AnimMontageRequests>()
+        .unwrap()
+        .play_section(entity, "slot", "montage.ranim", "Impact");
+
+    animator_system(&mut world, 0.1);
+    let debug = world.get_resource::<AnimGraphDebug>().unwrap();
+    let montage = &debug.montages(entity).expect("图实体")[0];
+    assert!((montage.time.unwrap() - 0.7).abs() < 1e-5);
+    assert_eq!(montage.section.as_deref(), Some("Impact"));
 }
 
 #[test]
