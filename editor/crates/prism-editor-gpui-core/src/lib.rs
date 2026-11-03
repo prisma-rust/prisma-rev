@@ -45,16 +45,16 @@ pub mod workspace;
 
 pub use anim_graph_view::{
     add_blend_space_sample, add_clip_node, add_graph_input, add_parameter, add_state_condition,
-    add_state_transition, move_state_transition, parse_anim_graph_view, parse_state_machine_view,
-    remove_blend_space_sample, remove_graph_input, remove_graph_node, remove_parameter,
-    remove_state_condition, remove_state_transition, rename_graph_node, rename_state,
-    set_blend_space_parameter, set_blend_space_position, set_blend_space_sample_clip,
-    set_condition_threshold, set_condition_value, set_graph_input_bone_mask,
-    set_graph_input_weight, set_graph_node_clip, set_graph_node_looped, set_graph_node_speed,
-    set_graph_node_weight, set_parameter_default, set_state_clip, set_state_looped,
-    set_state_speed, set_transition_states, set_transition_timing, AnimConditionView,
-    AnimGraphLayout, AnimGraphView, AnimInputView, AnimNodeView, AnimParameterView,
-    AnimStateMachineView, AnimStateView, AnimTransitionView,
+    add_state_transition, blend_space_2d_area, blend_space_2d_degenerate, move_state_transition,
+    parse_anim_graph_view, parse_state_machine_view, remove_blend_space_sample, remove_graph_input,
+    remove_graph_node, remove_parameter, remove_state_condition, remove_state_transition,
+    rename_graph_node, rename_state, set_blend_space_parameter, set_blend_space_position,
+    set_blend_space_sample_clip, set_condition_threshold, set_condition_value,
+    set_graph_input_bone_mask, set_graph_input_weight, set_graph_node_clip, set_graph_node_looped,
+    set_graph_node_speed, set_graph_node_weight, set_parameter_default, set_state_clip,
+    set_state_looped, set_state_speed, set_transition_states, set_transition_timing,
+    AnimConditionView, AnimGraphLayout, AnimGraphView, AnimInputView, AnimNodeView,
+    AnimParameterView, AnimStateMachineView, AnimStateView, AnimTransitionView,
 };
 pub use asset_edit::{AssetEdit, AssetEditHistory};
 pub use asset_meta::{AssetMeta, META_SUFFIX};
