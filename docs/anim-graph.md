@@ -171,6 +171,7 @@ if let Some(states) = world.get_resource::<AnimGraphDebug>().and_then(|d| d.stat
     for node in states {
         // node.name / node.kind / node.time / node.state
         // node.blending / node.blend_weight / node.cached / node.weight
+        // node.state_name / node.state_clip（状态机节点）
     }
 }
 ```
@@ -184,7 +185,8 @@ if let Some(states) = world.get_resource::<AnimGraphDebug>().and_then(|d| d.stat
 状态机节点的 `state` 是当前状态下标、`blending` / `blend_weight` 反映交叉淡入，
 `cached` 表示 `cached_pose` 节点是否已有缓存姿态，`weight` 是这个节点对最终姿态的
 贡献（从输出节点按连线权重往下乘，共享节点取最大值，没连到输出的是 0；BlendStack /
-LayeredBlend 的连线权重就是层权重）。`weight` 只用于显示，不参与求值。
+LayeredBlend 的连线权重就是层权重）。`weight` 只用于显示，不参与求值。状态机节点还有
+`state_name` / `state_clip`（当前状态名与它的剪辑路径），其他节点是空串。
 
 引擎侧项目代码通过 `AnimMontageRequests` 资源发请求（`MontageRequest::play` /
 `enqueue` / `stop` / `stop_after_current` / `pause` / `resume`，可带循环 / 速度 / 权重 /

@@ -107,6 +107,9 @@ struct NodeRuntime {
     cached: Pose,
     /// 每样本独立播放头的归一化相位（仅配置了速度的 BlendSpace 节点使用）。
     sample_times: Vec<f32>,
+    /// 状态机节点当前状态名 / 剪辑路径（其他节点为空），调试快照用。
+    state_name: String,
+    state_clip: String,
 }
 
 #[derive(Debug, Clone)]
@@ -153,6 +156,10 @@ pub struct GraphNodeSnapshot {
     pub cached: bool,
     /// 这个节点对最终姿态的权重 `0..=1`（从输出节点按连线权重往下乘）。
     pub weight: f32,
+    /// 状态机节点的当前状态名；其他节点为空串。
+    pub state_name: String,
+    /// 状态机节点当前状态的剪辑路径；其他节点为空串。
+    pub state_clip: String,
 }
 
 /// 一个 Slot 的 Montage 运行时摘要（[`AnimGraphEvaluator::montage_snapshots`]）。
@@ -350,6 +357,8 @@ impl AnimGraphEvaluator {
                     blend_weight,
                     cached: !runtime.cached.is_empty(),
                     weight: weights[index],
+                    state_name: runtime.state_name.clone(),
+                    state_clip: runtime.state_clip.clone(),
                 }
             })
             .collect()
@@ -1061,6 +1070,12 @@ impl AnimGraphEvaluator {
         let runtime = &mut self.runtime[index];
         runtime.state = state;
         runtime.time = state_time;
+        if runtime.state_name != state_info.name {
+            runtime.state_name = state_info.name.clone();
+        }
+        if runtime.state_clip != state_info.clip_path {
+            runtime.state_clip = state_info.clip_path.clone();
+        }
         Ok(pose)
     }
 }

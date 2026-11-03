@@ -1701,6 +1701,7 @@ fn graph_debug_snapshots_are_opt_in_and_track_node_time() {
         states[0].time
     );
     assert_eq!(states[1].kind, GraphNodeKind::Output);
+    assert!(states[0].state_name.is_empty(), "非状态机节点没有状态名");
 }
 
 #[test]
