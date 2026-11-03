@@ -32,6 +32,8 @@ pub struct AnimNodeView {
     pub clips: Vec<String>,
     /// 混合空间的样本坐标；一维节点的 y 恒为 0。
     pub positions: Vec<[f32; 2]>,
+    /// 混合空间每个样本的播放速度；空 = 全部按 1.0。
+    pub speeds: Vec<f32>,
     pub inputs: Vec<AnimInputView>,
     pub state_machine: String,
     pub parameter: String,
@@ -193,6 +195,7 @@ pub fn parse_anim_graph_view(document: &Value) -> Result<AnimGraphView, String> 
                 .to_string(),
             clips,
             positions: parse_positions(node),
+            speeds: parse_speeds(node),
             inputs,
             state_machine: node
                 .get("state_machine")
@@ -232,6 +235,16 @@ fn parse_positions(node: &Value) -> Vec<[f32; 2]> {
             ],
             _ => [0.0, 0.0],
         })
+        .collect()
+}
+
+fn parse_speeds(node: &Value) -> Vec<f32> {
+    node.get("speeds")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|speed| speed.as_f64().map(|speed| speed as f32))
         .collect()
 }
 
@@ -1321,6 +1334,52 @@ pub fn set_blend_space_sample_clip(
     Ok(())
 }
 
+/// 改一个混合空间样本的播放速度（`speeds[index]`）。
+///
+/// 节点还没有 `speeds` 时按剪辑数量补一列 `1.0` 再改；已有数组长度必须与
+/// `clips` 一致（cooker 会拒绝错位），否则让作者先修好数量。
+pub fn set_blend_space_sample_speed(
+    document: &mut Value,
+    name: &str,
+    index: usize,
+    speed: f32,
+) -> Result<(), String> {
+    if !speed.is_finite() || speed < 0.0 {
+        return Err("sample speed must be finite and >= 0".to_string());
+    }
+    let Some(node) = find_node_mut(document, name) else {
+        return Err(format!("unknown node '{name}'"));
+    };
+    if !node.is_object() {
+        return Err(format!("node '{name}' is malformed"));
+    }
+    if blend_space_dims(node).is_none() {
+        return Err(format!("node '{name}' is not a blend space"));
+    }
+    let clip_count = node
+        .get("clips")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    if index >= clip_count {
+        return Err(format!("node '{name}' has no sample #{index}"));
+    }
+    if node.get("speeds").is_none() {
+        node["speeds"] = Value::Array(vec![json!(1.0); clip_count]);
+    }
+    let Some(speeds) = node.get_mut("speeds").and_then(Value::as_array_mut) else {
+        return Err(format!("node '{name}' has an invalid `speeds` array"));
+    };
+    if speeds.len() != clip_count {
+        return Err(format!(
+            "node '{name}' has {clip_count} clips but {} sample speeds; fix the mismatch first",
+            speeds.len()
+        ));
+    }
+    speeds[index] = json!(speed);
+    Ok(())
+}
+
 /// 改节点的播放速度（`0` = 冻结，必须有限且非负）。
 pub fn set_graph_node_speed(document: &mut Value, name: &str, speed: f32) -> Result<(), String> {
     if !speed.is_finite() || speed < 0.0 {
@@ -1790,6 +1849,44 @@ mod blend_space_tests {
         assert!(set_blend_space_sample_clip(&mut doc, "locomotion", 0, "  ").is_err());
         assert!(set_blend_space_sample_clip(&mut doc, "locomotion", 9, "a.ranim").is_err());
         assert!(set_blend_space_sample_clip(&mut doc, "out", 0, "a.ranim").is_err());
+    }
+
+    #[test]
+    fn a_view_reads_per_sample_speeds() {
+        let mut doc = document();
+        assert!(parse_anim_graph_view(&doc).expect("parses").nodes[0]
+            .speeds
+            .is_empty());
+        doc["nodes"][0]["speeds"] = json!([1.0, 2.5]);
+        let view = parse_anim_graph_view(&doc).expect("parses");
+        assert_eq!(view.nodes[0].speeds, [1.0, 2.5]);
+    }
+
+    #[test]
+    fn sample_speeds_can_be_created_and_edited() {
+        let mut doc = document();
+        set_blend_space_sample_speed(&mut doc, "locomotion", 1, 2.0).expect("creates table");
+        assert_eq!(doc["nodes"][0]["speeds"], json!([1.0, 2.0]));
+
+        set_blend_space_sample_speed(&mut doc, "locomotion", 0, 0.5).expect("edits");
+        assert_eq!(doc["nodes"][0]["speeds"], json!([0.5, 2.0]));
+    }
+
+    #[test]
+    fn bad_sample_speeds_are_rejected() {
+        let mut doc = document();
+        assert!(set_blend_space_sample_speed(&mut doc, "locomotion", 0, -1.0).is_err());
+        assert!(set_blend_space_sample_speed(&mut doc, "locomotion", 0, f32::NAN).is_err());
+        assert!(set_blend_space_sample_speed(&mut doc, "locomotion", 9, 1.0).is_err());
+        assert!(set_blend_space_sample_speed(&mut doc, "out", 0, 1.0).is_err());
+        assert!(set_blend_space_sample_speed(&mut doc, "missing", 0, 1.0).is_err());
+
+        let mut mismatched = json!({
+            "nodes": [{ "name": "m", "type": "blend_space_1d",
+                        "clips": ["a.ranim", "b.ranim"], "positions": [0.0, 1.0],
+                        "parameter": "speed", "speeds": [1.0] }]
+        });
+        assert!(set_blend_space_sample_speed(&mut mismatched, "m", 0, 2.0).is_err());
     }
 }
 
