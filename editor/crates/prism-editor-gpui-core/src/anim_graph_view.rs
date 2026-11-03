@@ -59,6 +59,13 @@ pub struct AnimStateView {
 /// 一条转移条件，`summary` 已经是可显示的形式。
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnimConditionView {
+    /// `float_greater` / `float_less` / `bool_is` / `trigger`。
+    pub kind: String,
+    pub name: String,
+    /// 只对 float 条件有意义。
+    pub threshold: f32,
+    /// 只对 `bool_is` 有意义。
+    pub value: bool,
     pub summary: String,
 }
 
@@ -275,8 +282,7 @@ pub fn parse_state_machine_view(document: &Value) -> Result<AnimStateMachineView
             .map(Vec::as_slice)
             .unwrap_or_default()
             .iter()
-            .filter_map(condition_summary)
-            .map(|summary| AnimConditionView { summary })
+            .filter_map(parse_condition)
             .collect();
         transitions.push(AnimTransitionView {
             from,
@@ -299,33 +305,30 @@ pub fn parse_state_machine_view(document: &Value) -> Result<AnimStateMachineView
     })
 }
 
-fn condition_summary(condition: &Value) -> Option<String> {
+fn parse_condition(condition: &Value) -> Option<AnimConditionView> {
     let kind = condition.get("type").and_then(Value::as_str)?;
     let name = condition.get("name").and_then(Value::as_str)?;
-    Some(match kind {
-        "float_greater" => format!(
-            "{name} > {}",
-            condition
-                .get("threshold")
-                .and_then(Value::as_f64)
-                .unwrap_or(0.0)
-        ),
-        "float_less" => format!(
-            "{name} < {}",
-            condition
-                .get("threshold")
-                .and_then(Value::as_f64)
-                .unwrap_or(0.0)
-        ),
-        "bool_is" => format!(
-            "{name} == {}",
-            condition
-                .get("value")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-        ),
+    let threshold = condition
+        .get("threshold")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0) as f32;
+    let value = condition
+        .get("value")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let summary = match kind {
+        "float_greater" => format!("{name} > {threshold}"),
+        "float_less" => format!("{name} < {threshold}"),
+        "bool_is" => format!("{name} == {value}"),
         "trigger" => format!("{name} (trigger)"),
         other => format!("{name} ({other})"),
+    };
+    Some(AnimConditionView {
+        kind: kind.to_string(),
+        name: name.to_string(),
+        threshold,
+        value,
+        summary,
     })
 }
 
@@ -385,7 +388,11 @@ mod tests {
         assert!(!view.states[1].looped);
         assert_eq!(view.transitions[0].from.as_deref(), Some("Idle"));
         assert_eq!(view.transitions[0].conditions[0].summary, "speed > 1.5");
+        assert_eq!(view.transitions[0].conditions[0].kind, "float_greater");
+        assert_eq!(view.transitions[0].conditions[0].name, "speed");
+        assert_eq!(view.transitions[0].conditions[0].threshold, 1.5);
         assert_eq!(view.transitions[0].conditions[1].summary, "jump (trigger)");
+        assert_eq!(view.transitions[0].conditions[1].kind, "trigger");
         assert!(view.transitions[1].from.is_none());
     }
 }
@@ -845,6 +852,286 @@ pub fn remove_state_transition(document: &mut Value, index: usize) -> Result<(),
     }
     transitions.remove(index);
     Ok(())
+}
+
+fn find_transition_mut(document: &mut Value, index: usize) -> Result<&mut Value, String> {
+    let transition = document
+        .get_mut("transitions")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "state machine has no editable `transitions` array".to_string())?
+        .get_mut(index)
+        .ok_or_else(|| format!("state machine has no transition #{index}"))?;
+    if !transition.is_object() {
+        return Err(format!("transition #{index} is malformed"));
+    }
+    Ok(transition)
+}
+
+fn find_condition_mut<'a>(
+    document: &'a mut Value,
+    index: usize,
+    condition: usize,
+) -> Result<&'a mut Value, String> {
+    let transition = find_transition_mut(document, index)?;
+    let entry = transition
+        .get_mut("conditions")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| format!("transition #{index} has no editable `conditions` array"))?
+        .get_mut(condition)
+        .ok_or_else(|| format!("transition #{index} has no condition #{condition}"))?;
+    if !entry.is_object() {
+        return Err(format!(
+            "transition #{index} condition #{condition} is malformed"
+        ));
+    }
+    Ok(entry)
+}
+
+/// 设置转移的混合时长与最小状态占比。
+///
+/// 两个值都与运行时的含义一致：`duration` 是淡入秒数（0 = 硬切），
+/// `min_state_fraction` 是允许离开源状态前至少播过的比例（0..=1）。
+pub fn set_transition_timing(
+    document: &mut Value,
+    index: usize,
+    duration: f32,
+    min_state_fraction: f32,
+) -> Result<(), String> {
+    if !duration.is_finite() || duration < 0.0 {
+        return Err("transition duration must be finite and >= 0".to_string());
+    }
+    if !min_state_fraction.is_finite() || !(0.0..=1.0).contains(&min_state_fraction) {
+        return Err("min_state_fraction must be finite and between 0 and 1".to_string());
+    }
+    let transition = find_transition_mut(document, index)?;
+    transition["duration"] = json!(duration);
+    transition["min_state_fraction"] = json!(min_state_fraction);
+    Ok(())
+}
+
+/// 给第 `index` 条转移追加一条条件。
+///
+/// `kind` 只接受运行时认识的四种；`threshold` 只用于 float 条件，`value` 只用于
+/// `bool_is`。同一个 `(type, name)` 不重复添加 —— 两个相同条件只是白写一遍 AND。
+pub fn add_state_condition(
+    document: &mut Value,
+    index: usize,
+    kind: &str,
+    name: &str,
+    threshold: f32,
+    value: bool,
+) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("a condition needs a non-empty parameter name".to_string());
+    }
+    let kind = match kind.trim() {
+        kind @ ("float_greater" | "float_less" | "bool_is" | "trigger") => kind,
+        other => {
+            return Err(format!(
+                "unknown condition type '{other}' \
+                 (expected float_greater / float_less / bool_is / trigger)"
+            ))
+        }
+    };
+    if !threshold.is_finite() {
+        return Err("a condition threshold must be finite".to_string());
+    }
+    let transition = find_transition_mut(document, index)?;
+    if transition.get("conditions").is_none() {
+        transition["conditions"] = json!([]);
+    }
+    let Some(conditions) = transition
+        .get_mut("conditions")
+        .and_then(Value::as_array_mut)
+    else {
+        return Err(format!(
+            "transition #{index} has an invalid `conditions` field"
+        ));
+    };
+    if conditions.iter().any(|condition| {
+        condition.get("type").and_then(Value::as_str) == Some(kind)
+            && condition.get("name").and_then(Value::as_str) == Some(name)
+    }) {
+        return Err(format!(
+            "transition #{index} already has the condition '{name} ({kind})'"
+        ));
+    }
+    let condition = match kind {
+        "float_greater" | "float_less" => {
+            json!({ "type": kind, "name": name, "threshold": threshold })
+        }
+        "bool_is" => json!({ "type": kind, "name": name, "value": value }),
+        _ => json!({ "type": kind, "name": name }),
+    };
+    conditions.push(condition);
+    Ok(())
+}
+
+/// 删除第 `index` 条转移里的第 `condition` 条条件。
+pub fn remove_state_condition(
+    document: &mut Value,
+    index: usize,
+    condition: usize,
+) -> Result<(), String> {
+    let transition = find_transition_mut(document, index)?;
+    let Some(conditions) = transition
+        .get_mut("conditions")
+        .and_then(Value::as_array_mut)
+    else {
+        return Err(format!(
+            "transition #{index} has no editable `conditions` array"
+        ));
+    };
+    if condition >= conditions.len() {
+        return Err(format!("transition #{index} has no condition #{condition}"));
+    }
+    conditions.remove(condition);
+    Ok(())
+}
+
+/// 改一条 float 条件的阈值；`bool_is` / `trigger` 没有阈值，返回错误。
+pub fn set_condition_threshold(
+    document: &mut Value,
+    index: usize,
+    condition: usize,
+    threshold: f32,
+) -> Result<(), String> {
+    if !threshold.is_finite() {
+        return Err("a condition threshold must be finite".to_string());
+    }
+    let entry = find_condition_mut(document, index, condition)?;
+    if !matches!(
+        entry.get("type").and_then(Value::as_str),
+        Some("float_greater" | "float_less")
+    ) {
+        return Err(format!(
+            "transition #{index} condition #{condition} has no threshold"
+        ));
+    }
+    entry["threshold"] = json!(threshold);
+    Ok(())
+}
+
+/// 改一条 `bool_is` 条件的期望值；其它条件类型返回错误。
+pub fn set_condition_value(
+    document: &mut Value,
+    index: usize,
+    condition: usize,
+    value: bool,
+) -> Result<(), String> {
+    let entry = find_condition_mut(document, index, condition)?;
+    if entry.get("type").and_then(Value::as_str) != Some("bool_is") {
+        return Err(format!(
+            "transition #{index} condition #{condition} is not a bool condition"
+        ));
+    }
+    entry["value"] = json!(value);
+    Ok(())
+}
+
+#[cfg(test)]
+mod condition_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn document() -> Value {
+        json!({
+            "states": [
+                { "name": "Idle", "clip": "idle.ranim" },
+                { "name": "Run", "clip": "run.ranim" }
+            ],
+            "transitions": [
+                { "from": "Idle", "to": "Run", "duration": 0.2,
+                  "conditions": [{ "type": "float_greater", "name": "speed", "threshold": 1.5 }] }
+            ]
+        })
+    }
+
+    #[test]
+    fn transition_timing_can_be_edited_and_is_validated() {
+        let mut doc = document();
+        set_transition_timing(&mut doc, 0, 0.35, 0.5).expect("sets");
+        assert_eq!(
+            doc["transitions"][0]["duration"].as_f64(),
+            Some(0.35f32 as f64)
+        );
+        assert_eq!(
+            doc["transitions"][0]["min_state_fraction"].as_f64(),
+            Some(0.5)
+        );
+        assert!(set_transition_timing(&mut doc, 0, -1.0, 0.0).is_err());
+        assert!(set_transition_timing(&mut doc, 0, f32::NAN, 0.0).is_err());
+        assert!(set_transition_timing(&mut doc, 0, 0.1, 1.5).is_err());
+        assert!(set_transition_timing(&mut doc, 9, 0.1, 0.0).is_err());
+        assert!(
+            set_transition_timing(&mut json!({ "transitions": ["bad"] }), 0, 0.1, 0.0).is_err()
+        );
+    }
+
+    #[test]
+    fn conditions_can_be_added_and_removed() {
+        let mut doc = document();
+        add_state_condition(&mut doc, 0, "float_less", "speed", 0.25, false).expect("adds float");
+        add_state_condition(&mut doc, 0, "bool_is", "grounded", 0.0, false).expect("adds bool");
+        add_state_condition(&mut doc, 0, "trigger", "jump", 0.0, false).expect("adds trigger");
+        assert_eq!(
+            doc["transitions"][0]["conditions"][1],
+            json!({ "type": "float_less", "name": "speed", "threshold": 0.25 })
+        );
+        assert_eq!(
+            doc["transitions"][0]["conditions"][2],
+            json!({ "type": "bool_is", "name": "grounded", "value": false })
+        );
+        assert_eq!(
+            doc["transitions"][0]["conditions"][3],
+            json!({ "type": "trigger", "name": "jump" })
+        );
+        remove_state_condition(&mut doc, 0, 0).expect("removes");
+        assert_eq!(doc["transitions"][0]["conditions"][0]["name"], "speed");
+        assert_eq!(doc["transitions"][0]["conditions"][0]["type"], "float_less");
+    }
+
+    #[test]
+    fn adding_conditions_creates_the_array_and_rejects_bad_input() {
+        let mut doc = json!({
+            "states": [{ "name": "Idle", "clip": "idle.ranim" }],
+            "transitions": [{ "from": "*", "to": "Idle" }]
+        });
+        add_state_condition(&mut doc, 0, "trigger", "jump", 0.0, false).expect("adds");
+        assert_eq!(
+            doc["transitions"][0]["conditions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let mut doc = document();
+        assert!(add_state_condition(&mut doc, 0, "nope", "speed", 0.0, false).is_err());
+        assert!(add_state_condition(&mut doc, 0, "trigger", "  ", 0.0, false).is_err());
+        assert!(add_state_condition(&mut doc, 0, "float_greater", "speed", 2.0, false).is_err());
+        assert!(add_state_condition(&mut doc, 0, "float_less", "speed", f32::NAN, false).is_err());
+        assert!(add_state_condition(&mut doc, 9, "trigger", "jump", 0.0, false).is_err());
+        assert!(remove_state_condition(&mut doc, 0, 9).is_err());
+    }
+
+    #[test]
+    fn thresholds_and_bool_values_can_be_edited() {
+        let mut doc = document();
+        set_condition_threshold(&mut doc, 0, 0, 2.5).expect("sets threshold");
+        assert_eq!(doc["transitions"][0]["conditions"][0]["threshold"], 2.5);
+        assert!(set_condition_threshold(&mut doc, 0, 0, f32::NAN).is_err());
+
+        add_state_condition(&mut doc, 0, "bool_is", "grounded", 0.0, false).expect("adds bool");
+        set_condition_value(&mut doc, 0, 1, true).expect("sets bool");
+        assert_eq!(doc["transitions"][0]["conditions"][1]["value"], true);
+
+        assert!(set_condition_value(&mut doc, 0, 0, true).is_err());
+        assert!(set_condition_threshold(&mut doc, 0, 1, 0.5).is_err());
+        assert!(set_condition_threshold(&mut doc, 0, 9, 0.5).is_err());
+        assert!(set_condition_value(&mut doc, 9, 0, true).is_err());
+    }
 }
 
 #[cfg(test)]

@@ -366,6 +366,8 @@ pub struct UiState {
     pub anim_graph_layout: Option<(String, prism_editor_core::AnimGraphLayout)>,
     /// Animation Graph 面板「新增剪辑节点」的输入缓冲：(节点名, 剪辑路径)。
     pub anim_graph_new_node: (String, String),
+    /// 状态机面板「+ Condition」正在填的条件草稿（None = 表单关闭）。
+    pub anim_sm_condition: Option<StateConditionDraft>,
     pub asset_selection: Vec<String>,
     /// 区间选择的锚点：Shift+单击从它选到目标（#486）。
     pub asset_anchor: Option<String>,
@@ -5740,14 +5742,21 @@ pub fn anim_graph(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
         }
     } else {
         match prism_editor_core::parse_state_machine_view(&value) {
-            Ok(machine) => {
-                if draw_state_machine_view(ui, &machine, &mut value) {
+            Ok(machine) => match draw_state_machine_view(
+                ui,
+                &machine,
+                &mut value,
+                &mut state.anim_sm_condition,
+            ) {
+                Ok(true) => {
                     state.status = match workspace.write_asset_json(&path, &value) {
                         Ok(()) => format!("saved transitions in {path}"),
                         Err(error) => format!("save transitions failed: {error}"),
                     };
                 }
-            }
+                Ok(false) => {}
+                Err(error) => state.status = format!("state machine: {error}"),
+            },
             Err(error) => {
                 ui.label(RichText::new(error).color(Color32::from_rgb(232, 96, 96)));
             }
@@ -6039,11 +6048,38 @@ fn draw_anim_graph_view(
     Ok(changed)
 }
 
+/// 状态机条件草稿：`+ Condition` 先选类型、填参数，点 Add 才写文档。
+#[derive(Debug, Clone)]
+pub struct StateConditionDraft {
+    pub transition: usize,
+    pub kind: String,
+    pub name: String,
+    pub threshold: f32,
+    pub value: bool,
+}
+
+/// 面板里可添加的条件类型（与 cooker / 运行时保持一致）。
+const STATE_CONDITION_KINDS: [(&str, &str); 4] = [
+    ("float_greater", "float >"),
+    ("float_less", "float <"),
+    ("bool_is", "bool =="),
+    ("trigger", "trigger"),
+];
+
+fn condition_kind_label(kind: &str) -> &str {
+    STATE_CONDITION_KINDS
+        .iter()
+        .find(|(value, _)| *value == kind)
+        .map(|(_, label)| *label)
+        .unwrap_or(kind)
+}
+
 fn draw_state_machine_view(
     ui: &mut Ui,
     machine: &prism_editor_core::AnimStateMachineView,
     document: &mut Value,
-) -> bool {
+    draft_slot: &mut Option<StateConditionDraft>,
+) -> Result<bool, String> {
     let mut changed = false;
     ui.label(
         RichText::new(format!("States ({})", machine.states.len()))
@@ -6071,6 +6107,13 @@ fn draw_state_machine_view(
             .size(11.0),
     );
     let mut remove = None;
+    let mut timing_edits = Vec::new();
+    let mut threshold_edits = Vec::new();
+    let mut value_edits = Vec::new();
+    let mut remove_condition = None;
+    let mut add_condition = None;
+    let mut cancel_draft = false;
+    let mut add_transition = None;
     for (index, transition) in machine.transitions.iter().enumerate() {
         let from = transition.from.as_deref().unwrap_or("*");
         let title = format!(
@@ -6083,22 +6126,150 @@ fn draw_state_machine_view(
                 if ui.small_button("× Remove transition").clicked() {
                     remove = Some(index);
                 }
+
+                let mut duration = transition.duration;
+                let mut fraction = transition.min_state_fraction;
+                let mut timing_changed = ui
+                    .add(
+                        egui::DragValue::new(&mut duration)
+                            .speed(0.01)
+                            .range(0.0..=5.0)
+                            .prefix("blend "),
+                    )
+                    .changed();
+                timing_changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut fraction)
+                            .speed(0.01)
+                            .range(0.0..=1.0)
+                            .prefix("min "),
+                    )
+                    .changed();
+                if timing_changed {
+                    timing_edits.push((index, duration, fraction));
+                }
+
                 if transition.conditions.is_empty() {
                     ui.label(RichText::new("no conditions").weak().size(10.0));
                 }
-                for condition in &transition.conditions {
-                    ui.label(
-                        RichText::new(format!("if {}", condition.summary))
-                            .monospace()
-                            .size(10.0),
-                    );
+                for (condition_index, condition) in transition.conditions.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(format!("if {}", condition.summary))
+                                .monospace()
+                                .size(10.0),
+                        );
+                        match condition.kind.as_str() {
+                            "float_greater" | "float_less" => {
+                                let mut threshold = condition.threshold;
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut threshold)
+                                            .speed(0.01)
+                                            .range(-1000.0..=1000.0),
+                                    )
+                                    .changed()
+                                {
+                                    threshold_edits.push((index, condition_index, threshold));
+                                }
+                            }
+                            "bool_is" => {
+                                let mut value = condition.value;
+                                if ui.checkbox(&mut value, "").changed() {
+                                    value_edits.push((index, condition_index, value));
+                                }
+                            }
+                            _ => {}
+                        }
+                        if ui.small_button("×").clicked() {
+                            remove_condition = Some((index, condition_index));
+                        }
+                    });
+                }
+
+                if ui.small_button("+ Condition").clicked() {
+                    *draft_slot = Some(StateConditionDraft {
+                        transition: index,
+                        kind: "float_greater".to_string(),
+                        name: String::new(),
+                        threshold: 0.0,
+                        value: false,
+                    });
+                }
+                if let Some(draft) = draft_slot
+                    .as_mut()
+                    .filter(|draft| draft.transition == index)
+                {
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        egui::ComboBox::from_id_salt(("anim-sm-condition-kind", index))
+                            .selected_text(condition_kind_label(&draft.kind))
+                            .show_ui(ui, |ui| {
+                                for (kind, label) in STATE_CONDITION_KINDS {
+                                    ui.selectable_value(&mut draft.kind, kind.to_string(), label);
+                                }
+                            });
+                        ui.add(
+                            egui::TextEdit::singleline(&mut draft.name)
+                                .hint_text("parameter")
+                                .desired_width(110.0),
+                        );
+                        if draft.kind.starts_with("float") {
+                            ui.add(
+                                egui::DragValue::new(&mut draft.threshold)
+                                    .speed(0.01)
+                                    .range(-1000.0..=1000.0)
+                                    .prefix("threshold "),
+                            );
+                        } else if draft.kind == "bool_is" {
+                            ui.checkbox(&mut draft.value, "value");
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("Add condition").clicked() {
+                            add_condition = Some(draft.clone());
+                        }
+                        if ui.button("Cancel").clicked() {
+                            cancel_draft = true;
+                        }
+                    });
                 }
             });
     }
     if let Some(index) = remove {
-        if prism_editor_core::remove_state_transition(document, index).is_ok() {
-            changed = true;
-        }
+        prism_editor_core::remove_state_transition(document, index)?;
+        changed = true;
+    }
+    for (index, duration, fraction) in timing_edits {
+        prism_editor_core::set_transition_timing(document, index, duration, fraction)?;
+        changed = true;
+    }
+    for (index, condition, threshold) in threshold_edits {
+        prism_editor_core::set_condition_threshold(document, index, condition, threshold)?;
+        changed = true;
+    }
+    for (index, condition, value) in value_edits {
+        prism_editor_core::set_condition_value(document, index, condition, value)?;
+        changed = true;
+    }
+    if let Some((index, condition)) = remove_condition {
+        prism_editor_core::remove_state_condition(document, index, condition)?;
+        changed = true;
+    }
+    if let Some(draft) = add_condition {
+        prism_editor_core::add_state_condition(
+            document,
+            draft.transition,
+            &draft.kind,
+            &draft.name,
+            draft.threshold,
+            draft.value,
+        )?;
+        *draft_slot = None;
+        changed = true;
+    }
+    if cancel_draft {
+        *draft_slot = None;
     }
 
     ui.menu_button("+ Transition", |ui| {
@@ -6112,22 +6283,18 @@ fn draw_state_machine_view(
                         continue;
                     }
                     if ui.button(&to.name).clicked() {
-                        if prism_editor_core::add_state_transition(
-                            document,
-                            from.map(String::as_str),
-                            &to.name,
-                        )
-                        .is_ok()
-                        {
-                            changed = true;
-                        }
+                        add_transition = Some((from.map(String::as_str), to.name.clone()));
                         ui.close();
                     }
                 }
             });
         }
     });
-    changed
+    if let Some((from, to)) = add_transition {
+        prism_editor_core::add_state_transition(document, from.as_deref(), &to)?;
+        changed = true;
+    }
+    Ok(changed)
 }
 
 // ---------------------------------------------------------------------------
