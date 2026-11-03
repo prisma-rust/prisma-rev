@@ -6538,6 +6538,7 @@ fn draw_anim_graph_view(
     let mut node_name_edits = Vec::new();
     let mut parameter_edits = Vec::new();
     let mut position_edits = Vec::new();
+    let mut sample_speed_edits = Vec::new();
     let mut sample_removals = Vec::new();
     let mut sample_adds = Vec::new();
     let mut sample_draft_cancel = false;
@@ -6735,6 +6736,18 @@ fn draw_anim_graph_view(
                                     ));
                                 }
                             }
+                            let mut speed = node.speeds.get(index).copied().unwrap_or(1.0);
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut speed)
+                                        .speed(0.01)
+                                        .range(0.0..=10.0)
+                                        .prefix("speed "),
+                                )
+                                .changed()
+                            {
+                                sample_speed_edits.push((node.name.clone(), index, speed));
+                            }
                             if ui.small_button("×").clicked() {
                                 sample_removals.push((node.name.clone(), index));
                             }
@@ -6898,6 +6911,17 @@ fn draw_anim_graph_view(
                             .size(10.0),
                         );
                     }
+                    if !node.speeds.is_empty() && node.speeds.len() != node.clips.len() {
+                        ui.label(
+                            RichText::new(format!(
+                                "{} clips vs {} sample speeds — cooker rejects this",
+                                node.clips.len(),
+                                node.speeds.len()
+                            ))
+                            .color(Color32::from_rgb(232, 160, 96))
+                            .size(10.0),
+                        );
+                    }
                 }
                 if !node.state_machine.is_empty() {
                     ui.label(
@@ -7048,6 +7072,10 @@ fn draw_anim_graph_view(
     }
     for (node, index, position) in position_edits {
         prism_editor_core::set_blend_space_position(document, &node, index, position)?;
+        changed = true;
+    }
+    for (node, index, speed) in sample_speed_edits {
+        prism_editor_core::set_blend_space_sample_speed(document, &node, index, speed)?;
         changed = true;
     }
     for (node, index) in sample_removals {
