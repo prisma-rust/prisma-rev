@@ -258,19 +258,17 @@ fn same_seed_and_script_are_bit_identical_across_runs() {
     assert_eq!(first, second, "same seed + same script must be identical");
 
     assert!(
-        first[0]
-            .input
-            .as_ref()
-            .is_some_and(|input| input.keys[0] & (1 << KeyCode::KeyW.bit_index()) != 0),
+        first[0].input.as_ref().is_some_and(|input| input.keys[0]
+            & (1 << KeyCode::KeyW.bit_index().expect("named key"))
+            != 0),
         "scripted key press must reach the input snapshot: {:?}",
         first[0].input
     );
     assert_eq!(first[0].input.as_ref().unwrap().cursor, [64.0, 32.0]);
     assert!(
-        first[3]
-            .input
-            .as_ref()
-            .is_some_and(|input| input.keys[0] & (1 << KeyCode::KeyW.bit_index()) == 0),
+        first[3].input.as_ref().is_some_and(|input| input.keys[0]
+            & (1 << KeyCode::KeyW.bit_index().expect("named key"))
+            == 0),
         "release must clear the held bit: {:?}",
         first[3].input
     );
