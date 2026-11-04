@@ -8,6 +8,7 @@
 
 pub mod animation;
 pub mod components;
+pub mod cook_stamp;
 pub mod helpers;
 pub mod json;
 pub mod migrate;

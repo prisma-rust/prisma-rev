@@ -16,7 +16,8 @@
 //! 静态 Player 与编辑器动态模块共用同一份玩法代码。
 
 use prism_game_api::{keys, EntityHandle, GameWorld};
-use prism_scene::components::{LineRenderer, LocalTransform, Name, SpriteRenderer};
+use prism_scene::components::{LineRenderer, LocalTransform, Name, SpriteRenderer, TimeOfDay};
+use prism_scene::ui::Text;
 
 /// 鱼竿尖端相对船锚点的偏移（船体局部像素）。
 const ROD_OFFSET: [f32; 2] = [44.0, 24.0];
@@ -66,6 +67,8 @@ pub struct FishingState {
     bite_at: f32,
     /// 已钓到的鱼数（M0 只做计数）。
     caught: u32,
+    /// HUD 顶栏的文本实体（`title`），每帧写入鱼数与时间。
+    hud: Option<EntityHandle>,
     boat: Option<EntityHandle>,
     bobber: Option<EntityHandle>,
     line: Option<EntityHandle>,
@@ -79,6 +82,19 @@ impl FishingState {
     pub fn caught(&self) -> u32 {
         self.caught
     }
+}
+
+/// HUD 顶栏文本实体（场景里叫 `title`，由工程自己的场景摆放）。
+fn find_hud_label(world: &mut GameWorld<'_>) -> Option<EntityHandle> {
+    for entity in world.query::<Name>() {
+        let Some(name) = world.get::<Name>(entity) else {
+            continue;
+        };
+        if name.0 == "title" {
+            return Some(entity);
+        }
+    }
+    None
 }
 
 /// 每帧推进钓鱼状态机。
@@ -95,6 +111,18 @@ pub fn tick(state: &mut Option<FishingState>, world: &mut GameWorld<'_>, dt: f32
                 _ => {}
             }
         }
+        // #984：进度从玩家存档里恢复（键就是 `caught`，工程自己定的 schema）。
+        fresh.caught = world
+            .load_data("caught")
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(0);
+        if fresh.caught > 0 {
+            log::info!(
+                "fishing: restored {} caught fish from the save",
+                fresh.caught
+            );
+        }
+        fresh.hud = find_hud_label(world);
         fresh.line = spawn_line(world);
         *state = Some(fresh);
     }
@@ -189,7 +217,9 @@ pub fn tick(state: &mut Option<FishingState>, world: &mut GameWorld<'_>, dt: f32
                 current.caught += 1;
                 current.phase = Phase::Caught;
                 current.elapsed = 0.0;
-                log::info!("fishing: landed fish #{}", current.caught);
+                // #984：落袋即存档，退出游戏不会丢进度。
+                let saved = world.save_data("caught", &current.caught.to_string());
+                log::info!("fishing: landed fish #{} (saved: {saved})", current.caught);
             }
         }
         Phase::Caught => {
@@ -197,6 +227,25 @@ pub fn tick(state: &mut Option<FishingState>, world: &mut GameWorld<'_>, dt: f32
                 current.phase = Phase::Idle;
                 current.elapsed = 0.0;
                 current.bobber_pos = [boat_pos[0] + ROD_OFFSET[0], boat_pos[1] + ROD_OFFSET[1]];
+            }
+        }
+    }
+
+    // --- HUD：鱼数 + 当前时刻 -------------------------------------------------
+    //
+    // 时间来自引擎的 `TimeOfDay`（#983），工程不再自己维护计时器。
+    if let Some(hud) = current.hud {
+        if let Some(mut text) = world.get::<Text>(hud) {
+            let clock = world
+                .query::<TimeOfDay>()
+                .into_iter()
+                .find_map(|entity| world.get::<TimeOfDay>(entity))
+                .map(|clock| clock.clock_text())
+                .unwrap_or_else(|| "--:--".to_string());
+            let content = format!("CATCH LOG   x{}   {}", current.caught, clock);
+            if text.content != content {
+                text.content = content;
+                world.set(hud, text);
             }
         }
     }
@@ -259,6 +308,7 @@ fn spawn_line(world: &mut GameWorld<'_>) -> Option<EntityHandle> {
             width: 0.6,
             sorting_layer: LINE_LAYER,
             order_in_layer: 0,
+            ..LineRenderer::default()
         },
     );
     Some(entity)

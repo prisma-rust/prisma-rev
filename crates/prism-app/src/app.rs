@@ -282,7 +282,17 @@ impl App {
         // 存档目录跟随工程 `[app] company/name`（AppConfig 已从 settings 读好）。
         // 以前 `scene_state_path()` 用默认配置，所有项目共用一个目录（#484）。
         if let Some(dir) = prism_engine::config::app_data_dir_for(&config) {
+            // 玩家存档（#984）与场景存档同目录：都跟着 `[app] company/name` 走。
+            // 设了 `PRISMREV_USER_DATA` 时改用它（便携版 / Android 宿主）。
+            let player_data = if std::env::var_os(prism_engine::user_data::ENV_OVERRIDE).is_some() {
+                prism_engine::user_data::save_path(&config.app.name)
+            } else {
+                dir.join(prism_engine::user_data::FILE_NAME)
+            };
             engine.set_save_directory(dir);
+            engine
+                .world_mut()
+                .insert_resource(prism_engine::user_data::UserStore::open(player_data));
         }
 
         // 运行时 startup callbacks
@@ -1372,6 +1382,9 @@ impl App {
                     );
                 }
             }
+            // 重新打包后也校验一次构建戳（#976）：包和文档对不上时立刻提示，
+            // 而不是等玩家发现画面不对。
+            self.asset_resolver.check_cook_stamp(pak);
             reloaded += 1;
         }
         if reloaded == 0 {

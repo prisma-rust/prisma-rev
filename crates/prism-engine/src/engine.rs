@@ -661,6 +661,13 @@ fn default_schedule() -> Schedule {
         crate::scene::systems::particles2d::particle_emitter_2d_system(world, dt);
     });
 
+    // ── 昼夜（#983）────────────────────────────────────────
+    // 推进 `TimeOfDay` 并刷新环境光。放在粒子之前、`hierarchy_system` 之前：
+    // 本帧的 `sprite_light_entries` 要读到推进后的环境光，否则画面晚一帧。
+    s.add_system("time::of_day", |world, dt| {
+        crate::scene::systems::time_of_day::time_of_day_system(world, dt);
+    });
+
     // ── UI 布局 ─────────────────────────────────────────────
     // 每帧重新计算所有 UI 元素的屏幕空间矩形。
     s.add_system("ui::layout", |world, _dt| {
