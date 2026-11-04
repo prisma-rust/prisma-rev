@@ -16,8 +16,9 @@ use std::path::{Path, PathBuf};
 use libloading::{Library, Symbol};
 use prism_project_api::{
     GetProjectApi, HostApi, ProjectApi, RaycastHit, ABI_VERSION, BUFFER_TOO_SMALL, HOST_CAP_ASSET,
-    HOST_CAP_COMPONENTS, HOST_CAP_DRAW, HOST_CAP_LOGGING, HOST_CAP_PHYSICS, HOST_CAP_SCENE,
-    HOST_CAP_STATE, HOST_CAP_WORLD_COMMANDS, INVALID_ARGUMENT, SUCCESS, UNKNOWN_TYPE,
+    HOST_CAP_AUDIO, HOST_CAP_COMPONENTS, HOST_CAP_DRAW, HOST_CAP_LOGGING, HOST_CAP_PHYSICS,
+    HOST_CAP_SCENE, HOST_CAP_STATE, HOST_CAP_WORLD_COMMANDS, INVALID_ARGUMENT, SUCCESS,
+    UNKNOWN_TYPE,
 };
 use prism_reflect::rtti_bin;
 use thiserror::Error;
@@ -116,6 +117,18 @@ pub struct RaycastResult {
     pub is_trigger: bool,
 }
 
+/// 一次性音效的宿主实现（#987）。
+///
+/// 本 crate 不依赖 `prism-engine` / `prism-audio`（会带进第二份实现），所以
+/// 混音器由宿主以 trait 对象注入：玩家走 `App` 的 `AudioEngine`，编辑器走
+/// 自己的试听引擎。
+pub trait AudioIo {
+    /// 开始播放；返回宿主侧的音效 id（`0` = 失败）。
+    fn play_sound(&mut self, path: &str, volume: f32, repeat: bool) -> u32;
+    /// 停止某个音效 id；未知 id 视为成功。
+    fn stop_sound(&mut self, id: u32);
+}
+
 /// 射线查询实现的签名（`prism_engine::physics::raycast` 的等价物）。
 pub type RaycastFn = fn(&prism_ecs::World, [f32; 3], [f32; 3], f32, u32) -> Option<RaycastResult>;
 
@@ -141,6 +154,8 @@ struct CommandContext<'a> {
     scene_switch: bool,
     /// 宿主的射线查询实现（#522）；`None` 时不声明 `HOST_CAP_PHYSICS`。
     raycast: Option<RaycastFn>,
+    /// 宿主的一次性音效实现（#987）；`None` 时不声明 `HOST_CAP_AUDIO`。
+    audio: Option<&'a mut dyn AudioIo>,
 }
 
 /// 把宿主世界包装成 [`HostApi`] 函数表。
@@ -169,6 +184,7 @@ impl<'a> WorldCommands<'a> {
                 scene_request: None,
                 scene_switch: false,
                 raycast: None,
+                audio: None,
             },
         }
     }
@@ -207,6 +223,12 @@ impl<'a> WorldCommands<'a> {
     /// `prism_engine::physics::raycast` 的适配器（见 `engine_raycast`）。
     pub fn with_raycast(mut self, raycast: RaycastFn) -> Self {
         self.context.raycast = Some(raycast);
+        self
+    }
+
+    /// 注入一次性音效实现（#987）；声明 [`HOST_CAP_AUDIO`]。
+    pub fn with_audio(mut self, audio: &'a mut dyn AudioIo) -> Self {
+        self.context.audio = Some(audio);
         self
     }
 
@@ -249,6 +271,11 @@ impl<'a> WorldCommands<'a> {
                     HOST_CAP_PHYSICS
                 } else {
                     0
+                }
+                | if self.context.audio.is_some() {
+                    HOST_CAP_AUDIO
+                } else {
+                    0
                 },
             scene_generation: self.context.scene_generation,
             user_data: (&mut self.context as *mut CommandContext).cast(),
@@ -272,6 +299,16 @@ impl<'a> WorldCommands<'a> {
             },
             raycast: if self.context.raycast.is_some() {
                 Some(host_raycast)
+            } else {
+                None
+            },
+            play_sound: if self.context.audio.is_some() {
+                Some(host_play_sound)
+            } else {
+                None
+            },
+            stop_sound: if self.context.audio.is_some() {
+                Some(host_stop_sound)
             } else {
                 None
             },
@@ -306,6 +343,14 @@ unsafe fn type_name<'a>(ptr: *const u8, len: usize) -> Option<&'a str> {
     }
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     std::str::from_utf8(bytes).ok()
+}
+
+/// ABI 字符串参数 → `&str`（与 [`type_name`] 同一套校验）。
+///
+/// # Safety
+/// `ptr`/`len` 必须描述一块调用期间有效的 UTF-8 字节。
+unsafe fn path_str<'a>(ptr: *const u8, len: usize) -> Option<&'a str> {
+    unsafe { type_name(ptr, len) }
 }
 
 fn handle_to_entity(handle: EntityHandle) -> prism_ecs::Entity {
@@ -556,6 +601,61 @@ unsafe extern "C" fn host_is_alive(user_data: *mut std::ffi::c_void, entity: Ent
         return -1;
     };
     i32::from(context.world.is_alive(handle_to_entity(entity)))
+}
+
+/// 一次性音效（#987）：混音由宿主注入，本 crate 只做 ABI 适配。
+///
+/// # Safety
+/// `path` 必须指向调用期间有效的 UTF-8；`out_id` 可为 `null`。
+unsafe extern "C" fn host_play_sound(
+    user_data: *mut std::ffi::c_void,
+    path: *const u8,
+    path_len: usize,
+    volume: f32,
+    repeat: u8,
+    out_id: *mut u32,
+) -> i32 {
+    let Some(context) = (unsafe { context(user_data) }) else {
+        return INVALID_ARGUMENT;
+    };
+    if !out_id.is_null() {
+        unsafe { *out_id = 0 };
+    }
+    let Some(path) = (unsafe { path_str(path, path_len) }) else {
+        return INVALID_ARGUMENT;
+    };
+    let Some(audio) = context.audio.as_mut() else {
+        return -2;
+    };
+    let volume = if volume.is_finite() {
+        volume.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let id = audio.play_sound(path, volume, repeat != 0);
+    if id == 0 {
+        return -1;
+    }
+    if !out_id.is_null() {
+        unsafe { *out_id = id };
+    }
+    SUCCESS
+}
+
+/// 停止一次性音效（#987）。
+///
+/// # Safety
+/// 同 [`host_play_sound`]。
+unsafe extern "C" fn host_stop_sound(user_data: *mut std::ffi::c_void, id: u32) -> i32 {
+    let Some(context) = (unsafe { context(user_data) }) else {
+        return INVALID_ARGUMENT;
+    };
+    if id != 0 {
+        if let Some(audio) = context.audio.as_mut() {
+            audio.stop_sound(id);
+        }
+    }
+    SUCCESS
 }
 
 /// 射线查询（#522）：几何实现由宿主注入，本 crate 只做 ABI 适配。
@@ -922,6 +1022,71 @@ mod tests {
                 Err(std::io::Error::new(std::io::ErrorKind::NotFound, path))
             }
         }
+    }
+
+    /// #987：一次性音效能力同样是可选注入的；没有注入时不宣称支持、回调返回负码。
+    #[test]
+    fn audio_capability_requires_an_injected_implementation() {
+        struct FakeAudio {
+            played: Vec<(String, f32, bool)>,
+            stopped: Vec<u32>,
+        }
+        impl AudioIo for FakeAudio {
+            fn play_sound(&mut self, path: &str, volume: f32, repeat: bool) -> u32 {
+                self.played.push((path.to_string(), volume, repeat));
+                7
+            }
+            fn stop_sound(&mut self, id: u32) {
+                self.stopped.push(id);
+            }
+        }
+
+        let mut world = prism_ecs::World::new();
+        let registry = registry();
+
+        let mut plain = WorldCommands::new(&mut world, &registry, 1);
+        let api = plain.api();
+        assert_eq!(
+            api.capabilities & HOST_CAP_AUDIO,
+            0,
+            "没注入就不该声明能力位"
+        );
+        assert!(api.play_sound.is_none());
+
+        let mut fake = FakeAudio {
+            played: Vec::new(),
+            stopped: Vec::new(),
+        };
+        let mut wired = WorldCommands::new(&mut world, &registry, 1).with_audio(&mut fake);
+        {
+            let api = wired.api();
+            assert_ne!(api.capabilities & HOST_CAP_AUDIO, 0);
+            let play = api.play_sound.expect("play callback");
+            let mut id = 0u32;
+            let status = unsafe {
+                play(
+                    api.user_data,
+                    "audio/splash.wav".as_ptr(),
+                    "audio/splash.wav".len(),
+                    0.8,
+                    0,
+                    &mut id,
+                )
+            };
+            assert_eq!(status, prism_project_api::SUCCESS);
+            assert_eq!(id, 7);
+
+            let stop = api.stop_sound.expect("stop callback");
+            assert_eq!(
+                unsafe { stop(api.user_data, id) },
+                prism_project_api::SUCCESS
+            );
+        }
+        assert_eq!(
+            fake.played,
+            vec![("audio/splash.wav".to_string(), 0.8, false)]
+        );
+        assert_eq!(fake.stopped, vec![7]);
     }
 
     /// #484：存档能力是可选注入的，没注入时不宣称支持。

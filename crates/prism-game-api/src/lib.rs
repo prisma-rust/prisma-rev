@@ -219,6 +219,52 @@ impl<'a> GameWorld<'a> {
         }
     }
 
+    /// 播放一次性音效（#987）：`path` 相对 `assets/`，`volume` 是 0..1 的线性增益。
+    ///
+    /// 返回宿主分配的音效 id（可用于 [`Self::stop_sound`]）；返回 `None` 表示
+    /// 片段不存在、解码失败，或当前后端不支持音频。
+    ///
+    /// - host 后端把请求排进 `prism_engine::sound::SoundCommands`，由 `App`
+    ///   在 tick 结束后真正播放；
+    /// - plugin 后端走 `HostApi::play_sound`（能力位 `HOST_CAP_AUDIO`）；编辑器
+    ///   没有注入音频实现时返回 `None`，不会静默吞掉调用。
+    pub fn play_sound(&mut self, path: &str, volume: f32, repeat: bool) -> Option<u32> {
+        match &mut self.backend {
+            #[cfg(feature = "host")]
+            Backend::Host(backend) => {
+                // `Engine::empty` 会插入这个 resource；拿不到（自定义宿主）就临时补一个。
+                if backend
+                    .get_resource::<prism_engine::sound::SoundCommands>()
+                    .is_none()
+                {
+                    backend.insert_resource(prism_engine::sound::SoundCommands::default());
+                }
+                let commands = backend
+                    .get_resource_mut::<prism_engine::sound::SoundCommands>()
+                    .expect("SoundCommands was just inserted");
+                Some(commands.play(path, volume, repeat))
+            }
+            #[cfg(feature = "plugin")]
+            Backend::Plugin(backend) => backend.play_sound(path, volume, repeat),
+        }
+    }
+
+    /// 停止 [`Self::play_sound`] 返回的音效 id；未知 / 已结束的 id 是空操作。
+    pub fn stop_sound(&mut self, id: u32) {
+        match &mut self.backend {
+            #[cfg(feature = "host")]
+            Backend::Host(backend) => {
+                if let Some(commands) =
+                    backend.get_resource_mut::<prism_engine::sound::SoundCommands>()
+                {
+                    commands.stop(id);
+                }
+            }
+            #[cfg(feature = "plugin")]
+            Backend::Plugin(backend) => backend.stop_sound(id),
+        }
+    }
+
     /// 场景代数：宿主每次换场 / 卸载 +1。项目代码用它判断缓存的实体句柄是否失效。
     ///
     /// 静态 Player（host 后端）没有跨场景切换，恒为 `0`。
@@ -548,6 +594,39 @@ pub fn install_host_logger(host: &HostApi) {
 
 #[cfg(feature = "plugin")]
 impl PluginBackend<'_> {
+    /// 一次性音效（#987）：没有 `HOST_CAP_AUDIO` 时返回 `None`。
+    fn play_sound(&self, path: &str, volume: f32, repeat: bool) -> Option<u32> {
+        if self.api.capabilities & prism_project_api::HOST_CAP_AUDIO == 0 {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                log::warn!("host does not expose one-shot audio (HOST_CAP_AUDIO)");
+            });
+            return None;
+        }
+        let play = self.api.play_sound?;
+        let mut id = 0u32;
+        let status = unsafe {
+            play(
+                self.api.user_data,
+                path.as_ptr(),
+                path.len(),
+                volume,
+                u8::from(repeat),
+                &mut id,
+            )
+        };
+        (status == SUCCESS && id != 0).then_some(id)
+    }
+
+    fn stop_sound(&self, id: u32) {
+        if self.api.capabilities & prism_project_api::HOST_CAP_AUDIO == 0 {
+            return;
+        }
+        if let Some(stop) = self.api.stop_sound {
+            unsafe { stop(self.api.user_data, id) };
+        }
+    }
+
     fn spawn(&self) -> EntityHandle {
         let Some(spawn) = self.api.spawn_entity else {
             return EntityHandle::PLACEHOLDER;

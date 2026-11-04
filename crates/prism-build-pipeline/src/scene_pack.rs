@@ -175,6 +175,9 @@ pub fn build_scene_package_split(
     // 运行时生成的精灵（背景层、鱼、特效）不在场景 JSON 里，所以整个
     // `sprites/` 目录都要烘进包内——和引擎的「Assets 目录即内容」一致。
     stage_sprite_folder(asset_root, staging)?;
+    // 一次性音效（#987）同理：`GameWorld::play_sound("audio/xxx.wav")` 是运行时
+    // 字符串，构建期无从枚举，所以把 `audio/` 整个目录原样打包。
+    stage_audio_folder(asset_root, staging)?;
 
     report_missing_references(missing)?;
 
@@ -380,6 +383,41 @@ fn stage_sprite_assets(
     }
 
     Ok(staged.len())
+}
+
+/// 把整个 `assets/audio/` 目录原样放进包里（#987）。
+///
+/// 和 `sprites/` 同样的理由：音效路径是运行时字符串（`play_sound`），构建期
+/// 枚举不到，只能按目录打包。音频不需要转码，直接拷字节。
+fn stage_audio_folder(asset_root: &Path, staging: &Path) -> Result<usize> {
+    let dir = asset_root.join("audio");
+    if !dir.is_dir() {
+        return Ok(0);
+    }
+    let mut packed = 0usize;
+    let mut stack = vec![dir.clone()];
+    while let Some(current) = stack.pop() {
+        for entry in fs::read_dir(&current)
+            .with_context(|| format!("read audio dir {}", current.display()))?
+        {
+            let path = entry?.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let relative = path
+                .strip_prefix(asset_root)
+                .with_context(|| format!("audio file outside assets/: {}", path.display()))?;
+            let bytes =
+                fs::read(&path).with_context(|| format!("read audio {}", path.display()))?;
+            write_staged(staging, relative, &bytes)?;
+            packed += 1;
+        }
+    }
+    if packed > 0 {
+        log::info!("packaged {packed} audio file(s) from {}", dir.display());
+    }
+    Ok(packed)
 }
 
 /// 把 UI 组件引用的贴图与字体放进 staging（`#591` 背景图 / `#529` tileset / `#583` 字体）。
