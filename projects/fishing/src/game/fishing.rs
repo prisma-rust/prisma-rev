@@ -190,6 +190,11 @@ pub fn tick(state: &mut Option<FishingState>, world: &mut GameWorld<'_>, dt: f32
                 current.phase = Phase::Caught;
                 current.elapsed = 0.0;
                 log::info!("fishing: landed fish #{}", current.caught);
+                // 上钩的水花声（#987）：玩家和编辑器 Play 都能听到。
+                match world.play_sound("audio/splash.wav", 0.8, false) {
+                    Some(id) => log::info!("fishing: splash sound id {id}"),
+                    None => log::warn!("fishing: splash sound unavailable"),
+                }
             }
         }
         Phase::Caught => {
@@ -259,6 +264,7 @@ fn spawn_line(world: &mut GameWorld<'_>) -> Option<EntityHandle> {
             width: 0.6,
             sorting_layer: LINE_LAYER,
             order_in_layer: 0,
+            ..LineRenderer::default()
         },
     );
     Some(entity)
