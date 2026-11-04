@@ -253,6 +253,13 @@ fn stage_entry(
                         source_json.display()
                     );
                 }
+                // 没有作者文档时只能原样打包现成的 `.rscn`：它是哪一版工具、
+                // 哪一版组件 schema 烘出来的，构建侧完全无从判断（cook 戳里的
+                // `sources_mtime` 也只统计文档）。至少要说出来，别让
+                // 「画面不对但日志全绿」再发生一次（#976）。
+                log::warn!(
+                    "scene entry '{entry_path}' is packaged from a pre-cooked .rscn with no source document: freshness cannot be verified, rebuild it from a source document if the scene looks wrong"
+                );
                 fs::read(&source).with_context(|| format!("read {}", source.display()))?
             };
             validate_rscn(entry_path, &cooked)?;
@@ -2152,6 +2159,55 @@ mod tests {
             .map(|asset| asset["path"].as_str().unwrap())
             .collect();
         assert!(paths.contains(&"env/valley.hdr"), "paths = {paths:?}");
+    }
+
+    /// #976：清单写的是 `.rscn`，但作者文档也在时**必须重新 cook**，
+    /// 不能让旁边那份旧的 `.rscn` 顶替（否则改了场景、画面却是旧的）。
+    #[test]
+    fn the_authoring_document_wins_over_a_pre_cooked_rscn() {
+        let temp = tempfile::tempdir().unwrap();
+        let assets = temp.path().join("assets");
+        fs::create_dir_all(assets.join("scenes")).unwrap();
+        let authoring = assets.join("scenes/valley.scene.json");
+
+        // 1) 先烘一份“旧”的 .rscn（天空盒场景），再把它留在 assets 里。
+        fs::write(&authoring, skybox_scene_json("../env/valley.hdr")).unwrap();
+        let stale = SceneCooker::default()
+            .cook_json_bytes(&fs::read(&authoring).unwrap())
+            .unwrap();
+        let stale_path = assets.join("scenes/valley.rscn");
+        fs::write(&stale_path, &stale).unwrap();
+
+        // 2) 作者文档改成另一个场景（这里只改内容，不删旧 .rscn）。
+        fs::write(
+            &authoring,
+            r#"{"version": 1, "entities": [{"name": "Renamed", "parent": null,
+                "transform": {}, "components": {}}]}"#,
+        )
+        .unwrap();
+
+        write_manifest(
+            &assets,
+            r#"{"scenes": [{"name": "valley", "path": "scenes/valley.rscn"}]}"#,
+        );
+        let staging = temp.path().join("cooked");
+        build_scene_package(
+            assets.join("scenes.json"),
+            &staging,
+            temp.path().join("scenes.pak"),
+            0,
+        )
+        .unwrap();
+
+        let staged = fs::read(staging.join("scenes/valley.rscn")).unwrap();
+        assert_ne!(
+            staged, stale,
+            "清单里的 .rscn 不能直接采信旁边的旧文件，必须按作者文档重新 cook"
+        );
+        let expected = SceneCooker::default()
+            .cook_json_bytes(&fs::read(&authoring).unwrap())
+            .unwrap();
+        assert_eq!(staged, expected, "打包结果应等于当前文档的 cook 结果");
     }
 
     /// #466: a stale `hdr_path` with a valid `hdr_guid` is resolved before
