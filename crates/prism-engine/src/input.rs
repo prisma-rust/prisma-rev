@@ -39,8 +39,9 @@ impl KeyCode {
     ///
     /// 这是**跨模块 ABI 的一部分**：数字一旦发布就不能重排，否则已编译的
     /// 项目模块会把按键认错。新增按键请追加到末尾。
-    pub fn bit_index(self) -> usize {
-        match self {
+    /// `None` = 这个键码放不进 `InputSnapshot` 的位图（见 [`Self::Other`] 分支）。
+    pub fn bit_index(self) -> Option<usize> {
+        Some(match self {
             Self::KeyW => 0,
             Self::KeyA => 1,
             Self::KeyS => 2,
@@ -71,9 +72,13 @@ impl KeyCode {
             Self::Digit7 => 27,
             Self::Digit8 => 28,
             Self::Digit9 => 29,
-            // 平台原始键码落在 30..256；位图容量足够，冲突只影响非常用键。
-            Self::Other(code) => 30 + (code as usize % 226),
-        }
+            // 位图 30..=255 一共 226 个槽位，只放得下 vk < 226 的原始键码。
+            //
+            // 超出的键码必须**丢弃**，不能取模：取模会让 vk 226 和 vk 452 落在
+            // 同一个位上，玩家按一个冷门键却看到另一个键被按住，比丢键难查得多。
+            Self::Other(code) if (code as usize) < 226 => 30 + code as usize,
+            Self::Other(_) => return None,
+        })
     }
 }
 
@@ -328,28 +333,72 @@ mod abi_key_tests {
     /// `prism_project_api::keys`，否则动态模块读到的输入会错位。
     #[test]
     fn abi_key_table_matches_bit_index() {
-        assert_eq!(KeyCode::KeyW.bit_index(), keys::KEY_W);
-        assert_eq!(KeyCode::KeyA.bit_index(), keys::KEY_A);
-        assert_eq!(KeyCode::KeyS.bit_index(), keys::KEY_S);
-        assert_eq!(KeyCode::KeyD.bit_index(), keys::KEY_D);
-        assert_eq!(KeyCode::KeyQ.bit_index(), keys::KEY_Q);
-        assert_eq!(KeyCode::KeyE.bit_index(), keys::KEY_E);
-        assert_eq!(KeyCode::Space.bit_index(), keys::SPACE);
-        assert_eq!(KeyCode::ShiftLeft.bit_index(), keys::SHIFT_LEFT);
-        assert_eq!(KeyCode::ShiftRight.bit_index(), keys::SHIFT_RIGHT);
-        assert_eq!(KeyCode::ControlLeft.bit_index(), keys::CONTROL_LEFT);
-        assert_eq!(KeyCode::ControlRight.bit_index(), keys::CONTROL_RIGHT);
-        assert_eq!(KeyCode::AltLeft.bit_index(), keys::ALT_LEFT);
-        assert_eq!(KeyCode::AltRight.bit_index(), keys::ALT_RIGHT);
-        assert_eq!(KeyCode::Escape.bit_index(), keys::ESCAPE);
-        assert_eq!(KeyCode::Tab.bit_index(), keys::TAB);
-        assert_eq!(KeyCode::Enter.bit_index(), keys::ENTER);
-        assert_eq!(KeyCode::ArrowUp.bit_index(), keys::ARROW_UP);
-        assert_eq!(KeyCode::ArrowDown.bit_index(), keys::ARROW_DOWN);
-        assert_eq!(KeyCode::ArrowLeft.bit_index(), keys::ARROW_LEFT);
-        assert_eq!(KeyCode::ArrowRight.bit_index(), keys::ARROW_RIGHT);
-        assert_eq!(KeyCode::Digit0.bit_index(), keys::DIGIT_0);
-        assert_eq!(KeyCode::Other(5).bit_index(), keys::OTHER_BASE + 5);
+        assert_eq!(KeyCode::KeyW.bit_index(), Some(keys::KEY_W));
+        assert_eq!(KeyCode::KeyA.bit_index(), Some(keys::KEY_A));
+        assert_eq!(KeyCode::KeyS.bit_index(), Some(keys::KEY_S));
+        assert_eq!(KeyCode::KeyD.bit_index(), Some(keys::KEY_D));
+        assert_eq!(KeyCode::KeyQ.bit_index(), Some(keys::KEY_Q));
+        assert_eq!(KeyCode::KeyE.bit_index(), Some(keys::KEY_E));
+        assert_eq!(KeyCode::Space.bit_index(), Some(keys::SPACE));
+        assert_eq!(KeyCode::ShiftLeft.bit_index(), Some(keys::SHIFT_LEFT));
+        assert_eq!(KeyCode::ShiftRight.bit_index(), Some(keys::SHIFT_RIGHT));
+        assert_eq!(KeyCode::ControlLeft.bit_index(), Some(keys::CONTROL_LEFT));
+        assert_eq!(KeyCode::ControlRight.bit_index(), Some(keys::CONTROL_RIGHT));
+        assert_eq!(KeyCode::AltLeft.bit_index(), Some(keys::ALT_LEFT));
+        assert_eq!(KeyCode::AltRight.bit_index(), Some(keys::ALT_RIGHT));
+        assert_eq!(KeyCode::Escape.bit_index(), Some(keys::ESCAPE));
+        assert_eq!(KeyCode::Tab.bit_index(), Some(keys::TAB));
+        assert_eq!(KeyCode::Enter.bit_index(), Some(keys::ENTER));
+        assert_eq!(KeyCode::ArrowUp.bit_index(), Some(keys::ARROW_UP));
+        assert_eq!(KeyCode::ArrowDown.bit_index(), Some(keys::ARROW_DOWN));
+        assert_eq!(KeyCode::ArrowLeft.bit_index(), Some(keys::ARROW_LEFT));
+        assert_eq!(KeyCode::ArrowRight.bit_index(), Some(keys::ARROW_RIGHT));
+        assert_eq!(KeyCode::Digit0.bit_index(), Some(keys::DIGIT_0));
+        assert_eq!(KeyCode::Other(5).bit_index(), Some(keys::OTHER_BASE + 5));
+    }
+
+    /// 不同键码不能共用一个位：#986 之前 `Other(code)` 取模 226，
+    /// vk 226 和 vk 452 都落到 30，按一个冷门键会报出另一个键。
+    #[test]
+    fn other_key_codes_never_alias_each_other() {
+        let mut seen = [None; 256];
+        for code in 0u32..226 {
+            let index = KeyCode::Other(code)
+                .bit_index()
+                .expect("code < 226 必须放得进位图");
+            assert!(index < 256, "code {code} → {index} 越界");
+            assert!(
+                seen[index].is_none(),
+                "code {code} 与 {:?} 抢同一个位 {index}",
+                seen[index]
+            );
+            seen[index] = Some(code);
+        }
+    }
+
+    /// 位图只有 226 个剩余槽位：超出范围必须**丢弃**（`None`），不能折叠。
+    #[test]
+    fn other_key_codes_above_the_table_are_dropped() {
+        for code in [226u32, 227, 255, 452, 1000, u32::MAX] {
+            assert_eq!(
+                KeyCode::Other(code).bit_index(),
+                None,
+                "code {code} 不该被折叠成别的键"
+            );
+        }
+    }
+
+    /// 位图边界：最大可表示键码正好落在最后一个 bit 上。
+    #[test]
+    fn the_last_representable_key_fills_the_last_bit() {
+        assert_eq!(KeyCode::Other(225).bit_index(), Some(255));
+        let mut snapshot = prism_project_api::InputSnapshot::default();
+        snapshot.set_key(255, true);
+        assert_eq!(
+            snapshot.keys[3] >> 63,
+            1,
+            "第 255 位应在最后一个 word 的最高位"
+        );
     }
 }
 
@@ -379,14 +428,35 @@ pub fn input_snapshot(input: &InputManager, screen: [f32; 2]) -> prism_project_a
     snapshot.scroll = input.scroll_delta() as f32;
     snapshot.pointer_locked = input.pointer_locked;
 
+    // 放不进位图的键码要丢得干净：宁可少一个键，也不能让它冒充别的键。
+    let mut dropped: Option<u32> = None;
     for key in input.held_keys() {
-        snapshot.set_key(key.bit_index(), true);
+        match key.bit_index() {
+            Some(index) => snapshot.set_key(index, true),
+            None => {
+                if let KeyCode::Other(code) = key {
+                    dropped = dropped.or(Some(code));
+                }
+            }
+        }
     }
     for key in input.pressed_keys() {
-        snapshot.set_key_edge(key.bit_index(), true);
+        if let Some(index) = key.bit_index() {
+            snapshot.set_key_edge(index, true);
+        }
     }
     for key in input.released_keys() {
-        snapshot.set_key_edge(key.bit_index(), false);
+        if let Some(index) = key.bit_index() {
+            snapshot.set_key_edge(index, false);
+        }
+    }
+    if let Some(code) = dropped {
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            log::warn!(
+                "input: key code {code} does not fit the InputSnapshot bitmap                  (30 + code must stay below 256); keys above 225 are ignored,                  later codes are not logged"
+            )
+        });
     }
 
     let touches = input.touches();

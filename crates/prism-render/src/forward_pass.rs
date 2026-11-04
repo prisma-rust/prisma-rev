@@ -707,9 +707,14 @@ impl ForwardPass {
         // and the (shared) 光源 SSBO at 绑定 2.
         // 内置 once here; never rewritten at 运行时
         let frame_set_bindings = [
+            // Binding 0 is DYNAMIC: the pass composites several cameras from
+            // one set by passing `camera_index * stride` as a dynamic offset
+            // (#461). A plain `UNIFORM_BUFFER` here made every
+            // `vkCmdBindDescriptorSets` report
+            // `dynamicOffsetCount-00359` (0 dynamic descriptors, 1 offset).
             vk::DescriptorSetLayoutBinding::default()
                 .binding(scene_frag::FRAME_BINDING)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
             vk::DescriptorSetLayoutBinding::default()
@@ -966,7 +971,8 @@ impl ForwardPass {
                 vk::WriteDescriptorSet::default()
                     .dst_set(*set)
                     .dst_binding(scene_frag::FRAME_BINDING)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    // 必须与布局里的 DYNAMIC 类型一致，否则写入被忽略。
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC)
                     .buffer_info(std::slice::from_ref(&ubo_infos[i])),
             );
             writes.push(
@@ -1494,10 +1500,14 @@ impl ForwardPass {
         let color_attachment = vk::AttachmentDescription::default()
             .format(self.color_format)
             .samples(vk::SampleCountFlags::TYPE_1)
-            // #461: every camera after the first must preserve what came
-            // before, so the load op is LOAD and the pass clears explicitly
-            // with `vkCmdClearAttachments` according to `Camera.clearFlags`.
-            .load_op(vk::AttachmentLoadOp::LOAD)
+            // #972: `initial_layout` is UNDEFINED (the 渲染 graph emits no
+            // barrier before this pass, see `setup`), and Vulkan forbids
+            // LOAD with an UNDEFINED initial layout — the load would read
+            // undefined texels. Every camera clears explicitly with
+            // `vkCmdClearAttachments` according to `Camera.clearFlags`, and
+            // the "preserve what came before" case (#461) happens **inside**
+            // this single 渲染 pass instance, where DONT_CARE never applies.
+            .load_op(vk::AttachmentLoadOp::DONT_CARE)
             .store_op(vk::AttachmentStoreOp::STORE)
             .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
             .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
@@ -1520,7 +1530,9 @@ impl ForwardPass {
         let depth_attachment = vk::AttachmentDescription::default()
             .format(vk::Format::D32_SFLOAT)
             .samples(vk::SampleCountFlags::TYPE_1)
-            .load_op(vk::AttachmentLoadOp::LOAD)
+            // 同 #972：UNDEFINED 起始布局只能用 CLEAR / DONT_CARE，深度由
+            // 每个 相机 的 clear flags 显式清空。
+            .load_op(vk::AttachmentLoadOp::DONT_CARE)
             .store_op(vk::AttachmentStoreOp::STORE)
             .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
             .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
@@ -1537,7 +1549,8 @@ impl ForwardPass {
         let normal_attachment = vk::AttachmentDescription::default()
             .format(self.normal_format)
             .samples(vk::SampleCountFlags::TYPE_1)
-            .load_op(vk::AttachmentLoadOp::LOAD)
+            // 同 #972。
+            .load_op(vk::AttachmentLoadOp::DONT_CARE)
             .store_op(vk::AttachmentStoreOp::STORE)
             .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
             .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
