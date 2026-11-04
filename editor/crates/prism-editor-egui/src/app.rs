@@ -1642,6 +1642,14 @@ impl EditorApp {
             self.state.select_asset_only(path.to_owned());
             return Ok(format!("select asset {path}"));
         }
+        // `open:<asset path>` 等同于在资产面板里打开那个文档。没有它，自动化只能
+        // 「选中」资产，而 Play 用的仍是编辑器自带的示例场景，项目自己的场景
+        // 根本进不了 Game 视图。
+        if let Some(path) = node.strip_prefix("open:") {
+            self.workspace.open_path(path);
+            self.state.status = format!("open {path}");
+            return Ok(format!("open {path}"));
+        }
         if let Some(tab) = node.strip_prefix("panel:") {
             // 面板可能在某个 leaf 里（切到那个 tab），也可能关着（打开它）。
             let leaf = self
