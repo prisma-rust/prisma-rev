@@ -760,7 +760,8 @@ impl ForwardPass {
         self.frame_sets.clear();
 
         let fif_count = frame_ubo_buffers.len();
-        // 池 needs: UNIFORM_BUFFER fif_count, plus three STORAGE_BUFFER
+        // 池 needs: UNIFORM_BUFFER_DYNAMIC fif_count (the frame UBO is bound
+        // with a per-camera dynamic offset), plus three STORAGE_BUFFER
         // bindings per set (materials, point lights, bone palette).
         let frame_pool = unsafe {
             device.create_descriptor_pool(
@@ -768,7 +769,7 @@ impl ForwardPass {
                     .max_sets(fif_count as u32)
                     .pool_sizes(&[
                         vk::DescriptorPoolSize {
-                            ty: vk::DescriptorType::UNIFORM_BUFFER,
+                            ty: vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC,
                             descriptor_count: fif_count as u32,
                         },
                         vk::DescriptorPoolSize {
