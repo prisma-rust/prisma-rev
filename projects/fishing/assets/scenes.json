@@ -2,7 +2,7 @@
   "scenes": [
     {
       "name": "lake",
-      "path": "scenes/lake.rscn",
+      "path": "scenes/lake.scene.json",
       "enabled": true
     }
   ]
