@@ -29,6 +29,7 @@ pub mod render_settings;
 pub mod render_system;
 pub mod scene;
 pub mod scene_state;
+pub mod sound;
 pub mod ui;
 pub mod util;
 

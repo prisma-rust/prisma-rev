@@ -165,6 +165,9 @@ pub struct App {
     /// `SceneAudio` 声部 id → 真实播放句柄。
     #[cfg(feature = "audio")]
     audio_voices: crate::scene_audio::VoiceHandles,
+    /// `GameWorld::play_sound` 排队的一次性音效（#987）：id → 播放句柄 + 片段。
+    #[cfg(feature = "audio")]
+    one_shot_sounds: std::collections::HashMap<u32, crate::one_shot::OneShotSound>,
 
     // ---------- 物理（主线程 + 独立步进线程，`physics` feature） ----------
     /// 每个固定步把 ECS 里的 `Rigidbody` / `Collider` 送进 rapier，并把结果写回
@@ -320,6 +323,8 @@ impl App {
             scene_audio: crate::scene_audio::SceneAudio::new(),
             #[cfg(feature = "audio")]
             audio_voices: crate::scene_audio::VoiceHandles::default(),
+            #[cfg(feature = "audio")]
+            one_shot_sounds: std::collections::HashMap::new(),
             #[cfg(feature = "physics")]
             physics: None,
             needs_resize: false,
@@ -438,9 +443,12 @@ impl App {
             Subsystem::Audio => {
                 #[cfg(feature = "audio")]
                 {
-                    self.audio = AudioEngine::new(prism_audio::AudioConfig::default()).ok();
-                    if self.audio.is_none() {
-                        log::warn!("audio subsystem requested but failed to initialize");
+                    match AudioEngine::new(prism_audio::AudioConfig::default()) {
+                        Ok(engine) => self.audio = Some(engine),
+                        // 没有声卡 / 设备被独占时不要静默：一次性音效会因此全部丢弃。
+                        Err(error) => log::warn!(
+                            "audio subsystem requested but failed to initialize: {error}"
+                        ),
                     }
                     self.start_audio_decode_thread();
                 }
@@ -1217,6 +1225,13 @@ impl App {
                         self.audio_decode_tx.as_ref(),
                     );
                 }
+                // 一次性音效（#987）：项目代码排队，这里真正播放。
+                crate::one_shot::drain(
+                    engine.world_mut(),
+                    self.audio.as_mut(),
+                    &mut self.one_shot_sounds,
+                    &mut self.asset_resolver.resource_manager,
+                );
             }
         } // engine 借用在此结束
 
