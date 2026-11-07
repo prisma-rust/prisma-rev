@@ -19,14 +19,18 @@ alive safely, and drive an opaque `create -> tick -> shutdown` session from
 Game View. The module does not receive `Engine`, `World`, Vulkan handles, or
 Rust component values.
 
-The current ABI (v10) exposes capability bits for logging, world commands,
-components, drawing, and asset access. Components cross the boundary as RTTIBin
-bytes through the host's `ComponentRegistry`, so adding a component type does
-not change the ABI. The host table is tick-scoped: project code cannot retain a
-world pointer across frames. Scene switching and raycast requests are recorded
-and applied after the tick (`HOST_CAP_SCENE` / `HOST_CAP_PHYSICS`). Project logs
-and panics are bridged by `install_host_logger` / `install_host_panic_hook`; a
-failed tick latches until the module is reloaded.
+The current ABI (v11) exposes capability bits for logging, world commands,
+components, drawing, asset access, and player saves. Components cross the
+boundary as RTTIBin bytes through the host's `ComponentRegistry`, so adding a
+component type does not change the ABI. The host table is tick-scoped: project
+code cannot retain a world pointer across frames. Scene switching and raycast
+requests are recorded and applied after the tick (`HOST_CAP_SCENE` /
+`HOST_CAP_PHYSICS`), and save requests are served by a host-injected store
+(`HOST_CAP_SAVE`): the player writes the real user data directory, while the
+editor's Play mode writes `<project>/target/play-data/`, so Play sessions never
+touch the player's real save. Project logs and panics are bridged by
+`install_host_logger` / `install_host_panic_hook`; a failed tick latches until
+the module is reloaded.
 
 P0–P2 of the phase list below are implemented. P3 (a separate engine dynamic
 library) and P4 (a stable third-party SDK) remain future work and are not on the
