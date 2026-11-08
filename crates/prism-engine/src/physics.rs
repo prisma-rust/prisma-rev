@@ -70,6 +70,40 @@ pub fn raycast(
     max_distance: f32,
     layer_mask: u32,
 ) -> Option<RayHit> {
+    raycast_inner(world, origin, direction, max_distance, layer_mask, None)
+}
+
+/// [`raycast`] that skips one entity's colliders.
+///
+/// Character queries start inside the character's own capsule, so the nearest hit
+/// would always be the caster itself. Excluding it here keeps the geometry loop in
+/// one place instead of each caller re-casting past its own collider.
+pub fn raycast_excluding(
+    world: &World,
+    origin: [f32; 3],
+    direction: [f32; 3],
+    max_distance: f32,
+    layer_mask: u32,
+    excluded: Entity,
+) -> Option<RayHit> {
+    raycast_inner(
+        world,
+        origin,
+        direction,
+        max_distance,
+        layer_mask,
+        Some(excluded),
+    )
+}
+
+fn raycast_inner(
+    world: &World,
+    origin: [f32; 3],
+    direction: [f32; 3],
+    max_distance: f32,
+    layer_mask: u32,
+    excluded: Option<Entity>,
+) -> Option<RayHit> {
     let dir = glam::Vec3::from_array(direction);
     let length = dir.length();
     if !length.is_finite() || length <= 1e-6 || !(max_distance > 0.0) {
@@ -80,7 +114,7 @@ pub fn raycast(
 
     let mut best: Option<RayHit> = None;
     for (entity, collider) in world.query::<Collider>() {
-        if collider.layer & layer_mask == 0 {
+        if collider.layer & layer_mask == 0 || excluded == Some(entity) {
             continue;
         }
         let Some(transform) = world.get::<LocalToWorld>(entity) else {

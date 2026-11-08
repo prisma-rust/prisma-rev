@@ -69,8 +69,24 @@ let report = placement.update(
 - `weight = 0` 直接清空状态并保持姿态不变；非法链 / 姿态长度不符返回
   `applied = false`，不写任何骨骼。
 
+## 引擎侧的地面查询
+
+`prism_anim_ik` 自己不认识 ECS 也不认识渲染，地面查询由调用方实现。引擎里现成的是
+`prism_engine::anim_ground::SceneGroundQuery`：
+
+```rust
+use prism_engine::anim_ground::SceneGroundQuery;
+
+// 只看 ground 层（1），并跳过角色自己的碰撞体。
+let ground = SceneGroundQuery::new(world, 1).excluding(character);
+```
+
+- 底层走 `physics::raycast_excluding`（与 `raycast` 同一套盒 / 球 / 胶囊求交，纯 ECS 几何），
+  所以不需要 `prism-app/physics` feature，也不依赖 rapier 的步进顺序。
+- 触发器不算地面：`is_sensor` 体积无法承重。
+- 探针从角色胶囊内部出发，必须 `excluding(character)`，否则最近命中永远是角色自己。
+
 ## 未接线
 
-引擎还没有消费这个求解器：Foot Placement 需要物理射线查询（#522）与
-`CharacterController`（#560 P2），接线切片会把 `TwoBoneChain` 映射到骨架关节名，
-逐帧对脚做地面查询后调用 `apply_two_bone_ik`。
+引擎还没有逐帧消费这个求解器：剩下的接线是把 `TwoBoneChain` 映射到骨架关节名，
+在 `Animator` 求值出姿态之后、算骨骼调色板之前调用 `FootPlacement::update`。

@@ -1425,6 +1425,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "prism-anim-ik"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "prism-anim",
+]
+
+[[package]]
 name = "prism-app"
 version = "0.1.0"
 dependencies = [
@@ -1478,6 +1486,7 @@ dependencies = [
  "jni",
  "log",
  "prism-anim",
+ "prism-anim-ik",
  "prism-asset",
  "prism-ecs",
  "prism-ini",

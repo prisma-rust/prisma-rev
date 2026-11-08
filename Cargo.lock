@@ -3008,6 +3008,7 @@ dependencies = [
  "jni",
  "log",
  "prism-anim",
+ "prism-anim-ik",
  "prism-asset",
  "prism-audio",
  "prism-ecs",
