@@ -100,20 +100,17 @@ impl Call {
 struct Pool {
     jobs: Mutex<VecDeque<Job>>,
     work_available: Condvar,
-    /// Ids of the threads spawned in [`Pool::new`], for the reuse test only.
-    #[cfg(test)]
-    workers: Arc<Mutex<Vec<std::thread::ThreadId>>>,
 }
+
+/// Number of workers [`Pool::new`] managed to spawn, for the reuse test.
+#[cfg(test)]
+static POOL_SPAWNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 impl Pool {
     fn new(threads: usize) -> Arc<Self> {
-        #[cfg(test)]
-        let workers = Arc::new(Mutex::new(Vec::new()));
         let pool = Arc::new(Self {
             jobs: Mutex::new(VecDeque::new()),
             work_available: Condvar::new(),
-            #[cfg(test)]
-            workers: Arc::clone(&workers),
         });
         for index in 0..threads {
             let worker = Arc::clone(&pool);
@@ -123,10 +120,7 @@ impl Pool {
             match spawned {
                 Ok(handle) => {
                     #[cfg(test)]
-                    workers
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .push(handle.thread().id());
+                    POOL_SPAWNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     drop(handle);
                 }
                 Err(_) => {
@@ -205,19 +199,10 @@ fn worker_pool() -> Option<&'static Arc<Pool>> {
     .as_ref()
 }
 
-/// Ids of the threads [`worker_pool`] spawned, for the reuse test.
-///
-/// Empty on hosts where the pool is disabled and chunks run on the caller.
+/// Number of workers the pool spawned, for the reuse test.
 #[cfg(test)]
-fn pool_thread_ids() -> Vec<std::thread::ThreadId> {
-    worker_pool()
-        .map(|pool| {
-            pool.workers
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .clone()
-        })
-        .unwrap_or_default()
+fn pool_spawn_count() -> usize {
+    POOL_SPAWNS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Erases the borrow of a chunk so the job can sit in the pool's queue.
@@ -300,45 +285,36 @@ mod tests {
         assert_eq!(one, [2, 3, 4]);
     }
 
-    fn record_thread(ids: &Mutex<Vec<std::thread::ThreadId>>) -> impl Fn(&mut usize) + Sync + '_ {
-        move |_: &mut usize| {
-            ids.lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push(std::thread::current().id());
-        }
-    }
-
-    /// Chunks must run on the pool's own threads (#1031).
+    /// Chunks must run on the pool's worker threads, not on threads spawned
+    /// per call (#1031).
     ///
-    /// The caller helps drain the queue, so a single call cannot prove reuse by
-    /// itself: which workers pick up work depends on timing, and another test
-    /// may be using the pool at the same time. Comparing against the ids the
-    /// pool spawned makes the check independent of that schedule — a
-    /// regression back to per-call scoped threads would hand the chunks to
-    /// threads the pool never created.
+    /// Which thread executes which chunk is deliberately not asserted: the
+    /// caller helps drain the shared queue and another test's caller can pick
+    /// up this call's chunks, so the schedule is not observable. What is
+    /// observable is that the pool is created once — later calls must not raise
+    /// the spawn count. Per-call scoped threads would never touch it at all.
     #[test]
-    fn parallel_chunks_run_on_the_persistent_pool() {
-        // First use builds the pool; the ids are what the assertions compare to.
-        let mut warmup = vec![0usize; 64];
-        scoped_parallel_chunks(&mut warmup, MAX_POOL_THREADS, |_| {});
-        let pool_ids = pool_thread_ids();
-        if pool_ids.is_empty() {
+    fn parallel_chunks_reuse_the_pool_instead_of_spawning_per_call() {
+        if available_parallelism() < 2 {
             return;
         }
+        let mut warmup = vec![0usize; 64];
+        scoped_parallel_chunks(&mut warmup, MAX_POOL_THREADS, |_| {});
+        let spawned = pool_spawn_count();
+        assert!(
+            spawned > 0,
+            "the first call must build the pool instead of running on scoped threads"
+        );
 
-        let caller = std::thread::current().id();
-        let seen = Mutex::new(Vec::new());
-        let mut items = vec![0usize; 256];
-        scoped_parallel_chunks(&mut items, MAX_POOL_THREADS, record_thread(&seen));
-
-        let seen = seen.into_inner().unwrap_or_else(PoisonError::into_inner);
-        assert!(!seen.is_empty());
-        for id in seen {
-            assert!(
-                id == caller || pool_ids.contains(&id),
-                "chunk ran on {id:?}, which the pool never spawned"
-            );
+        for _ in 0..3 {
+            let mut items = vec![0usize; 256];
+            scoped_parallel_chunks(&mut items, MAX_POOL_THREADS, |item| *item += 1);
         }
+        assert_eq!(
+            pool_spawn_count(),
+            spawned,
+            "later calls must reuse the pool's workers"
+        );
     }
 
     /// A panicking chunk must not wedge the pool, and the panic has to reach
