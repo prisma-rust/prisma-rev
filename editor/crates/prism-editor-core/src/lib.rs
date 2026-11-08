@@ -41,6 +41,7 @@ pub mod state;
 pub mod sync_marker_view;
 pub mod textinput;
 pub mod theme;
+pub mod thumbnails;
 pub mod undo;
 pub mod viewport_math;
 pub mod workspace;

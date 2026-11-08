@@ -19,6 +19,8 @@ egui-ash = { git = "https://github.com/prisma-rust/egui-ash", rev = "6b390d3e8f4
   "gpu-allocator",
 ] }
 env_logger = "0.11"
+# Asset thumbnails (#982); `prism-editor-core` decodes PNG, the UI uploads it.
+image = { version = "0.25", default-features = false }
 glam = "0.33"
 gpu-allocator = { version = "0.27", default-features = false, features = [
   "vulkan",
