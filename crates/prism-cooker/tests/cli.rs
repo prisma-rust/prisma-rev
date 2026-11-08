@@ -265,3 +265,83 @@ fn cli_build_without_prior_import_imports_on_demand() {
     assert!(v_stderr.is_empty(), "validate error: {v_stderr}");
     assert!(v_stdout.contains("RPAK"), "validate should show magic");
 }
+
+#[test]
+fn cli_verify_reports_missing_and_orphan_intermediates() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let root = dir.path();
+    let root_str = root.to_string_lossy().to_string();
+
+    let (_stdout, stderr) = run_cli(&["init", &root_str]);
+    assert!(stderr.is_empty(), "init error: {stderr}");
+
+    let img_path = root.join("Assets").join("test_tex.png");
+    image::RgbaImage::new(4, 4)
+        .save(&img_path)
+        .expect("save test png");
+
+    let (_stdout, stderr) = run_cli(&["scan", "--project", &root_str]);
+    assert!(stderr.is_empty(), "scan error: {stderr}");
+    let (_stdout, stderr) = run_cli(&["import", "--project", &root_str]);
+    assert!(stderr.is_empty(), "import error: {stderr}");
+
+    // Intermediate names are content addressed instead of per-database serials.
+    let inter_dir = root.join("Library").join("Intermediate");
+    let names: Vec<String> = std::fs::read_dir(&inter_dir)
+        .expect("read Intermediate/")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names.len(), 1, "one imported asset → one intermediate");
+    assert!(
+        names[0].ends_with(".bin") && names[0].split('-').count() == 3,
+        "expected <source-hash>-<settings-hash>-v<importer-version>.bin, got: {}",
+        names[0]
+    );
+
+    let (stdout, stderr) = run_cli(&["verify", "--project", &root_str]);
+    assert!(stderr.is_empty(), "verify error: {stderr}");
+    assert!(
+        stdout.contains("verified"),
+        "verify should pass on a fresh library:\n{stdout}"
+    );
+
+    // A source that changed without a re-import makes the record outdated.
+    image::RgbaImage::new(8, 8)
+        .save(&img_path)
+        .expect("rewrite test png");
+    let (stdout, stderr) = run_cli(&["verify", "--project", &root_str]);
+    assert!(stdout.contains("outdated"), "verify output:\n{stdout}");
+    assert!(
+        stdout.contains("source changed"),
+        "verify should explain why the record is outdated:\n{stdout}"
+    );
+    assert!(stderr.contains("out of date"), "verify error:\n{stderr}");
+
+    // Re-importing repairs the record and the intermediate.
+    let (_stdout, stderr) = run_cli(&["import", "--project", &root_str]);
+    assert!(stderr.is_empty(), "re-import error: {stderr}");
+    let (stdout, stderr) = run_cli(&["verify", "--project", &root_str]);
+    assert!(stderr.is_empty(), "verify error: {stderr}");
+    assert!(stdout.contains("verified"), "verify output:\n{stdout}");
+    // The intermediate built from the old source hash is now unreferenced; it
+    // stays on disk until a gc pass exists, and `verify` lists it as an orphan.
+    assert!(
+        stdout.contains("1 orphan"),
+        "stale intermediate should be reported as an orphan:\n{stdout}"
+    );
+
+    // A missing intermediate is reported and fails the command.
+    for entry in std::fs::read_dir(&inter_dir).expect("read Intermediate/") {
+        std::fs::remove_file(entry.expect("intermediate entry").path())
+            .expect("remove intermediate");
+    }
+    let (stdout, stderr) = run_cli(&["verify", "--project", &root_str]);
+    assert!(stdout.contains("missing"), "verify output:\n{stdout}");
+    assert!(stderr.contains("missing"), "verify error:\n{stderr}");
+
+    // An intermediate no record points at is reported as an orphan.
+    std::fs::write(inter_dir.join("orphan.bin"), b"stale").expect("write orphan");
+    let (stdout, _stderr) = run_cli(&["verify", "--project", &root_str]);
+    assert!(stdout.contains("orphan.bin"), "verify output:\n{stdout}");
+}

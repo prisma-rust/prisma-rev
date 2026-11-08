@@ -779,8 +779,15 @@ pub trait Asset: Sized + Send + 'static {
 | `import` | 对每个文件运行匹配的 Importer，增量缓存 |
 | `build --output game.pak` | 烹饪所有资产 → 打包 `.pak`；`--profile <name>` / `--platform <p>` 先解析 profile（`--compression` 覆盖 profile 的 level） |
 | `validate game.pak` | 验证魔数 + 版本 + 校验和 |
+| `verify` | 校验 `Library/Intermediate/`：每个记录都要有内容寻址的中间文件，并列出孤儿文件 |
 | `list` | 列出数据库全部资产 |
 | `inspect <id>` | 查看单资产详情（依赖树可见） |
+
+`Library/Intermediate/` 的文件名是内容寻址的：
+`<source-hash>-<settings-hash>-v<importer-version>.bin`（三个键与 `ImportCache`
+的判定键相同）。同一个源文件用同一份设置导入，在任何项目 / checkout 里都落到同名文件，
+所以中间产物可以跨项目复用；换设置或换 importer 版本会得到新名字，旧文件由 `verify`
+报成孤儿，等 `gc` 清理（尚未实现）。`AssetId` 仍只是 `.pak` 内的运行时标识。
 
 ### 10.10 场景 cook 与运行时的接缝
 

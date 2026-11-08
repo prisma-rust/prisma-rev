@@ -20,6 +20,9 @@
 //! # Validate an existing .pak
 //! prism-cook validate game.pak
 //!
+//! # Verify the content-addressed Library/Intermediate cache
+//! prism-cook verify
+//!
 //! # List registered assets
 //! prism-cook 列表
 //!
@@ -27,10 +30,10 @@
 //! prism-cook inspect 10001
 //! ```
 
-use prism_asset::core::{AssetId, AssetType};
+use prism_asset::core::AssetType;
 use prism_asset::package::PackageBuilder;
 use prism_cooker::cooker::{default_cooker_registry, profile, CookPipeline};
-use prism_cooker::db::{AssetDatabase, ImportCache};
+use prism_cooker::db::{AssetDatabase, AssetRecord, ImportCache};
 use prism_cooker::importer::{default_importer_registry, ImportPipeline};
 
 use clap::{Parser, Subcommand};
@@ -161,6 +164,9 @@ enum Commands {
         pak: PathBuf,
     },
 
+    /// Verify the Library/Intermediate cache. 校验中间缓存
+    Verify,
+
     /// List all registered assets. 列出所有已注册资源
     List,
 
@@ -202,8 +208,19 @@ fn intermediate_dir(root: &Path) -> PathBuf {
     library_dir(root).join("Intermediate")
 }
 
-fn intermediate_path(root: &Path, id: AssetId) -> PathBuf {
-    intermediate_dir(root).join(format!("{:016x}.bin", id.0))
+/// Content-addressed path of a record's intermediate artifact.
+///
+/// The file name is built from the three keys the import cache already tracks:
+/// source hash, import-settings hash and importer version. Identical source
+/// bytes cooked with identical settings therefore land on the same file name
+/// in every project and checkout, so a `Library/` directory can be reused
+/// across projects instead of being keyed by a per-database serial. `AssetId`
+/// stays a `.pak`-only runtime identifier.
+fn intermediate_path(root: &Path, record: &AssetRecord) -> PathBuf {
+    intermediate_dir(root).join(format!(
+        "{:016x}-{:016x}-v{}.bin",
+        record.source_hash, record.import_settings_hash, record.version
+    ))
 }
 
 /// Resolve the profile/platform + CLI overrides into final cook settings.
@@ -360,7 +377,8 @@ fn cmd_import(root: &Path, force: bool, _cli: &Cli) -> anyhow::Result<()> {
         let id_opt = db.id_by_path(relative);
         let force_this = force
             || id_opt
-                .map(|id| !intermediate_path(root, id).exists())
+                .and_then(|id| db.get(id))
+                .map(|record| !intermediate_path(root, record).exists())
                 .unwrap_or(true);
 
         match pipeline.import_file_with_key(
@@ -375,8 +393,9 @@ fn cmd_import(root: &Path, force: bool, _cli: &Cli) -> anyhow::Result<()> {
                 if r.was_imported {
                     imported += 1;
                     if let Some(data) = r.intermediate_data {
-                        if let Some(id) = db.id_by_path(relative) {
-                            let path = intermediate_path(root, id);
+                        let record = db.id_by_path(relative).and_then(|id| db.get(id));
+                        if let Some(record) = record {
+                            let path = intermediate_path(root, record);
                             if let Err(e) = std::fs::write(&path, &data) {
                                 eprintln!(
                                     "  ⚠  cannot write intermediate / 无法写入中间文件 {}: {e}",
@@ -452,7 +471,7 @@ fn cmd_build(
     let mut asset_data: std::collections::HashMap<prism_asset::core::AssetId, Vec<u8>> =
         std::collections::HashMap::new();
     for record in db.records() {
-        let inter_path = intermediate_path(root, record.id);
+        let inter_path = intermediate_path(root, record);
         if inter_path.exists() {
             if let Ok(data) = std::fs::read(&inter_path) {
                 asset_data.insert(record.id, data);
@@ -477,7 +496,13 @@ fn cmd_build(
             Ok(r) => {
                 dirty = true;
                 if let Some(data) = r.intermediate_data {
-                    let _ = std::fs::write(&inter_path, &data);
+                    // The record may have picked up new hashes while importing,
+                    // so write to the name derived from the updated record.
+                    let path = db_mut
+                        .get(record.id)
+                        .map(|updated| intermediate_path(root, updated))
+                        .unwrap_or_else(|| inter_path.clone());
+                    let _ = std::fs::write(&path, &data);
                     asset_data.insert(record.id, data);
                 } else if let Ok(data) = std::fs::read(&inter_path) {
                     asset_data.insert(record.id, data);
@@ -710,6 +735,88 @@ fn cmd_validate(pak_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Verify that every database record has a content-addressed intermediate on
+/// disk, and report intermediate files no record points at any more (#1005).
+fn cmd_verify(root: &Path) -> anyhow::Result<()> {
+    if !db_path(root).exists() {
+        anyhow::bail!("No AssetDatabase.json found / 未找到数据库. Run 'prism-cook scan' first.");
+    }
+
+    let db = AssetDatabase::load(db_path(root))?;
+
+    let assets = assets_dir(root);
+    let mut expected: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    let mut missing: Vec<(&str, PathBuf)> = Vec::new();
+    let mut outdated: Vec<(&str, &str)> = Vec::new();
+    for record in db.records() {
+        let path = intermediate_path(root, record);
+        let usable = std::fs::metadata(&path)
+            .map(|meta| meta.len() > 0)
+            .unwrap_or(false);
+        if usable {
+            expected.insert(path);
+        } else {
+            missing.push((record.path.as_str(), path));
+        }
+
+        // The file name only stays correct while the database record matches
+        // the source on disk; a stale record would point at an intermediate
+        // built from different bytes.
+        match std::fs::read(assets.join(&record.path)) {
+            Ok(bytes) => {
+                if xxhash_rust::xxh3::xxh3_64(&bytes) != record.source_hash {
+                    outdated.push((record.path.as_str(), "source changed since the last import"));
+                }
+            }
+            Err(_) => outdated.push((record.path.as_str(), "source file is missing")),
+        }
+    }
+    let available = expected.len();
+
+    let mut orphans: Vec<PathBuf> = Vec::new();
+    let dir = intermediate_dir(root);
+    if dir.is_dir() {
+        for entry in std::fs::read_dir(&dir)? {
+            let path = entry?.path();
+            if path.extension().map(|ext| ext != "bin").unwrap_or(true) {
+                continue;
+            }
+            if !expected.contains(&path) {
+                orphans.push(path);
+            }
+        }
+    }
+    orphans.sort();
+
+    for (asset, path) in &missing {
+        println!("  ✗ missing / 缺失: {asset} → {}", path.display());
+    }
+    for (asset, reason) in &outdated {
+        println!("  ✗ outdated / 过期: {asset}（{reason}）");
+    }
+    for path in &orphans {
+        println!("  ? orphan / 孤儿文件: {}", path.display());
+    }
+    println!(
+        "  Intermediate: {available} ok / 正常, {} missing / 缺失, {} outdated / 过期, {} orphan / 孤儿",
+        missing.len(),
+        outdated.len(),
+        orphans.len()
+    );
+
+    if !missing.is_empty() || !outdated.is_empty() {
+        anyhow::bail!(
+            "{} intermediate file(s) missing or empty, {} record(s) out of date; run 'prism-cook import' / {} 个中间文件缺失，{} 条记录过期，请重新 import",
+            missing.len(),
+            outdated.len(),
+            missing.len(),
+            outdated.len()
+        );
+    }
+    println!("✅  Intermediate cache verified / 中间缓存校验通过");
+    Ok(())
+}
+
 fn cmd_list(root: &Path, _cli: &Cli) -> anyhow::Result<()> {
     if !db_path(root).exists() {
         anyhow::bail!("No AssetDatabase.json found / 未找到数据库. Run 'prism-cook scan' first.");
@@ -806,6 +913,7 @@ fn main() -> anyhow::Result<()> {
             &cli,
         ),
         Some(Commands::Validate { pak }) => cmd_validate(pak),
+        Some(Commands::Verify) => cmd_verify(&root),
         Some(Commands::List) => cmd_list(&root, &cli),
         Some(Commands::Inspect { id }) => cmd_inspect(&root, id),
         None => {
@@ -849,6 +957,51 @@ mod tests {
 
     fn temp_root(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!("prism-cook-{tag}-{}", std::process::id()))
+    }
+
+    fn record_with_hashes(source_hash: u64, settings_hash: u64, version: u32) -> AssetRecord {
+        let mut record = AssetRecord::new(
+            prism_asset::core::AssetId::from_raw(1),
+            "textures/a.png".to_owned(),
+            AssetType::Texture,
+            "texture-importer",
+        );
+        record.source_hash = source_hash;
+        record.import_settings_hash = settings_hash;
+        record.version = version;
+        record
+    }
+
+    #[test]
+    fn intermediate_names_are_content_addressed() {
+        let root = temp_root("intermediate-name");
+        let record = record_with_hashes(0xabc, 0xdef, 3);
+        let path = intermediate_path(&root, &record);
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("0000000000000abc-0000000000000def-v3.bin"),
+            "intermediate name must encode source hash, settings hash and importer version"
+        );
+
+        // The database serial must not influence the name: two projects that
+        // imported the same source end up with the same intermediate file.
+        let mut other_serial = record.clone();
+        other_serial.id = prism_asset::core::AssetId::from_raw(999);
+        assert_eq!(intermediate_path(&root, &other_serial), path);
+
+        // Changing any of the three keys changes the name.
+        assert_ne!(
+            intermediate_path(&root, &record_with_hashes(0xabd, 0xdef, 3)),
+            path
+        );
+        assert_ne!(
+            intermediate_path(&root, &record_with_hashes(0xabc, 0xdf0, 3)),
+            path
+        );
+        assert_ne!(
+            intermediate_path(&root, &record_with_hashes(0xabc, 0xdef, 4)),
+            path
+        );
     }
 
     #[test]
