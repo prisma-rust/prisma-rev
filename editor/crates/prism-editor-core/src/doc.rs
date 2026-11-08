@@ -13,12 +13,27 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 /// 预制体实例链接组件名（编辑器元数据，引擎运行时不查询）。
 pub const PREFAB_LINK_COMPONENT: &str = "prism_engine::scene::PrefabInstance";
 
+///
+/// Missing components fall back to the identity transform, exactly like the
+/// engine's own `TransformJson`: a document that only authors `position` must
+/// load in the editor as well as it does in the player.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TransformJson {
+    #[serde(default)]
     pub position: [f32; 3],
+    #[serde(default = "identity_rotation")]
     pub rotation: [f32; 4],
+    #[serde(default = "uniform_scale")]
     pub scale: [f32; 3],
+}
+
+fn identity_rotation() -> [f32; 4] {
+    [0.0, 0.0, 0.0, 1.0]
+}
+
+fn uniform_scale() -> [f32; 3] {
+    [1.0; 3]
 }
 
 impl Default for TransformJson {

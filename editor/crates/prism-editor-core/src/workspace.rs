@@ -619,6 +619,11 @@ pub struct Workspace {
     pub asset_edits: crate::asset_edit::AssetEditHistory,
     /// 进入 Play 时的编辑态快照；`None` = 不在播放/没有快照（#500）。
     play_snapshot: Option<PlaySnapshot>,
+    /// Documents that failed to parse during the last `load_project` (project-relative paths).
+    ///
+    /// The UI uses this to say "N scene files failed" instead of silently
+    /// showing the fixture documents (#1020).
+    project_load_failures: Vec<String>,
 }
 
 impl Default for Workspace {
@@ -665,6 +670,11 @@ fn selection_ids_in(doc: &crate::doc::SceneDoc, selection: &[usize]) -> Vec<u32>
 }
 
 impl Workspace {
+    /// Project-relative paths of documents that failed to parse in [`Self::load_project`].
+    pub fn project_load_failures(&self) -> &[String] {
+        &self.project_load_failures
+    }
+
     /// 一个自包含的最小工作区（没有 fixture 时也能启动）。
     pub fn sample() -> Self {
         let mut doc = SceneDoc::default();
@@ -727,6 +737,7 @@ impl Workspace {
             scene_manifest: SceneManifest::default(),
             asset_edits: crate::asset_edit::AssetEditHistory::new(),
             play_snapshot: None,
+            project_load_failures: Vec::new(),
         };
         workspace.log(
             LogSource::Editor,
@@ -891,6 +902,7 @@ impl Workspace {
     pub fn load_project(&mut self, root: PathBuf) -> io::Result<usize> {
         let files = project::scan_documents(&root);
         let mut opened: Vec<Document> = Vec::new();
+        let mut failed: Vec<String> = Vec::new();
         for file in &files {
             match project::read_document(&root, &file.path) {
                 Ok(doc) => {
@@ -898,13 +910,27 @@ impl Workspace {
                     document.note_disk_state(Some(&root));
                     opened.push(document);
                 }
-                Err(error) => self.log(
-                    LogSource::Editor,
-                    LogLevel::Warn,
-                    format!("读取 {} 失败: {error}", file.path),
-                ),
+                Err(error) => {
+                    failed.push(file.path.clone());
+                    self.log(
+                        LogSource::Editor,
+                        LogLevel::Error,
+                        format!("读取 {} 失败: {error}", file.path),
+                    );
+                }
             }
         }
+        if !files.is_empty() && opened.is_empty() {
+            self.log(
+                LogSource::Editor,
+                LogLevel::Error,
+                format!(
+                    "工程里的 {} 个文档全部加载失败；当前显示的是编辑器示例文档，不是工程内容",
+                    failed.len()
+                ),
+            );
+        }
+        self.project_load_failures = failed;
 
         self.project_root = Some(root);
         self.project_files = files;
@@ -8092,6 +8118,53 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn load_project_accepts_transforms_with_missing_components() {
+        let project = TempProject::new("partial-transform");
+        std::fs::write(
+            project.root.join("assets/scenes/main.scene.json"),
+            r#"{"version":3,"entities":[{"id":1,"name":"A","transform":{"position":[1.0,2.0,3.0]}}]}"#,
+        )
+        .unwrap();
+
+        let mut workspace = Workspace::load_fixture(&fixture());
+        workspace.load_project(project.root.clone()).unwrap();
+
+        assert!(
+            workspace.project_load_failures().is_empty(),
+            "{:?}",
+            workspace.project_load_failures()
+        );
+        let document = workspace
+            .docs
+            .iter()
+            .find(|document| document.path.as_deref() == Some("assets/scenes/main.scene.json"))
+            .expect("scene document");
+        assert_eq!(
+            document.doc.entities[0].transform.rotation,
+            [0.0, 0.0, 0.0, 1.0]
+        );
+        assert_eq!(document.doc.entities[0].transform.scale, [1.0; 3]);
+    }
+
+    #[test]
+    fn load_project_reports_documents_that_fail_to_parse() {
+        let project = TempProject::new("broken-scene");
+        std::fs::write(
+            project.root.join("assets/scenes/broken.scene.json"),
+            r#"{"version":3,"entities":42}"#,
+        )
+        .unwrap();
+
+        let mut workspace = Workspace::load_fixture(&fixture());
+        workspace.load_project(project.root.clone()).unwrap();
+
+        assert_eq!(
+            workspace.project_load_failures(),
+            ["assets/scenes/broken.scene.json"]
+        );
     }
 
     #[test]

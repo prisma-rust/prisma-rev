@@ -583,6 +583,11 @@ impl EditorApp {
         );
         app.doc_hash = document_hash(&app.workspace);
         app.render_report = read_report(app.project_root.as_deref());
+        let failures = app.workspace.project_load_failures().len();
+        if failures > 0 {
+            app.state.status =
+                format!("{failures} document(s) failed to load — see the Console panel");
+        }
         app.workspace.log(
             prism_editor_core::LogSource::Editor,
             prism_editor_core::LogLevel::Info,
