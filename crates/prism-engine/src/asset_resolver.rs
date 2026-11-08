@@ -16,7 +16,7 @@
 //! 这样启动期渲染器在渲染线程异步构建时，主线程仍可处理窗口事件（关闭/移动/缩放）。
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use prism_asset::core::AssetId;
 use prism_asset::formats::{
@@ -144,6 +144,10 @@ struct PendingRequest {
 /// 每帧调用 [`prepare_requests`] 收集待处理实体并产出上传请求（CPU 段）；
 /// GPU 上传由渲染线程异步完成。
 pub struct GpuAssetResolver {
+    /// 已成功挂载的 `.pak`（首次 `prepare_requests` 时统一校验构建戳，#976）。
+    mounted_paks: Vec<PathBuf>,
+    /// 构建戳只报一次：`App::build` 阶段 logger 还没装好，日志会被丢掉。
+    stamps_checked: bool,
     pub resource_manager: ResourceManager,
     /// 已投递上传请求的实体（去重：避免每帧重复 enqueue，直到结果写回 World）。
     enqueued: HashSet<Entity>,
@@ -221,6 +225,8 @@ fn report_missing_reference(path: &str, kind: &str) {
 impl GpuAssetResolver {
     pub fn new() -> Self {
         Self {
+            mounted_paks: Vec::new(),
+            stamps_checked: false,
             resource_manager: ResourceManager::new(),
             enqueued: HashSet::new(),
             failed: HashMap::new(),
@@ -531,6 +537,9 @@ impl GpuAssetResolver {
                 continue;
             }
             loaded.push(pak_path.clone());
+            if !self.mounted_paks.iter().any(|mounted| mounted == pak_path) {
+                self.mounted_paks.push(pak_path.clone());
+            }
 
             // 每个包旁边有 `<name>.pak.meta.json`（路径清单）时一并加载。
             let manifest_path = pak_path.with_extension("pak.meta.json");
@@ -551,6 +560,81 @@ impl GpuAssetResolver {
             }
         }
         loaded
+    }
+
+    /// 校验包内构建戳（#976）：包过期时给出明确提示，而不是安静地画错内容。
+    ///
+    /// 三种情况：
+    /// - 没有戳 → 包由更旧的管线构建，无法判断新鲜度（warn，不阻断）；
+    /// - schema 指纹不同 → 引擎换了组件布局，旧包可能解出错误数据（error）；
+    /// - 工程文档比包新 → 改了场景忘改打包（error，带重建命令）。
+    /// 首次取资源时统一校验一次已挂载的包（logger 此时已就绪）。
+    fn check_cook_stamps_once(&mut self) {
+        if self.stamps_checked {
+            return;
+        }
+        self.stamps_checked = true;
+        let paks = std::mem::take(&mut self.mounted_paks);
+        for pak in &paks {
+            self.check_cook_stamp(pak);
+        }
+        self.mounted_paks = paks;
+    }
+
+    /// Pub 版给热重载用：重新打包后同样要校验一次（#976）。
+    ///
+    /// 三种情况：
+    /// - 没有戳 / 戳读不出来 → 包由更旧的管线构建（warn，不阻断）；
+    /// - schema 指纹不同 → 引擎换了组件布局，旧包可能解出错误数据（error）；
+    /// - 工程文档比包新 → 改了场景忘改打包（error，带重建命令）。
+    ///
+    /// 注意 `App::build` 阶段也会挂包，但那时 logger 还没装，所以真正的校验
+    /// 推迟到第一次 `prepare_requests`（见 [`Self::check_cook_stamps_once`]）。
+    pub fn check_cook_stamp(&mut self, pak_path: &Path) {
+        use prism_scene::cook_stamp as stamp_mod;
+        let stamp = self
+            .resource_manager
+            .id_by_path(stamp_mod::COOK_STAMP_NAME)
+            .and_then(|id| self.resource_manager.load_with_deps_raw(id).ok())
+            .and_then(|bytes| stamp_mod::CookStamp::parse(&String::from_utf8_lossy(&bytes)));
+        // 发布版没有 `assets/scenes/*.scene.json`，扫出来是 0 = 只比对 schema。
+        let newest = pak_path
+            .parent()
+            .map(stamp_mod::newest_source_mtime)
+            .unwrap_or(0);
+        match stamp_mod::check(
+            stamp,
+            prism_scene::registry::builtin_schema_fingerprint(),
+            newest,
+        ) {
+            stamp_mod::StampCheck::Fresh => {
+                log::debug!("resource package {} is up to date", pak_path.display());
+            }
+            stamp_mod::StampCheck::Missing => {
+                log::warn!(
+                    "resource package {} has no cook stamp: it was built by an older pipeline, \
+                     so its freshness cannot be verified. If the scene looks wrong, rebuild it: \
+                     `prism-build-pipeline build-scenes`",
+                    pak_path.display()
+                );
+            }
+            stamp_mod::StampCheck::SchemaChanged { cooked, current } => {
+                log::error!(
+                    "resource package {} was cooked with component schema {cooked:#x}, this \
+                     engine has {current:#x}: scene data may decode incorrectly. \
+                     Rebuild with `prism-build-pipeline build-scenes`",
+                    pak_path.display()
+                );
+            }
+            stamp_mod::StampCheck::SourcesNewer { cooked, newest } => {
+                log::error!(
+                    "resource package {} is older than the project documents (pak {cooked}, \
+                     newest source {newest}): the scene will render stale content. \
+                     Rebuild with `prism-build-pipeline build-scenes`",
+                    pak_path.display()
+                );
+            }
+        }
     }
 
     /// 从内存资源加载 `.pak` 及其路径 manifest。
@@ -584,6 +668,10 @@ impl GpuAssetResolver {
     /// 槽位会记入失败缓存（[`GpuAssetResolver::failed`]），同一坏路径只尝试一次，
     /// 直到路径被改写。
     pub fn prepare_requests(&mut self, world: &World) -> Vec<(Entity, AssetResolveRequest)> {
+        // #976：构建戳在**第一次**取资源时才校验。启动时的挂包发生在
+        // `App::build`，那时 `env_logger` 还没初始化，任何 warn/error 都会被丢掉
+        // ——这正是「旧包静默画错」能长期存在的原因之一。
+        self.check_cook_stamps_once();
         // 先回收这一帧已经失效的 GPU 资源（#495）：实体没了、组件被删、或
         // `generation` 归零（热重载）时把槽位交还给渲染器，再重新上传。
         self.release_stale_assets(world);
