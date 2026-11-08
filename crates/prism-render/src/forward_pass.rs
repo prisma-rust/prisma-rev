@@ -1640,10 +1640,11 @@ impl ForwardPass {
             .render_pass
             .context("ForwardPass: render_pass not created before pipeline")?;
 
-        // 顶点 reuse mesh_vert.vert.spv (MeshPush{model}, 64 字节 The 管线
-        // pushes PbrBindlessPushConstants (96 字节 the 顶点 阶段 only
-        // reads the 第一个 64 字节 模型 which Vulkan permits.
-        // 片元 scene_frag.frag.spv (bindless PBR + shadow).
+        // 顶点阶段复用 mesh_vert.vert.spv（`MeshPush { model }`，64 字节）；管线
+        // 按 `shader_bindings::scene_frag::PbrBindlessPush`（120 字节）推送同一个
+        // push-constant 块，顶点阶段只读最前面的 model，Vulkan 允许推送范围大于
+        // 某个阶段实际读取的字节数。
+        // 片元阶段 scene_frag.frag.spv（bindless PBR + shadow）。
         const VERT_SPV: &[u8] = include_bytes!("../../../assets/shaders/mesh_vert.vert.spv");
         const FRAG_SPV: &[u8] = include_bytes!("../../../assets/shaders/scene_frag.frag.spv");
         let vert_module =
