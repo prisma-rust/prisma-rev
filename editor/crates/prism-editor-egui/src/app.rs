@@ -714,6 +714,15 @@ impl EditorApp {
         }
     }
 
+    /// 把引擎解出的局部包围盒灌进工作区（`Frame Selection` / `Frame All` 用）。
+    fn refresh_object_bounds(&mut self) {
+        let Some(view) = self.scene_view.as_ref() else {
+            return;
+        };
+        let bounds = crate::viewport::bounds_table(&self.workspace, Some(&view.host));
+        self.workspace.set_object_bounds(bounds);
+    }
+
     fn apply_command(&mut self, command: Command) {
         if command == Command::DeleteSelection
             && self.state.confirm_delete
@@ -5697,6 +5706,10 @@ impl App for EditorApp {
     fn ui(&mut self, ctx: &egui::Context) {
         self.frame_count += 1;
         self.state.build_running = self.build_job_running();
+        // 取景用的真实包围盒（#991）：贴图像素尺寸只有引擎知道，数据层拿不到，
+        // 所以每帧把 Scene 视图解出来的 bounds 灌回工作区。实体数是几百的量级，
+        // 一份 `Option<PickBounds>` 的拷贝远小于这一帧的 egui 开销。
+        self.refresh_object_bounds();
         // 光源预算（#468）：视口每帧采集，检查器只读这份镜像。
         if let Some(view) = self.scene_view.as_ref() {
             let (kept, total) = view.host.local_light_stats();
