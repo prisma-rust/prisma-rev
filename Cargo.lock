@@ -3131,19 +3131,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "prism-terrain-tool"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "env_logger",
- "image",
- "log",
- "rand",
- "rayon",
-]
-
-[[package]]
 name = "proc-macro-crate"
 version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
