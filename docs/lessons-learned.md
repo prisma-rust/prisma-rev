@@ -410,7 +410,7 @@ GTAO+PostPass 集成时一次性暴露了 5 个验证错误，按修复顺序：
 
 - CI shaders job 末尾有 **drift guard**：跑 `shaders/compile.sh` 重新编译 `.spv` + reflection JSON，再 `xtask shader-bindgen` 重新生成 `crates/prism-render/src/shader_bindings.rs`，然后 `git diff --quiet` 比对仓库里已提交的 `.spv` 和 `shader_bindings.rs`。**任何不一致 → `exit 1`**。
 - **规则：动了 `shaders/slang/*.slang`，必须本地跑 `bash shaders/compile.sh` + `cd xtask && cargo run --bin shader-bindgen -- ../shaders/reflection ../crates/prism-render/src/shader_bindings.rs`，把生成的 `.spv` / `reflection/*.json` / `shader_bindings.rs` 一起 commit**。否则 CI 必红。
-- **Termux 本地跑不了 `shaders/compile.sh`**：slangc 官方预编译是 glibc 二进制，Termux（bionic）无法运行；且 `.spv` 是 `include_bytes!` 进二进制的，必须和 CI 用**同版本 slangc**（当前 `2026.13.1`）生成才一致。本次因本地无 slangc，借 **CI artifact**（drift step 前的 `Upload compiled SPIR-V + reflection (debug)` 已上传重新编译的 `.spv` 和 reflection JSON）取回正确产物：下载 artifact 的 `.spv` + `reflection/*.json`，本地只跑 `xtask shader-bindgen`（它只吃 reflection JSON，不需要 slangc）生成 `shader_bindings.rs`，覆盖后提交。
+- **Termux 本地跑不了 `shaders/compile.sh`**：slangc 官方预编译是 glibc 二进制，Termux（bionic）无法运行；且 `.spv` 是 `include_bytes!` 进二进制的，必须和 CI 用**同版本 slangc**（当前 `2026.21`）生成才一致。`compile.sh` 现在会拒绝更旧的 `slangc`，并在反射 JSON 与仓库不一致时失败（见 #980），所以版本错配会在编译这一步就暴露，而不是等到 bindgen 漂移。本次因本地无 slangc，借 **CI artifact**（drift step 前的 `Upload compiled SPIR-V + reflection (debug)` 已上传重新编译的 `.spv` 和 reflection JSON）取回正确产物：下载 artifact 的 `.spv` + `reflection/*.json`，本地只跑 `xtask shader-bindgen`（它只吃 reflection JSON，不需要 slangc）生成 `shader_bindings.rs`，覆盖后提交。
 - **`.spv` 和 `shader_bindings.rs` 必须同时更新**：只更新一个，drift 仍挂（drift 同时检查两者）。
 
 ### 30.4 环境 / 操作

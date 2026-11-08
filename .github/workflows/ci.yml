@@ -32,7 +32,7 @@ env:
   # Bump to force-refresh caches when toolchains change.
   CACHE_VERSION: v1
   # Slang release used to compile shaders (both desktop + shaders jobs).
-  SLANG_VERSION: "2026.13.1"
+  SLANG_VERSION: "2026.21"
 
 concurrency:
   group: ci-${{ github.ref }}

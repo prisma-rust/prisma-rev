@@ -425,9 +425,19 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   的 `slang-*-linux-aarch64.tar.gz` 解到 `/usr/local/opt/slang`，`/usr/local/bin/slangc`
   包一层 `LD_LIBRARY_PATH`）。它的 reflection JSON 只比旧版**多**字段
   （`version` / `globalScope` / `bindlessSpaceIndex` / `elementStride` / `sizes`，
-  entry point 参数挪到 `scope` 下），字段顺序与 offset 不变，所以 bindgen 输出不变；
-  想只生成 `.spv` 不改动已提交的 `reflection/*.json`，把 `-reflection-json` 重定向到
-  /tmp 再跑 `compile.sh`。
+  entry point 参数挪到 `scope` 下），字段顺序与 offset 不变，所以 bindgen 输出不变。
+- **已提交的 `reflection/*.json` 由 slangc `2026.21` 生成**，CI 的 `SLANG_VERSION` 与
+  `compile.sh` 的 `SLANGC_MIN_VERSION` 都钉在这一个版本上；换版本 = 同时改这两处 + 重新生成
+  反射 JSON + 重跑 bindgen。`compile.sh` 会拒绝更旧的版本（`SLANGC_MIN_VERSION=0` 只用于
+  一次性实验）：旧的编译器生成的 offset 不变，但会**少**字段（`version` / `combined` /
+  `sizes`），静默覆盖后绑定就和 shader 对不上了。
+- 版本是钉死的，**不会为了本地方便下调**：自己的机器 / 设备没跟上时，按脚本报错里的链接装
+  同版本的 Slang 发行包（桌面直接解压加到 PATH，Termux/aarch64 参考上一段），不要用
+  `SLANGC_MIN_VERSION=0` 或手改反射 JSON 绕过检查。
+- `compile.sh` 现在先写到临时目录：`.spv` 只在 slangc 成功后才会落盘（编译失败不会留下半个
+  `.spv`），反射 JSON 与已提交版本**逐字节比对**，不一致就失败并列出行；确实要更新 schema 时
+  用 `bash assets/shaders/compile.sh --write-reflection`，再跑 `xtask shader-bindgen` 并一起提交。
+  **不要再手工把 `-reflection-json` 改到 /tmp 来「避开」检查。**
 - Reflection JSON (`assets/shaders/reflection/*.json`) is committed and drives `xtask` Rust binding codegen.
 
 ## Auto-generated shader bindings (push constants, descriptor bindings)
