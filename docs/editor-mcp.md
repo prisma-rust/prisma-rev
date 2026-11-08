@@ -33,19 +33,25 @@ cargo run -p prism-editor-mcp -- --project projects/fishing
 
 ## 工具
 
-| 工具 | 作用 |
-|---|---|
-| `documents_list` | 列出场景 / 预制体（项目相对路径） |
-| `document_read` | 读完整文档（已迁移到当前格式，实体带稳定 `id`） |
-| `document_write` | 校验后整体写回 |
-| `schema_list` | 所有组件 + 嵌套结构体的字段、枚举变体、只读标记 |
-| `entity_get` | 按 `id` 或名字取实体 |
-| `field_set` | **反射写入**一个字段（`a.b` / `list[0].x` 都支持） |
-| `component_add` / `component_remove` | 挂 / 摘组件（默认值来自 schema） |
-| `asset_inspect` | 检查已 cook 的资源（`RSKL`/`RSKN`/`RANI`/`RMES`/`RTEX`/`RMAT`）：计数、摘要、校验问题 |
-| `asset_validate` | 只跑校验（权重和、joint 越界、索引/子网格区间、关键帧时间与顺序），`ok=true` 表示通过 |
-| `game_run` / `game_stop` / `game_logs` | 起停游戏、读日志尾部 |
-| `screenshot` | 起游戏 → 抓图 → 结束，返回 PNG 路径 |
+下面两张表合起来是**完整**的工具清单：本表是文档 / 资源 / 游戏进程工具，egui 编辑器的
+工具在「[egui 编辑器](#egui-编辑器editor)」一节。参数带 `?` 的是可选，其余必填。
+
+| 工具 | 参数 | 作用 |
+|---|---|---|
+| `documents_list` | `kind?`（`scene` / `prefab` / `all`） | 列出场景 / 预制体（项目相对路径） |
+| `document_read` | `path` | 读完整文档（已迁移到当前格式，实体带稳定 `id`） |
+| `document_write` | `path` `doc` | 校验后整体写回；`doc` 是 `{ version, entities }` |
+| `schema_list` | `component?` | 所有组件 + 嵌套结构体的字段、枚举变体、只读标记 |
+| `entity_get` | `path` `entity` | 按 `id` 或名字取实体 |
+| `field_set` | `path` `entity` `component` `field` `value` | **反射写入**一个字段（`a.b` / `list[0].x` 都支持） |
+| `component_add` | `path` `entity` `component` | 挂组件（默认值来自 schema） |
+| `component_remove` | `path` `entity` `component` | 摘组件 |
+| `asset_inspect` | `path` | 检查已 cook 的资源（`RSKL`/`RSKN`/`RANI`/`RMES`/`RTEX`/`RMAT`）：计数、摘要、校验问题 |
+| `asset_validate` | `path` `skeleton?` | 只跑校验（权重和、joint 越界、索引/子网格区间、关键帧时间与顺序），`ok=true` 表示通过 |
+| `game_run` | `command?` `env?` | 起游戏（默认 `cargo run --release`），日志进缓冲区 |
+| `game_stop` | — | 结束由 `game_run` / `screenshot` 启动的进程 |
+| `game_logs` | `lines?` | 读日志尾部（stdout + stderr，默认 200 行） |
+| `screenshot` | `path` `size?` `scale?` `frame?` `timeout_ms?` `command?` `env?` | 起游戏 → 抓图 → 结束，返回 PNG 路径 |
 
 ### `field_set` 为什么安全
 
@@ -90,7 +96,7 @@ MCP 工具        → 读端口文件 → TCP 一行 JSON 请求 / 一行 JSON �
 | `editor_launch` | `command?` `wait_ms?` | 起 `editor/target/{release,debug}/prism-editor-egui`（没构建过退回 `cargo run`），等控制通道就绪 |
 | `editor_status` | — | 帧数、当前场景、选中实体、Play / 暂停、未保存标记、项目根 |
 | `editor_capture` | `target`(`window`/`scene`/`game`) `path?` `size?` | 抓整窗（UI + 视口）或某个视口的引擎离屏图，返回 PNG 路径 |
-| `editor_ui` | `action`(`snapshot`/`click`/`move`/`wheel`/`drag`/`set`) `node?` `offset?` `from?` `to?` `value?` | UI 节点树：快照 / 按节点点击 / 视口指针移动、滚轮、拖动 / 按节点设值 |
+| `editor_ui` | `action`(`snapshot`/`click`/`move`/`wheel`/`drag`/`set`) `node?` `offset?` `tab?` `x?` `y?` `delta?` `from?` `to?` `steps?` `mode?` `ctrl?` `value?` | UI 节点树：快照 / 按节点点击 / 视口指针移动、滚轮、拖动 / 按节点设值 |
 | `editor_play` | `action`(`play`/`stop`/`pause`) | 控制 Play（Play 会触发工程模块编译 + 加载） |
 | `editor_logs` | `since?` `limit?` | 读 Console 缓冲：引擎日志 + 工程模块 `project:` 日志 + panic 调用栈 |
 | `editor_input` | `key?` `mouse?` `state?` `click?` | 给 Play 注入输入（每帧一个事件），`click=true` 点一下左键 |
