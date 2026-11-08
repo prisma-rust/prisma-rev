@@ -290,6 +290,14 @@ impl App {
     }
 
     fn build(config: AppConfig, load_scene: bool) -> Self {
+        // The player mounts asset packages and loads its startup scene here,
+        // before `run` installs the process logger. Buffer those records so
+        // "package is stale/missing" warnings are not dropped.
+        if load_scene {
+            Self::apply_launch_config();
+            crate::startup_log::install();
+        }
+
         let mut engine = Engine::empty();
 
         // Phase 1 – Subsystem registration
@@ -767,9 +775,9 @@ impl App {
     /// 解析启动配置，把日志级别写入 `RUST_LOG`。
     ///
     /// **必须在 logger 初始化之前调用**：`env_logger` / `android_logger`
-    /// 只在初始化时读取一次过滤器。桌面入口在 [`Self::run`] 里先调用本函数，
-    /// Android 入口在 `run_on_android` 里先读取同一份配置。
-    fn apply_launch_config(&self) {
+    /// 只在初始化时读取一次过滤器。桌面入口在 [`Self::build`] 与 [`Self::run`]
+    /// 里先调用本函数，Android 入口在 `run_on_android` 里先读取同一份配置。
+    fn apply_launch_config() {
         let launch = prism_engine::launch_config::LaunchConfig::from_env();
         if let Some(level) = &launch.log_level {
             std::env::set_var("RUST_LOG", level);
@@ -803,9 +811,11 @@ impl App {
     #[cfg(feature = "winit-backend")]
     pub fn run(self) {
         // 日志级别必须在 try_init 之前写入，否则 env_logger 已经读完 RUST_LOG。
-        self.apply_launch_config();
+        Self::apply_launch_config();
         // 日志兜底（try_init 幂等，已初始化时静默失败）。
         let _ = env_logger::try_init();
+        // Emit the warnings `build` buffered before the logger existed.
+        crate::startup_log::replay();
         Self::log_asset_root();
         let event_loop = winit::event_loop::EventLoop::new().expect("failed to create event loop");
         self.run_on(event_loop).expect("fatal application error");
@@ -819,7 +829,7 @@ impl App {
     /// `PRISMREV_LAUNCH_CONFIG` env（从 files 目录读取）。
     #[cfg(feature = "winit-backend")]
     pub fn run_on(mut self, event_loop: winit::event_loop::EventLoop<()>) -> anyhow::Result<()> {
-        self.apply_launch_config();
+        Self::apply_launch_config();
         event_loop.run_app(&mut self)?;
         Ok(())
     }
@@ -830,8 +840,9 @@ impl App {
     /// 只是窗口与消息来自 `prism-platform` 的 `win32-native` 后端。
     #[cfg(all(windows, feature = "win32-native", not(feature = "winit-backend")))]
     pub fn run(self) {
-        self.apply_launch_config();
+        Self::apply_launch_config();
         let _ = env_logger::try_init();
+        crate::startup_log::replay();
         Self::log_asset_root();
         self.run_win32().expect("fatal application error");
     }

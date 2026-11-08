@@ -98,6 +98,7 @@ mod render_shared;
 #[cfg(feature = "audio")]
 pub mod scene_audio;
 mod screenshot;
+mod startup_log;
 
 use prism_engine::config::AppConfig;
 
