@@ -5,6 +5,22 @@
 //! `tools/call` and `ping`. There are no resource, prompt or sampling
 //! capabilities and no progress notifications; tools are synchronous and
 //! return their result directly.
+//!
+//! # Why this is hand-written instead of `rmcp` (#1045)
+//!
+//! The whole server is one synchronous read loop over stdin, and this file is
+//! its protocol layer. `rmcp` would bring an async runtime (tokio) into a
+//! process whose tools all block on `cargo` / file IO anyway, and the two
+//! capabilities it adds — resources and prompts — are not what this server
+//! exposes. Keeping the subset means the process stays dependency-light and
+//! the MCP spec revision in [`initialize_result`] is one string to bump.
+//!
+//! Revisit when any of these becomes true: a protocol revision changes the
+//! message framing or handshake beyond a version string, a client needs
+//! resources / prompts / progress notifications, or the tool table grows a
+//! streaming result. If `rmcp` is adopted then, check first that its tokio
+//! dependency stays inside this process: `prism-editor-mcp` is not part of the
+//! player tree, and `scripts/check_deps.py` must keep passing.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
