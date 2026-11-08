@@ -22,9 +22,10 @@
 //   set 5, binding 1 - probe volume grid metadata UBO (ProbeVolumeInfo)
 // brdf LUT: registered in the bindless Texture2D[] table at slot pc.env_handle
 //           (the env_handle push constant is repurposed for the BRDF LUT index).
-// Push constants: PbrBindlessPush (96 bytes, mirrors Rust
-//                  PbrBindlessPushConstants). lightViewProj lives in the
-//                  UBO so the push constant stays under 128 bytes.
+// Push constants: PbrBindlessPush (120 bytes, mirrored by
+//                  `shader_bindings::scene_frag::PbrBindlessPush`).
+//                  lightViewProj lives in the UBO so the push constant stays
+//                  under the 128-byte guarantee.
 //
 // MRT: the fragment stage now writes two color attachments:
 //   SV_Target0 - linear HDR lit color (PostPass tonemaps this -> swapchain)
