@@ -63,6 +63,8 @@ pub struct FishingState {
     bobber_pos: [f32; 2],
     /// 抛竿起点（船锚点）。
     cast_origin: [f32; 2],
+    /// 收线起点（咬钩时的浮标位置）。
+    reel_origin: [f32; 2],
     /// 本次等待的咬钩时间（伪随机）。
     bite_at: f32,
     /// 已钓到的鱼数（M0 只做计数）。
@@ -196,6 +198,7 @@ pub fn tick(state: &mut Option<FishingState>, world: &mut GameWorld<'_>, dt: f32
                 WATER_LINE - 4.0 + (current.elapsed * 18.0).sin() * 2.5,
             ];
             if action {
+                current.reel_origin = current.bobber_pos;
                 current.phase = Phase::Reeling;
                 current.elapsed = 0.0;
                 log::info!("fishing: hook set");
@@ -208,10 +211,15 @@ pub fn tick(state: &mut Option<FishingState>, world: &mut GameWorld<'_>, dt: f32
         }
         Phase::Reeling => {
             let t = (current.elapsed / REEL_SECONDS).clamp(0.0, 1.0);
+            // Position is a pure function of the phase time: easing from the hook
+            // position to the rod tip always takes `REEL_SECONDS`, so the path does
+            // not change with the frame rate (#1059).
+            let ease = 1.0 - (1.0 - t) * (1.0 - t);
             let target = [boat_pos[0] + ROD_OFFSET[0], boat_pos[1] + ROD_OFFSET[1]];
+            let origin = current.reel_origin;
             current.bobber_pos = [
-                current.bobber_pos[0] + (target[0] - current.bobber_pos[0]) * t * 0.35,
-                current.bobber_pos[1] + (target[1] - current.bobber_pos[1]) * t * 0.35,
+                origin[0] + (target[0] - origin[0]) * ease,
+                origin[1] + (target[1] - origin[1]) * ease,
             ];
             if t >= 1.0 {
                 current.caught += 1;
@@ -327,4 +335,60 @@ fn pseudo_random(seed: u32) -> f32 {
     x = x.wrapping_mul(2_246_822_519);
     x ^= x >> 13;
     (x & 0xFFFF) as f32 / 65535.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a world with just the boat, and a state that is already reeling from
+    /// `[194, 76]` (the bite position) toward the rod tip.
+    fn run_reeling(dt: f32, steps: u32) -> [f32; 2] {
+        let mut world = prism_ecs::World::new();
+        let mut api = GameWorld::host(&mut world);
+        let boat = api.spawn();
+        api.set(boat, Name("boat".to_string()));
+        api.set(boat, LocalTransform::default());
+        let mut state = Some(FishingState {
+            phase: Phase::Reeling,
+            bobber_pos: [194.0, 76.0],
+            reel_origin: [194.0, 76.0],
+            boat: Some(boat),
+            ..FishingState::default()
+        });
+        for _ in 0..steps {
+            tick(&mut state, &mut api, dt);
+        }
+        state.expect("state must survive the tick").bobber_pos
+    }
+
+    #[test]
+    fn reeling_path_does_not_depend_on_frame_rate() {
+        // 0.9 s of reeling is 27 steps at 30 FPS and 54 at 60 FPS.
+        let thirty_end = run_reeling(1.0 / 30.0, 27);
+        let sixty_end = run_reeling(1.0 / 60.0, 54);
+        // 0.4667 s in, sampled at both rates.
+        let thirty_mid = run_reeling(1.0 / 30.0, 14);
+        let sixty_mid = run_reeling(1.0 / 60.0, 28);
+
+        let tip = [ROD_OFFSET[0], ROD_OFFSET[1]];
+        for axis in 0..2 {
+            assert!(
+                (thirty_end[axis] - tip[axis]).abs() < 1e-3,
+                "30 FPS did not reach the rod tip: {thirty_end:?}"
+            );
+            assert!(
+                (sixty_end[axis] - tip[axis]).abs() < 1e-3,
+                "60 FPS did not reach the rod tip: {sixty_end:?}"
+            );
+            assert!(
+                (thirty_mid[axis] - sixty_mid[axis]).abs() < 1e-3,
+                "mid-reel position differs by frame rate: {thirty_mid:?} vs {sixty_mid:?}"
+            );
+        }
+        assert!(
+            sixty_mid[0] > tip[0] + 10.0,
+            "the bobber should still be away from the rod tip mid-reel: {sixty_mid:?}"
+        );
+    }
 }
