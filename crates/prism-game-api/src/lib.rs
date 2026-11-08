@@ -83,8 +83,6 @@ pub struct GameWorld<'a> {
     /// has not been written yet, and the mirror for `set_input`.
     #[cfg_attr(not(feature = "host"), allow(dead_code))]
     input: InputSnapshot,
-    #[cfg_attr(not(feature = "host"), allow(dead_code))]
-    quads: Vec<UiQuad>,
 }
 
 enum Backend<'a> {
@@ -101,7 +99,6 @@ impl<'a> GameWorld<'a> {
         Self {
             backend: Backend::Host(world),
             input: InputSnapshot::default(),
-            quads: Vec::new(),
         }
     }
 
@@ -115,7 +112,6 @@ impl<'a> GameWorld<'a> {
         Self {
             backend: Backend::Plugin(PluginBackend { api, registry }),
             input: api.input,
-            quads: Vec::new(),
         }
     }
 
@@ -520,22 +516,34 @@ impl<'a> GameWorld<'a> {
         }
     }
 
-    /// Submits a UI quad; the host takes the quads before this frame's UI render and
-    /// merges them into its draw list.
+    /// Submits a UI quad for this frame's UI draw list.
+    ///
+    /// The host backend queues it in the world's [`ExternalUiQuads`] resource, so the
+    /// static Player renders it even though the `GameWorld` itself is dropped at the
+    /// end of the tick. The plugin backend forwards it through `HostApi::draw_quad`.
+    ///
+    /// [`ExternalUiQuads`]: prism_engine::ui::ExternalUiQuads
     pub fn draw_quad(&mut self, quad: UiQuad) {
         match &mut self.backend {
             #[cfg(feature = "host")]
-            Backend::Host(_) => self.quads.push(quad),
+            Backend::Host(world) => {
+                let mut external = world
+                    .remove_resource::<prism_engine::ui::ExternalUiQuads>()
+                    .unwrap_or_default();
+                external.0.push(prism_engine::ui::UiQuad {
+                    rect: quad.rect,
+                    color: quad.color,
+                    border_radius: quad.border_radius,
+                    // Project quads are solid colour only (no bindless texture slot).
+                    texture: None,
+                    layer: quad.layer,
+                    order: prism_engine::ui::EXTERNAL_UI_ORDER,
+                });
+                world.insert_resource(external);
+            }
             #[cfg(feature = "plugin")]
             Backend::Plugin(backend) => backend.draw(quad),
         }
-    }
-
-    /// Takes the quads accumulated this frame (called by the host side; the plugin
-    /// backend's quads are taken by the host itself).
-    #[cfg(feature = "host")]
-    pub fn take_quads(&mut self) -> Vec<UiQuad> {
-        std::mem::take(&mut self.quads)
     }
 }
 
@@ -1301,13 +1309,24 @@ mod tests {
     }
 
     #[test]
-    fn quads_are_drained_once() {
+    fn host_quads_are_queued_for_the_engine() {
         let mut world = World::new();
-        let mut api = GameWorld::host(&mut world);
+        {
+            let mut api = GameWorld::host(&mut world);
+            api.draw_quad(UiQuad {
+                layer: 3,
+                ..UiQuad::default()
+            });
+        }
 
-        api.draw_quad(UiQuad::default());
-        assert_eq!(api.take_quads().len(), 1);
-        assert!(api.take_quads().is_empty());
+        // The `GameWorld` is gone; the quad survives in the world resource the
+        // engine merges into `UiDrawList` (#1048).
+        let external = world
+            .remove_resource::<prism_engine::ui::ExternalUiQuads>()
+            .expect("quad queued in the world");
+        assert_eq!(external.0.len(), 1);
+        assert_eq!(external.0[0].layer, 3);
+        assert_eq!(external.0[0].order, prism_engine::ui::EXTERNAL_UI_ORDER);
     }
 
     #[cfg(feature = "plugin")]

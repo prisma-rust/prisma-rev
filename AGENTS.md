@@ -238,6 +238,12 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
     capability bit or a `GameWorld` method.
   - **Only values with cross-boundary identity are versioned** (fixed index tables such
     as key codes): they are part of the ABI contract, append-only and never reordered.
+  - **`GameWorld::draw_quad` is a supported channel in both hosts.** The host backend
+    queues the quad in the engine's `ExternalUiQuads` resource (the `GameWorld` itself is
+    dropped at the end of the tick), and `Engine::update` merges it into the same frame's
+    `UiDrawList` right after the schedule runs; the plugin backend forwards it through
+    `HostApi::draw_quad` and the editor queues it before `engine.update()`. Do not buffer
+    project quads inside the `GameWorld` — the static player never drains that buffer (#1048).
 - **换场复用同一个 `Engine`**（#482）：`App::load_scene_json_file` 只在第一次加载时建
   engine / 资源解析器 / `.pak` 监听，之后走 `Engine::load_scene_json_file`（`Single`：
   先加载成功再卸载旧场景）。`Persistent` 实体连子树活过换场，用户注册的 system 不会被冲掉；

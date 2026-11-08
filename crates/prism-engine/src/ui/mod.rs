@@ -43,8 +43,9 @@ pub use layout::{assign_draw_order, ui_layout_system, ScreenSize, UiScreenMappin
 pub use panel_base::PanelBase;
 pub use particles::{Particle2D, ParticleSystem2D, SpawnKind};
 pub use render::{
-    convert_ui_draw_list_to_overlay, convert_ui_draw_list_to_overlay_into, ui_render_system,
-    ExternalUiQuads, UiDrawItem, UiDrawList, UiQuad, UiTextCmd, EXTERNAL_UI_ORDER,
+    convert_ui_draw_list_to_overlay, convert_ui_draw_list_to_overlay_into, merge_external_quads,
+    ui_render_system, ExternalUiQuads, UiDrawItem, UiDrawList, UiQuad, UiTextCmd,
+    EXTERNAL_UI_ORDER,
 };
 
 /// 实体及其祖先链是否全部处于激活状态。
