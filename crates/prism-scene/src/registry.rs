@@ -528,6 +528,7 @@ pub fn register_builtin_components(registry: &mut ComponentRegistry) {
     registry.register_reflect_type::<AnimLayer>();
     registry.register_reflect_serde::<Animator>("prism_engine::scene::Animator");
     registry.register_reflect_serde::<SkeletonRoot>("prism_engine::scene::SkeletonRoot");
+    registry.register_reflect_serde::<FootIk>("prism_engine::scene::FootIk");
     registry
         .register_reflect_serde::<SkinnedMeshRenderer>("prism_engine::scene::SkinnedMeshRenderer");
     registry.register_reflect_serde::<Collider>("prism_engine::scene::Collider");

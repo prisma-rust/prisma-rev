@@ -2639,6 +2639,68 @@ impl Default for AnimLayer {
     }
 }
 
+/// Foot IK settings for one skeleton (#560 P4).
+///
+/// Bone names are resolved against the skeleton loaded through [`SkeletonRoot`].
+/// If any of them is missing the pose is left exactly as the clip, state machine
+/// or graph produced it, instead of guessing. Without this component (or with
+/// `enabled = false`) the animator output does not change.
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
+#[reflect(name = "prism_engine::scene::FootIk")]
+#[serde(default)]
+pub struct FootIk {
+    /// Master switch; the component stays authored but inert when `false`.
+    pub enabled: bool,
+    /// Pelvis joint. Both leg chains must be children of it.
+    pub hips_joint: String,
+    pub left_thigh: String,
+    pub left_shin: String,
+    pub left_foot: String,
+    pub right_thigh: String,
+    pub right_shin: String,
+    pub right_foot: String,
+    /// Collider layer mask the ground probe considers (`0` = nothing).
+    pub ground_layer: u32,
+    /// How far above the ankle the downward probe starts.
+    pub probe_height: f32,
+    /// Ground higher than this above the ankle counts as a wall, not a step.
+    pub max_step_up: f32,
+    /// Ground farther than this below the ankle counts as no ground.
+    pub max_step_down: f32,
+    /// Ankle height above the ground when planted.
+    pub foot_offset: f32,
+    /// How far the pelvis may be lowered (negative) when a planted foot would
+    /// pull a leg past its reach.
+    pub pelvis_min: f32,
+    /// Smoothing time constant for plant targets and weights; `0` snaps.
+    pub blend_seconds: f32,
+    /// Global weight, `0` disables the solve without removing the component.
+    pub weight: f32,
+}
+
+impl Default for FootIk {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            hips_joint: String::new(),
+            left_thigh: String::new(),
+            left_shin: String::new(),
+            left_foot: String::new(),
+            right_thigh: String::new(),
+            right_shin: String::new(),
+            right_foot: String::new(),
+            ground_layer: 1,
+            probe_height: 0.15,
+            max_step_up: 0.35,
+            max_step_down: 0.45,
+            foot_offset: 0.05,
+            pelvis_min: -0.25,
+            blend_seconds: 0.08,
+            weight: 1.0,
+        }
+    }
+}
+
 /// 骨架的播放控制（#560 P0-2）。
 ///
 /// 事件源是 cooked 的 `.ranim` 剪辑；骨架由同一实体上的 [`SkeletonRoot`] 指定。

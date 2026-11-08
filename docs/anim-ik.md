@@ -86,7 +86,26 @@ let ground = SceneGroundQuery::new(world, 1).excluding(character);
 - 触发器不算地面：`is_sensor` 体积无法承重。
 - 探针从角色胶囊内部出发，必须 `excluding(character)`，否则最近命中永远是角色自己。
 
-## 未接线
+## 引擎接线（`FootIk` 组件）
 
-引擎还没有逐帧消费这个求解器：剩下的接线是把 `TwoBoneChain` 映射到骨架关节名，
-在 `Animator` 求值出姿态之后、算骨骼调色板之前调用 `FootPlacement::update`。
+场景实体上加 `FootIk`（`prism_engine::scene::FootIk`）就接上了，关节名按骨架解析：
+
+```json
+"foot_ik": {
+  "hips_joint": "hips",
+  "left_thigh": "thigh_l", "left_shin": "shin_l", "left_foot": "foot_l",
+  "right_thigh": "thigh_r", "right_shin": "shin_r", "right_foot": "foot_r",
+  "ground_layer": 1
+}
+```
+
+- `Animator` 求值出姿态之后、算骨骼调色板之前调用（动画图分支与普通剪辑 / 状态机 /
+  混合空间分支都有；动画 LOD 冻结的远处实体**不跑**，避免和节流打架）。
+- 姿态是骨架根空间，碰撞体是世界空间：`prism_engine::scene::systems::foot_ik` 里的
+  `ModelGroundQuery` 用实体 `LocalToWorld` 把探针换算到世界、命中再换算回来。
+  模型缩放按均匀缩放处理（探测距离按方向长度缩放）。
+- `FootIk` 缺省 `ground_layer = 1`，所以地面碰撞体要放在第 1 层；`0` 等于什么都不探。
+- 任何关节名解析失败、`enabled = false`、`weight = 0` 或姿态长度不等于骨架关节数时，
+  **姿态原样返回**，不会半途写骨骼。
+- 平滑状态（着地点、已烘焙的骨盆偏移）是引擎自己的 `FootIkState`，不进作者文档、不进
+  RSCN，和 `AnimatorPlayhead` 一样由系统写回。
