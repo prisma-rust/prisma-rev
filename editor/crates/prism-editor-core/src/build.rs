@@ -99,7 +99,10 @@ pub fn game_binary_name(manifest: &Path) -> String {
 }
 
 /// 运行时需要的 `assets/` 产物：`.pak` 包、路径清单、场景清单、`settings.ini`
-/// 以及工程自己在运行时读的顶层数据文件（`lake_layers.json` 这类）。
+/// 以及工程自己在运行时读的顶层数据文件（`*.json`）。
+///
+/// 子目录里的工程数据（`assets/data/`）由 `build-scenes` 打进 `.pak`（#1049），
+/// 这里只需要处理顶层松散文件。
 ///
 /// 只拷**产物**，不拷作者文档（`*.scene.json` / `*.prefab.json`）与散装资产：
 /// 场景内容已经在 `.pak` 里，散装资产由 cook 决定，拷目录会带走一堆源文件。
@@ -371,7 +374,7 @@ mod tests {
             "scenes.pak.meta.json",
             "settings.ini",
             "scenes.json",
-            "lake_layers.json",
+            "project_data.json",
         ] {
             std::fs::write(assets.join(name), b"x").unwrap();
         }
@@ -391,7 +394,7 @@ mod tests {
             "scenes.pak.meta.json",
             "settings.ini",
             "scenes.json",
-            "lake_layers.json",
+            "project_data.json",
         ] {
             assert!(
                 staged.contains(&out.join("assets").join(name).display().to_string()),

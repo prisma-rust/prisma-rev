@@ -180,6 +180,9 @@ pub fn build_scene_package_split(
     // 一次性音效（#987）同理：`GameWorld::play_sound("audio/xxx.wav")` 是运行时
     // 字符串，构建期无从枚举，所以把 `audio/` 整个目录原样打包。
     stage_audio_folder(asset_root, staging)?;
+    // 工程数据（#1049）：关卡配置等 JSON 同样按运行时路径读取，没有组件引用
+    // 可供枚举，`data/` 整个目录原样进包。
+    stage_data_folder(asset_root, staging)?;
 
     report_missing_references(missing)?;
 
@@ -418,7 +421,12 @@ fn stage_sprite_assets(
 /// 和 `sprites/` 同样的理由：音效路径是运行时字符串（`play_sound`），构建期
 /// 枚举不到，只能按目录打包。音频不需要转码，直接拷字节。
 fn stage_audio_folder(asset_root: &Path, staging: &Path) -> Result<usize> {
-    let dir = asset_root.join("audio");
+    stage_folder_verbatim(asset_root, staging, "audio")
+}
+
+/// 把 `assets/<name>/` 整个目录原样拷进 staging（不转码）。
+fn stage_folder_verbatim(asset_root: &Path, staging: &Path, name: &str) -> Result<usize> {
+    let dir = asset_root.join(name);
     if !dir.is_dir() {
         return Ok(0);
     }
@@ -426,7 +434,7 @@ fn stage_audio_folder(asset_root: &Path, staging: &Path) -> Result<usize> {
     let mut stack = vec![dir.clone()];
     while let Some(current) = stack.pop() {
         for entry in fs::read_dir(&current)
-            .with_context(|| format!("read audio dir {}", current.display()))?
+            .with_context(|| format!("read {name} dir {}", current.display()))?
         {
             let path = entry?.path();
             if path.is_dir() {
@@ -435,17 +443,27 @@ fn stage_audio_folder(asset_root: &Path, staging: &Path) -> Result<usize> {
             }
             let relative = path
                 .strip_prefix(asset_root)
-                .with_context(|| format!("audio file outside assets/: {}", path.display()))?;
+                .with_context(|| format!("{name} file outside assets/: {}", path.display()))?;
             let bytes =
-                fs::read(&path).with_context(|| format!("read audio {}", path.display()))?;
+                fs::read(&path).with_context(|| format!("read {name} {}", path.display()))?;
             write_staged(staging, relative, &bytes)?;
             packed += 1;
         }
     }
     if packed > 0 {
-        log::info!("packaged {packed} audio file(s) from {}", dir.display());
+        log::info!("packaged {packed} {name} file(s) from {}", dir.display());
     }
     Ok(packed)
+}
+
+/// 把 `assets/data/` 里的工程数据原样放进包里（#1049）。
+///
+/// 关卡配置、时段表这类 JSON 没有对应的场景组件引用，构建期无从枚举；
+/// 和 `sprites/` / `audio/` 一样按「目录即内容」整体打包。运行时的
+/// [`prism_engine::asset_paths::read_asset_text`] 先找松散文件，再回退到
+/// `.pak`，所以桌面与 Android 走同一条路径。
+fn stage_data_folder(asset_root: &Path, staging: &Path) -> Result<usize> {
+    stage_folder_verbatim(asset_root, staging, "data")
 }
 
 /// 把 UI 组件引用的贴图与字体放进 staging（`#591` 背景图 / `#529` tileset / `#583` 字体）。
@@ -1762,6 +1780,37 @@ mod tests {
             text.contains("audio/missing.ogg"),
             "error should name the missing clip: {text}"
         );
+    }
+
+    /// #1049：`assets/data/` 里的工程数据原样进包，运行时可按键读回。
+    #[test]
+    fn project_data_folder_is_packaged_verbatim() {
+        let temp = tempfile::tempdir().unwrap();
+        let assets = temp.path().join("assets");
+        fs::create_dir_all(assets.join("scenes")).unwrap();
+        fs::create_dir_all(assets.join("data/nested")).unwrap();
+        let layers = br#"{"layers":[{"slug":"sky","depth":0.9}]}"#;
+        fs::write(assets.join("data/lake_layers.json"), layers).unwrap();
+        fs::write(assets.join("data/nested/notes.txt"), b"hello").unwrap();
+        write_minimal_scene(&assets.join("scenes/lake.scene.json"));
+        write_manifest(
+            &assets,
+            r#"{"scenes":[{"name":"lake","path":"scenes/lake.scene.json","enabled":true}]}"#,
+        );
+
+        let output = temp.path().join("scenes.pak");
+        let staging = temp.path().join("cooked");
+        let summary =
+            build_scene_package(assets.join("scenes.json"), &staging, &output, 0).unwrap();
+
+        let meta_text = fs::read_to_string(summary.pack.manifest_path.clone()).unwrap();
+        let mut rm = ResourceManager::new();
+        rm.load_package_bytes(&fs::read(&output).unwrap()).unwrap();
+        rm.load_path_manifest_from_str(&meta_text).unwrap();
+        let layers_id = rm.id_by_path("data/lake_layers.json").expect("data path");
+        assert_eq!(rm.load_with_deps_raw(layers_id).unwrap(), layers);
+        let nested_id = rm.id_by_path("data/nested/notes.txt").expect("nested path");
+        assert_eq!(rm.load_with_deps_raw(nested_id).unwrap(), b"hello");
     }
 
     /// #509：`build-scenes --optional-dir` 把 staged 子目录拆成独立包，

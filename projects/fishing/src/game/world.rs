@@ -1,7 +1,7 @@
 //! 湖面世界：分层视差背景 + 昼夜换图。
 //!
 //! 这是**用户项目**的内容（关卡编排），不是引擎能力：
-//! `assets/lake_layers.json` 描述湖面的图层顺序与视差系数，本模块为
+//! `assets/data/lake_layers.json` 描述湖面的图层顺序与视差系数，本模块为
 //! 「当前时段」的每一层生成一个精灵实体，然后：
 //!
 //! - 每帧按相机位置平移各层（`pos = base + (cam - origin) * parallax`），
@@ -9,7 +9,7 @@
 //! - 按引擎 `TimeOfDay` 时钟轮换 dawn → day → dusk → night：只改写
 //!   `sprite_path`，资产解析器按路径比较后重新上传，不重复生成实体。
 //!
-//! 图层列表与顺序见 `assets/lake_layers.json`；美术由
+//! 图层列表与顺序见 `assets/data/lake_layers.json`；美术由
 //! `scripts/gen_placeholder_sprites.py` 生成，文件名与场景引用一致。
 //!
 //! 状态与读写都走 [`prism_game_api::GameWorld`]（与 `boat.rs` 同构），所以这份
@@ -96,7 +96,7 @@ impl LakeWorld {
                 file.water_line,
             ),
             Err(err) => {
-                log::error!("lake_layers.json: {err}");
+                log::error!("data/lake_layers.json: {err}");
                 (Vec::new(), Vec::new(), [0.0, 0.0], 0.0)
             }
         };
@@ -227,13 +227,13 @@ fn initial_tod(tods: &[String]) -> usize {
 
 fn load_layers(world: &GameWorld<'_>) -> Result<LayersFile, String> {
     let text = world
-        .read_asset_text("lake_layers.json")
-        .map_err(|e| format!("read lake_layers.json: {e}"))?;
+        .read_asset_text("data/lake_layers.json")
+        .map_err(|e| format!("read data/lake_layers.json: {e}"))?;
     serde_json::from_str(&text).map_err(|e| format!("parse lake_layers.json: {e}"))
 }
 
 /// 每帧：推进昼夜、平移各层。
-/// 引擎 `TimeOfDay` 的阶段 → `lake_layers.json` 里 `time_of_day` 的名字。
+/// 引擎 `TimeOfDay` 的阶段 → `data/lake_layers.json` 里 `time_of_day` 的名字。
 fn lake_phase(world: &mut GameWorld<'_>) -> Option<&'static str> {
     let clock = world
         .query::<TimeOfDay>()

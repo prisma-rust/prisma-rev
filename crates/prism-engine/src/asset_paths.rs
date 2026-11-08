@@ -169,32 +169,150 @@ pub fn optional_pak_files() -> Vec<PathBuf> {
 
 /// 松散资产（`.pak` 之外）是否存在。编辑器预览与用户项目的关卡 JSON、
 /// 按时段回落的贴图都走这里，不要再自己拼 `assets/` 相对路径。
+///
+/// 松散文件优先；找不到时再查 `assets/*.pak` 的路径清单（#1049），所以
+/// Android / 发布版里打进包的关卡数据同样可见。
 pub fn asset_exists(relative: impl AsRef<Path>) -> bool {
-    asset_path(relative).is_some_and(|path| path.is_file())
+    let relative = relative.as_ref();
+    if asset_path(relative).is_some_and(|path| path.is_file()) {
+        return true;
+    }
+    packaged_asset_exists(&package_key(relative))
 }
 
-/// 读取松散资产原始字节。
+/// 读取松散资产原始字节；松散文件不存在时回退到 `.pak`（#1049）。
 pub fn read_asset_file(relative: impl AsRef<Path>) -> std::io::Result<Vec<u8>> {
     let relative = relative.as_ref();
-    let path = asset_path(relative).ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("asset root not found for {}", relative.display()),
-        )
-    })?;
-    std::fs::read(&path)
+    if let Some(path) = asset_path(relative) {
+        if path.is_file() {
+            return std::fs::read(&path);
+        }
+    }
+    if let Some(bytes) = packaged_asset_bytes(&package_key(relative)) {
+        return Ok(bytes);
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        format!(
+            "asset not found (loose or packaged): {}",
+            relative.display()
+        ),
+    ))
 }
 
-/// 读取松散文本资产（关卡配置、清单等）。
+/// 读取松散文本资产（关卡配置、清单等）；`read_asset_file` 的 UTF-8 版本。
 pub fn read_asset_text(relative: impl AsRef<Path>) -> std::io::Result<String> {
-    let relative = relative.as_ref();
-    let path = asset_path(relative).ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("asset root not found for {}", relative.display()),
-        )
-    })?;
-    std::fs::read_to_string(&path)
+    let bytes = read_asset_file(relative)?;
+    String::from_utf8(bytes)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+}
+
+// ---------------------------------------------------------------------------
+// 打包资产回退（#1049）
+// ---------------------------------------------------------------------------
+
+/// 已打开的 `.pak` 读取器缓存条目。
+///
+/// `PackageReader::open` 会校验整包 checksum，所以不能每次查询都重开；
+/// 用 `(mtime, len)` 判断包是否被重建（与热重载同一套判据，Android 的
+/// FUSE 时间戳粒度是 1 秒，单看 mtime 会漏）。
+struct CachedPak {
+    path: PathBuf,
+    stamp: (u64, u64),
+    reader: std::sync::Arc<prism_asset::package::PackageReader>,
+}
+
+static PAK_CACHE: std::sync::OnceLock<std::sync::Mutex<Vec<CachedPak>>> =
+    std::sync::OnceLock::new();
+
+/// `.pak` 里的路径键：正斜杠、去掉开头的 `./`（`AssetId::from_path` 的输入）。
+fn package_key(relative: &Path) -> String {
+    relative
+        .to_string_lossy()
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .to_string()
+}
+
+fn pak_stamp(path: &Path) -> Option<(u64, u64)> {
+    let metadata = fs::metadata(path).ok()?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or(0);
+    Some((modified, metadata.len()))
+}
+
+/// 用 `assets/` 下当前的 `.pak` 列表刷新缓存：保留未变化的读取器，重开
+/// 刚被重建的包，丢掉已删除的包。
+fn refresh_pak_cache(cache: &mut Vec<CachedPak>) {
+    let mut previous = std::mem::take(cache);
+    let mut next = Vec::with_capacity(previous.len());
+    for path in pak_files() {
+        let Some(stamp) = pak_stamp(&path) else {
+            continue;
+        };
+        if let Some(index) = previous
+            .iter()
+            .position(|cached| cached.path == path && cached.stamp == stamp)
+        {
+            next.push(previous.swap_remove(index));
+            continue;
+        }
+        match prism_asset::package::PackageReader::open(&path) {
+            Ok(reader) => next.push(CachedPak {
+                path,
+                stamp,
+                reader: std::sync::Arc::new(reader),
+            }),
+            // 包里正在热重载时可能恰好在写；下一次查询会重试。
+            Err(error) => log::debug!(
+                "cannot open {} for packaged-asset lookup: {error}",
+                path.display()
+            ),
+        }
+    }
+    *cache = next;
+}
+
+fn with_pak_cache<R>(f: impl FnOnce(&[CachedPak]) -> R) -> R {
+    let cache = PAK_CACHE.get_or_init(Default::default);
+    let mut guard = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    refresh_pak_cache(&mut guard);
+    f(&guard)
+}
+
+fn packaged_asset_exists(key: &str) -> bool {
+    if key.is_empty() {
+        return false;
+    }
+    let id = prism_asset::AssetId::from_path(key);
+    with_pak_cache(|paks| paks.iter().any(|pak| pak.reader.find_record(id).is_some()))
+}
+
+fn packaged_asset_bytes(key: &str) -> Option<Vec<u8>> {
+    if key.is_empty() {
+        return None;
+    }
+    let id = prism_asset::AssetId::from_path(key);
+    with_pak_cache(|paks| {
+        for pak in paks {
+            let Some(record) = pak.reader.find_record(id) else {
+                continue;
+            };
+            match pak.reader.read_asset_record_data(record) {
+                Ok(bytes) => return Some(bytes),
+                Err(error) => {
+                    log::warn!("read packaged '{key}' from {}: {error}", pak.path.display())
+                }
+            }
+        }
+        None
+    })
 }
 
 #[cfg(test)]
