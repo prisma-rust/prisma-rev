@@ -354,7 +354,8 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
   检查器里 `Style` 上方有专门的 **Layout Group** 编辑块（方向下拉、间距、四边
   padding、交叉轴对齐、fit content），写入走 `set_field` 的点路径，所以撤销 /
   标脏 / 重载语义与其它字段一致。
-  `Text.wrap = true` 时文本按矩形宽度**按空格断词**换行（单个词过长按字符断），
+  `Text.wrap = true` 时文本按矩形宽度**按 UAX #14 的断点**换行（空格、连字符、
+  CJK 字间都能断，`，` / `。` 这类收尾标点不会落到行首；单个词过长按字符断），
   `\n` 始终换行并保留空行；超出行底边的行不再绘制。
 - **UI Canvas 缩放（#463）**：给 UI 根节点加 `prism_engine::ui::Canvas`
   （`reference_resolution` / `scale_mode` / `match_width_or_height`）后，整棵子树

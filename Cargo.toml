@@ -83,6 +83,9 @@ clap = { version = "4", features = ["derive"] }
 image = { version = "0.25", default-features = false }
 dirs = "6.0.0"
 unicode-width = "0.2"
+# UAX #14 断行机会（`prism-render/ui` 的 UI 文本换行）。只有这一个依赖，不拉
+# textwrap：换行宽度用的是字体推进量（像素），不是 `textwrap` 的列宽。
+unicode-linebreak = "0.1"
 
 # Windows API 绑定。目前只有 `prism-render/ui-directwrite`（DirectWrite 文本光栅）用，
 # 而且只在 `cfg(windows)` 目标上作为 optional 依赖激活（见 prism-render/Cargo.toml）。
