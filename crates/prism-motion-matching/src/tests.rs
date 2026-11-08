@@ -5,7 +5,8 @@ use prism_anim::{JointTransform, Skeleton};
 
 use crate::database::{DatabaseSettings, MotionDatabase, MotionFrame};
 use crate::pose_feature::PoseFeature;
-use crate::search::{search, MatchWeights};
+use crate::search::{search, search_biased, MatchWeights, MotionMatch};
+use crate::selection::{SearchBias, SelectionHistory};
 use crate::trajectory::{Trajectory, TrajectoryPoint, TrajectoryWeights};
 
 fn chain() -> Skeleton {
@@ -150,4 +151,150 @@ fn frames_with_another_joint_list_are_skipped() {
     };
     let database = MotionDatabase::from_frames(vec![stranger]);
     assert!(search(&database, &pose, &trajectory, &MatchWeights::default()).is_none());
+}
+
+/// A one-joint frame whose pose sits `offset` metres along +X, otherwise identical
+/// to the query. Cost of that frame is therefore `offset²`.
+fn offset_frame(trajectory: &Trajectory, offset: f32, clip: usize) -> MotionFrame {
+    MotionFrame {
+        clip,
+        time: 0.0,
+        pose: PoseFeature::new(vec![Vec3::new(offset, 0.0, 0.0)], vec![Vec3::ZERO])
+            .expect("equal lengths"),
+        trajectory: trajectory.clone(),
+    }
+}
+
+fn zero_query() -> PoseFeature {
+    PoseFeature::new(vec![Vec3::ZERO], vec![Vec3::ZERO]).expect("equal lengths")
+}
+
+#[test]
+fn the_continuing_frame_is_kept_while_it_is_close_enough() {
+    let trajectory = Trajectory::predicted(Vec3::ZERO, Vec3::NEG_Z, Vec3::NEG_Z, &[0.5]);
+    let database = MotionDatabase::from_frames(vec![
+        offset_frame(&trajectory, 0.1, 0),
+        offset_frame(&trajectory, 0.12, 1),
+    ]);
+    let query = zero_query();
+    let weights = MatchWeights::default();
+
+    let cold = search(&database, &query, &trajectory, &weights).expect("comparable frames");
+    assert_eq!(cold.frame, 0, "frame 0 is 0.01 vs 0.0144");
+
+    // Pretend frame 1 is what is playing right now: a cheap frame change is not
+    // worth a 20% worse match.
+    let mut history = SelectionHistory::default();
+    history.record(&MotionMatch {
+        frame: 1,
+        clip: 1,
+        time: 0.0,
+        pose_cost: 0.0144,
+        trajectory_cost: 0.0,
+        cost: 0.0144,
+    });
+    let sticky = search_biased(
+        &database,
+        &query,
+        &trajectory,
+        &weights,
+        SearchBias {
+            continuing: 0.5,
+            reselect: 1.0,
+        },
+        Some(&history),
+    )
+    .expect("comparable frames");
+    assert_eq!(sticky.frame, 1, "0.0144 * 0.5 beats 0.01");
+    assert!(
+        (sticky.pose_cost - 0.0144).abs() < 1e-5,
+        "the raw distance is reported unchanged: {}",
+        sticky.pose_cost
+    );
+
+    // Stiff weights still win: a clearly better frame overrides the bonus.
+    let clearly_better = MotionDatabase::from_frames(vec![
+        offset_frame(&trajectory, 0.02, 0),
+        offset_frame(&trajectory, 0.12, 1),
+    ]);
+    let switched = search_biased(
+        &clearly_better,
+        &query,
+        &trajectory,
+        &weights,
+        SearchBias {
+            continuing: 0.5,
+            reselect: 1.0,
+        },
+        Some(&history),
+    )
+    .expect("comparable frames");
+    assert_eq!(switched.frame, 0, "0.0004 vs 0.0072");
+}
+
+#[test]
+fn a_frame_picked_moments_ago_is_penalised() {
+    let trajectory = Trajectory::predicted(Vec3::ZERO, Vec3::NEG_Z, Vec3::NEG_Z, &[0.5]);
+    let database = MotionDatabase::from_frames(vec![
+        offset_frame(&trajectory, 0.114, 0),
+        offset_frame(&trajectory, 0.12, 1),
+        offset_frame(&trajectory, 0.3, 2),
+    ]);
+    let query = zero_query();
+    let weights = MatchWeights::default();
+
+    let cold = search(&database, &query, &trajectory, &weights).expect("comparable frames");
+    assert_eq!(cold.frame, 0);
+
+    // Frame 0 was picked before, frame 2 is playing now.
+    let mut history = SelectionHistory::default();
+    for frame in [0, 2] {
+        history.record(&MotionMatch {
+            frame,
+            clip: frame,
+            time: 0.0,
+            pose_cost: 0.0,
+            trajectory_cost: 0.0,
+            cost: 0.0,
+        });
+    }
+    let biased = search_biased(
+        &database,
+        &query,
+        &trajectory,
+        &weights,
+        SearchBias {
+            continuing: 0.5,
+            reselect: 1.5,
+        },
+        Some(&history),
+    )
+    .expect("comparable frames");
+    assert_eq!(
+        biased.frame, 1,
+        "frame 0 (0.013 * 1.5) loses to the untouched 0.0144"
+    );
+}
+
+#[test]
+fn a_fresh_history_does_not_change_the_plain_search() {
+    let trajectory = Trajectory::predicted(Vec3::ZERO, Vec3::NEG_Z, Vec3::NEG_Z, &[0.5]);
+    let database = MotionDatabase::from_frames(vec![
+        offset_frame(&trajectory, 0.1, 0),
+        offset_frame(&trajectory, 0.12, 1),
+    ]);
+    let query = zero_query();
+    let weights = MatchWeights::default();
+    let history = SelectionHistory::default();
+    let plain = search(&database, &query, &trajectory, &weights).expect("comparable frames");
+    let biased = search_biased(
+        &database,
+        &query,
+        &trajectory,
+        &weights,
+        SearchBias::default(),
+        Some(&history),
+    )
+    .expect("comparable frames");
+    assert_eq!(plain, biased);
 }

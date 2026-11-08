@@ -10,6 +10,8 @@
 //! - [`database`] — a clip sampled into frames that carry both features.
 //! - [`search`] — nearest-neighbour lookup of the frame that best continues both
 //!   the current pose and the desired trajectory.
+//! - [`selection`] — the decisions made so far, used to keep the choice sticky
+//!   instead of flipping between frames that cost almost the same.
 //!
 //! Everything is brute force on purpose: the first slice is about the data model
 //! and the cost function, and a linear scan of a few thousand frames is cheap
@@ -20,13 +22,17 @@
 //! entity transform is applied later, and `+Y` is up.
 
 pub mod database;
+pub mod foot_lock;
 pub mod pose_feature;
 pub mod search;
+pub mod selection;
 pub mod trajectory;
 
 pub use database::{DatabaseSettings, MotionDatabase, MotionFrame};
+pub use foot_lock::{FootLock, FootLockReport, FootLockSettings};
 pub use pose_feature::PoseFeature;
-pub use search::{search, MatchWeights, MotionMatch};
+pub use search::{search, search_biased, MatchWeights, MotionMatch};
+pub use selection::{SearchBias, SelectionHistory};
 pub use trajectory::{Trajectory, TrajectoryPoint, TrajectoryWeights};
 
 #[cfg(test)]
