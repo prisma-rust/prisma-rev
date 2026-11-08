@@ -195,7 +195,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod tests {
+mod docs_tests {
     use super::*;
     use std::collections::BTreeSet;
 
