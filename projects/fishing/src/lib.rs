@@ -26,8 +26,10 @@ pub fn build_app() -> prism_app::App {
         .with_subsystem(prism_app::Subsystem::Audio);
 
     app.add_system("game::world", world_system);
-    app.add_system("game::fishing", fishing_system)
-        .add_system("game::boat", boat_system);
+    // `fishing::tick` reads the boat transform, so the boat must run first. The
+    // preview module calls the same ticks in this order; keep the two in sync.
+    app.add_system("game::boat", boat_system)
+        .add_system("game::fishing", fishing_system);
     app
 }
 
