@@ -5,11 +5,13 @@ use std::time::Duration;
 
 use firewheel::core::channel_config::{ChannelCount, NonZeroChannelCount};
 use firewheel::core::diff::{Notify, ParamPath};
+use firewheel::core::dsp::distance_attenuation::DistanceAttenuation;
 use firewheel::core::event::{NodeEventType, ParamData};
 use firewheel::core::node::NodeID;
+use firewheel::core::vector::Vec3;
 use firewheel::cpal::{CpalConfig, CpalOutputConfig, CpalStream};
 use firewheel::nodes::sampler::*;
-use firewheel::nodes::volume_pan::VolumePanNode;
+use firewheel::nodes::spatial_basic::SpatialBasicNode;
 use firewheel::*;
 
 use crate::error::AudioError;
@@ -70,14 +72,19 @@ impl Default for AudioConfig {
 struct ActiveSound {
     handle: PlaybackHandle,
     node_id: NodeID,
-    /// Volume/pan node on a stereo output; `None` on mono devices.
+    /// Spatialization node on a stereo output; `None` on mono devices.
     ///
     /// Pan must update during playback (#508), so it cannot be baked into the
-    /// sample data at `play()` time as it was previously — Firewheel's
-    /// `VolumePanNode` provides the real-time pan instead.
-    pan_node: Option<NodeID>,
-    /// Last pan value pushed to `pan_node`, so events are not requeued every frame.
-    pan: f32,
+    /// sample data at `play()` time. Firewheel's `SpatialBasicNode` pans by the
+    /// horizontal angle between listener and source and smooths the value on
+    /// the audio thread. Distance attenuation stays in `prism-app`
+    /// (`AudioSource::volume_at`), so the node is configured with a flat
+    /// distance curve and only the panning is used (#1034).
+    spatial_node: Option<NodeID>,
+    /// Listener-space offset last pushed to `spatial_node`.
+    offset: [f32; 3],
+    /// Panning threshold last pushed to `spatial_node` (from `spatial_blend`).
+    panning_threshold: f32,
     /// Local copy used to call `sync_*_event()`.
     sampler: SamplerNode,
     /// Shared state of the sampler node, used to observe the true playback
@@ -244,8 +251,8 @@ impl AudioEngine {
                 return true;
             }
             let _ = ctx.remove_node(s.node_id);
-            if let Some(pan_id) = s.pan_node {
-                let _ = ctx.remove_node(pan_id);
+            if let Some(spatial_id) = s.spatial_node {
+                let _ = ctx.remove_node(spatial_id);
             }
             false
         });
@@ -327,14 +334,24 @@ impl AudioEngine {
         self.ctx
             .queue_event_for(node_id, SamplerNode::set_dyn_sample_event(resource));
 
-        // Insert a real-time volume/pan node on stereo outputs (#508); mono
-        // devices keep the direct chain.
-        let pan_node = if self.channels >= 2 {
-            let pan = VolumePanNode::from_pan(0.0);
-            match self.ctx.add_node(pan, None) {
+        // Insert a real-time spatial node on stereo outputs (#508, #1034);
+        // mono devices keep the direct chain.
+        let spatial_node = if self.channels >= 2 {
+            let node = SpatialBasicNode {
+                // `prism-app` owns the distance curve, so the node must not
+                // attenuate on its own (a non-positive factor disables it).
+                distance_attenuation: DistanceAttenuation {
+                    distance_gain_factor: 0.0,
+                    ..Default::default()
+                },
+                // Centered until the host sends the first offset.
+                panning_threshold: 0.0,
+                ..Default::default()
+            };
+            match self.ctx.add_node(node, None) {
                 Ok(id) => Some(id),
                 Err(e) => {
-                    ::log::error!("Failed to add pan node to graph: {e}");
+                    ::log::error!("Failed to add spatial node to graph: {e}");
                     let _ = self.ctx.remove_node(node_id);
                     return PlaybackHandle(0);
                 }
@@ -346,13 +363,13 @@ impl AudioEngine {
         // Connect to the graph output. Mono connects (0, 0); stereo connects
         // the stereo pair.
         let out = self.ctx.graph_out_node_id();
-        let res = match pan_node {
-            Some(pan_id) => {
+        let res = match spatial_node {
+            Some(spatial_id) => {
                 // The sampler is always configured as STEREO on stereo devices
                 // (`mono_to_stereo = true`).
                 self.ctx
-                    .connect(node_id, pan_id, &[(0, 0), (1, 1)], false)
-                    .and_then(|_| self.ctx.connect_stereo(pan_id, out, false))
+                    .connect(node_id, spatial_id, &[(0, 0), (1, 1)], false)
+                    .and_then(|_| self.ctx.connect_stereo(spatial_id, out, false))
                     .map(|_| ())
             }
             None => self.ctx.connect(node_id, out, &[(0, 0)], false).map(|_| ()),
@@ -360,8 +377,8 @@ impl AudioEngine {
         if let Err(e) = res {
             ::log::error!("Failed to connect sampler to graph output: {e}");
             let _ = self.ctx.remove_node(node_id);
-            if let Some(pan_id) = pan_node {
-                let _ = self.ctx.remove_node(pan_id);
+            if let Some(spatial_id) = spatial_node {
+                let _ = self.ctx.remove_node(spatial_id);
             }
             return PlaybackHandle(0);
         }
@@ -372,8 +389,9 @@ impl AudioEngine {
         self.active.push(ActiveSound {
             handle: id,
             node_id,
-            pan_node,
-            pan: 0.0,
+            spatial_node,
+            offset: [0.0; 3],
+            panning_threshold: 0.0,
             sampler,
             state,
             seen_playing: false,
@@ -387,8 +405,8 @@ impl AudioEngine {
         if let Some(idx) = self.active.iter().position(|s| s.handle == *handle) {
             let sound = self.active.swap_remove(idx);
             let _ = self.ctx.remove_node(sound.node_id);
-            if let Some(pan_id) = sound.pan_node {
-                let _ = self.ctx.remove_node(pan_id);
+            if let Some(spatial_id) = sound.spatial_node {
+                let _ = self.ctx.remove_node(spatial_id);
             }
         }
     }
@@ -404,32 +422,63 @@ impl AudioEngine {
             .queue_event_for(s.node_id, s.sampler.sync_volume_event());
     }
 
-    /// Sets the pan in real time: `-1` full left, `0` center, `+1` full right.
+    /// Places a playing sound relative to the listener and sets how strongly it pans.
+    ///
+    /// `offset` is the source position minus the listener position, expressed in
+    /// **listener space**: `+x` is to the right, `+y` is up, `+z` is behind.
+    /// `panning_threshold` is in `[0, 1]`: `0` keeps the signal centered and `1`
+    /// allows hard left/right panning.
     ///
     /// On stereo devices this takes effect smoothly through the
-    /// `VolumePanNode` in the playback chain, without replaying the clip; mono
+    /// `SpatialBasicNode` in the playback chain, without replaying the clip; mono
     /// devices have no left/right channels, so the call is a no-op.
     /// Non-finite values are ignored.
-    pub fn set_pan(&mut self, handle: &PlaybackHandle, pan: f32) {
-        if !pan.is_finite() {
+    pub fn set_spatial(
+        &mut self,
+        handle: &PlaybackHandle,
+        offset: [f32; 3],
+        panning_threshold: f32,
+    ) {
+        if !(offset.iter().all(|value| value.is_finite()) && panning_threshold.is_finite()) {
             return;
         }
-        let pan = pan.clamp(-1.0, 1.0);
+        let panning_threshold = panning_threshold.clamp(0.0, 1.0);
         let Some(s) = self.active.iter_mut().find(|s| s.handle == *handle) else {
             return;
         };
-        s.pan = pan;
-        let Some(pan_id) = s.pan_node else {
+
+        let offset_changed = s
+            .offset
+            .iter()
+            .zip(offset.iter())
+            .any(|(old, new)| (old - new).abs() > 1e-5);
+        let threshold_changed = (s.panning_threshold - panning_threshold).abs() > 1e-5;
+        s.offset = offset;
+        s.panning_threshold = panning_threshold;
+
+        let Some(spatial_id) = s.spatial_node else {
             return;
         };
-        self.ctx.queue_event_for(
-            pan_id,
-            NodeEventType::Param {
-                data: ParamData::F32(pan),
-                // VolumePanNode field order: volume(0), pan(1), ...
-                path: ParamPath::Single(1),
-            },
-        );
+        // `SpatialBasicNode` field order: volume(0), offset(1),
+        // panning_threshold(2), ...
+        if offset_changed {
+            self.ctx.queue_event_for(
+                spatial_id,
+                NodeEventType::Param {
+                    data: ParamData::Vector3D(Vec3::from(offset)),
+                    path: ParamPath::Single(1),
+                },
+            );
+        }
+        if threshold_changed {
+            self.ctx.queue_event_for(
+                spatial_id,
+                NodeEventType::Param {
+                    data: ParamData::F32(panning_threshold),
+                    path: ParamPath::Single(2),
+                },
+            );
+        }
     }
 
     /// Pauses a sound (freezes its playback position).
@@ -468,6 +517,9 @@ impl AudioEngine {
     pub fn stop_all(&mut self) {
         for s in self.active.drain(..) {
             let _ = self.ctx.remove_node(s.node_id);
+            if let Some(spatial_id) = s.spatial_node {
+                let _ = self.ctx.remove_node(spatial_id);
+            }
         }
     }
 
@@ -593,27 +645,36 @@ mod tests {
     }
 
     #[test]
-    fn stereo_playback_has_a_realtime_pan_node() {
+    fn stereo_playback_has_a_realtime_spatial_node() {
         let mut engine = AudioEngine::new(AudioConfig::default()).expect("engine new");
         let handle = engine.play(&dummy_audio(2));
         assert!(handle.is_valid());
         let sound = engine.active.first().expect("active sound");
         assert!(
-            sound.pan_node.is_some(),
-            "stereo output needs a VolumePanNode"
+            sound.spatial_node.is_some(),
+            "stereo output needs a SpatialBasicNode"
         );
-        assert_eq!(sound.pan, 0.0);
+        assert_eq!(sound.offset, [0.0; 3]);
+        assert_eq!(sound.panning_threshold, 0.0);
 
-        engine.set_pan(&handle, 2.5);
-        assert_eq!(engine.active[0].pan, 1.0, "pan is clamped to [-1, 1]");
-        engine.set_pan(&handle, f32::NAN);
-        assert_eq!(engine.active[0].pan, 1.0, "non-finite pan is ignored");
+        engine.set_spatial(&handle, [4.0, 0.0, 1.0], 2.5);
+        assert_eq!(engine.active[0].offset, [4.0, 0.0, 1.0]);
+        assert_eq!(
+            engine.active[0].panning_threshold, 1.0,
+            "panning threshold is clamped to [0, 1]"
+        );
+        engine.set_spatial(&handle, [f32::NAN, 0.0, 0.0], 1.0);
+        assert_eq!(
+            engine.active[0].offset,
+            [4.0, 0.0, 1.0],
+            "non-finite offsets are ignored"
+        );
         engine.stop(&handle);
         assert_eq!(engine.active_count(), 0);
     }
 
     #[test]
-    fn mono_playback_has_no_pan_node() {
+    fn mono_playback_has_no_spatial_node() {
         let config = AudioConfig {
             channels: 1,
             ..Default::default()
@@ -621,9 +682,13 @@ mod tests {
         let mut engine = AudioEngine::new(config).expect("engine new");
         let handle = engine.play(&dummy_audio(1));
         assert!(handle.is_valid());
-        assert!(engine.active[0].pan_node.is_none());
-        engine.set_pan(&handle, 1.0);
-        assert_eq!(engine.active[0].pan, 1.0, "state still records the request");
+        assert!(engine.active[0].spatial_node.is_none());
+        engine.set_spatial(&handle, [1.0, 0.0, 0.0], 1.0);
+        assert_eq!(
+            engine.active[0].offset,
+            [1.0, 0.0, 0.0],
+            "state still records the request"
+        );
         engine.stop(&handle);
     }
 

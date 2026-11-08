@@ -13,10 +13,11 @@
 //!
 //! # 现状与边界
 //!
-//! - **距离衰减 + 等功率声像**：`spatial_blend` 既缩放衰减曲线，也缩放左右声像。
-//!   声像按听者右向量计算后**逐帧**下发给混音器（`AudioSink::set_pan`），所以移动
-//!   中的声源会实时左右移动；混音器用 Firewheel 的 `VolumePanNode` 平滑过渡，
-//!   不需要为了换声像而重播片段。
+//! - **距离衰减 + 等功率声像**：`spatial_blend` 同时缩放衰减曲线与声像强度。
+//!   每帧把「声源相对听者的偏移」（转换到听者空间）下发给混音器
+//!   （`AudioSink::set_spatial`），由 Firewheel 的 `SpatialBasicNode` 做等功率声像
+//!   与平滑过渡，所以移动中的声源会实时左右移动，不需要为了换声像而重播片段。
+//!   距离衰减仍在这里算（`AudioSource::volume_at`），节点只负责声像。
 //! - 只读**松散文件**：`assets/**` 里的音频；`.pak` 内的音频还没接。
 //! - 片段的采样率/声道由解码器给；混音器负责重采样。
 //! - 不监听文件变化：改音频后需要重启或重新加载场景（资产热重载只处理 `.pak`）。
@@ -38,10 +39,12 @@ pub trait AudioSink {
     fn play(&mut self, clip: &AudioData) -> u64;
     fn stop(&mut self, voice: u64);
     fn set_volume(&mut self, voice: u64, volume: f32);
-    /// 实时声像：`-1` 全左、`0` 居中、`+1` 全右。
+    /// 实时空间化：`offset` 是声源相对听者的偏移，已转换到**听者空间**
+    /// （`+x` 右、`+y` 上、`+z` 后），`panning_threshold` 是 `0..=1` 的声像强度
+    /// （`0` 保持居中）。
     ///
     /// 提供空实现是为了不破坏已有的测试 / 自定义 sink；真实混音器应当覆盖它。
-    fn set_pan(&mut self, _voice: u64, _pan: f32) {}
+    fn set_spatial(&mut self, _voice: u64, _offset: [f32; 3], _panning_threshold: f32) {}
     fn is_playing(&self, voice: u64) -> bool;
 }
 
@@ -52,8 +55,10 @@ struct Voice {
     id: u64,
     /// 已经下发给混音器的音量（避免每帧重复排队事件）。
     volume: f32,
-    /// 已经下发给混音器的声像（#508，移动声源逐帧更新）。
-    pan: f32,
+    /// 已经下发给混音器的听者空间偏移（#508，移动声源逐帧更新）。
+    offset: [f32; 3],
+    /// 已经下发给混音器的声像强度（#1034，来自 `spatial_blend`）。
+    panning_threshold: f32,
     /// 音频线程是否真的开始播了（`play()` 刚返回时它还是 `false`）。
     started: bool,
     /// 声部对应的片段路径（路径变了要重播）。
@@ -193,12 +198,14 @@ impl SceneAudio {
             .clamp(0.0, 1.0)
                 * self.bus_gain(source.bus);
             let volume = volume.clamp(0.0, 1.0);
-            let pan = pan_for(
-                position,
-                listener.position,
-                listener.right,
-                source.spatial_blend,
-            );
+            let threshold = panning_threshold(source.spatial_blend);
+            let (offset, panning_threshold) = match (position, listener.position) {
+                (Some(position), Some(listener_position)) => (
+                    listener_offset(position, listener_position, listener.basis),
+                    threshold,
+                ),
+                _ => ([0.0; 3], 0.0),
+            };
 
             if !self.clips.contains_key(&source.sound_path) {
                 self.request(&source.sound_path, requests);
@@ -224,13 +231,14 @@ impl SceneAudio {
                         continue;
                     }
                     sink.set_volume(id, volume);
-                    sink.set_pan(id, pan);
+                    sink.set_spatial(id, offset, panning_threshold);
                     self.voices.insert(
                         entity,
                         Voice {
                             id,
                             volume,
-                            pan,
+                            offset,
+                            panning_threshold,
                             started: false,
                             path,
                         },
@@ -255,13 +263,14 @@ impl SceneAudio {
                             continue;
                         }
                         sink.set_volume(id, volume);
-                        sink.set_pan(id, pan);
+                        sink.set_spatial(id, offset, panning_threshold);
                         self.voices.insert(
                             entity,
                             Voice {
                                 id,
                                 volume,
-                                pan,
+                                offset,
+                                panning_threshold,
                                 started: false,
                                 path,
                             },
@@ -272,9 +281,16 @@ impl SceneAudio {
                         voice.volume = volume;
                         sink.set_volume(voice.id, volume);
                     }
-                    if (voice.pan - pan).abs() > 0.001 {
-                        voice.pan = pan;
-                        sink.set_pan(voice.id, pan);
+                    let offset_changed = voice
+                        .offset
+                        .iter()
+                        .zip(offset.iter())
+                        .any(|(old, new)| (old - new).abs() > 0.001);
+                    if offset_changed || (voice.panning_threshold - panning_threshold).abs() > 0.001
+                    {
+                        voice.offset = offset;
+                        voice.panning_threshold = panning_threshold;
+                        sink.set_spatial(voice.id, offset, panning_threshold);
                     }
                 }
             }
@@ -324,15 +340,16 @@ impl SceneAudio {
     }
 }
 
-/// 听者：位置、增益与**右向量**（声像用）。
+/// 听者：位置、增益与**基向量**（声像用）。
 struct Listener {
     position: Option<[f32; 3]>,
     gain: f32,
-    right: [f32; 3],
+    /// 右、上、后三个世界空间单位向量。
+    basis: [[f32; 3]; 3],
 }
 
-/// 听者位置 / 增益 / 右方向：优先 `AudioListener` 实体，否则退回第一个相机，
-/// 再否则原点 + 世界 +X。
+/// 听者位置 / 增益 / 基向量：优先 `AudioListener` 实体，否则退回第一个相机，
+/// 再否则原点 + 世界坐标轴。
 fn listener(world: &World) -> Listener {
     let gain = |entity: Entity, fallback: f32| {
         world
@@ -340,68 +357,75 @@ fn listener(world: &World) -> Listener {
             .map(|listener| listener.gain.clamp(0.0, 1.0))
             .unwrap_or(fallback)
     };
-    let right = |entity: Entity| {
-        world
-            .get::<LocalToWorld>(entity)
-            .map(|world| {
-                let axis = world.0.x_axis.truncate();
-                let length = axis.length();
-                if length.is_finite() && length > 1e-5 {
-                    (axis / length).to_array()
-                } else {
-                    [1.0, 0.0, 0.0]
-                }
-            })
-            .unwrap_or([1.0, 0.0, 0.0])
-    };
     if let Some((entity, _)) = world.query::<AudioListener>().next() {
         return Listener {
             position: world_position(world, entity),
             gain: gain(entity, 1.0),
-            right: right(entity),
+            basis: listener_basis(world, entity),
         };
     }
     if let Some((entity, _)) = world.query::<Camera>().next() {
         return Listener {
             position: world_position(world, entity),
             gain: 1.0,
-            right: right(entity),
+            basis: listener_basis(world, entity),
         };
     }
     Listener {
         position: Some([0.0; 3]),
         gain: 1.0,
-        right: [1.0, 0.0, 0.0],
+        basis: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
     }
 }
 
-/// 声像：`-1` 全左、`+1` 全右，按 `spatial_blend` 缩放（2D 声源恒为 0）。
-///
-/// 只投影到听者的右向量上，不区分前后：3D 音频的首版够用，等混音器支持
-/// HRTF / 双耳时再换成完整方位。
-fn pan_for(
-    source: Option<[f32; 3]>,
-    listener: Option<[f32; 3]>,
-    right: [f32; 3],
-    spatial_blend: f32,
-) -> f32 {
-    if !(spatial_blend.is_finite() && spatial_blend > 0.0) {
-        return 0.0;
-    }
-    let (Some(source), Some(listener)) = (source, listener) else {
-        return 0.0;
+/// 听者的右 / 上 / 后向量（世界空间，已归一化；退化轴回退到世界坐标轴）。
+fn listener_basis(world: &World, entity: Entity) -> [[f32; 3]; 3] {
+    let mut axes = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    let Some(transform) = world.get::<LocalToWorld>(entity) else {
+        return axes;
     };
+    let columns = [transform.0.x_axis, transform.0.y_axis, transform.0.z_axis];
+    for (axis, column) in axes.iter_mut().zip(columns) {
+        let column = column.truncate();
+        let length = column.length();
+        if length.is_finite() && length > 1e-5 {
+            *axis = (column / length).to_array();
+        }
+    }
+    axes
+}
+
+/// 声源相对听者的偏移，转换到听者空间（`+x` 右、`+y` 上、`+z` 后）。
+///
+/// Firewheel 的 `SpatialBasicNode` 用 `+x` 方向的水平夹角做等功率声像，并把
+/// 偏移长度当作距离，所以这里只需把世界坐标偏移投影到听者的基向量上。
+fn listener_offset(source: [f32; 3], listener: [f32; 3], basis: [[f32; 3]; 3]) -> [f32; 3] {
     let offset = [
         source[0] - listener[0],
         source[1] - listener[1],
         source[2] - listener[2],
     ];
-    let length = (offset[0] * offset[0] + offset[1] * offset[1] + offset[2] * offset[2]).sqrt();
-    if !length.is_finite() || length < 1e-4 {
-        return 0.0;
+    if !offset.iter().all(|value| value.is_finite()) {
+        return [0.0; 3];
     }
-    let dot = (offset[0] * right[0] + offset[1] * right[1] + offset[2] * right[2]) / length;
-    (dot * spatial_blend).clamp(-1.0, 1.0)
+    [
+        dot(offset, basis[0]),
+        dot(offset, basis[1]),
+        dot(offset, basis[2]),
+    ]
+}
+
+fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// `spatial_blend` → 声像强度；非有限值按 0 处理，`0` 表示保持居中（2D 声源）。
+fn panning_threshold(spatial_blend: f32) -> f32 {
+    if spatial_blend.is_finite() {
+        spatial_blend.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
 }
 
 fn world_position(world: &World, entity: Entity) -> Option<[f32; 3]> {
@@ -448,9 +472,9 @@ impl AudioSink for (&mut prism_audio::AudioEngine, &mut VoiceHandles) {
         }
     }
 
-    fn set_pan(&mut self, voice: u64, pan: f32) {
+    fn set_spatial(&mut self, voice: u64, offset: [f32; 3], panning_threshold: f32) {
         if let Some(handle) = self.1.handles.get(&voice) {
-            self.0.set_pan(handle, pan);
+            self.0.set_spatial(handle, offset, panning_threshold);
         }
     }
 
@@ -486,7 +510,7 @@ mod tests {
         ends: HashMap<u64, &'static str>,
         playing: HashMap<u64, bool>,
         volumes: HashMap<u64, f32>,
-        pans: HashMap<u64, f32>,
+        spatial: HashMap<u64, ([f32; 3], f32)>,
         stopped: Vec<u64>,
         played: usize,
     }
@@ -500,10 +524,11 @@ mod tests {
             values.sort_by_key(|a| a.0);
             values.into_iter().map(|(_, volume)| volume).collect()
         }
-        fn pans(&self) -> Vec<f32> {
-            let mut values: Vec<(u64, f32)> = self.pans.iter().map(|(k, v)| (*k, *v)).collect();
+        fn spatials(&self) -> Vec<([f32; 3], f32)> {
+            let mut values: Vec<(u64, ([f32; 3], f32))> =
+                self.spatial.iter().map(|(k, v)| (*k, *v)).collect();
             values.sort_by_key(|a| a.0);
-            values.into_iter().map(|(_, pan)| pan).collect()
+            values.into_iter().map(|(_, spatial)| spatial).collect()
         }
     }
 
@@ -524,8 +549,8 @@ mod tests {
         fn set_volume(&mut self, voice: u64, volume: f32) {
             self.volumes.insert(voice, volume);
         }
-        fn set_pan(&mut self, voice: u64, pan: f32) {
-            self.pans.insert(voice, pan);
+        fn set_spatial(&mut self, voice: u64, offset: [f32; 3], panning_threshold: f32) {
+            self.spatial.insert(voice, (offset, panning_threshold));
         }
         fn is_playing(&self, voice: u64) -> bool {
             self.playing.get(&voice).copied().unwrap_or(false)
@@ -641,22 +666,33 @@ mod tests {
     }
 
     #[test]
-    fn pan_follows_the_listener_right_vector_and_spatial_blend() {
-        let axis = [1.0, 0.0, 0.0];
-        assert!((pan_for(Some([5.0, 0.0, 0.0]), Some([0.0; 3]), axis, 1.0) - 1.0).abs() < 1e-6);
-        assert!((pan_for(Some([-5.0, 0.0, 0.0]), Some([0.0; 3]), axis, 1.0) + 1.0).abs() < 1e-6);
-        // 2D 声源 / 缺位置 / 与听者重合都居中，且不产生 NaN。
+    fn offsets_are_expressed_in_listener_space() {
+        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
         assert_eq!(
-            pan_for(Some([5.0, 0.0, 0.0]), Some([0.0; 3]), axis, 0.0),
-            0.0
+            listener_offset([5.0, 0.0, 0.0], [0.0; 3], identity),
+            [5.0, 0.0, 0.0]
         );
-        assert_eq!(pan_for(None, Some([0.0; 3]), axis, 1.0), 0.0);
-        assert_eq!(pan_for(Some([0.0; 3]), Some([0.0; 3]), axis, 1.0), 0.0);
+        // 听者朝向 +X：右向量是 -Z，于是世界上 +X 的声源落在正前方。
+        let facing_x = [[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]];
+        assert_eq!(
+            listener_offset([5.0, 0.0, 0.0], [0.0; 3], facing_x),
+            [0.0, 0.0, 5.0]
+        );
+        // 非有限输入不会产生 NaN。
+        assert_eq!(
+            listener_offset([f32::NAN, 0.0, 0.0], [0.0; 3], identity),
+            [0.0; 3]
+        );
+        // 声像强度：2D 与非有限值都是 0，上限夹到 1。
+        assert_eq!(panning_threshold(0.0), 0.0);
+        assert_eq!(panning_threshold(f32::NAN), 0.0);
+        assert_eq!(panning_threshold(2.0), 1.0);
+        assert_eq!(panning_threshold(0.5), 0.5);
     }
 
     #[test]
-    fn a_source_to_the_right_plays_panned_right() {
-        // 听者在原点、无旋转（右向量 = +X），声源在 +X：pan 应为 +1。
+    fn a_source_to_the_right_keeps_its_offset_on_x() {
+        // 听者在原点、无旋转（右向量 = +X），声源在 +X：偏移应为 (5, 0, 0)。
         let mut world = World::new();
         let listener_entity = place(&mut world, [0.0; 3]);
         world.insert(listener_entity, Camera::default());
@@ -678,11 +714,11 @@ mod tests {
         let mut sink = FakeSink::default();
         scene.update(&world, &mut sink, None);
 
-        assert_eq!(sink.pans(), vec![1.0], "right-side source should pan +1");
+        assert_eq!(sink.spatials(), vec![([5.0, 0.0, 0.0], 1.0)]);
     }
 
     #[test]
-    fn a_moving_source_updates_pan_without_replaying_the_clip() {
+    fn a_moving_source_updates_the_offset_without_replaying_the_clip() {
         let mut world = World::new();
         place(&mut world, [0.0; 3]); // 默认监听者 = 世界原点
         let speaker = place(&mut world, [5.0, 0.0, 0.0]);
@@ -703,16 +739,16 @@ mod tests {
         let mut sink = FakeSink::default();
         scene.update(&world, &mut sink, None);
         assert_eq!(sink.played, 1);
-        assert_eq!(sink.pans(), vec![1.0]);
+        assert_eq!(sink.spatials(), vec![([5.0, 0.0, 0.0], 1.0)]);
 
-        // 移到左侧：同一声部只更新 pan，不重新 play。
+        // 移到左侧：同一声部只更新空间化参数，不重新 play。
         world.insert(
             speaker,
             LocalToWorld(Mat4::from_translation(glam::Vec3::new(-5.0, 0.0, 0.0))),
         );
         scene.update(&world, &mut sink, None);
         assert_eq!(sink.played, 1, "panning must not restart the voice");
-        assert_eq!(sink.pans(), vec![-1.0]);
+        assert_eq!(sink.spatials(), vec![([-5.0, 0.0, 0.0], 1.0)]);
     }
 
     #[test]
@@ -733,6 +769,11 @@ mod tests {
         let mut sink = FakeSink::default();
         scene.update(&world, &mut sink, None);
         assert!((sink.volumes()[0] - 0.4).abs() < 1e-6);
+        assert_eq!(
+            sink.spatials(),
+            vec![([0.0, 0.0, 500.0], 0.0)],
+            "a 2D source keeps the panning threshold at zero"
+        );
     }
 
     #[test]

@@ -2788,8 +2788,8 @@ impl ReflectType for AudioBus {
 /// 不持有任何音频句柄。
 ///
 /// 空间化做**距离衰减 + 等功率声像**：`spatial_blend = 0` 时按 2D 播放（不衰减、
-/// 居中），`= 1` 时完全按 [`AudioSource::volume_at`] 衰减并按听者右向量声像。
-/// 声像在开始播放时烘焙（混音器只有 `set_volume`）。
+/// 居中），`= 1` 时完全按 [`AudioSource::volume_at`] 衰减，并按声源在听者空间中的
+/// 水平夹角声像。声像由混音器的空间化节点实时更新，不烘焙进片段（#508、#1034）。
 #[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
 #[reflect(name = "prism_engine::scene::AudioSource")]
 #[serde(default)]

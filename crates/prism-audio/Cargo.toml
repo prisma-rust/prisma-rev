@@ -7,7 +7,7 @@ description = "Audio subsystem for PrismaRev, built on Firewheel"
 
 [dependencies]
 firewheel = { version = "0.12", default-features = false, features = [
-    "cpal", "symphonium", "sampler_node", "log"
+    "cpal", "symphonium", "sampler_node", "spatial_basic_node", "log"
 ] }
 
 log.workspace = true

@@ -164,10 +164,13 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   **无父级**实体；有 `Parent` 的刚体跳过并 warn。`Collider` 仍然是
   `prism_engine::physics::raycast` 的查询来源（两条路径共用同一份作者数据）。
   `LinearVelocity` / 碰撞事件 / CCD / trimesh 还没接。
-- `prism-app/audio` 的场景音频：距离衰减 + **等功率声像**。声像按听者（`AudioListener`，
-  没有就用第一个相机）的右向量投影，在**开始播放时**烘焙进片段（单声道 → 立体声，
-  立体声按 L/R 缩放），所以混音器仍然只需要 `set_volume`；`spatial_blend = 0` 保持纯 2D，
-  移动中的声源保留首次播放时的声像。总线 / 编辑器试听仍未接（#508）。
+- `prism-app/audio` 的场景音频：距离衰减 + **等功率声像**。距离衰减在
+  `prism-app::scene_audio` 里按 `AudioSource::volume_at` 算；声像交给 Firewheel 的
+  `SpatialBasicNode`（`prism-audio` 的 `AudioEngine::set_spatial`）：每帧把「声源相对
+  听者（`AudioListener`，没有就用第一个相机）的偏移」转换到听者空间下发给节点，
+  `spatial_blend` 映射成 `panning_threshold`，移动中的声源实时左右移动、不重播片段。
+  节点的距离衰减被关掉（`distance_gain_factor = 0`），避免和组件曲线重复衰减；
+  `spatial_blend = 0` 保持纯 2D。总线 / 编辑器试听仍未接（#508）。
 - The only editor is the egui editor (`editor/`, Rust + egui + ash). Its data layer lives in
   `editor/crates/prism-editor-core`; the engine side must stay generic: no editor-only
   concepts (panels, docks, selection) may leak into `prism-app` / `prism-engine` / `prism-render`.
