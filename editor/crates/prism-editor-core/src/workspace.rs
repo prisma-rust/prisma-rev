@@ -120,6 +120,11 @@ pub struct Document {
     pub doc: SceneDoc,
     pub undo: crate::undo::UndoStack,
     pub dirty: bool,
+    /// 最近一次保存（或创建 / 重载）时的内容，`dirty` 的判定基线（#992）。
+    ///
+    /// 撤销 / 重做只移动撤销栈，不会自动把 `dirty` 改回 false；回到基线内容时
+    /// 用 [`Document::refresh_dirty`] 重算，避免「值已经和磁盘一致却仍标脏」。
+    saved_doc: SceneDoc,
     /// 上一次读 / 写这份文件时的版本戳（mtime + 长度，#495）；`None` = 还没落过盘。
     pub saved_stamp: Option<project::FileStamp>,
     /// 磁盘上的版本已经和 `saved_stamp` 不一致，且用户还没处理（#452）。
@@ -139,6 +144,7 @@ impl Document {
         Self {
             kind,
             path,
+            saved_doc: doc.clone(),
             doc,
             undo: crate::undo::UndoStack::new(),
             dirty: false,
@@ -147,6 +153,17 @@ impl Document {
             prefab_origin: None,
             hidden_entities: HashSet::new(),
         }
+    }
+
+    /// 把当前内容记为「已保存」基线：之后撤销 / 重做回到这里时不再是脏文档（#992）。
+    pub fn mark_saved(&mut self) {
+        self.saved_doc = self.doc.clone();
+        self.dirty = false;
+    }
+
+    /// 按内容重算脏标记。撤销 / 重做之后调用（#992）。
+    pub fn refresh_dirty(&mut self) {
+        self.dirty = self.doc != self.saved_doc;
     }
 
     /// 记下「刚读过 / 刚写过」这个文件的版本戳。
@@ -2107,7 +2124,7 @@ impl Workspace {
             let document = self.docs.get_mut(index).expect("checked above");
             document.doc = doc;
             document.undo = crate::undo::UndoStack::new();
-            document.dirty = false;
+            document.mark_saved();
             document.note_disk_state(Some(&root));
         }
         self.hydrate_documents();
@@ -2164,7 +2181,7 @@ impl Workspace {
         {
             let document = self.docs.get_mut(index).expect("checked above");
             document.path = Some(path.clone());
-            document.dirty = false;
+            document.mark_saved();
             document.note_disk_state(Some(&root));
         }
         self.refresh_project_files();
@@ -2298,7 +2315,7 @@ impl Workspace {
         {
             let document = self.document_mut();
             document.path = Some(path.clone());
-            document.dirty = false;
+            document.mark_saved();
         }
         self.refresh_project_files();
         self.log(
@@ -2324,7 +2341,7 @@ impl Workspace {
             let document = self.document_mut();
             document.doc = doc;
             document.undo.clear();
-            document.dirty = false;
+            document.mark_saved();
         }
         self.hydrate_documents();
         // 外部文件可能比当前文档短（git checkout / 脚本重写）。选中集存的是
@@ -2546,7 +2563,7 @@ impl Workspace {
     pub fn mark_saved(&mut self) {
         let title = {
             let document = self.document_mut();
-            document.dirty = false;
+            document.mark_saved();
             document.title()
         };
         self.log(LogSource::Editor, LogLevel::Info, format!("已保存 {title}"));
@@ -4436,7 +4453,7 @@ impl Workspace {
         let Some(outcome) = outcome else {
             return;
         };
-        self.document_mut().dirty = true;
+        self.document_mut().refresh_dirty();
         self.restore_selection(outcome.selection);
     }
 
@@ -4448,7 +4465,7 @@ impl Workspace {
         let Some(outcome) = outcome else {
             return;
         };
-        self.document_mut().dirty = true;
+        self.document_mut().refresh_dirty();
         self.restore_selection(outcome.selection);
     }
 
@@ -5922,6 +5939,38 @@ fn normalize_quat(quat: [f32; 4]) -> Option<[f32; 4]> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// #992: undoing back to the saved content must clear the dirty flag again.
+    #[test]
+    fn undoing_back_to_the_saved_state_clears_dirty() {
+        let mut workspace = Workspace::sample();
+        let id = workspace.document().doc.id_of_index(0).unwrap();
+        workspace.document_mut().doc.entities[0]
+            .components
+            .insert("test::Rig".to_string(), json!({"speed": 9.0}));
+        // The sample document has no file on disk; treat its content as the baseline.
+        workspace.document_mut().mark_saved();
+        assert!(!workspace.document().dirty);
+
+        workspace.set_field(id, "test::Rig", "speed", json!(50.0));
+        assert!(workspace.document().dirty);
+
+        workspace.undo();
+        assert_eq!(
+            workspace.document().doc.entities[0].components["test::Rig"]["speed"],
+            json!(9.0)
+        );
+        assert!(
+            !workspace.document().dirty,
+            "undoing back to the saved content must clear the dirty flag"
+        );
+
+        workspace.redo();
+        assert!(
+            workspace.document().dirty,
+            "redoing away from the saved content must set it again"
+        );
+    }
 
     #[test]
     fn an_empty_path_replaces_the_whole_component_in_one_step() {
