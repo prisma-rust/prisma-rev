@@ -6181,6 +6181,8 @@ fn render_settings_json(
         "motionBlurMaxPixels": settings.motion_blur_max_pixels,
         "taa": settings.taa,
         "taaStrength": settings.taa_strength,
+        // #1007：遮挡剔除开关（默认关）。
+        "occlusionCulling": settings.occlusion_culling,
         "shadowDistance": settings.shadow_distance,
         "shadowCascadeCount": settings.shadow_cascade_count,
         "debugRt": settings.debug_rt,
@@ -6223,6 +6225,10 @@ fn render_settings_from_json(
         debug_flags: u32_field("debugFlags", base.debug_flags),
         tonemap_mode: u32_field("tonemapMode", base.tonemap_mode),
         aa_mode: u32_field("aaMode", base.aa_mode),
+        occlusion_culling: value
+            .get("occlusionCulling")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(base.occlusion_culling),
         contrast: f32_field("contrast", base.contrast),
         saturation: f32_field("saturation", base.saturation),
         vignette: f32_field("vignette", base.vignette),

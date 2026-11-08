@@ -187,6 +187,10 @@ pub struct ForwardPass {
     /// One depth image per swapchain image (each framebuffer references its
     /// own depth view). Parallel to `framebuffers`.
     depth_images: Vec<Option<crate::render_pass::DepthImage>>,
+    /// #1007：本帧把主通道深度拷到这个宿主可见缓冲（`None` = 关闭）。
+    depth_readback: Option<vk::Buffer>,
+    /// 最近一次真正记录了深度拷贝的帧序号（主通道没渲染时保持旧值）。
+    depth_capture_frame: Option<u32>,
     /// One view-space normal image per swapchain image (MRT SV_Target1). Same
     /// per-slot lifetime as `depth_images`: rebuilt only when its swapchain
     /// view changes.
@@ -318,6 +322,8 @@ impl ForwardPass {
             framebuffers: Vec::new(),
             color_images: Vec::new(),
             depth_images: Vec::new(),
+            depth_readback: None,
+            depth_capture_frame: None,
             normal_images: Vec::new(),
             velocity_images: Vec::new(),
             target_views: Vec::new(),
@@ -1254,6 +1260,17 @@ impl ForwardPass {
             .get(image_index as usize)
             .and_then(|d| d.as_ref())
             .map(|d| d.view)
+    }
+
+    /// #1007：设置本帧的深度回读缓冲。传 `None` 时本帧不做拷贝。
+    pub fn set_depth_readback(&mut self, buffer: Option<vk::Buffer>) {
+        self.depth_readback = buffer;
+        self.depth_capture_frame = None;
+    }
+
+    /// 最近一次记录深度拷贝的帧序号（`None` = 本帧没有拷贝）。
+    pub fn depth_capture_frame(&self) -> Option<u32> {
+        self.depth_capture_frame
     }
 
     /// Borrow the depth image handle for `image_index`. The GTAO pass needs the
@@ -2722,6 +2739,86 @@ impl RenderPassNode for ForwardPass {
         }
 
         unsafe { ctx.device.cmd_end_render_pass(ctx.cmd) };
+
+        // #1007：主通道结束、深度仍是 DEPTH_STENCIL_ATTACHMENT_OPTIMAL 时
+        // 拷到宿主可见缓冲；拷完恢复布局，后面的 GTAO 仍按原布局采样。
+        if let Some(buffer) = self.depth_readback {
+            if let Some(depth_image) = self.depth_image(ctx.image_index) {
+                let device = ctx.device;
+                let range = vk::ImageSubresourceRange::default()
+                    .aspect_mask(vk::ImageAspectFlags::DEPTH)
+                    .level_count(1)
+                    .layer_count(1);
+                let to_transfer = vk::ImageMemoryBarrier::default()
+                    .old_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                    .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .image(depth_image)
+                    .subresource_range(range)
+                    .src_access_mask(vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE)
+                    .dst_access_mask(vk::AccessFlags::TRANSFER_READ);
+                unsafe {
+                    device.cmd_pipeline_barrier(
+                        ctx.cmd,
+                        vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+                            | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                        vk::PipelineStageFlags::TRANSFER,
+                        vk::DependencyFlags::empty(),
+                        &[],
+                        &[],
+                        std::slice::from_ref(&to_transfer),
+                    );
+                }
+                let region = vk::BufferImageCopy::default()
+                    .image_subresource(
+                        vk::ImageSubresourceLayers::default()
+                            .aspect_mask(vk::ImageAspectFlags::DEPTH)
+                            .mip_level(0)
+                            .base_array_layer(0)
+                            .layer_count(1),
+                    )
+                    .image_extent(vk::Extent3D {
+                        width: self.extent.width,
+                        height: self.extent.height,
+                        depth: 1,
+                    });
+                unsafe {
+                    device.cmd_copy_image_to_buffer(
+                        ctx.cmd,
+                        depth_image,
+                        vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                        buffer,
+                        &[region],
+                    );
+                }
+                let to_attachment = vk::ImageMemoryBarrier::default()
+                    .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                    .new_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .image(depth_image)
+                    .subresource_range(range)
+                    .src_access_mask(vk::AccessFlags::TRANSFER_READ)
+                    .dst_access_mask(
+                        vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
+                            | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+                    );
+                unsafe {
+                    device.cmd_pipeline_barrier(
+                        ctx.cmd,
+                        vk::PipelineStageFlags::TRANSFER,
+                        vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+                            | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+                        vk::DependencyFlags::empty(),
+                        &[],
+                        &[],
+                        std::slice::from_ref(&to_attachment),
+                    );
+                }
+                self.depth_capture_frame = Some(ctx.frame_index);
+            }
+        }
 
         // Publish our output views under the handles declared in `setup` so
         // downstream passes (`GtaoPass`, `PostPass`) read them by handle

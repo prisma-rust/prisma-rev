@@ -10380,6 +10380,17 @@ pub fn render_graph(
             changed |= ui.checkbox(&mut settings.taa, "Enable").changed();
             ui.end_row();
 
+            // #1007：上一帧粗深度的遮挡剔除。默认关，画面应保持一致。
+            ui.label("Occlusion Culling");
+            changed |= ui
+                .checkbox(&mut settings.occlusion_culling, "Enable")
+                .on_hover_text(
+                    "Skip draws that the previous frame's depth fully covers; \
+                     shadows are unaffected. Off by default.",
+                )
+                .changed();
+            ui.end_row();
+
             ui.label("TAA Strength");
             changed |= ui
                 .add_enabled(

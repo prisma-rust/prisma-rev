@@ -227,6 +227,185 @@ impl Frustum {
     }
 }
 
+/// 屏幕空间粗深度（“保守遮挡剔除”用的第一级深度缓存）。
+///
+/// 每个 `tile_size × tile_size` 的屏幕块保存块内**最大**深度（最远的片元），
+/// 背景保持清屏深度 `1.0`。这样「整个包围盒都被挡住」的判据可以写成：
+/// 盒子投影矩形覆盖的每一块都满足 `tile_max < 盒子最近点深度` —— 只要块里
+/// 还有背景（1.0）或更远的表面，就不会误剔。
+///
+/// 深度来自**上一帧**：渲染器把主通道的深度图异步回读、下采样后交给这里。
+/// 延迟一帧只会让快速移动的物体偶尔晚一帧被剔除，不会影响正确性。
+#[derive(Debug, Clone, PartialEq)]
+pub struct DepthTiles {
+    width: u32,
+    height: u32,
+    tile_size: u32,
+    /// 行主序，长度 `width * height`。
+    max_depth: Vec<f32>,
+}
+
+impl DepthTiles {
+    /// 从一张行主序的 `D32_SFLOAT` 深度图构建粗深度。
+    ///
+    /// `samples.len()` 必须至少是 `extent[0] * extent[1]`；非有限深度按
+    /// `1.0`（最远）处理，宁可少剔。参数非法时返回 `None`。
+    pub fn from_samples(extent: [u32; 2], tile_size: u32, samples: &[f32]) -> Option<Self> {
+        let (width, height) = (extent[0], extent[1]);
+        if width == 0 || height == 0 || tile_size == 0 {
+            return None;
+        }
+        if (samples.len() as u64) < u64::from(width) * u64::from(height) {
+            return None;
+        }
+        let tiles_x = width.div_ceil(tile_size);
+        let tiles_y = height.div_ceil(tile_size);
+        let mut max_depth = vec![f32::NEG_INFINITY; (tiles_x * tiles_y) as usize];
+        for y in 0..height {
+            let tile_row = (y / tile_size) * tiles_x;
+            let row = (y * width) as usize;
+            for x in 0..width {
+                let depth = samples[row + x as usize];
+                if !depth.is_finite() {
+                    continue;
+                }
+                let slot = &mut max_depth[(tile_row + x / tile_size) as usize];
+                if depth > *slot {
+                    *slot = depth;
+                }
+            }
+        }
+        // 没有任何有限样本的块保持清屏深度（最远），不会误剔。
+        for depth in &mut max_depth {
+            if !depth.is_finite() {
+                *depth = 1.0;
+            }
+        }
+        Some(Self {
+            width: tiles_x,
+            height: tiles_y,
+            tile_size,
+            max_depth,
+        })
+    }
+
+    pub fn tiles(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    pub fn tile_size(&self) -> u32 {
+        self.tile_size
+    }
+
+    /// 包围盒是否被**完全**挡住。
+    ///
+    /// 判据是保守的：只有 8 个角点都在屏幕内、深度都在 `[0, 1]`，并且投影
+    /// 矩形覆盖的每个深度块都严格近于盒子的最近点时才返回 `true`。任何角点
+    /// 在屏幕外、盒子跨过近平面、或块里有背景，都保持可见。
+    ///
+    /// `view_proj` 必须是**生成这张深度图那一帧**的矩阵；`margin_tiles` 用来
+    /// 向外扩一圈，抵消一帧延迟带来的边缘误差。
+    pub fn is_box_occluded(
+        &self,
+        view_proj: &[[f32; 4]; 4],
+        aabb: &Aabb,
+        margin_tiles: u32,
+    ) -> bool {
+        if !aabb.is_valid() || self.max_depth.is_empty() {
+            return false;
+        }
+        const BIAS: f32 = 1e-4;
+        let mut nearest = f32::INFINITY;
+        let (mut min_uv, mut max_uv) = ([f32::INFINITY; 2], [f32::NEG_INFINITY; 2]);
+        for corner in aabb.corners() {
+            let [x, y, z] = corner;
+            let clip = [
+                view_proj[0][0] * x + view_proj[1][0] * y + view_proj[2][0] * z + view_proj[3][0],
+                view_proj[0][1] * x + view_proj[1][1] * y + view_proj[2][1] * z + view_proj[3][1],
+                view_proj[0][2] * x + view_proj[1][2] * y + view_proj[2][2] * z + view_proj[3][2],
+                view_proj[0][3] * x + view_proj[1][3] * y + view_proj[2][3] * z + view_proj[3][3],
+            ];
+            // 角点在相机平面上或背后：没有可靠的屏幕投影，保守保留。
+            if !clip[3].is_finite() || clip[3] <= 1e-6 {
+                return false;
+            }
+            let inv_w = 1.0 / clip[3];
+            let ndc = [clip[0] * inv_w, clip[1] * inv_w, clip[2] * inv_w];
+            if !ndc.iter().all(|value| value.is_finite()) {
+                return false;
+            }
+            if !(0.0..=1.0).contains(&ndc[2]) {
+                return false;
+            }
+            let uv = [ndc[0] * 0.5 + 0.5, ndc[1] * 0.5 + 0.5];
+            if uv.iter().any(|value| !(-0.001..=1.001).contains(value)) {
+                return false;
+            }
+            let uv = [uv[0].clamp(0.0, 1.0), uv[1].clamp(0.0, 1.0)];
+            min_uv = [min_uv[0].min(uv[0]), min_uv[1].min(uv[1])];
+            max_uv = [max_uv[0].max(uv[0]), max_uv[1].max(uv[1])];
+            nearest = nearest.min(ndc[2]);
+        }
+        if !nearest.is_finite() {
+            return false;
+        }
+        let tile = |uv: f32, tiles: u32| -> u32 {
+            ((uv * tiles as f32).floor() as u32).min(tiles.saturating_sub(1))
+        };
+        let x0 = tile(min_uv[0], self.width).saturating_sub(margin_tiles);
+        let y0 = tile(min_uv[1], self.height).saturating_sub(margin_tiles);
+        let x1 = tile(max_uv[0], self.width)
+            .saturating_add(margin_tiles)
+            .min(self.width - 1);
+        let y1 = tile(max_uv[1], self.height)
+            .saturating_add(margin_tiles)
+            .min(self.height - 1);
+        let mut farthest = 0.0f32;
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                farthest = farthest.max(self.max_depth[(y * self.width + x) as usize]);
+            }
+        }
+        farthest < nearest - BIAS
+    }
+}
+
+/// 一帧的遮挡剔除结果（报告 / 测试用）。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct OcclusionCounts {
+    /// 参与测试的绘制项数（没有世界包围盒的不算）。
+    pub tested: usize,
+    /// 被判定为完全遮挡、主通道不再提交的数量。
+    pub culled: usize,
+}
+
+/// 把上一帧粗深度判定为完全遮挡的绘制项标记成「主通道不可见」。
+///
+/// 只改 `visible_in_main_pass`：阴影通道不读这个字段，所以被挡住的物体仍然
+/// 会投下可见的影子（这是正确的 —— 遮挡关系只对当前相机成立）。
+pub fn mark_occluded_draws(
+    items: &mut [crate::render_graph::DrawItem],
+    tiles: &DepthTiles,
+    view_proj: &[[f32; 4]; 4],
+    margin_tiles: u32,
+) -> OcclusionCounts {
+    let mut counts = OcclusionCounts::default();
+    for item in items {
+        if !item.visible_in_main_pass {
+            continue;
+        }
+        let Some(bounds) = item.world_bounds.as_ref() else {
+            continue;
+        };
+        counts.tested += 1;
+        if tiles.is_box_occluded(view_proj, bounds, margin_tiles) {
+            item.visible_in_main_pass = false;
+            counts.culled += 1;
+        }
+    }
+    counts
+}
+
 fn add4(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]]
 }
@@ -401,6 +580,108 @@ mod tests {
         let broken = Aabb::new([f32::NAN, 0.0, 0.0], [1.0, 1.0, 1.0]);
         assert_eq!(left.union(&broken), Some(left));
         assert_eq!(broken.union(&broken), None);
+    }
+
+    fn uniform_tiles(depth: f32) -> DepthTiles {
+        DepthTiles::from_samples([128, 128], 4, &vec![depth; 128 * 128]).expect("valid samples")
+    }
+
+    #[test]
+    fn a_box_behind_a_full_screen_surface_is_occluded() {
+        // 墙的深度 0.99（约 z = −10），盒子在 z = −50（深度 ≈ 0.999）。
+        let tiles = uniform_tiles(0.99);
+        let camera = perspective();
+        assert!(tiles.is_box_occluded(&camera, &unit_box_at(0.0, 0.0, -50.0), 1));
+    }
+
+    #[test]
+    fn a_box_in_front_of_the_surface_stays_visible() {
+        // z = −5 的深度 ≈ 0.981 < 0.99：盒子比墙近，不能剔。
+        let tiles = uniform_tiles(0.99);
+        let camera = perspective();
+        assert!(!tiles.is_box_occluded(&camera, &unit_box_at(0.0, 0.0, -5.0), 1));
+    }
+
+    #[test]
+    fn a_background_tile_inside_the_rect_keeps_the_box_visible() {
+        // 右半边是背景（1.0）：盒子投影覆盖到它就说明那里没有遮挡物。
+        let mut samples = vec![0.99f32; 128 * 128];
+        for y in 0..128 {
+            for x in 64..128 {
+                samples[y * 128 + x] = 1.0;
+            }
+        }
+        let tiles = DepthTiles::from_samples([128, 128], 4, &samples).unwrap();
+        let camera = perspective();
+        // 盒子在 z = −50、x = 6：投影落在右半边。
+        assert!(!tiles.is_box_occluded(&camera, &unit_box_at(6.0, 0.0, -50.0), 1));
+    }
+
+    #[test]
+    fn boxes_touching_the_screen_edge_or_camera_plane_stay_visible() {
+        let tiles = uniform_tiles(0.99);
+        let camera = perspective();
+        // 屏幕外（x = 100）与跨近平面（z 从 −0.05 到 +0.05）都保守保留。
+        assert!(!tiles.is_box_occluded(&camera, &unit_box_at(100.0, 0.0, -50.0), 1));
+        assert!(!tiles.is_box_occluded(
+            &camera,
+            &Aabb::new([-0.1, -0.1, -0.05], [0.1, 0.1, 0.05]),
+            1
+        ));
+        // 无效包围盒同样不剔。
+        assert!(!tiles.is_box_occluded(&camera, &Aabb::new([f32::NAN; 3], [1.0; 3]), 1));
+    }
+
+    #[test]
+    fn marking_draws_only_touches_the_main_pass_flag() {
+        use crate::render_graph::DrawItem;
+        fn item(bounds: Option<Aabb>) -> DrawItem {
+            DrawItem {
+                mesh: Default::default(),
+                entity_id: u32::MAX,
+                model: identity(),
+                material: None,
+                cast_shadow: true,
+                visible_in_main_pass: true,
+                cast_shadow_two_sided: false,
+                bone_offset: None,
+                splat_slots: [u32::MAX; 4],
+                splat_tiling: 0.0,
+                state: Default::default(),
+                world_bounds: bounds,
+                index_start: 0,
+                index_count: None,
+            }
+        }
+        let tiles = uniform_tiles(0.99);
+        let hidden = item(Some(unit_box_at(0.0, 0.0, -50.0)));
+        let visible = item(Some(unit_box_at(0.0, 0.0, -5.0)));
+        let unknown = item(None);
+        let mut items = vec![hidden, visible, unknown];
+        let counts = mark_occluded_draws(&mut items, &tiles, &perspective(), 1);
+        assert_eq!(
+            counts,
+            OcclusionCounts {
+                tested: 2,
+                culled: 1
+            }
+        );
+        assert!(!items[0].visible_in_main_pass);
+        assert!(items[1].visible_in_main_pass);
+        assert!(items[2].visible_in_main_pass);
+        // 阴影仍然由 `cast_shadow` 决定，剔除不碰它。
+        assert!(items[0].cast_shadow);
+    }
+
+    #[test]
+    fn a_depth_grid_rejects_bad_input() {
+        assert!(DepthTiles::from_samples([0, 4], 4, &[]).is_none());
+        assert!(DepthTiles::from_samples([4, 4], 0, &[0.0; 16]).is_none());
+        assert!(DepthTiles::from_samples([4, 4], 4, &[0.0; 15]).is_none());
+        let tiles = DepthTiles::from_samples([5, 3], 4, &[f32::NAN; 15]).unwrap();
+        assert_eq!(tiles.tiles(), (2, 1));
+        // 非有限深度按最远处理，绝不剔除。
+        assert!(!tiles.is_box_occluded(&perspective(), &unit_box_at(0.0, 0.0, -50.0), 0));
     }
 
     #[test]

@@ -478,8 +478,26 @@ fn render_one_frame(
     } else {
         prism_engine::asset_paths::asset_path(settings.lut.trim())
     };
+    // #613：内部分辨率必须在 `begin_frame` 之前生效——begin_frame 用它决定
+    // HDR 中间目标尺寸，execute 再用它做 PostPass 的目标矩形。
+    renderer.set_internal_resolution(settings.internal_resolution, settings.internal_scale_mode);
+    renderer.set_occlusion_culling(settings.occlusion_culling);
+
+    let ctx = match renderer.begin_frame()? {
+        Some(c) => c,
+        None => return Ok(false),
+    };
+    // #1007：上一帧粗深度在 `begin_frame` 里读回，所以过滤放在它之后。
+    let mut occlusion_items = Vec::new();
+    let main_pass_items: &[prism_render::render_graph::DrawItem] = if settings.occlusion_culling {
+        occlusion_items.extend_from_slice(draw_items);
+        renderer.cull_occluded_draws(&mut occlusion_items);
+        &occlusion_items
+    } else {
+        draw_items
+    };
     let input = FrameInput {
-        draw_items,
+        draw_items: main_pass_items,
         gizmos: &packet.gizmos,
         sprite_items: &packet.sprite_items,
         sprite_lights: &packet.sprite_lights,
@@ -517,15 +535,6 @@ fn render_one_frame(
         shadows_enabled: scene.shadows_enabled,
         ui_overlay: Some(&packet.ui_overlay),
         show_grid: settings.show_grid,
-    };
-
-    // #613：内部分辨率必须在 `begin_frame` 之前生效——begin_frame 用它决定
-    // HDR 中间目标尺寸，execute 再用它做 PostPass 的目标矩形。
-    renderer.set_internal_resolution(settings.internal_resolution, settings.internal_scale_mode);
-
-    let ctx = match renderer.begin_frame()? {
-        Some(c) => c,
-        None => return Ok(false),
     };
     if let Some(plan) = screenshot {
         renderer.request_screenshot(plan.path.clone(), plan.size, plan.scale);
