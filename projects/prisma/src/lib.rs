@@ -37,7 +37,7 @@ mod preview {
     use std::sync::OnceLock;
 
     use prism_game_api::GameWorld;
-    use prism_project_api::{HostApi, ProjectApi, ABI_VERSION, INVALID_ARGUMENT, SUCCESS};
+    use prism_project_api::{guard, HostApi, ProjectApi, ABI_VERSION, INVALID_ARGUMENT, SUCCESS};
 
     use crate::intro::{self, IntroState};
 
@@ -76,25 +76,29 @@ mod preview {
     }
 
     unsafe extern "C" fn create(host: *const HostApi, out: *mut *mut std::ffi::c_void) -> i32 {
-        if host.is_null() || out.is_null() {
-            return INVALID_ARGUMENT;
-        }
-        let host = unsafe { &*host };
-        if host.abi_version != ABI_VERSION
-            || host.schema_fingerprint != registry().schema_fingerprint()
-        {
-            return INVALID_ARGUMENT;
-        }
-        let state = Box::new(PreviewState {
-            intro: None,
-            scene_generation: None,
-        });
-        unsafe { *out = Box::into_raw(state).cast() };
-        if let Some(log) = host.log {
-            let message = b"prisma preview module started";
-            unsafe { log(host.user_data, 3, message.as_ptr(), message.len()) };
-        }
-        SUCCESS
+        guard(|| {
+            if host.is_null() || out.is_null() {
+                return INVALID_ARGUMENT;
+            }
+            let host = unsafe { &*host };
+            if host.abi_version != ABI_VERSION
+                || host.schema_fingerprint != registry().schema_fingerprint()
+            {
+                return INVALID_ARGUMENT;
+            }
+            let state = Box::new(PreviewState {
+                intro: None,
+                scene_generation: None,
+            });
+            unsafe { *out = Box::into_raw(state).cast() };
+            // The module is a separate dylib with its own `log`, so the host logger
+            // and panic hook must be installed explicitly: otherwise `intro::*` logs
+            // are dropped and a panic unwinds across `extern "C"` and aborts the host.
+            prism_game_api::install_host_logger(host);
+            prism_game_api::install_host_panic_hook();
+            log::info!("prisma: preview module started");
+            SUCCESS
+        })
     }
 
     unsafe extern "C" fn tick(
@@ -102,23 +106,26 @@ mod preview {
         state: *mut std::ffi::c_void,
         dt: f32,
     ) -> i32 {
-        let Some(state) = (unsafe { state.cast::<PreviewState>().as_mut() }) else {
-            return INVALID_ARGUMENT;
-        };
-        if host_api.is_null() {
-            return INVALID_ARGUMENT;
-        }
-        let host = unsafe { &*host_api };
+        guard(|| unsafe {
+            let Some(state) = state.cast::<PreviewState>().as_mut() else {
+                return INVALID_ARGUMENT;
+            };
+            if host_api.is_null() {
+                return INVALID_ARGUMENT;
+            }
+            let host = &*host_api;
 
-        // 场景重载会让所有实体句柄失效：丢掉绑定的状态，下一帧按 Name 重绑。
-        if state.scene_generation != Some(host.scene_generation) {
-            state.intro = None;
-            state.scene_generation = Some(host.scene_generation);
-        }
+            // A scene reload invalidates every entity handle: drop the bound state
+            // and rebind by name on the next tick.
+            if state.scene_generation != Some(host.scene_generation) {
+                state.intro = None;
+                state.scene_generation = Some(host.scene_generation);
+            }
 
-        let mut world = GameWorld::plugin(host, registry().type_registry());
-        intro::tick(&mut state.intro, &mut world, dt);
-        SUCCESS
+            let mut world = GameWorld::plugin(host, registry().type_registry());
+            intro::tick(&mut state.intro, &mut world, dt);
+            SUCCESS
+        })
     }
 
     unsafe extern "C" fn shutdown(state: *mut std::ffi::c_void) {
