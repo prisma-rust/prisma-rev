@@ -5919,6 +5919,19 @@ impl App for EditorApp {
 // 数据装载
 // ---------------------------------------------------------------------------
 
+/// The inspector schema has exactly one source: the reflection registry of
+/// `prism-scene`, projected by `prism_editor_api::build_schema`.
+///
+/// The fixture used to carry a frozen snapshot of it, which silently went stale
+/// (19 components and 23 nested types missing by the time it was noticed), so
+/// new components never showed up in Add Component or the inspector.
+fn runtime_schema() -> prism_editor_core::Schema {
+    let value = serde_json::to_value(prism_editor_api::build_schema())
+        .expect("the editor schema is serializable");
+    prism_editor_core::Schema::from_value(&value)
+        .expect("the editor schema matches the UI-side model")
+}
+
 fn load_workspace() -> Workspace {
     let candidates: Vec<PathBuf> = std::env::var("PRISMREV_EDITOR_DEMO")
         .ok()
@@ -5944,13 +5957,30 @@ fn load_workspace() -> Workspace {
             prism_editor_core::LogLevel::Info,
             format!("fixture: {}", path.display()),
         );
+        install_schema(&mut workspace);
         attach_project(&mut workspace);
         return workspace;
     }
 
     let mut workspace = Workspace::sample();
+    install_schema(&mut workspace);
     attach_project(&mut workspace);
     workspace
+}
+
+/// Install the live schema into the workspace (both the fixture and the
+/// no-fixture startup path go through here).
+fn install_schema(workspace: &mut Workspace) {
+    workspace.set_schema(runtime_schema());
+    workspace.log(
+        prism_editor_core::LogSource::Editor,
+        prism_editor_core::LogLevel::Info,
+        format!(
+            "schema: {} types ({} components)",
+            workspace.schema.types.len(),
+            workspace.schema.components().len()
+        ),
+    );
 }
 
 /// 找到项目根（含 `assets/`）并把资产 / 场景清单读进来。
@@ -6176,6 +6206,21 @@ fn read_report(root: Option<&Path>) -> Option<String> {
 mod tests {
     use super::*;
     use prism_editor_core::{KeyChord, SHORTCUTS, SHORTCUT_ALIASES};
+
+    /// The inspector must see every component the scene registry knows about.
+    /// A frozen schema snapshot used to hide 19 of them from Add Component.
+    #[test]
+    fn runtime_schema_covers_every_registered_component() {
+        let mut registry = prism_scene::ComponentRegistry::new();
+        prism_scene::register_builtin_components(&mut registry);
+        let schema = runtime_schema();
+        let missing: Vec<&str> = registry
+            .component_names()
+            .into_iter()
+            .filter(|name| schema.component(name).is_none())
+            .collect();
+        assert!(missing.is_empty(), "not in the editor schema: {missing:?}");
+    }
 
     /// #979：第一次打开工程时 Scene 视图要拿工程 `[render]` 的设置，而不是引擎默认值。
     #[test]

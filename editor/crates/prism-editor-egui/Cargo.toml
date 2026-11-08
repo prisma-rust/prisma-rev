@@ -34,3 +34,5 @@ prism-runtime-host = { path = "../../../crates/prism-runtime-host" }
 # 数据层（UI 框架无关）：dock 布局、文档模型、schema、
 # 撤销栈、日志缓冲、i18n、项目读写。
 prism-editor-core = { path = "../prism-editor-core" }
+# 组件 schema 的唯一来源：从 `prism-scene` 反射注册表投影出的属性面板 schema。
+prism-editor-api = { path = "../../../crates/prism-editor-api" }

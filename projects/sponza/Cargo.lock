@@ -1464,6 +1464,7 @@ dependencies = [
  "prism-anim",
  "prism-asset",
  "prism-ecs",
+ "prism-ini",
  "prism-project-api",
  "prism-reflect",
  "prism-render",
@@ -1481,6 +1482,13 @@ dependencies = [
  "glam",
  "prism-reflect",
  "serde",
+]
+
+[[package]]
+name = "prism-ini"
+version = "0.1.0"
+dependencies = [
+ "log",
 ]
 
 [[package]]
@@ -1544,14 +1552,6 @@ dependencies = [
  "prism-reflect",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "prisma-sponza"
-version = "0.1.0"
-dependencies = [
- "prism-app",
- "prism-engine",
 ]
 
 [[package]]
@@ -1904,6 +1904,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
 dependencies = [
  "lock_api",
+]
+
+[[package]]
+name = "sponza"
+version = "0.1.0"
+dependencies = [
+ "prism-app",
+ "prism-engine",
 ]
 
 [[package]]

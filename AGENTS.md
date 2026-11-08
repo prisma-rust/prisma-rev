@@ -63,6 +63,8 @@ deviating from those conventions is a bug. (`README.md` is the human-facing over
   翻译成 Vulkan 状态（剔除位、混合因子……）留在 `prism-render`。
 - `crates/prism-scene` — 场景 schema 层：纯数据组件、`ComponentRegistry`、`.scene.json`
   作者格式、RSCN v4 编解码。UI / render / audio-free；cooker 与 engine 共用这一份 schema。
+- `crates/prism-ini` — `assets/settings.ini` 方言的唯一实现（解析 / 写回 / 类型转换），
+  只依赖 `log`；engine、`prism-editor-api`、`prism-editor-core` 都只 re-export 它。
 - `crates/prism-render` — Vulkan backend: context, swapchain, render-graph passes (`forward_pass.rs`/`shadow_map_pass.rs`/`skybox_pass.rs`),
   `GraphRenderer` driver (`graph_renderer.rs`), IBL cubemap (`ibl.rs`), bindless/PBR.
   **UI-framework-free**; hosts inject UI via the neutral `SwapchainOverlay` trait (`external_overlay.rs`).
@@ -96,6 +98,9 @@ deviating from those conventions is a bug. (`README.md` is the human-facing over
   菜单栏 / 主工具栏 / 状态栏 + split-tree docking（拖 splitter、tab 切换、浮动窗口）+
   层级 / 检查器 / 资产 / 文档 / 日志 / 历史 / 设置类面板；数据层直接复用
   `editor/crates/prism-editor-core`（与 UI 框架无关）。
+  组件 schema 只有一个来源：`prism_editor_api::build_schema`（`prism-scene` 反射注册表的
+  投影），启动时经 `Workspace::set_schema` 装入并回填文档缺失字段；`editor/public/demo.json`
+  **不再保存 schema 快照**（旧的快照会随组件演进悄悄过期，检查器里看不到新组件）。
   **Scene / Game 视图零拷贝**：`prism-render` 渲染到自己的离屏 `VkImage`，egui-ash 与
   引擎共用同一个 `VkDevice` / 队列，`ImageRegistry::register_user_texture` 注册
   `offscreen_image_view()` 后由 `painter.image()` 直接采样 —— 没有
@@ -137,7 +142,7 @@ deviating from those conventions is a bug. (`README.md` is the human-facing over
     **只有宿主机是 aarch64**（Asahi / 树莓派 / ARM 服务器 / Termux）时还需要
     [`docs/android-arm64.md`](docs/android-arm64.md) 的 NDK / build-tools 替换步骤。
     与 `launcher/` 那条「启动器 + 游戏」双 Activity 的路互不影响，不要把它们合并。
-- `projects/prisma-sponza/` — Sponza 样例用户项目，
+- `projects/sponza/` — Sponza 样例用户项目，
   同为独立 workspace（package 名与目录名一致）。
 - `crates/xtask` — **excluded** from default workspace; desktop/CI only (needs `slangc`).
 - `assets/shaders/` — Slang sources in `slang/`, compiled `.spv` (gitignored, not committed) +
@@ -309,7 +314,7 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   lists them under `optional_paks`, and the runtime only mounts them when
   `GpuAssetResolver::load_optional_packages()` is called (`assets/optional/` is not part
   of the startup scan). `build-scenes` accepts the same flag against the staged layout.
-- The `projects/prisma/`, `projects/prisma-sponza/`, `launcher/` and `editor/` standalone workspaces need their own `cargo build` / `cargo clippy`
+- The `projects/prisma/`, `projects/sponza/`, `launcher/` and `editor/` standalone workspaces need their own `cargo build` / `cargo clippy`
   runs — a root-workspace build does **not** cover them.
 
 ## Editor MCP server (agent 改场景 / 跑游戏 / 抓图)
@@ -548,10 +553,11 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   值可加双引号（支持 `\"` `\\` `\n`），不加引号取到行尾并 trim；解析器只产出
   `String`，类型转换由调用方做（失败 → 默认值 + `warn!`）；未知 section/key 忽略并
   `debug!`；重复 section 合并、后者覆盖前者。
-- 解析器有三份**同方言**实现，改一处必须同步另外两处：
-  `crates/prism-engine/src/config/ini.rs`（引擎读取）、
+- 解析器只有一份：`crates/prism-ini`（零业务依赖，只依赖 `log`）。三个使用方都只是
+  re-export，不要各自再抄一份：`crates/prism-engine/src/config/ini.rs`（引擎读取）、
   `crates/prism-editor-api/src/ini.rs`（MCP / 工具，需保留未知段）、
   `editor/crates/prism-editor-core/src/ini.rs`（编辑器数据层）。
+  改方言 = 改 `prism-ini` + `docs/DESIGN.md` §10.14。
 - `[render] internal_resolution`（`640x360` / `off`）与 `internal_scale_mode`
   （`stretch` / `integer`）把场景渲染分辨率与窗口分辨率分开（#613）：中间目标按内部
   尺寸渲染、相机按内部宽高比投影、`PostPass` 再放大到窗口（`integer` = 最近邻 +
@@ -654,3 +660,10 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
 - App icons are build inputs, not screenshots: the blanket `*.png` ignore in `.gitignore` has
   explicit `!` re-includes for `launcher/src-tauri/icons/*.png` and the Android `res/mipmap-*`
   PNGs. A missing `icons/32x32.png` fails `tauri android build` inside `generate_context!`.
+
+## Issue 查重范围
+
+- 查重只对比 **open** issue，不对比 closed。closed 只用于背景引用，不作为「已经提过」的依据；
+  如果 closed 的问题在当前代码里仍然存在，按新问题提并引用旧号。
+- 「重复造轮子」只指「已有成熟 crate / 标准实现却自行重写更差的替代」；纯架构取舍（自研 ECS、
+  反射、RSCN、`.pak`、render graph 等）不在此列，不要再按此主题报。

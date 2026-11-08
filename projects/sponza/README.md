@@ -8,7 +8,7 @@
 Sponza 资源需要先导入并构建到运行目录的资源包（根目录 `assets/scenes.json` 的 `sponza` 条目）：
 
 ```powershell
-cargo run --manifest-path projects/prisma-sponza/Cargo.toml
+cargo run --manifest-path projects/sponza/Cargo.toml
 ```
 
 引擎默认加载 manifest 的**第一个**条目，而根 `assets/scenes.json` 里排第一的是 `intro`（开场动画），
@@ -16,7 +16,7 @@ cargo run --manifest-path projects/prisma-sponza/Cargo.toml
 
 ```powershell
 $env:PRISMREV_LAUNCH_CONFIG = '{"scene":"sponza"}'
-cargo run --manifest-path projects/prisma-sponza/Cargo.toml
+cargo run --manifest-path projects/sponza/Cargo.toml
 ```
 
 不设置时回退到第一个条目；`scene` 写错名字不会回退，引擎只记一条警告并保持空场景。

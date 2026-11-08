@@ -717,13 +717,15 @@ impl Workspace {
         workspace
     }
 
-    /// 从编辑器 fixture（`editor/public/demo.json`）恢复全部数据。
+    /// Restore the workspace from the editor fixture (`editor/public/demo.json`).
+    ///
+    /// The fixture only carries documents, templates and presets. The component
+    /// schema is not part of it: the host installs the live projection of the
+    /// `prism-scene` registry (`Workspace::schema`), so a new component never
+    /// needs a fixture refresh to appear in the editor.
     pub fn load_fixture(value: &Value) -> Self {
         let mut workspace = Self::sample();
 
-        if let Some(schema) = value.get("schema").and_then(Schema::from_value) {
-            workspace.schema = schema;
-        }
         if let Some(presets) = value.get("presets") {
             workspace.presets = EntityPreset::from_list(presets);
         }
@@ -826,19 +828,27 @@ impl Workspace {
             }
         }
 
-        workspace.hydrate_documents();
         workspace.active = 0;
         workspace.log(
             LogSource::Editor,
             LogLevel::Info,
             format!(
-                "已载入 fixture：{} 个文档 / {} 个组件类型 / {} 个资产",
+                "已载入 fixture：{} 个文档 / {} 个资产",
                 workspace.docs.len(),
-                workspace.schema.types.len(),
                 workspace.assets.len()
             ),
         );
         workspace
+    }
+
+    /// Install the component schema supplied by the host.
+    ///
+    /// Documents may already be open when the schema arrives, so installing it
+    /// hydrates them: every field missing from the author JSON is filled from
+    /// the type's `defaultJson`.
+    pub fn set_schema(&mut self, schema: Schema) {
+        self.schema = schema;
+        self.hydrate_documents();
     }
 
     /// 用 schema 的 `defaultJson` 补齐组件缺失字段。
@@ -6438,6 +6448,25 @@ mod tests {
         assert_eq!(workspace.camera.pitch, 0.0);
     }
 
+    /// A workspace built from [`fixture`] with its schema snapshot installed.
+    ///
+    /// Production never reads a schema from the fixture: the host installs the
+    /// live projection from `prism-editor-api`. Tests keep a tiny explicit
+    /// schema so they can assert schema-driven behaviour without linking it.
+    fn fixture_workspace() -> Workspace {
+        let value = fixture();
+        let mut workspace = Workspace::load_fixture(&value);
+        workspace.set_schema(fixture_schema(&value));
+        workspace
+    }
+
+    fn fixture_schema(value: &Value) -> Schema {
+        value
+            .get("schema")
+            .and_then(Schema::from_value)
+            .unwrap_or_default()
+    }
+
     fn fixture() -> Value {
         json!({
             "schema": { "types": [
@@ -6491,8 +6520,21 @@ mod tests {
     }
 
     #[test]
+    fn the_demo_fixture_carries_no_schema_snapshot() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../public/demo.json");
+        let text = std::fs::read_to_string(&path).expect("editor fixture");
+        let value: Value = serde_json::from_str(&text).expect("editor fixture is JSON");
+        assert!(
+            value.get("schema").is_none(),
+            "{} must not freeze the component schema; the host installs the \
+             prism-editor-api projection",
+            path.display()
+        );
+    }
+
+    #[test]
     fn loads_fixture_documents_templates_and_panels() {
-        let workspace = Workspace::load_fixture(&fixture());
+        let workspace = fixture_workspace();
         assert_eq!(workspace.docs.len(), 1);
         assert_eq!(workspace.docs[0].title(), "a.scene.json");
         assert_eq!(workspace.docs[0].doc.entities.len(), 2);
@@ -6505,7 +6547,7 @@ mod tests {
 
     #[test]
     fn add_entity_uses_preset_and_parent() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.select(0, false);
         workspace.add_entity("camera");
         let doc = &workspace.document().doc;
@@ -6519,7 +6561,7 @@ mod tests {
 
     #[test]
     fn add_entity_names_stay_unique_among_siblings() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.clear_selection();
         workspace.add_entity("");
         workspace.add_entity("");
@@ -6535,7 +6577,7 @@ mod tests {
 
     #[test]
     fn multi_field_edit_writes_all_selected_in_one_step() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         // 给两个实体都加 Camera 组件。
         workspace.select(0, false);
         workspace.add_component("prism_engine::scene::Camera");
@@ -6583,7 +6625,7 @@ mod tests {
 
     #[test]
     fn rotate_and_scale_gizmo_operations_are_undoable() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         let id = workspace.document().doc.entities[0].id.unwrap();
         workspace.rotate_entity(id, 1, std::f32::consts::FRAC_PI_2);
         let rotation = workspace.document().doc.entities[0].transform.rotation;
@@ -7172,7 +7214,7 @@ mod tests {
 
     #[test]
     fn preview_rename_creates_one_undo_step_on_finish() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         let base = workspace.document().doc.clone();
         workspace.preview_rename(0, "C");
         workspace.preview_rename(0, "Ca");
@@ -7195,7 +7237,7 @@ mod tests {
     /// #473：预览不产生撤销步；提交后恰好一步，且撤销能回到原名。
     #[test]
     fn finish_rename_pushes_exactly_one_undo_step() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         let base = workspace.document().doc.clone();
         let was_dirty = workspace.document().dirty;
         assert!(!was_dirty);
@@ -7218,7 +7260,7 @@ mod tests {
     /// 输入后又删回原样：既不该留下撤销步，也不该把文档标脏。
     #[test]
     fn finishing_an_unchanged_rename_leaves_the_document_clean() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         let base = workspace.document().doc.clone();
 
         workspace.preview_rename(0, "Floor");
@@ -7232,7 +7274,7 @@ mod tests {
     /// Esc：预览过的名字要还原，脏标记也回到编辑前的状态。
     #[test]
     fn cancel_rename_restores_the_previous_name_and_dirty_flag() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         let base = workspace.document().doc.clone();
 
         workspace.preview_rename(0, "Floor");
@@ -7249,7 +7291,7 @@ mod tests {
 
     #[test]
     fn duplicate_selection_copies_subtree() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         // fixture: Camera(1) → Cube(2)。
         workspace.select(0, false);
         workspace.duplicate_selection();
@@ -7272,7 +7314,7 @@ mod tests {
 
     #[test]
     fn selection_range_and_toggle_follow_anchor() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.select_range(1, 0);
         assert_eq!(workspace.selection, vec![0, 1], "反向区间也规范化");
         workspace.select(0, true);
@@ -7301,7 +7343,7 @@ mod tests {
 
     #[test]
     fn select_many_overwrites_or_extends() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.select_many(&[1, 0], false);
         assert_eq!(workspace.selection, vec![0, 1], "排序且覆盖旧选择");
         workspace.select_many(&[1, 2], true);
@@ -7313,7 +7355,7 @@ mod tests {
     #[test]
     fn the_last_clicked_entity_stays_active_in_a_multi_selection() {
         // #507：选择集按文档顺序保存，但检查器/Add Component 用最后点击的那个。
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.select_with(0, SelectMode::Replace);
         workspace.select_with(2, SelectMode::Add);
         workspace.select_with(1, SelectMode::Add);
@@ -7334,7 +7376,7 @@ mod tests {
 
     #[test]
     fn right_clicking_a_selected_entity_makes_it_active_without_changing_the_set() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.select_many(&[0, 1, 2], false);
         assert_eq!(workspace.primary_selection(), Some(2));
         assert!(!workspace.select_for_context(0));
@@ -7344,7 +7386,7 @@ mod tests {
 
     #[test]
     fn shift_adds_and_ctrl_removes_in_the_viewport() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.select_with(0, SelectMode::Replace);
         workspace.select_with(1, SelectMode::Add);
         assert_eq!(workspace.selection, vec![0, 1], "Shift 并入且保留原选择");
@@ -7361,7 +7403,7 @@ mod tests {
     /// #524：右键未选中的行先把它选成唯一目标，菜单动作与检查器才一致。
     #[test]
     fn right_clicking_an_unselected_entity_selects_only_it() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.select_with(0, SelectMode::Replace);
         assert!(workspace.select_for_context(1), "未选中 → 换选择");
         assert_eq!(workspace.selection, vec![1]);
@@ -7371,7 +7413,7 @@ mod tests {
     /// 右键多选里的某项：保留整个集合，右键项就是菜单目标。
     #[test]
     fn right_clicking_a_selected_entity_keeps_the_whole_selection() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.select_many(&[0, 1, 2], false);
         assert!(!workspace.select_for_context(1), "已选中 → 不动选择");
         assert_eq!(workspace.selection, vec![0, 1, 2]);
@@ -7379,7 +7421,7 @@ mod tests {
 
     #[test]
     fn right_clicking_a_stale_index_leaves_the_selection_alone() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.select_with(0, SelectMode::Replace);
         assert!(!workspace.select_for_context(999));
         assert_eq!(workspace.selection, vec![0]);
@@ -7387,7 +7429,7 @@ mod tests {
 
     #[test]
     fn clicking_empty_space_only_clears_on_replace() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.select_many(&[0, 1], false);
         workspace.clear_selection_in(SelectMode::Add);
         assert_eq!(workspace.selection, vec![0, 1], "Shift+点空白保留选择");
@@ -7399,7 +7441,7 @@ mod tests {
 
     #[test]
     fn marquee_modes_add_remove_and_replace() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.select_many_with(&[0], SelectMode::Replace);
         workspace.select_many_with(&[1, 2], SelectMode::Add);
         assert_eq!(workspace.selection, vec![0, 1, 2], "Shift 框选并入");
@@ -7426,7 +7468,7 @@ mod tests {
 
     #[test]
     fn selection_duplicate_delete_roundtrip() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.select(1, false);
         workspace.duplicate_selection();
         assert_eq!(workspace.document().doc.entities.len(), 3);
@@ -7439,7 +7481,7 @@ mod tests {
 
     #[test]
     fn field_edit_goes_through_undo() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.set_field(
             1,
             "prism_engine::scene::Camera",
@@ -7462,7 +7504,7 @@ mod tests {
 
     #[test]
     fn add_and_remove_component() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.select(0, false);
         // 相机已有 Camera，列表里不应再出现。
         let available: Vec<&str> = workspace
@@ -7485,7 +7527,7 @@ mod tests {
 
     #[test]
     fn add_component_multi_writes_every_entity_in_one_step() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         let path = "prism_engine::scene::Camera";
         // fixture 的 0 号实体本来就带 Camera，1 号没有。
         assert!(workspace.document().doc.entities[0].has_component(path));
@@ -7510,7 +7552,7 @@ mod tests {
     /// #514：资产详情把「被谁引用」也算出来（打开文档 + 磁盘上的文档）。
     #[test]
     fn asset_details_reports_references_from_open_documents() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         let path = "assets/scenes/a.scene.json";
         workspace.document_mut().doc.entities[0].components.insert(
             "prism_engine::scene::MeshRenderer".to_string(),
@@ -7529,7 +7571,7 @@ mod tests {
     /// 没有这个资产时返回 `None`，检查器据此显示占位而不是 panic。
     #[test]
     fn asset_details_for_an_unknown_path_is_none() {
-        let workspace = Workspace::load_fixture(&fixture());
+        let workspace = fixture_workspace();
         assert!(workspace
             .asset_details("assets/does-not-exist.png")
             .is_none());
@@ -7538,7 +7580,7 @@ mod tests {
     /// #513：删除后撤销，原实体重新被选中（按 id 找回，不是按下标）。
     #[test]
     fn undoing_a_delete_restores_the_selection() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         let target = 1;
         let id = workspace.document().doc.entities[target]
             .id
@@ -7565,7 +7607,7 @@ mod tests {
     /// 重做删除：选择按「删除后」的快照还原（空的），不会指向越界下标。
     #[test]
     fn redoing_a_delete_leaves_an_empty_selection() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.selection = vec![1];
         workspace.delete_selection();
         workspace.undo();
@@ -7580,7 +7622,7 @@ mod tests {
     /// #513：复制后撤销，选择回到复制前的实体，而不是已经不存在的新下标。
     #[test]
     fn undoing_a_duplicate_returns_to_the_original_selection() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         let original = 1;
         let id = workspace.document().doc.entities[original]
             .id
@@ -7602,7 +7644,7 @@ mod tests {
     /// 选择快照里的 id 已经不存在时（文档被外部改动过）只丢弃，不 panic、不越界。
     #[test]
     fn restoring_a_selection_drops_entities_that_are_gone() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         let kept = workspace.document().doc.entities[0].id.unwrap();
         let selected = workspace.select_ids(&[kept, 9999]);
         assert_eq!(selected, 1);
@@ -7615,7 +7657,7 @@ mod tests {
     /// 字段类命令（没有选择快照）撤销后 SELECTION 保持现状。
     #[test]
     fn undoing_a_field_edit_keeps_the_selection() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.selection = vec![0];
         workspace.set_field(
             0,
@@ -7641,7 +7683,7 @@ mod tests {
     /// #512：检查器顺序 = 文档顺序，可以上下移动，一次撤销回退。
     #[test]
     fn components_can_be_reordered_and_the_move_is_one_undo_step() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         with_extra_components(&mut workspace);
         let entity = 0;
         let before = workspace.component_order(entity);
@@ -7669,7 +7711,7 @@ mod tests {
 
     #[test]
     fn moving_a_component_past_the_edges_is_a_no_op() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         with_extra_components(&mut workspace);
         let entity = 0;
         let order = workspace.component_order(entity);
@@ -7692,7 +7734,7 @@ mod tests {
 
     #[test]
     fn the_inspector_order_survives_a_save_and_reload() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         with_extra_components(&mut workspace);
         let entity = 0;
         let order = workspace.component_order(entity);
@@ -7707,7 +7749,7 @@ mod tests {
 
     #[test]
     fn add_component_multi_ignores_duplicates_and_repeats() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         let path = "prism_engine::scene::Camera";
         let added = workspace.add_component_multi(&[1, 1, 1], path);
         assert_eq!(added, 1, "重复下标只算一次");
@@ -7729,7 +7771,7 @@ mod tests {
 
     #[test]
     fn the_add_component_menu_lists_what_one_entity_is_missing() {
-        let workspace = Workspace::load_fixture(&fixture());
+        let workspace = fixture_workspace();
         let path = "prism_engine::scene::Camera";
         let names = |workspace: &Workspace, indices: &[usize]| -> Vec<String> {
             workspace
@@ -7749,7 +7791,7 @@ mod tests {
 
     #[test]
     fn add_component_does_not_reset_an_attached_component() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.select(0, false);
         let path = "prism_engine::scene::Camera";
         workspace.set_field(1, path, "fov_y_degrees", json!(30.0));
@@ -7767,7 +7809,7 @@ mod tests {
 
     #[test]
     fn maximize_toggles_without_touching_the_dock_tree() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         let before = workspace.dock.clone();
 
         workspace.toggle_maximized("inspector");
@@ -7795,7 +7837,7 @@ mod tests {
 
     #[test]
     fn close_panel_drops_the_tab_and_clears_maximize() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.show_panel("problems");
         assert!(workspace.docked_tabs().iter().any(|tab| tab == "problems"));
 
@@ -7822,7 +7864,7 @@ mod tests {
 
     #[test]
     fn close_other_panels_keeps_only_the_chosen_tab() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.float_panel("log", 10.0, 10.0);
         workspace.toggle_maximized("inspector");
 
@@ -7836,7 +7878,7 @@ mod tests {
 
     #[test]
     fn add_tab_to_leaf_merges_instead_of_splitting() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         let leaf = workspace.leaf_of("inspector").unwrap();
         workspace.add_tab_to_leaf(&leaf, "shortcuts");
 
@@ -7854,7 +7896,7 @@ mod tests {
 
     #[test]
     fn panel_toggle_and_dock_operations_keep_single_instance() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.toggle_panel("log");
         assert_eq!(
             workspace
@@ -7886,7 +7928,7 @@ mod tests {
 
     #[test]
     fn layout_presets_switch_and_clear_floating() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.float_panel("log", 10.0, 10.0);
         workspace.set_layout_preset("2by3");
         assert!(workspace.floating.is_empty());
@@ -7916,7 +7958,7 @@ mod tests {
 
     #[test]
     fn play_state_machine() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         assert!(!workspace.playing);
         workspace.play();
         assert!(workspace.playing);
@@ -7935,7 +7977,7 @@ mod tests {
     /// #500：进入 Play 前的文档、撤销栈、脏标记和选中都要在 Stop 时原样回来。
     #[test]
     fn stopping_play_discards_the_edits_made_while_playing() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         let index = 1; // fixture 里第二个实体：Cube
         workspace.selection = vec![index];
         let id = workspace.document().doc.entities[index]
@@ -8032,7 +8074,7 @@ mod tests {
             r#"{"clips": {}}"#,
         )
         .unwrap();
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
 
         let path = "assets/hero.skinning/notifies.json";
@@ -8101,7 +8143,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
         let updated = workspace
             .rename_anim_graph_parameter("assets/anim/hero.animgraph.json", "speed", "velocity")
@@ -8204,7 +8246,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
         let prefab = workspace
             .docs
@@ -8309,7 +8351,7 @@ mod tests {
             }"#,
         )
         .unwrap();
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
 
         assert!(workspace
@@ -8354,7 +8396,7 @@ mod tests {
             r#"{"version":3,"entities":[]}"#,
         )
         .unwrap();
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
         let index = workspace
             .docs
@@ -8394,7 +8436,7 @@ mod tests {
             r#"{"version":3,"entities":[]}"#,
         )
         .unwrap();
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
         let index = workspace
             .docs
@@ -8431,7 +8473,7 @@ mod tests {
             r#"{"version":3,"entities":[]}"#,
         )
         .unwrap();
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
         let index = workspace
             .docs
@@ -8455,7 +8497,7 @@ mod tests {
             r#"{"version":3,"entities":[]}"#,
         )
         .unwrap();
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
         assert!(workspace
             .assets
@@ -8486,7 +8528,7 @@ mod tests {
             r#"{"type":"material","metallic":0.0,"base_color":[1,1,1,1]}"#,
         )
         .unwrap();
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
 
         let mut value = workspace
@@ -8519,7 +8561,7 @@ mod tests {
             r#"{"version":3,"entities":[{"id":1,"name":"Mesh","components":{"prism_engine::scene::MeshRenderer":{"mesh_path":"assets/meshes/cube.fbx"}}}]}"#,
         )
         .unwrap();
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
 
         workspace.create_asset_folder("assets/meshes/new").unwrap();
@@ -8563,7 +8605,7 @@ mod tests {
             r#"{"version":3,"entities":[{"id":1,"name":"Mesh","components":{"prism_engine::scene::MeshRenderer":{"mesh_path":"assets/meshes/cube.fbx"}}}]}"#,
         )
         .unwrap();
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
         workspace.create_asset_folder("assets/moved").unwrap();
 
@@ -8598,7 +8640,7 @@ mod tests {
             r#"{"version":3,"entities":[{"id":1,"name":"Floor","components":{"prism_engine::scene::SpriteRenderer":{"sprite_path":"assets/tex/wood.png"}}}]}"#,
         )
         .unwrap();
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
 
         let (references, affected) = workspace
@@ -8631,7 +8673,7 @@ mod tests {
     fn renaming_a_folder_rejects_its_own_subtree() {
         let project = TempProject::new("folder-rename-subtree");
         std::fs::create_dir_all(project.root.join("assets/tex/inner")).unwrap();
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
 
         assert!(workspace
@@ -8647,7 +8689,7 @@ mod tests {
         std::fs::create_dir_all(project.root.join("assets/empty")).unwrap();
         std::fs::create_dir_all(project.root.join("assets/full")).unwrap();
         std::fs::write(project.root.join("assets/full/keep.png"), b"png").unwrap();
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
 
         let error = workspace.delete_folder("assets/full").unwrap_err();
@@ -8706,7 +8748,7 @@ mod tests {
             ]}"#,
         )
         .unwrap();
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
         assert_eq!(workspace.scene_manifest.scenes.len(), 2);
         assert_eq!(workspace.scene_manifest.active().unwrap().name, "intro");
@@ -8732,7 +8774,7 @@ mod tests {
             r#"{"scenes": [{"name": "a", "path": "scenes/a.rscn"}]}"#,
         )
         .unwrap();
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
 
         assert_eq!(
@@ -8772,7 +8814,7 @@ mod tests {
             ]}"#,
         )
         .unwrap();
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
         assert_eq!(workspace.docs.len(), 2);
         assert_eq!(
@@ -8803,7 +8845,7 @@ mod tests {
     #[test]
     fn save_document_can_target_an_inactive_tab() {
         let project = TempProject::new("save-inactive");
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
         workspace.new_document(DocKind::Scene, None);
         let index = workspace.docs.len() - 1;
@@ -8822,7 +8864,7 @@ mod tests {
     #[test]
     fn save_as_completes_the_suffix_and_rejects_traversal() {
         let project = TempProject::new("saveas");
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
 
         let saved = workspace.save_active_as("level2").unwrap();
@@ -8848,7 +8890,7 @@ mod tests {
 
     #[test]
     fn closing_documents_keeps_active_index_valid() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.new_document(DocKind::Scene, None);
         workspace.new_document(DocKind::Scene, None);
         assert!(workspace.docs.len() >= 3);
@@ -8877,7 +8919,7 @@ mod tests {
         }"#;
         std::fs::write(project.root.join(path), five).unwrap();
 
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
         assert_eq!(workspace.document().doc.entities.len(), 5);
         workspace.selection = (0..5).collect();
@@ -8913,7 +8955,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
         workspace.save_document(0).unwrap();
 
@@ -8946,7 +8988,7 @@ mod tests {
         }"#;
         std::fs::write(project.root.join("assets/scenes/disk.scene.json"), disk_doc).unwrap();
 
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         let opened = workspace.load_project(project.root.clone()).unwrap();
         assert_eq!(opened, 1);
         assert_eq!(workspace.project_files.len(), 1);
@@ -9027,7 +9069,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
         workspace.select(0, false);
 
@@ -9047,7 +9089,7 @@ mod tests {
         assert!(workspace.can_undo());
 
         // fixture 模式回退模板。
-        let mut fixture_workspace = Workspace::load_fixture(&fixture());
+        let mut fixture_workspace = fixture_workspace();
         let count = fixture_workspace
             .instantiate_prefab_asset("assets/prefabs/camera.prefab.json", None)
             .unwrap();
@@ -9080,7 +9122,7 @@ mod tests {
             ]}"#,
         )
         .unwrap();
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
         workspace.select(0, false);
 
@@ -9118,7 +9160,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
 
         assert!(workspace.delete_asset("outside.txt").is_err());
@@ -9147,7 +9189,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
         assert!(
             workspace
@@ -9209,7 +9251,7 @@ mod tests {
         let scene_path = project.root.join("assets/scenes/main.scene.json");
         std::fs::write(&scene_path, scene).unwrap();
 
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
         let assets_before = workspace.assets.clone();
         let (references, affected) = workspace
@@ -9330,7 +9372,7 @@ mod tests {
             .unwrap();
         }
 
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
         // 关掉 b：它仍在 project_files 里，但不在打开的文档里。
         let index = workspace
@@ -9390,7 +9432,7 @@ mod tests {
             r#"{"version":3,"entities":[]}"#,
         )
         .unwrap();
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
         workspace
             .instantiate_prefab_asset("assets/prefabs/box.prefab.json", None)
@@ -9534,7 +9576,7 @@ mod tests {
             ]}"#,
         )
         .unwrap();
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
         (project, workspace)
     }
@@ -9664,7 +9706,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
         assert_eq!(workspace.document().doc.entities.len(), 2);
 
@@ -9728,7 +9770,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
         workspace.revert_prefab_instance(2).unwrap();
         let root_id = workspace
@@ -9772,7 +9814,7 @@ mod tests {
 
     #[test]
     fn prefab_falls_back_to_template_in_fixture_mode() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         // fixture 的模板是 camera；伪造一个指向它的实例。
         workspace.document_mut().doc.entities[1].components.insert(
             PREFAB_LINK_COMPONENT.to_string(),
@@ -9800,7 +9842,7 @@ mod tests {
 
     #[test]
     fn saving_without_project_fails_cleanly() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         assert!(!workspace.has_project());
         assert!(workspace.save_active().is_err());
         assert!(workspace.reload_active().is_err());
@@ -9813,6 +9855,7 @@ mod tests {
         fixture["docs"]["assets/scenes/a.scene.json"]["entities"][0]["components"]
             ["prism_engine::scene::Camera"] = json!({});
         let mut workspace = Workspace::load_fixture(&fixture);
+        workspace.set_schema(fixture_schema(&fixture));
         assert_eq!(
             workspace.document().doc.entities[0].components["prism_engine::scene::Camera"]
                 ["fov_y_degrees"],
@@ -9833,7 +9876,7 @@ mod tests {
 
     #[test]
     fn unlink_prefab_removes_link_only_once() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.document_mut().doc.entities[1].components.insert(
             PREFAB_LINK_COMPONENT.to_string(),
             serde_json::json!({ "prefab": "assets/prefabs/camera.prefab.json" }),
@@ -9898,7 +9941,7 @@ mod tests {
 
     #[test]
     fn theme_and_locale_switch() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         assert_eq!(workspace.t("common.save"), "保存");
         workspace.set_locale(Locale::EnUs);
         assert_eq!(workspace.t("common.save"), "Save");
@@ -9950,7 +9993,7 @@ mod tests {
 
     #[test]
     fn frame_all_moves_camera_target() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.frame_all();
         assert!(workspace.camera.distance > 0.5);
         workspace.select(0, false);
@@ -10039,7 +10082,7 @@ mod tests {
 
     #[test]
     fn framing_an_empty_selection_does_not_move_the_camera() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         let before = workspace.camera.target;
         workspace.clear_selection();
         workspace.frame_selection();
@@ -10049,7 +10092,7 @@ mod tests {
 
     #[test]
     fn new_document_from_template() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.new_document(DocKind::Prefab, Some("camera"));
         assert_eq!(workspace.docs.len(), 2);
         assert_eq!(workspace.document().kind, DocKind::Prefab);
@@ -10064,7 +10107,7 @@ mod tests {
     #[test]
     fn two_documents_from_the_same_template_never_share_a_path() {
         let project = TempProject::new("template-paths");
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
         workspace.new_document(DocKind::Prefab, Some("camera"));
         workspace.new_document(DocKind::Prefab, Some("camera"));
@@ -10089,7 +10132,7 @@ mod tests {
             r#"{"version":3,"entities":[]}"#,
         )
         .unwrap();
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.load_project(project.root.clone()).unwrap();
         workspace.new_document(DocKind::Prefab, Some("camera"));
 
@@ -10105,7 +10148,7 @@ mod tests {
 
     #[test]
     fn commands_respect_enabled_state() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         assert!(!workspace.is_enabled(Command::Undo));
         workspace.run(Command::SelectAll);
         assert_eq!(workspace.selection.len(), 2);
@@ -10119,7 +10162,7 @@ mod tests {
 
     #[test]
     fn undo_snapshot_roundtrip_for_reparent() {
-        let mut workspace = Workspace::load_fixture(&fixture());
+        let mut workspace = fixture_workspace();
         workspace.reparent(1, None, Some(1));
         assert!(workspace.document().doc.entities[1].parent.is_none());
         workspace.undo();

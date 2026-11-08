@@ -32,6 +32,8 @@ prism-ecs = { path = "../prism-ecs" }
 # World resource，静态 Player 的 `GameWorld::input()` 因此有真实输入（#589）。
 prism-project-api = { path = "../prism-project-api" }
 prism-reflect = { path = "../prism-reflect" }
+# settings.ini 方言：引擎 / editor-api / editor-core 共用一份解析器。
+prism-ini = { path = "../prism-ini" }
 # 必须 default-features = false：否则组件组开关会被 prism-scene 的默认特性重新打开。
 prism-scene = { path = "../prism-scene", default-features = false }
 prism-render = { path = "../prism-render", default-features = false }

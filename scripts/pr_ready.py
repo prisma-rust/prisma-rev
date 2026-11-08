@@ -33,6 +33,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 IS_WINDOWS = os.name == "nt"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from lib.console import force_utf8_streams  # noqa: E402
+
+force_utf8_streams()
 
 # 这些文件变化会影响整个根 workspace。
 WORKSPACE_WIDE = {
@@ -64,17 +69,6 @@ BAD_NAMES = {".env", "local.properties", "id_rsa", "id_ed25519"}
 # --------------------------------------------------------------------------- #
 # 基础设施
 # --------------------------------------------------------------------------- #
-
-def _force_utf8_streams() -> None:
-    """Windows 控制台默认 GBK：打印 ✅ / ⚠ 会抛 UnicodeEncodeError（PR 自检假红）。"""
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is not None:
-            reconfigure(encoding="utf-8", errors="replace")
-
-
-_force_utf8_streams()
-
 
 def eprint(*args: object) -> None:
     print(*args, file=sys.stderr, flush=True)
@@ -228,6 +222,10 @@ class Check:
             return True
         self.status = "fail"
         eprint(f"  FAILED (exit {code})")
+        if "Traceback (most recent call last)" in out:
+            # A crashed check is not a failing check; say so instead of leaving
+            # the reader to guess why a green tree went red (#1019).
+            eprint("  note: the check itself crashed (see the traceback below), not the code")
         if verbose:
             eprint(out)
         else:
@@ -601,7 +599,7 @@ def main() -> int:
     if not args.quick:
         standalone = [
             ("projects/prisma", "projects/prisma/"),
-            ("projects/prisma-sponza", "projects/prisma-sponza/"),
+            ("projects/sponza", "projects/sponza/"),
             ("launcher", "launcher/"),
         ]
         for name, prefix in standalone:

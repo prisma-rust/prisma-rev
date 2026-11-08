@@ -1051,11 +1051,13 @@ internal_scale_mode = integer
 写回时数字 / 布尔裸写（`width = 1600`、`vsync = false`），其余字符串加引号
 （`company = "Acme"`）；注释不在模型里，写回会丢（与之前的 TOML 往返一致）。
 
-实现（三处，方言必须一致，改一处要同步另外两处）：
+实现只有一处，方言改这里即可：
 
-- `crates/prism-engine/src/config/ini.rs` —— 引擎读取（`AppConfig::from_ini`）；
-- `crates/prism-editor-api/src/ini.rs` —— MCP / 工具的文档模型（保留未知段）；
-- `editor/crates/prism-editor-core/src/ini.rs` —— 编辑器数据层（独立 workspace）。
+- `crates/prism-ini` —— 解析 / 写回 / 类型转换（只依赖 `log`，无业务依赖）；
+- 三个使用方都只是 re-export：`crates/prism-engine/src/config/ini.rs` —— 引擎读取
+  （`AppConfig::from_ini`）；`crates/prism-editor-api/src/ini.rs` —— MCP / 工具的文档模型
+  （保留未知段）；`editor/crates/prism-editor-core/src/ini.rs` —— 编辑器数据层
+  （独立 workspace）。
 
 #### 加载顺序与迁移
 

@@ -1481,6 +1481,7 @@ dependencies = [
  "prism-anim",
  "prism-asset",
  "prism-ecs",
+ "prism-ini",
  "prism-project-api",
  "prism-reflect",
  "prism-render",
@@ -1509,6 +1510,13 @@ dependencies = [
  "glam",
  "prism-reflect",
  "serde",
+]
+
+[[package]]
+name = "prism-ini"
+version = "0.1.0"
+dependencies = [
+ "log",
 ]
 
 [[package]]

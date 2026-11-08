@@ -3,10 +3,11 @@ name = "prism-editor-api"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "PrismaRev web 编辑器的数据/文件后端：场景读写 + 组件 schema（egui/Vulkan-free）"
+description = "Editor and MCP data layer: scene schema projection and .scene.json IO (UI-framework-free, Vulkan-free)"
 
 [dependencies]
 prism-scene = { path = "../prism-scene" }
+prism-ini = { path = "../prism-ini" }
 prism-asset = { path = "../prism-asset" }
 prism-reflect = { path = "../prism-reflect" }
 log = { workspace = true }

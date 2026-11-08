@@ -1,19 +1,17 @@
-//! 编辑器数据层（UI 框架无关）。
+//! Editor data layer (UI-framework-free).
 //!
-//! 与 Web 编辑器（`editor/`）共享同一套概念与持久化形状：
-//!
-//! | 模块 | 对应前端 |
-//! |------|----------|
-//! | [`dock`] | `editor/src/dock.ts`（split-tree docking + 浮动窗口） |
-//! | [`doc`] | `.scene.json` / `.prefab.json` 文档模型 |
-//! | [`schema`] | `prism-editor-api::build_schema` 的反射投影 |
-//! | [`undo`] | 按字段合并的撤销栈 |
-//! | [`theme`] | `editor/src/theme.ts`（token + 预设） |
-//! | [`i18n`] | `editor/src/i18n.ts` + `locales/*` |
-//! | [`logbuf`] | 窗口化日志缓冲 |
-//! | [`assets`] | `AssetBrowser.vue` 的目录树 / 检索 |
-//! | [`keys`] | 菜单命令 + 快捷键 |
-//! | [`workspace`] | 上面所有东西的宿主状态 |
+//! | Module | Responsibility |
+//! |--------|----------------|
+//! | [`dock`] | split-tree docking + floating windows |
+//! | [`doc`] | `.scene.json` / `.prefab.json` document model |
+//! | [`schema`] | UI-side component schema (data comes from `prism-editor-api`) |
+//! | [`undo`] | field-merged undo stack |
+//! | [`theme`] | theme tokens + presets |
+//! | [`i18n`] | UI language + `locales/*` |
+//! | [`logbuf`] | windowed log buffer |
+//! | [`assets`] | asset tree / search |
+//! | [`keys`] | menu commands + shortcuts |
+//! | [`workspace`] | host state tying all of the above together |
 
 pub mod anim_graph_view;
 pub mod asset_edit;

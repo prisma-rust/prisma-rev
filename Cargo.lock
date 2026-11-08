@@ -2766,6 +2766,7 @@ dependencies = [
  "log",
  "prism-asset",
  "prism-cooker",
+ "prism-ini",
  "prism-reflect",
  "prism-scene",
  "serde",
@@ -2797,6 +2798,7 @@ dependencies = [
  "prism-asset",
  "prism-audio",
  "prism-ecs",
+ "prism-ini",
  "prism-project-api",
  "prism-reflect",
  "prism-render",
@@ -2830,6 +2832,13 @@ dependencies = [
  "prism-reflect",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "prism-ini"
+version = "0.1.0"
+dependencies = [
+ "log",
 ]
 
 [[package]]
