@@ -132,6 +132,60 @@ fn empty_db_serialize() {
     assert!(!json.is_empty());
 }
 
+fn file_names(root: &std::path::Path) -> Vec<String> {
+    std::fs::read_dir(root)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect()
+}
+
+#[test]
+fn save_writes_pretty_json_without_leftover_temp_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("AssetDatabase.json");
+    let mut db = AssetDatabase::new();
+    let id = db.generate_id();
+    db.insert(AssetRecord::new(
+        id,
+        "a.bin".into(),
+        AssetType::Binary,
+        "raw",
+    ))
+    .unwrap();
+
+    db.save(&path).unwrap();
+
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(written, serde_json::to_string_pretty(&db).unwrap());
+    assert_eq!(AssetDatabase::load(&path).unwrap().len(), 1);
+    let leftovers: Vec<_> = file_names(temp.path())
+        .into_iter()
+        .filter(|name| name.contains(".tmp-"))
+        .collect();
+    assert!(leftovers.is_empty(), "leftover temp files: {leftovers:?}");
+}
+
+#[test]
+fn truncated_database_is_moved_aside() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("AssetDatabase.json");
+    std::fs::write(&path, br#"{"records":["#).unwrap();
+
+    let error = AssetDatabase::load(&path).unwrap_err();
+
+    assert!(
+        matches!(error, DatabaseError::Corrupt { .. }),
+        "expected Corrupt, got {error}"
+    );
+    assert!(!path.exists(), "the corrupt file must not be reused");
+    let backups: Vec<_> = file_names(temp.path())
+        .into_iter()
+        .filter(|name| name.contains(".corrupt-"))
+        .collect();
+    assert_eq!(backups.len(), 1, "backups: {backups:?}");
+}
+
 #[test]
 fn file_roundtrip() {
     let dir = std::env::temp_dir();

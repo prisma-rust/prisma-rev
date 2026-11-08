@@ -11,6 +11,7 @@
 
 pub mod cooker;
 pub mod db;
+mod fsutil;
 pub mod import_settings;
 pub mod importer;
 pub mod pack;

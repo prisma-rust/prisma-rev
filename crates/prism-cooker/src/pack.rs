@@ -292,16 +292,12 @@ fn pack_files(
                 .with_context(|| format!("create output directory {}", parent.display()))?;
         }
     }
-    // 先写同目录的临时文件再改名：`#509` 之后运行时不再把整个 `.pak` 读进内存，
-    // 而是按偏移读同一个文件，就地截断+重写会让正在运行的编辑器或游戏读到半截包。
-    // 同目录 rename 是原子的，旧句柄继续指向旧文件（Windows 也允许被共享删除的
-    // 文件被替换）。
-    let staging = pak_staging_path(output);
-    fs::write(&staging, &pak).with_context(|| format!("write {}", staging.display()))?;
-    if let Err(error) = fs::rename(&staging, output) {
-        let _ = fs::remove_file(&staging);
-        return Err(error).with_context(|| format!("replace {}", output.display()));
-    }
+    // Write a sibling file first and rename it into place: after `#509` the
+    // runtime reads the `.pak` in place by offset, so truncating and rewriting
+    // it would let a running editor or game read a half-written package. A
+    // same-directory rename is atomic and the old handle keeps the old file.
+    crate::fsutil::write_atomic(output, &pak)
+        .with_context(|| format!("replace {}", output.display()))?;
 
     let reader = PackageReader::from_bytes(&pak).context("read back generated .pak")?;
     let assets: Vec<_> = entries
@@ -429,14 +425,6 @@ fn is_package_artifact(path: &Path) -> bool {
 }
 
 /// 写入用的临时文件名：同目录、带进程号，正常路径上会在 `rename` 后消失。
-fn pak_staging_path(output: &Path) -> PathBuf {
-    let name = output
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "package.pak".to_string());
-    output.with_file_name(format!("{name}.tmp-{}", std::process::id()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

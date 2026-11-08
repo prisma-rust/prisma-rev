@@ -37,6 +37,16 @@ pub enum DatabaseError {
 
     #[error("Duplicate path: {0}")]
     DuplicatePath(PathBuf),
+
+    /// The file parsed as neither JSON nor this schema; it has been moved
+    /// aside so the next command does not fail on the same bytes again.
+    #[error("corrupt database '{path}': {source} ({backup})")]
+    Corrupt {
+        path: PathBuf,
+        backup: String,
+        #[source]
+        source: serde_json::Error,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -270,32 +280,42 @@ impl AssetDatabase {
 
     /// Load the database from a JSON file.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, DatabaseError> {
-        let content = std::fs::read_to_string(path.as_ref())?;
-        let mut db: Self = serde_json::from_str(&content)?;
-        db.rebuild_index();
-        Ok(db)
+        let path = path.as_ref();
+        let content = std::fs::read_to_string(path)?;
+        Self::from_json(path, &content)
     }
 
     /// Async load via tokio.
     pub async fn load_async(path: impl AsRef<Path> + Send) -> Result<Self, DatabaseError> {
         let content = tokio::fs::read_to_string(path.as_ref()).await?;
-        let mut db: Self = serde_json::from_str(&content)?;
-        db.rebuild_index();
-        Ok(db)
+        Self::from_json(path.as_ref(), &content)
     }
 
     /// Save the database to a JSON file.
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), DatabaseError> {
         let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(path.as_ref(), content)?;
+        crate::fsutil::write_atomic(path.as_ref(), content.as_bytes())?;
         Ok(())
     }
 
     /// Async save via tokio.
     pub async fn save_async(&self, path: impl AsRef<Path> + Send) -> Result<(), DatabaseError> {
-        let content = serde_json::to_string_pretty(self)?;
-        tokio::fs::write(path.as_ref(), content).await?;
-        Ok(())
+        self.save(path)
+    }
+
+    fn from_json(path: &Path, content: &str) -> Result<Self, DatabaseError> {
+        let mut db: Self = match serde_json::from_str(content) {
+            Ok(db) => db,
+            Err(source) => {
+                return Err(DatabaseError::Corrupt {
+                    path: path.to_path_buf(),
+                    backup: quarantine_corrupt(path),
+                    source,
+                })
+            }
+        };
+        db.rebuild_index();
+        Ok(db)
     }
 
     // ------------------------------------------------------------------
@@ -402,22 +422,51 @@ impl ImportCache {
 
     /// Load from JSON file.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, DatabaseError> {
-        let content = std::fs::read_to_string(path.as_ref())?;
-        Ok(serde_json::from_str(&content)?)
+        let path = path.as_ref();
+        let content = std::fs::read_to_string(path)?;
+        Self::from_json(path, &content)
     }
 
     /// Save to JSON file.
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), DatabaseError> {
         let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(path.as_ref(), content)?;
+        crate::fsutil::write_atomic(path.as_ref(), content.as_bytes())?;
         Ok(())
     }
 
     /// Async save.
     pub async fn save_async(&self, path: impl AsRef<Path> + Send) -> Result<(), DatabaseError> {
-        let content = serde_json::to_string_pretty(self)?;
-        tokio::fs::write(path.as_ref(), content).await?;
-        Ok(())
+        self.save(path)
+    }
+
+    fn from_json(path: &Path, content: &str) -> Result<Self, DatabaseError> {
+        match serde_json::from_str(content) {
+            Ok(cache) => Ok(cache),
+            Err(source) => Err(DatabaseError::Corrupt {
+                path: path.to_path_buf(),
+                backup: quarantine_corrupt(path),
+                source,
+            }),
+        }
+    }
+}
+
+/// Move an unparsable database aside and describe what happened.
+///
+/// The caller still decides whether to rebuild; this only makes the next run
+/// fail with a file-not-found instead of re-reporting the same parse error.
+fn quarantine_corrupt(path: &Path) -> String {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or_default();
+    let Some(name) = path.file_name() else {
+        return "backup failed; file left in place".to_string();
+    };
+    let backup = path.with_file_name(format!("{}.corrupt-{stamp}", name.to_string_lossy()));
+    match std::fs::rename(path, &backup) {
+        Ok(()) => format!("backed up to '{}'", backup.display()),
+        Err(error) => format!("backup failed: {error}; file left in place"),
     }
 }
 
