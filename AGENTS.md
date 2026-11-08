@@ -169,7 +169,7 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   **无父级**实体；有 `Parent` 的刚体跳过并 warn。`Collider` 仍然是
   `prism_engine::physics::raycast` 的查询来源（两条路径共用同一份作者数据）。
   `LinearVelocity` / 碰撞事件 / CCD / trimesh 还没接。
-  - **运动学角色移动（#560 P2）**：把 `CharacterMoveRequest` 写进 `CharacterMoveRequests` 资源，`PhysicsRuntime::step` 在 rapier `step` 之后用最新 broad phase 跑 `KinematicCharacterController::move_shape`（胶囊、坡度、贴地、自碰撞排除），把允许的位移写回 `LocalTransform`，并把 `grounded` / 下滑状态放进 `CharacterMoveResults`；请求是每步消费一次的，`CharacterMovement` 输入/重力系统是下一片。
+  - **运动学角色移动（#560 P2）**：把 `CharacterMoveRequest` 写进 `CharacterMoveRequests` 资源，`PhysicsRuntime::step` 在 rapier `step` 之后用最新 broad phase 跑 `KinematicCharacterController::move_shape`（胶囊、坡度、贴地、自碰撞排除），把允许的位移写回 `LocalTransform`，并把 `grounded` / 下滑状态放进 `CharacterMoveResults`；请求是每步消费一次的。场景侧 `CharacterController`（走路/冲刺速度、加速度、跳跃、坡度、贴地距离、skin offset）由 `prism-app` 的角色系统读取，配合 `CharacterMoveInput` 资源生成请求；目前只接了水平移动，竖直（重力 / 跳跃）与自动台阶待补。
 - `prism-app/audio` 的场景音频：距离衰减 + **等功率声像**。距离衰减在
   `prism-app::scene_audio` 里按 `AudioSource::volume_at` 算；声像交给 Firewheel 的
   `SpatialBasicNode`（`prism-audio` 的 `AudioEngine::set_spatial`）：每帧把「声源相对
