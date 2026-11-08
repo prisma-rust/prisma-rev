@@ -1,7 +1,7 @@
 //! `editor_*` tools that drive a **running** egui editor (`editor/`).
 //!
 //! The editor opens a local control channel on `127.0.0.1:<port>` and writes
-//! the port to `<project root>/target/editor/control.port`. This module only
+//! the port to `<project root>/target/editor-egui/control.port`. This module only
 //! does TCP + JSON; it does not link engine / render and does not open Vulkan.
 //!
 //! | Tool | Purpose |
@@ -148,7 +148,7 @@ pub fn definitions() -> Vec<ToolDef> {
                         "enum": ["window", "scene", "game"],
                         "description": "抓什么：整窗 / Scene view / Game view，默认 window"
                     },
-                    "path": { "type": "string", "description": "输出 PNG（相对项目根或绝对路径）；不给则写到 target/editor/captures/" },
+                    "path": { "type": "string", "description": "输出 PNG（相对项目根或绝对路径）；不给则写到 target/editor-egui/captures/" },
                     "size": { "type": "string", "description": "如 1920x1080（最近邻缩放在编辑器里做）" }
                 }
             }),
@@ -313,9 +313,6 @@ fn ui(root: &Path, args: &Value) -> Result<String, String> {
     };
     body["cmd"] = json!(cmd);
     let response = request(root, body)?;
-    if response.get("ok").and_then(Value::as_bool) == Some(false) {
-        return Err(response.to_string());
-    }
     Ok(response.to_string())
 }
 
@@ -346,7 +343,7 @@ fn capture(root: &Path, args: &Value) -> Result<String, String> {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|elapsed| elapsed.as_millis())
                 .unwrap_or_default();
-            root.join("target/editor/captures")
+            root.join("target/editor-egui/captures")
                 .join(format!("{target}-{stamp}.png"))
         }
     };
@@ -359,9 +356,6 @@ fn capture(root: &Path, args: &Value) -> Result<String, String> {
         request_body["size"] = json!(size);
     }
     let response = request(root, request_body)?;
-    if response.get("ok").and_then(Value::as_bool) != Some(true) {
-        return Err(response.to_string());
-    }
     Ok(response.to_string())
 }
 
@@ -385,7 +379,7 @@ fn quit(host: &EditorHost) -> Result<String, String> {
 fn port_file(root: &Path) -> PathBuf {
     match std::env::var_os("PRISMREV_EDITOR_CONTROL") {
         Some(value) => PathBuf::from(value),
-        None => root.join("target/editor/control.port"),
+        None => root.join("target/editor-egui/control.port"),
     }
 }
 
@@ -398,7 +392,7 @@ fn control_port(root: &Path) -> Result<u16, String> {
     let file = port_file(root);
     let text = std::fs::read_to_string(&file).map_err(|err| {
         format!(
-            "读不到控制端口 {}: {err}（编辑器没开，或先 editor_launch）",
+            "读不到控制端口 {}: {err}（编辑器没开、用了 --no-control，或先 editor_launch）",
             file.display()
         )
     })?;
@@ -421,7 +415,14 @@ fn request(root: &Path, body: Value) -> Result<Value, String> {
     BufReader::new(stream)
         .read_line(&mut line)
         .map_err(|err| format!("读控制通道失败: {err}"))?;
-    serde_json::from_str(line.trim()).map_err(|err| format!("控制通道回执不是 JSON: {err}"))
+    let reply: Value =
+        serde_json::from_str(line.trim()).map_err(|err| format!("控制通道回执不是 JSON: {err}"))?;
+    // Keep the raw reply (including `kind`: bad_request / not_ready / denied /
+    // internal) in the error text so the tool caller can decide whether to retry.
+    if reply.get("ok").and_then(Value::as_bool) == Some(false) {
+        return Err(reply.to_string());
+    }
+    Ok(reply)
 }
 
 fn default_command(root: &Path) -> String {

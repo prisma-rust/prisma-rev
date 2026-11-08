@@ -27,6 +27,9 @@ pub struct Preferences {
     /// 松散资产变化后自动重打场景包（#495）。默认开：改贴图 / HDR / 网格后
     /// 不用退出 Play 就能看到；关掉可以避免频繁重打包。
     pub hot_reload_assets: bool,
+    /// 本地控制通道（MCP / 自动化，#1008）。默认开；关掉会停止监听并删除
+    /// `control.port`，`--no-control` 也能在启动时关掉。
+    pub control_channel: bool,
     /// 快捷键覆盖：`Command::id()` → 键位（`"Ctrl+Shift+S"`）；空 = 默认表（#421）。
     pub shortcut_overrides: BTreeMap<String, String>,
     pub max_log_lines: f32,
@@ -40,6 +43,7 @@ impl Default for Preferences {
             confirm_delete: true,
             compact: false,
             hot_reload_assets: true,
+            control_channel: true,
             shortcut_overrides: BTreeMap::new(),
             max_log_lines: 5000.0,
             locale_auto: true,
@@ -411,6 +415,22 @@ mod tests {
         let partial_state = EditorState::from_json(&partial);
         assert!(!partial_state.scene.show_grid);
         assert!(partial_state.scene.show_selection_outline);
+    }
+
+    #[test]
+    fn control_channel_defaults_on_for_old_state_files() {
+        let old = json!({ "version": 1, "dock": {}, "themePreset": "studio" });
+        assert!(
+            EditorState::from_json(&old).preferences.control_channel,
+            "旧存档没有 controlChannel：默认开，不能把 MCP 挡在门外"
+        );
+        let off = json!({
+            "version": 1,
+            "dock": {},
+            "themePreset": "studio",
+            "preferences": { "controlChannel": false }
+        });
+        assert!(!EditorState::from_json(&off).preferences.control_channel);
     }
 
     #[test]

@@ -374,6 +374,12 @@ pub struct EditorApp {
     hwnd: Option<isize>,
     /// 本地控制通道（MCP 驱动截图 / 状态 / 退出）。
     control: Option<crate::control::ControlServer>,
+    /// `--no-control` 启动：Preferences 的开关也救不回来。
+    control_cli_disabled: bool,
+    /// 上一帧想要的通道状态（Preferences + CLI），用来只在开关变化时启停。
+    control_wanted: bool,
+    /// 最近一次启动失败的说明（`status` 里回给调用方）。
+    control_error: Option<String>,
     /// 已渲染帧数（状态汇报用）。
     frame_count: u64,
     /// 还没到「画面稳定」帧的截图请求：等 `ready_at` 帧再抓，回执延迟发送。
@@ -491,6 +497,23 @@ impl EditorApp {
         );
         workspace.show_grid = render_settings.show_grid;
 
+        let control_cli_disabled = crate::control::cli_disabled();
+        let control_enabled = !control_cli_disabled
+            && saved_state
+                .as_ref()
+                .map(|state| state.preferences.control_channel)
+                .unwrap_or(true);
+        let (control_server, control_error) = match crate::control::ControlServer::start_if(
+            control_enabled,
+            state_path.parent().unwrap_or_else(|| Path::new(".")),
+        ) {
+            Ok(server) => (server, None),
+            Err(error) => {
+                log::warn!("control channel disabled: {error:#}");
+                (None, Some(format!("{error:#}")))
+            }
+        };
+
         let mut app = Self {
             doc_hash: 0,
             selection_hash: 0,
@@ -533,14 +556,10 @@ impl EditorApp {
             exit_signal: cc.exit_signal.clone(),
             state_path: state_path.clone(),
             hwnd: main_window_hwnd(cc.main_window),
-            control: crate::control::ControlServer::start(
-                state_path.parent().unwrap_or_else(|| Path::new(".")),
-            )
-            .map_err(|error| {
-                log::warn!("control channel disabled: {error:#}");
-                error
-            })
-            .ok(),
+            control: control_server,
+            control_cli_disabled,
+            control_wanted: control_enabled,
+            control_error,
             frame_count: 0,
             pending_captures: Vec::new(),
             panel_rects: std::collections::BTreeMap::new(),
@@ -886,9 +905,41 @@ impl EditorApp {
         }
     }
 
-    /// 直接执行一段操作（菜单里的非 `Command` 项，例如新建目录 / 实例化预制体）。
+    /// Preferences 的 `control_channel` 与 `--no-control` → listener 的实际启停。
+    fn sync_control_channel(&mut self) {
+        let want = !self.control_cli_disabled && self.preferences.control_channel;
+        if want == self.control_wanted {
+            return;
+        }
+        self.control_wanted = want;
+        if want {
+            let dir = self
+                .state_path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("."));
+            match crate::control::ControlServer::start(&dir) {
+                Ok(server) => {
+                    self.control = Some(server);
+                    self.control_error = None;
+                    self.state.status = "control channel enabled".to_string();
+                }
+                Err(error) => {
+                    log::warn!("control channel failed to start: {error:#}");
+                    self.control_error = Some(format!("{error:#}"));
+                }
+            }
+        } else {
+            self.control = None;
+            self.control_error = None;
+            log::info!("control channel disabled");
+            self.state.status = "control channel disabled".to_string();
+        }
+    }
+
     /// 处理本地控制通道的请求（MCP 驱动）。每帧取一次，同一帧内完成。
     fn poll_control(&mut self, ctx: &egui::Context) {
+        self.sync_control_channel();
         if let Some(control) = self.control.as_ref() {
             for request in control.drain() {
                 if let Some(response) =
@@ -912,10 +963,10 @@ impl EditorApp {
                 // 整窗截图必须离开 UI 线程：`PrintWindow` 会给自己的窗口发消息。
                 crate::screenshot::CaptureTarget::Window => {
                     let Some(hwnd) = self.hwnd else {
-                        let _ = pending.reply.send(serde_json::json!({
-                            "ok": false,
-                            "error": "window capture unavailable on this platform",
-                        }));
+                        let _ = pending.reply.send(crate::control::failed(
+                            crate::control::Kind::Denied,
+                            "window capture unavailable on this platform",
+                        ));
                         continue;
                     };
                     let path = pending.path.clone();
@@ -924,17 +975,18 @@ impl EditorApp {
                     std::thread::Builder::new()
                         .name("editor-window-capture".to_owned())
                         .spawn(move || {
-                            let response = match crate::screenshot::save_window_png(hwnd, &path, size)
-                            {
-                                Ok(path) => serde_json::json!({
-                                    "ok": true,
-                                    "path": path.display().to_string(),
-                                    "target": "window",
-                                }),
-                                Err(error) => {
-                                    serde_json::json!({ "ok": false, "error": format!("{error:#}") })
-                                }
-                            };
+                            let response =
+                                match crate::screenshot::save_window_png(hwnd, &path, size) {
+                                    Ok(path) => serde_json::json!({
+                                        "ok": true,
+                                        "path": path.display().to_string(),
+                                        "target": "window",
+                                    }),
+                                    Err(error) => crate::control::failed(
+                                        crate::control::Kind::Internal,
+                                        format!("{error:#}"),
+                                    ),
+                                };
                             let _ = reply.send(response);
                         })
                         .ok();
@@ -947,9 +999,10 @@ impl EditorApp {
                             "path": path.display().to_string(),
                             "target": target.name(),
                         }),
-                        Err(error) => {
-                            serde_json::json!({ "ok": false, "error": format!("{error:#}") })
-                        }
+                        Err(error) => crate::control::failed(
+                            crate::control::Kind::Internal,
+                            format!("{error:#}"),
+                        ),
                     };
                     let _ = pending.reply.send(response);
                 }
@@ -1143,12 +1196,11 @@ impl EditorApp {
         tab: &str,
         node: &str,
         offset: Option<[f32; 2]>,
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<serde_json::Value, crate::control::ControlError> {
         let objects = self.viewport_objects();
-        let view = objects
-            .iter()
-            .find(|view| view.tab == tab)
-            .ok_or_else(|| format!("viewport '{tab}' is not open"))?;
+        let view = objects.iter().find(|view| view.tab == tab).ok_or_else(|| {
+            crate::control::ControlError::not_ready(format!("viewport '{tab}' is not open"))
+        })?;
         let object = view
             .objects
             .iter()
@@ -1167,14 +1219,15 @@ impl EditorApp {
         &mut self,
         node: &str,
         offset: [f32; 2],
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<serde_json::Value, crate::control::ControlError> {
         let tab = node
             .strip_prefix("panel:")
             .ok_or_else(|| format!("offset clicks need a viewport panel, got '{node}'"))?;
         if tab != "sceneView" && tab != "gameView" {
             return Err(format!(
                 "panel '{tab}' has no viewport to click in (only sceneView / gameView)"
-            ));
+            )
+            .into());
         }
         self.viewport_click(tab, (offset[0], offset[1]))
     }
@@ -1188,12 +1241,12 @@ impl EditorApp {
         &mut self,
         tab: &str,
         local: (f32, f32),
-    ) -> Result<serde_json::Value, String> {
-        let rect = self
-            .panel_rects
-            .get(tab)
-            .copied()
-            .ok_or_else(|| format!("viewport '{tab}' was not laid out yet"))?;
+    ) -> Result<serde_json::Value, crate::control::ControlError> {
+        let rect = self.panel_rects.get(tab).copied().ok_or_else(|| {
+            crate::control::ControlError::not_ready(format!(
+                "viewport '{tab}' was not laid out yet"
+            ))
+        })?;
         if !local.0.is_finite() || !local.1.is_finite() {
             return Err("offset must be finite".into());
         }
@@ -1210,7 +1263,8 @@ impl EditorApp {
                         local.1,
                         rect.width(),
                         rect.height()
-                    ));
+                    )
+                    .into());
                 }
                 let frame = prism_editor_core::viewport_math::camera_frame(&self.workspace.camera);
                 let hit = {
@@ -1259,7 +1313,7 @@ impl EditorApp {
                     "queued": 3,
                 }))
             }
-            other => Err(format!("unknown viewport '{other}'")),
+            other => Err(format!("unknown viewport '{other}'").into()),
         }
     }
 
@@ -1278,7 +1332,7 @@ impl EditorApp {
     fn viewport_point(
         &self,
         args: &serde_json::Value,
-    ) -> Result<(String, (f32, f32), &'static str), String> {
+    ) -> Result<(String, (f32, f32), &'static str), crate::control::ControlError> {
         if let Some(node) = args.get("node").and_then(serde_json::Value::as_str) {
             let offset = args
                 .get("offset")
@@ -1286,17 +1340,18 @@ impl EditorApp {
                 .unwrap_or([0.0, 0.0]);
             if let Some(tab) = node.strip_prefix("panel:") {
                 if !self.panel_rects.contains_key(tab) {
-                    return Err(format!("panel '{tab}' was not laid out yet"));
+                    return Err(crate::control::ControlError::not_ready(format!(
+                        "panel '{tab}' was not laid out yet"
+                    )));
                 }
                 return Ok((tab.to_string(), (offset[0], offset[1]), "top-left"));
             }
             let tab = crate::ui_tree::parse_view_object_node(node)
                 .ok_or_else(|| format!("'{node}' is not a viewport object node"))?;
             let objects = self.viewport_objects();
-            let view = objects
-                .iter()
-                .find(|view| view.tab == tab)
-                .ok_or_else(|| format!("viewport '{tab}' is not open"))?;
+            let view = objects.iter().find(|view| view.tab == tab).ok_or_else(|| {
+                crate::control::ControlError::not_ready(format!("viewport '{tab}' is not open"))
+            })?;
             let object = view
                 .objects
                 .iter()
@@ -1320,21 +1375,22 @@ impl EditorApp {
         let y = args.get("y").and_then(serde_json::Value::as_f64);
         match (x, y) {
             (Some(x), Some(y)) => Ok((tab, (x as f32, y as f32), "top-left")),
-            _ => Err("need node+offset or x/y".to_string()),
+            _ => Err("need node+offset or x/y".into()),
         }
     }
 
     /// 视口局部像素 → Game 绘图区像素（含 letterbox 与离屏尺寸，#463/#585）。
-    fn game_graphic_cursor(&self, local: (f32, f32)) -> Result<(f32, f32), String> {
-        let rect = self
-            .panel_rects
-            .get("gameView")
-            .copied()
-            .ok_or_else(|| "game view was not laid out yet".to_string())?;
+    fn game_graphic_cursor(
+        &self,
+        local: (f32, f32),
+    ) -> Result<(f32, f32), crate::control::ControlError> {
+        let rect = self.panel_rects.get("gameView").copied().ok_or_else(|| {
+            crate::control::ControlError::not_ready("game view was not laid out yet")
+        })?;
         let view = self
             .game_view
             .as_ref()
-            .ok_or_else(|| "game view is not open".to_string())?;
+            .ok_or_else(|| crate::control::ControlError::not_ready("game view is not open"))?;
         let extent = view.host.size();
         let image = crate::viewport::letterbox(rect, extent);
         let position = egui::pos2(rect.min.x + local.0, rect.min.y + local.1);
@@ -1343,7 +1399,10 @@ impl EditorApp {
     }
 
     /// `ui.move`：把指针移到视口里某点，报告该点下的目标（#643）。
-    fn ui_view_move(&mut self, args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    fn ui_view_move(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, crate::control::ControlError> {
         let (tab, local, anchor) = self.viewport_point(args)?;
         match tab.as_str() {
             "sceneView" => {
@@ -1359,7 +1418,8 @@ impl EditorApp {
                         local.1,
                         rect.width(),
                         rect.height()
-                    ));
+                    )
+                    .into());
                 }
                 let frame = prism_editor_core::viewport_math::camera_frame(&self.workspace.camera);
                 let hit = {
@@ -1397,19 +1457,22 @@ impl EditorApp {
                     "queued": 1,
                 }))
             }
-            other => Err(format!("'{other}' is not a viewport panel")),
+            other => Err(format!("'{other}' is not a viewport panel").into()),
         }
     }
 
     /// `ui.wheel`：Scene 视图缩放到光标（#511），Game 视图把滚轮转给玩法（#643）。
-    fn ui_view_wheel(&mut self, args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    fn ui_view_wheel(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, crate::control::ControlError> {
         let (tab, local, anchor) = self.viewport_point(args)?;
         let delta = args
             .get("delta")
             .and_then(serde_json::Value::as_f64)
             .unwrap_or(120.0) as f32;
         if !delta.is_finite() {
-            return Err("delta must be finite".to_string());
+            return Err("delta must be finite".into());
         }
         match tab.as_str() {
             "sceneView" => {
@@ -1457,7 +1520,7 @@ impl EditorApp {
                     "action": "scroll",
                 }))
             }
-            other => Err(format!("'{other}' is not a viewport panel")),
+            other => Err(format!("'{other}' is not a viewport panel").into()),
         }
     }
 
@@ -1466,7 +1529,7 @@ impl EditorApp {
         &self,
         args: &serde_json::Value,
         key: &str,
-    ) -> Result<(String, (f32, f32), &'static str), String> {
+    ) -> Result<(String, (f32, f32), &'static str), crate::control::ControlError> {
         let value = args
             .get(key)
             .filter(|value| value.is_object())
@@ -1475,13 +1538,16 @@ impl EditorApp {
     }
 
     /// `ui.drag`：在视口里拖一次（gizmo / 框选 / 轨道 / 玩法指针，见 #643）。
-    fn ui_view_drag(&mut self, args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    fn ui_view_drag(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, crate::control::ControlError> {
         let (from_tab, from, _) = self.drag_point(args, "from")?;
         let (to_tab, to, _) = self.drag_point(args, "to")?;
         if from_tab != to_tab {
-            return Err(format!(
-                "from/to must be in the same view ('{from_tab}' vs '{to_tab}')"
-            ));
+            return Err(
+                format!("from/to must be in the same view ('{from_tab}' vs '{to_tab}')").into(),
+            );
         }
         let steps = args
             .get("steps")
@@ -1491,7 +1557,7 @@ impl EditorApp {
         match from_tab.as_str() {
             "sceneView" => self.drag_scene(from, to, steps, args),
             "gameView" => self.drag_game(from, to, steps),
-            other => Err(format!("'{other}' is not a viewport panel")),
+            other => Err(format!("'{other}' is not a viewport panel").into()),
         }
     }
 
@@ -1501,7 +1567,7 @@ impl EditorApp {
         to: (f32, f32),
         steps: u32,
         args: &serde_json::Value,
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<serde_json::Value, crate::control::ControlError> {
         let rect = self.scene_rect()?;
         for (name, point) in [("from", from), ("to", to)] {
             if point.0 < 0.0 || point.1 < 0.0 || point.0 > rect.width() || point.1 > rect.height() {
@@ -1511,7 +1577,8 @@ impl EditorApp {
                     point.1,
                     rect.width(),
                     rect.height()
-                ));
+                )
+                .into());
             }
         }
         let frame = prism_editor_core::viewport_math::camera_frame(&self.workspace.camera);
@@ -1519,7 +1586,9 @@ impl EditorApp {
             || args.get("orbit").and_then(serde_json::Value::as_bool) == Some(true);
         let ctrl = args.get("ctrl").and_then(serde_json::Value::as_bool) == Some(true);
         let Some(view) = self.scene_view.as_mut() else {
-            return Err("scene view is not open".to_string());
+            return Err(crate::control::ControlError::not_ready(
+                "scene view is not open",
+            ));
         };
         if !orbit && view.begin_gizmo_drag(&mut self.workspace, &frame, rect, from) {
             let mut changed = false;
@@ -1591,7 +1660,7 @@ impl EditorApp {
         from: (f32, f32),
         to: (f32, f32),
         steps: u32,
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<serde_json::Value, crate::control::ControlError> {
         let start = self.game_graphic_cursor(from)?;
         let end = self.game_graphic_cursor(to)?;
         self.pending_input
@@ -2106,6 +2175,12 @@ impl EditorApp {
                     .map(|path| path.display().to_string()),
                 "selection": self.workspace.selection.clone(),
                 "status": self.state.status.clone(),
+                "control": {
+                    "enabled": self.control.is_some(),
+                    "cli_disabled": self.control_cli_disabled,
+                    "port_file": self.control_port_file().display().to_string(),
+                    "error": self.control_error.clone(),
+                },
                 "project_module": self.project_module_json(),
             }),
             "logs" | "log.dump" => {
@@ -2155,10 +2230,10 @@ impl EditorApp {
                     "press" | "down" | "true" => true,
                     "release" | "up" | "false" => false,
                     other => {
-                        return Some(json!({
-                            "ok": false,
-                            "error": format!("state 只能是 press / release，收到 '{other}'"),
-                        }))
+                        return Some(crate::control::failed(
+                            crate::control::Kind::BadRequest,
+                            format!("state 只能是 press / release，收到 '{other}'"),
+                        ))
                     }
                 };
                 if args.get("click").and_then(serde_json::Value::as_bool) == Some(true) {
@@ -2179,23 +2254,27 @@ impl EditorApp {
                 if let Some(button) = args.get("mouse").and_then(serde_json::Value::as_str) {
                     let button = parse_mouse(button);
                     let Some(button) = button else {
-                        return Some(
-                            json!({ "ok": false, "error": "mouse 只能是 left / right / middle" }),
-                        );
+                        return Some(crate::control::failed(
+                            crate::control::Kind::BadRequest,
+                            "mouse 只能是 left / right / middle",
+                        ));
                     };
                     self.pending_input
                         .push_back(InjectedInput::Mouse(button, pressed));
                 } else if let Some(key) = args.get("key").and_then(serde_json::Value::as_str) {
                     let Some(key) = parse_key(key) else {
-                        return Some(json!({
-                            "ok": false,
-                            "error": format!("不认识的按键 '{key}'（可用：w/a/s/d/q/e/space/shift/ctrl/alt/escape/tab/enter/方向键/0-9）"),
-                        }));
+                        return Some(crate::control::failed(
+                            crate::control::Kind::BadRequest,
+                            format!("不认识的按键 '{key}'（可用：w/a/s/d/q/e/space/shift/ctrl/alt/escape/tab/enter/方向键/0-9）"),
+                        ));
                     };
                     self.pending_input
                         .push_back(InjectedInput::Key(key, pressed));
                 } else {
-                    return Some(json!({ "ok": false, "error": "需要 key / mouse / click 之一" }));
+                    return Some(crate::control::failed(
+                        crate::control::Kind::BadRequest,
+                        "需要 key / mouse / click 之一",
+                    ));
                 }
                 json!({ "ok": true, "queued": 1, "pending": self.pending_input.len() })
             }
@@ -2280,14 +2359,15 @@ impl EditorApp {
                 let offset = args.get("offset").and_then(parse_offset);
                 let clicked = match crate::ui_tree::parse_view_object_node(node) {
                     Some(tab) => self.ui_click_view_object(tab, node, offset),
-                    None if crate::ui_tree::parse_dialog_node(node).is_some() => {
-                        self.ui_click_dialog(ctx, node)
-                    }
+                    None if crate::ui_tree::parse_dialog_node(node).is_some() => self
+                        .ui_click_dialog(ctx, node)
+                        .map_err(crate::control::ControlError::from),
                     None => match offset {
                         Some(offset) => self.ui_click_panel_offset(node, offset),
                         None => self
                             .ui_click(node)
-                            .map(|message| json!({ "node": node, "action": message })),
+                            .map(|message| json!({ "node": node, "action": message }))
+                            .map_err(crate::control::ControlError::from),
                     },
                 };
                 match clicked {
@@ -2302,7 +2382,11 @@ impl EditorApp {
                             .unwrap_or(serde_json::Value::Null);
                         value
                     }
-                    Err(error) => json!({ "ok": false, "node": node, "error": error }),
+                    Err(error) => {
+                        let mut value = crate::control::ControlError::from(error).into_json();
+                        value["node"] = json!(node);
+                        value
+                    }
                 }
             }
             "ui.set" | "ui_set" => {
@@ -2316,7 +2400,11 @@ impl EditorApp {
                     .unwrap_or(serde_json::Value::Null);
                 match self.ui_set(node, value) {
                     Ok(message) => json!({ "ok": true, "node": node, "action": message }),
-                    Err(error) => json!({ "ok": false, "node": node, "error": error }),
+                    Err(error) => {
+                        let mut value = crate::control::ControlError::from(error).into_json();
+                        value["node"] = json!(node);
+                        value
+                    }
                 }
             }
             "ui.move" | "ui_move" | "ui.hover" => match self.ui_view_move(args) {
@@ -2324,21 +2412,21 @@ impl EditorApp {
                     value["ok"] = json!(true);
                     value
                 }
-                Err(error) => json!({ "ok": false, "error": error }),
+                Err(error) => error.into_json(),
             },
             "ui.wheel" | "ui_wheel" => match self.ui_view_wheel(args) {
                 Ok(mut value) => {
                     value["ok"] = json!(true);
                     value
                 }
-                Err(error) => json!({ "ok": false, "error": error }),
+                Err(error) => error.into_json(),
             },
             "ui.drag" | "ui_drag" => match self.ui_view_drag(args) {
                 Ok(mut value) => {
                     value["ok"] = json!(true);
                     value
                 }
-                Err(error) => json!({ "ok": false, "error": error }),
+                Err(error) => error.into_json(),
             },
             "quit.confirm" | "quit_confirm" => {
                 // 和菜单 Exit / 点窗口 × 一样：有未保存文档时弹三选一，不强制退出。
@@ -2368,7 +2456,10 @@ impl EditorApp {
                 self.request_quit(ctx);
                 json!({ "ok": true })
             }
-            other => json!({ "ok": false, "error": format!("unknown cmd: {other}") }),
+            other => crate::control::failed(
+                crate::control::Kind::BadRequest,
+                format!("unknown cmd: {other}"),
+            ),
         };
         Some(direct)
     }
@@ -2379,6 +2470,11 @@ impl EditorApp {
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    /// `<state 目录>/control.port`：通道开着时由 `ControlServer` 写，关掉时不存在。
+    fn control_port_file(&self) -> PathBuf {
+        self.capture_dir().join("control.port")
     }
 
     /// 统一的截图入口：`window` / `scene` / `game`。
@@ -4498,6 +4594,7 @@ impl EditorApp {
                 &mut self.preferences,
                 &mut self.workspace,
                 &mut self.state,
+                self.control_cli_disabled,
             ),
             "theme" => panels::theme(ui, &mut self.workspace),
             "build" => {

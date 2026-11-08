@@ -58,6 +58,12 @@ fn main() -> std::process::ExitCode {
 
     logging::install("warn");
 
+    // 全局控制通道开关：`--no-control` 完全不建 listener、不写 `control.port`，
+    // 而不是接受连接后逐条拒绝 —— 否则 agent 看到的是「连上了但都不行」。
+    if std::env::args().any(|arg| arg == "--no-control") {
+        control::set_cli_disabled(true);
+    }
+
     let options = RunOption {
         clear_color: [0.055, 0.06, 0.07, 1.0],
         viewport_builder: Some(

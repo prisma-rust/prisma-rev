@@ -696,6 +696,21 @@ cook 前会拒绝的形状问题 —— 节点名 / 类型、剪辑与坐标数�
 `logs` 读 Console 的同一份缓冲（`since` 增量、`limit` 条数），自动化因此能拿到引擎日志、
 工程模块的 `project:` 日志和 panic 栈。
 
+失败回执除 `ok: false` 外还带 `kind`（机器可读）与 `message`；`error` 保留同一段文本，
+旧调用方不用改（#1008）：
+
+| `kind` | 含义 | 调用方该做什么 |
+|---|---|---|
+| `bad_request` | JSON / `cmd` / 参数不合法（未知节点、越界坐标、不认识的按键） | 改参数重试 |
+| `not_ready` | 编辑器还没准备好：5 秒内没回执、视口还没布局、Play / 对话框还没打开 | 等一会再试 |
+| `denied` | 明确拒绝：平台不支持整窗截图、通道被关掉 | 不要重试 |
+| `internal` | 编辑器内部错误（截图写盘失败等） | 读 `logs`，重试通常无用 |
+
+全局开关：`--no-control` 启动时不建 listener、不写 `control.port`（而不是「连上以后
+逐条拒绝」）；Preferences 的 `Enable local control channel` 可以在运行中关掉，
+关掉会立即停止监听并删除端口文件。`status` 回执的 `control` 段给出
+`enabled` / `cli_disabled` / `port_file` / `error`。
+
 视口里的指针操作也走控制通道（#643），坐标单位是**视口局部逻辑像素**：
 
 | 命令 | 参数 | 行为 |
