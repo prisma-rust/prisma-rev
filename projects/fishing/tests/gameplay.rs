@@ -172,3 +172,33 @@ fn rod_line_follows_the_bobber() {
         "cast should have landed"
     );
 }
+
+/// 按住 Space 只应触发一次，不是每帧都抛竿 / 扬竿（#1050）。
+#[test]
+fn holding_space_does_not_recast() {
+    use fishing::game::fishing::Phase;
+    use prism_game_api::keys;
+
+    let mut world = scene_world();
+    let mut api = GameWorld::host(&mut world);
+    let mut state = None;
+
+    // Held, but no press edge this frame: the first tick only builds state.
+    let mut held = InputSnapshot::default();
+    held.set_key(keys::SPACE, true);
+    api.set_input(held);
+    fishing::game::fishing::tick(&mut state, &mut api, 0.016);
+    assert_eq!(state.as_ref().unwrap().phase(), Phase::Idle);
+
+    // The press edge starts exactly one cast.
+    let mut pressed = held;
+    pressed.set_key_edge(keys::SPACE, true);
+    api.set_input(pressed);
+    fishing::game::fishing::tick(&mut state, &mut api, 0.016);
+    assert_eq!(state.as_ref().unwrap().phase(), Phase::Casting);
+
+    // Still holding: no second cast while the first one is in flight.
+    api.set_input(held);
+    fishing::game::fishing::tick(&mut state, &mut api, 0.016);
+    assert_eq!(state.as_ref().unwrap().phase(), Phase::Casting);
+}
