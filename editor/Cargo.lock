@@ -2756,6 +2756,7 @@ dependencies = [
  "log",
  "prism-ecs",
  "prism-gfx",
+ "prism-ini",
  "prism-reflect",
  "serde",
  "serde_json",

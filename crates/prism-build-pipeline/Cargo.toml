@@ -5,19 +5,27 @@ edition.workspace = true
 license.workspace = true
 description = "Offline build pipeline: GI bake, asset cooking, etc."
 
+[features]
+# GI probe baking is the only part that needs the engine and the Vulkan
+# renderer, so it is opt-in: `build-scenes` / `cook` / `pack` / `heightmap`
+# stay CPU-only and do not require compiled `.spv` shaders.
+default = []
+gi-bake = ["dep:prism-ecs", "dep:prism-engine", "dep:prism-render", "dep:ash", "dep:bytemuck"]
+
 [[bin]]
 name = "prism-build-pipeline"
 path = "src/main.rs"
 
 [dependencies]
-prism-ecs = { path = "../prism-ecs" }
-prism-engine = { path = "../prism-engine" }
-prism-render = { path = "../prism-render" }
+prism-ecs = { path = "../prism-ecs", optional = true }
+prism-engine = { path = "../prism-engine", optional = true }
+prism-render = { path = "../prism-render", optional = true }
 prism-asset = { path = "../prism-asset", default-features = false, features = ["runtime"] }
 prism-cooker = { path = "../prism-cooker", default-features = false }
 prism-scene = { path = "../prism-scene" }
-ash = { workspace = true }
-bytemuck = { workspace = true }
+prism-ini = { path = "../prism-ini" }
+ash = { workspace = true, optional = true }
+bytemuck = { workspace = true, optional = true }
 anyhow = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true, features = ["auto-color", "humantime", "regex"] }

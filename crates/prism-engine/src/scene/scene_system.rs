@@ -620,9 +620,7 @@ pub fn load_env_bytes_from_manifest() -> Option<Vec<u8>> {
 // Manifest helpers（由旧 engine.rs 迁入）——场景系统的内部实现
 // ---------------------------------------------------------------------------
 
-fn default_enabled() -> bool {
-    true
-}
+pub use prism_scene::{SceneManifest, SceneManifestEntry};
 
 /// Resolve `scenes.json` GUID references against the source `assets/` tree.
 ///
@@ -649,112 +647,6 @@ fn manifest_style_path(current: &str, resolved: &str) -> String {
     } else {
         resolved.to_string()
     }
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct SceneManifestEntry {
-    pub name: String,
-    pub path: String,
-    /// Build Settings 的勾选状态；缺省视为启用（兼容旧 manifest）。
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-    /// 场景源文档的稳定 GUID（#466）。打包后的清单会去掉它，运行时只认 path。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub guid: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-pub struct SceneManifest {
-    pub scenes: Vec<SceneManifestEntry>,
-}
-
-impl SceneManifest {
-    /// 解析清单文本：优先 `scenes.json`（`{"scenes":[{name,path,enabled,guid}]}`），
-    /// 失败时回退到旧项目的 `scenes.toml`（`[[scenes]]` 数组表）并提示迁移。
-    ///
-    /// 回退只在 JSON 解析失败时发生，所以新格式解析错误不会被旧解析器
-    /// 「猜」成一份空清单——两种格式都失败才返回错误。
-    pub fn parse(text: &str) -> Result<Self, String> {
-        match serde_json::from_str::<Self>(text) {
-            Ok(manifest) => Ok(manifest),
-            Err(json_error) => match parse_legacy_toml(text) {
-                Ok(manifest) => {
-                    log::warn!(
-                        "scene manifest is in the legacy TOML format; run \
-                         `prism-build-pipeline build-scenes` to migrate it to scenes.json"
-                    );
-                    Ok(manifest)
-                }
-                Err(toml_error) => Err(format!(
-                    "not scenes.json ({json_error}) and not legacy scenes.toml ({toml_error})"
-                )),
-            },
-        }
-    }
-}
-
-/// 旧格式 `scenes.toml` 的最小读取器。
-///
-/// 只认清单用到的 TOML 子集：`[[scenes]]` 数组表 + `name` / `path` / `enabled`
-/// 三个键 + 整行注释。它不是通用 TOML 解析器——存在的唯一理由是让旧项目
-/// 在原文件上继续可加载，直到 `build-scenes` 把它们迁移成 `scenes.json`。
-fn parse_legacy_toml(text: &str) -> Result<SceneManifest, String> {
-    let mut scenes: Vec<SceneManifestEntry> = Vec::new();
-    let mut current: Option<SceneManifestEntry> = None;
-    let mut saw_table = false;
-
-    for raw in text.lines() {
-        let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if line == "[[scenes]]" {
-            if let Some(entry) = current.take() {
-                scenes.push(entry);
-            }
-            current = Some(SceneManifestEntry {
-                name: String::new(),
-                path: String::new(),
-                enabled: true,
-                guid: None,
-            });
-            saw_table = true;
-            continue;
-        }
-        if line.starts_with('[') && line.ends_with(']') {
-            // 别的表（理论上不该出现）：结束当前条目，后续键忽略。
-            if let Some(entry) = current.take() {
-                scenes.push(entry);
-            }
-            continue;
-        }
-        let Some(entry) = current.as_mut() else {
-            continue;
-        };
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        let value = crate::config::ini::parse_value(value);
-        match key.trim() {
-            "name" => entry.name = value,
-            "path" => entry.path = value,
-            "enabled" => {
-                entry.enabled = match value.trim().to_ascii_lowercase().as_str() {
-                    "false" | "0" | "no" | "off" => false,
-                    _ => true,
-                }
-            }
-            _ => {}
-        }
-    }
-    if let Some(entry) = current.take() {
-        scenes.push(entry);
-    }
-
-    if !saw_table {
-        return Err("no [[scenes]] table".into());
-    }
-    Ok(SceneManifest { scenes })
 }
 
 /// 不依赖当前工作目录地定位场景清单：

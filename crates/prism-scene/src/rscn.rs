@@ -174,6 +174,37 @@ impl DecodedScene {
     }
 }
 
+/// Read the skybox HDR path from cooked RSCN bytes (v4 component or v2 header).
+///
+/// Returns `None` when the data is not valid RSCN v2+ or declares no skybox.
+/// The app layer and the build pipeline use this to preload the environment
+/// map without spawning an entity graph.
+pub fn read_env_path(data: &[u8]) -> Option<String> {
+    if is_v4(data) {
+        let mut registry = ComponentRegistry::new();
+        crate::registry::register_builtin_components(&mut registry);
+        return decode_scene(data, &registry)
+            .ok()
+            .and_then(|scene| scene.env_path());
+    }
+    if data.len() < 11 || &data[..4] != b"RSCN" {
+        return None;
+    }
+    if data[4] < 2 {
+        return None; // v1 has no env path
+    }
+    let env_len = u16::from_le_bytes(data[9..11].try_into().ok()?) as usize;
+    if env_len == 0 || data.len() < 11 + env_len {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&data[11..11 + env_len]).into_owned();
+    if path.is_empty() {
+        None
+    } else {
+        Some(path)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Encoding
 // ---------------------------------------------------------------------------

@@ -8,13 +8,13 @@
 //! `settings.toml` 的内容与 INI 方言完全重合（`[section]` + `key = value` +
 //! 引号字符串 + 裸的布尔/数字），所以直接复用引擎的 INI 解析器重排一遍；
 //! 场景清单的 `[[scenes]]` 数组表则复用
-//! [`prism_engine::scene::SceneManifest::parse`] 的旧格式分支。
+//! [`prism_scene::SceneManifest::parse`] 的旧格式分支。
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use prism_engine::config::ini::Ini;
-use prism_engine::scene::SceneManifest;
+use prism_ini::Ini;
+use prism_scene::SceneManifest;
 
 /// 本次迁移写了哪些文件（`None` = 该文件不需要迁移）。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

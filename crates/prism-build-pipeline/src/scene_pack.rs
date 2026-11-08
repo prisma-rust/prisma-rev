@@ -122,7 +122,7 @@ pub fn build_scene_package_split(
 
     let manifest_text = fs::read_to_string(manifest_path)
         .with_context(|| format!("read {}", manifest_path.display()))?;
-    let mut manifest = prism_engine::scene::SceneManifest::parse(&manifest_text)
+    let mut manifest = prism_scene::SceneManifest::parse(&manifest_text)
         .map_err(|error| anyhow::anyhow!("parse {}: {error}", manifest_path.display()))?;
     let asset_root = manifest_path.parent().unwrap_or_else(|| Path::new("."));
     let guid_index = GuidIndex::scan(asset_root);
@@ -226,7 +226,7 @@ pub fn build_scene_package_split(
 
 fn write_cook_stamp(asset_root: &Path, staging: &Path) -> Result<()> {
     let stamp = prism_scene::cook_stamp::CookStamp::new(
-        prism_engine::scene::component_registry::builtin_schema_fingerprint(),
+        prism_scene::builtin_schema_fingerprint(),
         prism_scene::cook_stamp::newest_source_mtime(asset_root),
     );
     let path = staging.join(prism_scene::cook_stamp::COOK_STAMP_NAME);
@@ -300,7 +300,7 @@ fn stage_environment_assets(
     asset_root: &Path,
     guid_index: &GuidIndex,
     staging: &Path,
-    manifest: &prism_engine::scene::SceneManifest,
+    manifest: &prism_scene::SceneManifest,
     missing: &mut Vec<String>,
 ) -> Result<usize> {
     let mut staged = std::collections::BTreeSet::new();
@@ -315,7 +315,7 @@ fn stage_environment_assets(
             collect_env_values_from_doc(&document, &mut env_values);
         } else if let Ok(relative) = safe_relative(&entry.path) {
             if let Ok(cooked) = fs::read(staging.join(&relative)) {
-                let path = prism_engine::scene::loader::read_env_path_from_rscn_bytes(&cooked);
+                let path = prism_scene::rscn::read_env_path(&cooked);
                 env_values.extend(path);
             }
         }
@@ -356,7 +356,7 @@ fn stage_sprite_assets(
     asset_root: &Path,
     guid_index: &GuidIndex,
     staging: &Path,
-    manifest: &prism_engine::scene::SceneManifest,
+    manifest: &prism_scene::SceneManifest,
     missing: &mut Vec<String>,
 ) -> Result<usize> {
     let mut staged = std::collections::BTreeSet::new();
@@ -473,7 +473,7 @@ fn stage_ui_assets(
     asset_root: &Path,
     guid_index: &GuidIndex,
     staging: &Path,
-    manifest: &prism_engine::scene::SceneManifest,
+    manifest: &prism_scene::SceneManifest,
     missing: &mut Vec<String>,
 ) -> Result<usize> {
     let mut textures: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -563,7 +563,7 @@ fn stage_audio_assets(
     asset_root: &Path,
     guid_index: &GuidIndex,
     staging: &Path,
-    manifest: &prism_engine::scene::SceneManifest,
+    manifest: &prism_scene::SceneManifest,
     missing: &mut Vec<String>,
 ) -> Result<usize> {
     let mut clips: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -624,7 +624,7 @@ fn stage_mesh_assets(
     asset_root: &Path,
     guid_index: &GuidIndex,
     staging: &Path,
-    manifest: &prism_engine::scene::SceneManifest,
+    manifest: &prism_scene::SceneManifest,
     missing: &mut Vec<String>,
 ) -> Result<usize> {
     let mut staged = std::collections::BTreeSet::new();
@@ -636,7 +636,7 @@ fn stage_mesh_assets(
             else {
                 continue;
             };
-            if prism_render::primitives::is_builtin(value) {
+            if value.starts_with(prism_scene::BUILTIN_MESH_PREFIX) {
                 continue;
             }
             let Some(pak_path) = resolve_asset_path(asset_root, &doc_rel, value) else {
@@ -683,7 +683,7 @@ fn stage_material_assets(
     asset_root: &Path,
     guid_index: &GuidIndex,
     staging: &Path,
-    manifest: &prism_engine::scene::SceneManifest,
+    manifest: &prism_scene::SceneManifest,
     missing: &mut Vec<String>,
 ) -> Result<usize> {
     use prism_asset::core::id::AssetId;
@@ -806,7 +806,7 @@ fn stage_material_assets(
 fn scene_component_maps(
     asset_root: &Path,
     guid_index: &GuidIndex,
-    manifest: &prism_engine::scene::SceneManifest,
+    manifest: &prism_scene::SceneManifest,
 ) -> Vec<(String, Vec<serde_json::Map<String, serde_json::Value>>)> {
     let mut out = Vec::new();
     for entry in &manifest.scenes {
@@ -1209,7 +1209,7 @@ fn doc_relative_to(asset_root: &Path, path: &Path) -> String {
 }
 
 /// Resolve `scenes.json` GUIDs before staging/cooking.
-fn resolve_manifest_guids(manifest: &mut prism_engine::scene::SceneManifest, index: &GuidIndex) {
+fn resolve_manifest_guids(manifest: &mut prism_scene::SceneManifest, index: &GuidIndex) {
     for entry in &mut manifest.scenes {
         let Some(guid) = entry.guid.as_deref() else {
             continue;
@@ -2252,7 +2252,7 @@ mod tests {
         // cooked scene path it declares must resolve through the same package.
         let manifest_id = rm.id_by_path("scenes.json").expect("packaged manifest");
         let manifest_text = String::from_utf8(rm.load_with_deps_raw(manifest_id).unwrap()).unwrap();
-        let packaged = prism_engine::scene::SceneManifest::parse(&manifest_text).unwrap();
+        let packaged = prism_scene::SceneManifest::parse(&manifest_text).unwrap();
         // 作者写的是 `.scene.json`，包里必须改写成 cook 后的 `.rscn`。
         assert_eq!(packaged.scenes[0].path, "scenes/intro.rscn");
         for entry in packaged
@@ -2271,18 +2271,10 @@ mod tests {
         // decoder with the same component registry used by the game.
         let scene_id = rm.id_by_path("scenes/intro.rscn").unwrap();
         let scene_bytes = rm.load_with_deps_raw(scene_id).unwrap();
-        let mut registry = prism_engine::scene::ComponentRegistry::new();
-        prism_engine::scene::register_builtin_components(&mut registry);
-        let mut world = prism_ecs::World::new();
-        let mut loader = prism_engine::scene::loader::SceneLoader::new();
-        let instance = loader
-            .load_and_spawn(
-                &mut world,
-                prism_engine::scene::loader::SceneSource::RawCooked(scene_bytes),
-                &registry,
-            )
-            .unwrap();
-        assert_eq!(instance.all_entities.len(), 1);
+        let mut registry = prism_scene::ComponentRegistry::new();
+        prism_scene::register_builtin_components(&mut registry);
+        let decoded = prism_scene::rscn::decode_scene(&scene_bytes, &registry).unwrap();
+        assert_eq!(decoded.entities.len(), 1);
     }
 
     #[test]
