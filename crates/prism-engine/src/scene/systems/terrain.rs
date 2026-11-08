@@ -54,18 +54,11 @@ enum VertexSplat {
 }
 
 /// 高度场笔刷模式（#517 Phase 2 雕刻基础层）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SculptMode {
-    /// 在笔刷范围内加高：`h += strength * falloff`（strength 是高度场单位）。
-    #[default]
-    Raise,
-    /// 在笔刷范围内降低：`h -= strength * falloff`。
-    Lower,
-    /// 向邻域平均高度靠拢；`strength` 是 0..1 的混合系数。
-    Smooth,
-    /// 向笔刷中心高度靠拢；`strength` 是 0..1 的混合系数。
-    Flatten,
-}
+///
+/// The enum lives in `prism-scene` so the pipeline CLI can sculpt a raw
+/// heightmap without linking the engine; this re-export keeps the scene-side
+/// path unchanged.
+pub use prism_scene::terrain::SculptMode;
 
 impl Heightfield {
     /// 从 `.raw`（f32 little-endian，行优先）解析。
@@ -74,29 +67,13 @@ impl Heightfield {
     /// 和文件对不上时宁可报错，也不要画出一张错位的地形）。高度值不钳制范围 ——
     /// heightmap CLI 写出的是米（有负值），归一化高度场靠 `height_scale` 放大。
     pub fn from_raw(bytes: &[u8], cells: usize) -> Option<Self> {
-        let expected = cells.checked_mul(cells)?.checked_mul(4)?;
-        if cells < 2 || bytes.len() != expected {
-            return None;
-        }
-        let heights = bytes
-            .chunks_exact(4)
-            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-            .map(|value| if value.is_finite() { value } else { 0.0 })
-            .collect();
-        Some(Self { cells, heights })
+        prism_scene::terrain::decode_heights(bytes, cells).map(|heights| Self { cells, heights })
     }
 
     /// 从 `.raw` 推断分辨率：样本数必须是完全平方数（heightmap CLI 默认 1024×1024）。
     pub fn from_raw_auto(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() % 4 != 0 {
-            return None;
-        }
-        let samples = bytes.len() / 4;
-        let cells = (samples as f64).sqrt() as usize;
-        if cells * cells != samples || cells < 2 {
-            return None;
-        }
-        Self::from_raw(bytes, cells)
+        prism_scene::terrain::decode_heights_auto(bytes)
+            .map(|(cells, heights)| Self { cells, heights })
     }
 
     /// 全零的高度场（没有高度图时的占位，仍然是平的可见地面）。
@@ -118,19 +95,7 @@ impl Heightfield {
 
     /// 网格坐标上的高度：`u` / `v` 是 `[0, 1]` 的格子坐标（越界夹到边界）。
     pub fn sample_height(&self, u: f32, v: f32) -> f32 {
-        let last = (self.cells - 1) as f32;
-        let u = (u.clamp(0.0, 1.0) * last).max(0.0);
-        let v = (v.clamp(0.0, 1.0) * last).max(0.0);
-        let (x0, y0) = (u.floor() as usize, v.floor() as usize);
-        let (x1, y1) = ((x0 + 1).min(self.cells - 1), (y0 + 1).min(self.cells - 1));
-        let (tx, ty) = (u - x0 as f32, v - y0 as f32);
-        let h00 = self.at(x0, y0);
-        let h10 = self.at(x1, y0);
-        let h01 = self.at(x0, y1);
-        let h11 = self.at(x1, y1);
-        let top = h00 + (h10 - h00) * tx;
-        let bottom = h01 + (h11 - h01) * tx;
-        top + (bottom - top) * ty
+        prism_scene::terrain::sample_height(self.cells, &self.heights, u, v)
     }
 
     fn at(&self, x: usize, y: usize) -> f32 {
@@ -393,81 +358,20 @@ impl Heightfield {
         strength: f32,
         mode: SculptMode,
     ) -> usize {
-        if !center_u.is_finite()
-            || !center_v.is_finite()
-            || !radius.is_finite()
-            || !strength.is_finite()
-            || radius <= 0.0
-            || strength <= 0.0
-        {
-            return 0;
-        }
-        let cells = self.cells;
-        let last = (cells - 1) as f32;
-        let center_u = center_u.clamp(0.0, 1.0);
-        let center_v = center_v.clamp(0.0, 1.0);
-        let radius = radius.min(1.0) * last;
-        if radius <= 0.0 {
-            return 0;
-        }
-        let center_x = center_u * last;
-        let center_z = center_v * last;
-        let min_x = (center_x - radius).floor().max(0.0) as usize;
-        let max_x = (center_x + radius).ceil().min(last) as usize;
-        let min_z = (center_z - radius).floor().max(0.0) as usize;
-        let max_z = (center_z + radius).ceil().min(last) as usize;
-        let original = (mode == SculptMode::Smooth).then(|| self.heights.clone());
-        let target = if mode == SculptMode::Flatten {
-            self.sample_height(center_u, center_v)
-        } else {
-            0.0
-        };
-        let blend = strength.clamp(0.0, 1.0);
-
-        let mut affected = 0;
-        for z in min_z..=max_z {
-            for x in min_x..=max_x {
-                let dx = x as f32 - center_x;
-                let dz = z as f32 - center_z;
-                let distance = (dx * dx + dz * dz).sqrt() / radius;
-                if distance > 1.0 {
-                    continue;
-                }
-                let falloff = (1.0 - distance * distance).max(0.0).powi(2);
-                if falloff <= 0.0 {
-                    continue;
-                }
-                let index = z * cells + x;
-                match mode {
-                    SculptMode::Raise => self.heights[index] += strength * falloff,
-                    SculptMode::Lower => self.heights[index] -= strength * falloff,
-                    SculptMode::Smooth => {
-                        let original = original.as_ref().expect("smooth keeps a snapshot");
-                        let left = original[z * cells + x.saturating_sub(1)];
-                        let right = original[z * cells + (x + 1).min(cells - 1)];
-                        let up = original[z.saturating_sub(1) * cells + x];
-                        let down = original[(z + 1).min(cells - 1) * cells + x];
-                        let average = (left + right + up + down) * 0.25;
-                        let value = original[index];
-                        self.heights[index] = value + (average - value) * falloff * blend;
-                    }
-                    SculptMode::Flatten => {
-                        let value = self.heights[index];
-                        self.heights[index] = value + (target - value) * falloff * blend;
-                    }
-                }
-                affected += 1;
-            }
-        }
-        affected
+        prism_scene::terrain::sculpt_heights(
+            self.cells,
+            &mut self.heights,
+            center_u,
+            center_v,
+            radius,
+            strength,
+            mode,
+        )
     }
 
     /// 序列化回 `.raw`（f32 little-endian，行优先）——供 CLI / 编辑器写盘。
     pub fn to_raw_bytes(&self) -> Vec<u8> {
-        self.heights
-            .iter()
-            .flat_map(|height| height.to_le_bytes())
-            .collect()
+        prism_scene::terrain::encode_heights(&self.heights)
     }
 }
 

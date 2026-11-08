@@ -469,33 +469,7 @@ fn quat_to_yaw_pitch(quat: [f32; 4]) -> (f32, f32) {
 /// Used by the app layer to pre-load the environment map from either the
 /// ResourceManager or a loose file.
 pub fn read_env_path_from_rscn_bytes(data: &[u8]) -> Option<String> {
-    if rscn::is_v4(data) {
-        let mut registry = ComponentRegistry::new();
-        super::component_registry::register_builtin_components(&mut registry);
-        return rscn::decode_scene(data, &registry)
-            .ok()
-            .and_then(|scene| scene.env_path());
-    }
-    if data.len() < 11 {
-        return None;
-    }
-    if &data[..4] != b"RSCN" {
-        return None;
-    }
-    let version = data[4];
-    if version < 2 {
-        return None; // v1 has no env path
-    }
-    let env_len = u16::from_le_bytes(data[9..11].try_into().ok()?) as usize;
-    if env_len == 0 || data.len() < 11 + env_len {
-        return None;
-    }
-    let path = String::from_utf8_lossy(&data[11..11 + env_len]).into_owned();
-    if path.is_empty() {
-        None
-    } else {
-        Some(path)
-    }
+    prism_scene::rscn::read_env_path(data)
 }
 
 /// Read the skybox HDR path from a cooked RSCN **file**.

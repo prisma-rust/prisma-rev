@@ -11,16 +11,19 @@ pub mod components;
 pub mod cook_stamp;
 pub mod helpers;
 pub mod json;
+pub mod manifest;
 pub mod migrate;
 pub mod references;
 pub mod registry;
 pub mod render_enums;
 pub mod rscn;
+pub mod terrain;
 pub mod ui;
 
 pub use components::*;
 pub use helpers::HierarchyHelper;
 pub use json::{EntityJson, SceneJson, TransformJson};
+pub use manifest::{SceneManifest, SceneManifestEntry};
 pub use migrate::{doc_version, migrate_scene_doc, normalize_scene_doc, SCENE_DOC_VERSION};
 pub use registry::{builtin_schema_fingerprint, register_builtin_components, ComponentRegistry};
 pub use render_enums::{
@@ -28,3 +31,10 @@ pub use render_enums::{
     LightRenderMode, LightShadows, LightType, RenderQueue, ShadowCastingMode,
 };
 pub use rscn::{decode_scene, encode_scene, DecodedEntity, DecodedScene, RscnError};
+pub use terrain::SculptMode;
+
+/// Authoring prefix for procedural builtin meshes (`__builtin/box`, …).
+///
+/// The renderer generates these by name instead of cooking them, so the
+/// cooker and the asset resolver both skip packaging them.
+pub const BUILTIN_MESH_PREFIX: &str = "__builtin/";

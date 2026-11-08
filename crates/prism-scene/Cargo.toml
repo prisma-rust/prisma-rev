@@ -17,6 +17,8 @@ group-ui = []
 prism-ecs = { path = "../prism-ecs" }
 prism-reflect = { path = "../prism-reflect" }
 prism-gfx = { path = "../prism-gfx" }
+# settings.ini dialect (shared with the legacy `scenes.toml` value reader).
+prism-ini = { path = "../prism-ini" }
 glam.workspace = true
 log = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

@@ -80,7 +80,9 @@ deviating from those conventions is a bug. (`README.md` is the human-facing over
 - `crates/prism-editor-api` — 编辑器 / MCP 的**数据层**：把 `prism-scene` 组件注册表投影成
   属性面板 schema + `.scene.json` 定位/读写/校验。UI-framework-free、Vulkan-free，被
   `crates/prism-editor-mcp` 使用。
-- `crates/prism-build-pipeline` — offline build pipeline (GI baking, asset cooking, heightmap CLI).
+- `crates/prism-build-pipeline` — offline build pipeline (asset cooking, heightmap CLI).
+  `bake-gi` is behind the `gi-bake` feature because it is the only command that
+  links the engine and the Vulkan renderer; the default build is CPU-only.
 - `crates/prism-audio` — audio subsystem.
 - `crates/prism-asset` — **runtime** asset layer only: `AssetId`/`Handle`, `.pak`
   (`core`/`package`/`runtime`/`types`/`streaming`/`hot-reload`). No importer/cooker/db/CLI.

@@ -1,7 +1,7 @@
 //! CLI entry point for `prism-build-pipeline`.
 //!
 //! Subcommands:
-//!   bake-gi    — offline GI probe-volume baker (GPU ray-query, multi-bounce path tracing)
+//!   bake-gi    — offline GI probe-volume baker (requires the `gi-bake` feature)
 //!   cook       — cook a `.scene.json` to RSCN v4 (delegates to prism-cooker)
 //!   build-scenes — cook `scenes.json` entries and pack `scenes.pak`
 //!   pack       — pack a cooked directory into a `.pak` + path manifest
@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
-use prism_engine::scene::systems::terrain::{Heightfield, SculptMode};
+use prism_scene::terrain::{self as heightfield, SculptMode};
 
 #[derive(Parser)]
 #[command(name = "prism-build-pipeline", about = "Prisma build pipeline CLI")]
@@ -44,6 +44,7 @@ impl From<SculptModeArg> for SculptMode {
 #[derive(Subcommand)]
 enum Command {
     /// Offline GI probe-volume baker (GPU ray-query, multi-bounce path tracing)
+    #[cfg(feature = "gi-bake")]
     BakeGi {
         /// Output .bin path (default: assets/gi/probe_volume.bin)
         output: Option<PathBuf>,
@@ -187,6 +188,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        #[cfg(feature = "gi-bake")]
         Command::BakeGi {
             output,
             pak,
@@ -436,14 +438,23 @@ fn main() -> Result<()> {
         } => {
             let bytes = std::fs::read(&input)
                 .map_err(|error| anyhow!("cannot read {}: {error}", input.display()))?;
-            let mut field = Heightfield::from_raw_auto(&bytes).ok_or_else(|| {
-                anyhow!(
-                    "{} is not a square f32 heightmap ({} bytes)",
-                    input.display(),
-                    bytes.len()
-                )
-            })?;
-            let affected = field.sculpt(x, z, radius, strength, mode.into());
+            let (cells, mut heights) =
+                heightfield::decode_heights_auto(&bytes).ok_or_else(|| {
+                    anyhow!(
+                        "{} is not a square f32 heightmap ({} bytes)",
+                        input.display(),
+                        bytes.len()
+                    )
+                })?;
+            let affected = heightfield::sculpt_heights(
+                cells,
+                &mut heights,
+                x,
+                z,
+                radius,
+                strength,
+                mode.into(),
+            );
             if affected == 0 {
                 return Err(anyhow!(
                     "brush affected no cells (check --x/--z/--radius/--strength)"
@@ -453,7 +464,7 @@ fn main() -> Result<()> {
             if let Some(parent) = output.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::write(&output, field.to_raw_bytes())?;
+            std::fs::write(&output, heightfield::encode_heights(&heights))?;
             log::info!(
                 "sculpted {affected} cells ({:?}) -> {}",
                 mode,

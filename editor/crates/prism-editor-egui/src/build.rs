@@ -125,7 +125,7 @@ impl BuildKind {
     /// 这个任务要顺序执行的 cargo 命令。玩家构建先刷新 `scenes.pak`，
     /// 否则会跑上一次 cook 的场景。
     fn commands(&self, root: &Path) -> Result<Vec<Vec<String>>, String> {
-        let pipeline = |extra: &[&str]| -> Result<Vec<String>, String> {
+        let pipeline_with = |features: &[&str], extra: &[&str]| -> Result<Vec<String>, String> {
             let manifest = pipeline_manifest_path(root)
                 .ok_or_else(|| "cannot find prism-build-pipeline workspace".to_string())?;
             let mut args = vec![
@@ -134,11 +134,16 @@ impl BuildKind {
                 manifest.display().to_string(),
                 "-p".to_string(),
                 "prism-build-pipeline".to_string(),
-                "--".to_string(),
             ];
+            if !features.is_empty() {
+                args.push("--features".to_string());
+                args.push(features.join(","));
+            }
+            args.push("--".to_string());
             args.extend(extra.iter().map(|arg| arg.to_string()));
             Ok(args)
         };
+        let pipeline = |extra: &[&str]| pipeline_with(&[], extra);
         // 玩家构建复用数据层的 `BuildPlan`（profile / output_dir / 产物布局都在那里），
         // 这里只是把它的步骤翻译成 cargo 参数。
         let player_commands = || -> Result<Vec<Vec<String>>, String> {
@@ -169,14 +174,10 @@ impl BuildKind {
             } => {
                 let rays = rays.to_string();
                 let bounces = bounces.to_string();
-                vec![pipeline(&[
-                    "bake-gi",
-                    output,
-                    "--rays",
-                    &rays,
-                    "--bounces",
-                    &bounces,
-                ])?]
+                vec![pipeline_with(
+                    &["gi-bake"],
+                    &["bake-gi", output, "--rays", &rays, "--bounces", &bounces],
+                )?]
             }
             BuildKind::Heightmap {
                 output,
@@ -535,6 +536,9 @@ mod tests {
         assert_eq!(bake.len(), 1);
         assert!(mentions(&bake[0], "bake-gi"));
         assert!(mentions(&bake[0], "assets/gi/out.bin"));
+        assert!(bake[0]
+            .windows(2)
+            .any(|pair| pair[0] == "--features" && pair[1] == "gi-bake"));
         assert!(bake[0]
             .windows(2)
             .any(|pair| pair[0] == "--rays" && pair[1] == "128"));

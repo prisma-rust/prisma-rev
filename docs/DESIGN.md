@@ -598,9 +598,9 @@ pub struct SceneReadView<'a> {
 |-------|------|------|----------|
 | `prism-asset` | 运行时 | `AssetId`（64 bit gen+serial）、`AssetType`、`Handle<T>`、`.pak`（RPAK + zstd + xxh3）、`ResourceManager`（懒加载/预算/热重载）、streaming | serde, zstd, tokio（feature-gated） |
 | `prism-gfx` | 共享数据 | 形状的渲染状态枚举（`CullMode`/`CompareFunction`/`BlendMode`/`RenderQueue`/`ShadowCastingMode`/光照与相机枚举）+ 反射编码；Vulkan-free、ECS-free | `prism-reflect`、serde、glam |
-| `prism-scene` | schema | 场景/UI 组件、`ComponentRegistry`、`.scene.json` 作者格式、RSCN v4 编解码 | `prism-ecs`、`prism-reflect`、`prism-gfx`、serde |
+| `prism-scene` | schema | 场景/UI 组件、`ComponentRegistry`、`.scene.json` 作者格式、场景清单、RSCN v4 编解码、高度场纯数据 | `prism-ecs`、`prism-reflect`、`prism-gfx`、`prism-ini`、serde |
 | `prism-cooker` | 构建期 | importer 框架、cooker 框架、CookProfile、资产数据库/导入缓存、`SceneCooker`、CLI `prism-cook` | `prism-asset`、`prism-scene`、image、gltf |
-| `prism-build-pipeline` | 编排 | `bake-gi`、`cook`、`heightmap` 等批处理入口；调用 cooker，不进入运行时 | `prism-cooker`、`prism-engine` |
+| `prism-build-pipeline` | 编排 | `cook`、`build-scenes`、`pack`、`heightmap` 等批处理入口；`bake-gi` 需要 `gi-bake` feature | `prism-cooker`、`prism-scene`；`gi-bake` 额外要 `prism-engine`、`prism-render` |
 
 `prism-asset` 的 feature 只服务运行时裁剪（`runtime` / `package` / `types` /
 `streaming` / `hot-reload`），不再包含 `cooker` / `importer` / `db` / `cli`。
