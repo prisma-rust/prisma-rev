@@ -42,9 +42,14 @@ Push constant 结构**不手写**：全部来自 `shader_bindings::<module>::*`�
 #    Termux/aarch64 无法用官方 glibc 版；请在桌面/CI 做这一步。
 
 # 2) 编译 shader -> .spv + 反射 JSON
+#    需要 slangc 2026.21 或更新（已提交的反射就是这个版本生成的）；
+#    更旧的版本会被脚本拒绝，因为它会静默丢掉 "version" / "combined" / "sizes" 等字段。
 export SLANGC=/path/to/slangc      # 或让 slangc 在 PATH 上
 bash assets/shaders/compile.sh
-#   产出 assets/shaders/*.spv 和 assets/shaders/reflection/*.json
+#   产出 assets/shaders/*.spv；反射 JSON 先写到临时目录，再和已提交的逐字节比对。
+#   不一致时脚本失败并列出行（默认不覆盖仓库里的文件）。确认 schema 变更是有意的，再用
+#   bash assets/shaders/compile.sh --write-reflection
+#   采用新文件。
 
 # 3) 从真实反射重新生成 Rust 绑定（输出目录会被整份重写：每模块一个 .rs + mod.rs）
 cd crates/xtask
@@ -56,6 +61,8 @@ cargo test -p prism-render
 ```
 
 > `assets/shaders/reflection/*.json` 是**真实 slangc 产出**并 checked-in：没有 slangc 的机器（Termux / Android 构建机）也能跑 codegen，桌面/CI 重新编一遍由 drift guard 比对（见文末 CI 一节），手改反射 JSON 会在那里挂掉。
+>
+> 生成它们的是 slangc `2026.21`（CI 的 `SLANG_VERSION` 与 `compile.sh` 的 `SLANGC_MIN_VERSION` 都钉在它上面；自己的机器版本落后时按脚本提示自行安装，不要下调检查）。`compile.sh` 会检查 `slangc -version`，并在反射与仓库不一致时失败——所以本地那次「只在 /tmp 生成 `.spv`」的绕法不再需要，也不该再手工改 `-reflection-json` 的目标。
 >
 > 反过来，`assets/shaders/*.spv` 是 gitignore 的：**每个新 worktree 或新克隆都要先 `bash assets/shaders/compile.sh`**，否则 `include_bytes!` 找不到文件、`prism-render` 相关编译直接失败。
 
