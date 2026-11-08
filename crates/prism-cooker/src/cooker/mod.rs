@@ -238,6 +238,20 @@ const RTXI_MAGIC: &[u8; 4] = b"RTXI";
 /// Maximum mip levels for a single texture.
 const MAX_MIP_LEVELS: u32 = 16;
 
+/// Undo premultiplication for alpha-weighted sums: `r` is `sum(r * a)` and
+/// `alpha` is `sum(a)` over the same pixels, so the quotient is the
+/// alpha-weighted colour average. A fully transparent window keeps RGB at 0.
+fn unpremultiply(r: u64, g: u64, b: u64, alpha: u64) -> (u8, u8, u8) {
+    if alpha == 0 {
+        return (0, 0, 0);
+    }
+    (
+        (r / alpha).min(255) as u8,
+        (g / alpha).min(255) as u8,
+        (b / alpha).min(255) as u8,
+    )
+}
+
 /// Cooks texture data by reconstructing the RGBA image, generating a mip
 /// chain (box-filtered), and packing into a runtime-ready binary:
 ///
@@ -291,6 +305,10 @@ impl TextureCooker {
     }
 
     /// 面积平均缩放（只用于缩小）。
+    ///
+    /// RGB is accumulated in premultiplied space and divided by the summed
+    /// alpha, so a transparent pixel's colour cannot tint its neighbours --
+    /// that is what produced the dark halo around sprites.
     fn resize_rgba(width: u32, height: u32, rgba: &[u8], new_w: u32, new_h: u32) -> Vec<u8> {
         let mut out = Vec::with_capacity(new_w as usize * new_h as usize * 4);
         for y in 0..new_h {
@@ -299,20 +317,22 @@ impl TextureCooker {
             for x in 0..new_w {
                 let x0 = x * width / new_w;
                 let x1 = ((x + 1) * width / new_w).max(x0 + 1).min(width);
-                let mut acc = [0u32; 4];
-                let mut count = 0u32;
+                // Premultiplied R, G, B followed by the plain alpha sum.
+                let mut acc = [0u64; 4];
+                let mut count = 0u64;
                 for sy in y0..y1 {
                     for sx in x0..x1 {
                         let idx = ((sy * width) + sx) as usize * 4;
-                        for channel in 0..4 {
-                            acc[channel] += rgba[idx + channel] as u32;
+                        let alpha = rgba[idx + 3] as u64;
+                        for channel in 0..3 {
+                            acc[channel] += rgba[idx + channel] as u64 * alpha;
                         }
+                        acc[3] += alpha;
                         count += 1;
                     }
                 }
-                for channel in acc {
-                    out.push((channel / count.max(1)) as u8);
-                }
+                let (r, g, b) = unpremultiply(acc[0], acc[1], acc[2], acc[3]);
+                out.extend_from_slice(&[r, g, b, (acc[3] / count.max(1)) as u8]);
             }
         }
         out
@@ -334,12 +354,9 @@ impl TextureCooker {
 
             for y in 0..dst_h {
                 for x in 0..dst_w {
-                    // 2×2 box filter.
-                    let mut r = 0u32;
-                    let mut g = 0u32;
-                    let mut b = 0u32;
-                    let mut a = 0u32;
-                    let mut count = 0u32;
+                    // 2×2 box filter in premultiplied space.
+                    let mut acc = [0u64; 4];
+                    let mut count = 0u64;
 
                     for dy in 0..2 {
                         for dx in 0..2 {
@@ -348,19 +365,18 @@ impl TextureCooker {
                             // Guard against source dimensions (not the target).
                             if sx < src_w && sy < src_h {
                                 let idx = ((sy * src_w) + sx) as usize * 4;
-                                r += prev[idx] as u32;
-                                g += prev[idx + 1] as u32;
-                                b += prev[idx + 2] as u32;
-                                a += prev[idx + 3] as u32;
+                                let alpha = prev[idx + 3] as u64;
+                                for channel in 0..3 {
+                                    acc[channel] += prev[idx + channel] as u64 * alpha;
+                                }
+                                acc[3] += alpha;
                                 count += 1;
                             }
                         }
                     }
 
-                    next.push((r / count) as u8);
-                    next.push((g / count) as u8);
-                    next.push((b / count) as u8);
-                    next.push((a / count) as u8);
+                    let (r, g, b) = unpremultiply(acc[0], acc[1], acc[2], acc[3]);
+                    next.extend_from_slice(&[r, g, b, (acc[3] / count.max(1)) as u8]);
                 }
             }
 
