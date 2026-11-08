@@ -287,7 +287,7 @@ pub fn snapshot(input: &SnapshotInput<'_>) -> Value {
                         .map(file_name)
                         .unwrap_or_else(|| format!("untitled:{index}")),
                     "path": doc.path,
-                    "dirty": doc.dirty,
+                    "dirty": doc.is_dirty(),
                     "active": index == workspace.active_index(),
                 })
             })
@@ -320,7 +320,7 @@ fn panel_children(input: &SnapshotInput<'_>, tab: &str) -> Value {
                         "id": format!("doc:{index}"),
                         "role": "document",
                         "label": doc.path.as_deref().map(file_name).unwrap_or_default(),
-                        "dirty": doc.dirty,
+                        "dirty": doc.is_dirty(),
                         "active": index == workspace.active_index(),
                     })
                 })

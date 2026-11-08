@@ -91,6 +91,12 @@ pub struct Entry {
     at_ms: u64,
     /// 结构性编辑的选中快照；字段 / Transform 命令为 `None`（实体集合没变）。
     selection: Option<SelectionSnapshot>,
+    /// 执行这一步 / 撤销这一步之后所处的文档状态编号。
+    ///
+    /// 编号单调递增且全局唯一，所以「撤销回保存时的位置」和「撤销后又在同一深度
+    /// 做了别的编辑」可以区分开 —— 只比较撤销栈深度会把后一种误判成未修改（#992）。
+    before_state: u64,
+    after_state: u64,
 }
 
 impl Entry {
@@ -111,6 +117,12 @@ pub struct UndoStack {
     /// 交互进行中（拖动 gizmo / 拖拽输入框）：忽略合并时间窗口，
     /// 整段交互始终压成一步。
     sticky: bool,
+    /// 下一个可用状态编号。
+    next_state: u64,
+    /// 文档当前所处的状态编号。
+    current_state: u64,
+    /// 最后一次保存时的状态编号；`None` = 当前状态不可达（保存点已被丢弃）。
+    saved_state: Option<u64>,
 }
 
 impl UndoStack {
@@ -121,7 +133,30 @@ impl UndoStack {
             limit: DEFAULT_LIMIT,
             coalesce_ms: DEFAULT_COALESCE_MS,
             sticky: false,
+            next_state: 1,
+            current_state: 0,
+            saved_state: Some(0),
         }
+    }
+
+    fn allocate_state(&mut self) -> u64 {
+        let state = self.next_state;
+        self.next_state += 1;
+        state
+    }
+
+    /// 文档当前是否和最后一次 `mark_saved` 的状态不同。
+    ///
+    /// 只看撤销栈的游标 / 深度是不够的：撤销回到保存点后，`undo` 与 `redo`
+    /// 的长度会回到保存时的样子；但如果之后在同深度做了别的编辑，深度同样
+    /// 对得上，内容却变了。状态编号能同时覆盖这两种情况。
+    pub fn is_dirty(&self) -> bool {
+        self.saved_state != Some(self.current_state)
+    }
+
+    /// 把当前状态记为「已保存」的基线。
+    pub fn mark_saved(&mut self) {
+        self.saved_state = Some(self.current_state);
     }
 
     /// 开始一次交互：此后的改动不再受 `coalesce_ms` 时间窗口限制。
@@ -202,8 +237,17 @@ impl UndoStack {
     }
 
     pub fn clear(&mut self) {
+        let was_dirty = self.is_dirty();
         self.undo.clear();
         self.redo.clear();
+        self.current_state = self.allocate_state();
+        // 清空历史不应顺手清掉脏标记：干净的文档继续保持干净，脏的文档也
+        // 不会因为「历史没了」而看起来像没改过。
+        self.saved_state = if was_dirty {
+            None
+        } else {
+            Some(self.current_state)
+        };
     }
 
     /// 一次字段写入。`entity_id + component + path` 相同且在合并窗口内时，
@@ -223,6 +267,7 @@ impl UndoStack {
             return;
         }
         let coalesce = format!("{entity_id}/{component}/{path}");
+        let state = self.allocate_state();
         if let Some(last) = self.undo.last_mut() {
             if last.coalesce.as_deref() == Some(coalesce.as_str())
                 && (self.sticky || now_ms.saturating_sub(last.at_ms) <= self.coalesce_ms)
@@ -233,6 +278,8 @@ impl UndoStack {
                 {
                     *last_after = after.clone();
                     last.at_ms = now_ms;
+                    last.after_state = state;
+                    self.current_state = state;
                     self.redo.clear();
                     apply_field(doc, entity_id, component, path, &after);
                     return;
@@ -254,7 +301,10 @@ impl UndoStack {
             coalesce: Some(coalesce),
             at_ms: now_ms,
             selection: None,
+            before_state: self.current_state,
+            after_state: state,
         });
+        self.current_state = state;
         self.redo.clear();
         self.trim();
     }
@@ -272,6 +322,7 @@ impl UndoStack {
             return;
         }
         let coalesce = format!("transform/{entity_id}");
+        let state = self.allocate_state();
         if let Some(last) = self.undo.last_mut() {
             if last.coalesce.as_deref() == Some(coalesce.as_str())
                 && (self.sticky || now_ms.saturating_sub(last.at_ms) <= self.coalesce_ms)
@@ -282,6 +333,8 @@ impl UndoStack {
                 {
                     *last_after = after;
                     last.at_ms = now_ms;
+                    last.after_state = state;
+                    self.current_state = state;
                     self.redo.clear();
                     apply_transform(doc, entity_id, &after);
                     return;
@@ -299,7 +352,10 @@ impl UndoStack {
             coalesce: Some(coalesce),
             at_ms: now_ms,
             selection: None,
+            before_state: self.current_state,
+            after_state: state,
         });
+        self.current_state = state;
         self.redo.clear();
         self.trim();
     }
@@ -320,6 +376,7 @@ impl UndoStack {
         if changes.is_empty() {
             return;
         }
+        let state = self.allocate_state();
         if let Some(last) = self.undo.last_mut() {
             if last.coalesce.as_deref() == Some(coalesce.as_str())
                 && (self.sticky || now_ms.saturating_sub(last.at_ms) <= self.coalesce_ms)
@@ -339,6 +396,8 @@ impl UndoStack {
                         apply_transform(doc, *entity_id, after);
                     }
                     last.at_ms = now_ms;
+                    last.after_state = state;
+                    self.current_state = state;
                     self.redo.clear();
                     return;
                 }
@@ -353,7 +412,10 @@ impl UndoStack {
             coalesce: Some(coalesce),
             at_ms: now_ms,
             selection: None,
+            before_state: self.current_state,
+            after_state: state,
         });
+        self.current_state = state;
         self.redo.clear();
         self.trim();
     }
@@ -379,6 +441,7 @@ impl UndoStack {
         if before == *after {
             return;
         }
+        let state = self.allocate_state();
         self.undo.push(Entry {
             label: label.into(),
             command: Command::Snapshot {
@@ -388,7 +451,10 @@ impl UndoStack {
             coalesce: None,
             at_ms: 0,
             selection,
+            before_state: self.current_state,
+            after_state: state,
         });
+        self.current_state = state;
         self.redo.clear();
         self.trim();
     }
@@ -424,6 +490,7 @@ impl UndoStack {
             .as_ref()
             .map(|snapshot| snapshot.before.clone());
         entry.coalesce = None;
+        self.current_state = entry.before_state;
         let label = entry.label.clone();
         self.redo.push(entry);
         Some(UndoOutcome { label, selection })
@@ -460,6 +527,7 @@ impl UndoStack {
             .as_ref()
             .map(|snapshot| snapshot.after.clone());
         entry.coalesce = None;
+        self.current_state = entry.after_state;
         let label = entry.label.clone();
         self.undo.push(entry);
         Some(UndoOutcome { label, selection })
@@ -709,5 +777,100 @@ mod tests {
         stack.push_field(&mut doc, 999, "c", "p", json!(1), json!(2), 0);
         stack.undo(&mut doc);
         assert_eq!(doc.entities.len(), 1);
+    }
+
+    #[test]
+    fn undo_back_to_the_saved_state_clears_dirty() {
+        let (mut doc, id) = doc_with_camera();
+        let mut stack = UndoStack::new();
+        assert!(!stack.is_dirty(), "新文档是干净的");
+
+        stack.push_field(
+            &mut doc,
+            id,
+            "prism_engine::scene::Camera",
+            "fov_y_degrees",
+            json!(60.0),
+            json!(70.0),
+            0,
+        );
+        assert!(stack.is_dirty());
+
+        stack.undo(&mut doc);
+        assert!(!stack.is_dirty(), "撤销回保存点后应该是干净的");
+
+        stack.redo(&mut doc);
+        assert!(stack.is_dirty(), "重做后又离开保存点");
+    }
+
+    #[test]
+    fn a_new_edit_at_the_saved_depth_is_dirty() {
+        let (mut doc, id) = doc_with_camera();
+        let mut stack = UndoStack::new();
+        stack.push_field(
+            &mut doc,
+            id,
+            "prism_engine::scene::Camera",
+            "near",
+            json!(0.1),
+            json!(0.2),
+            0,
+        );
+        stack.undo(&mut doc);
+        assert!(!stack.is_dirty());
+
+        // 撤销后在同一深度做别的编辑：栈长度会重新变成 1，但内容不是保存点。
+        stack.push_field(
+            &mut doc,
+            id,
+            "prism_engine::scene::Camera",
+            "near",
+            json!(0.1),
+            json!(0.3),
+            10_000,
+        );
+        assert!(stack.is_dirty(), "同深度但内容不同仍是未保存");
+    }
+
+    #[test]
+    fn mark_saved_moves_the_baseline() {
+        let (mut doc, id) = doc_with_camera();
+        let mut stack = UndoStack::new();
+        stack.push_field(
+            &mut doc,
+            id,
+            "prism_engine::scene::Camera",
+            "fov_y_degrees",
+            json!(60.0),
+            json!(70.0),
+            0,
+        );
+        stack.mark_saved();
+        assert!(!stack.is_dirty(), "保存后基线跟着前移");
+
+        stack.undo(&mut doc);
+        assert!(stack.is_dirty(), "保存后再撤销同样算未保存");
+        stack.redo(&mut doc);
+        assert!(!stack.is_dirty(), "重做回保存点又干净了");
+    }
+
+    #[test]
+    fn clearing_history_keeps_the_dirty_state() {
+        let (mut doc, id) = doc_with_camera();
+        let mut stack = UndoStack::new();
+        stack.clear();
+        assert!(!stack.is_dirty(), "干净文档清历史后还是干净");
+
+        stack.push_field(
+            &mut doc,
+            id,
+            "prism_engine::scene::Camera",
+            "near",
+            json!(0.1),
+            json!(0.2),
+            0,
+        );
+        stack.clear();
+        assert!(stack.is_dirty(), "清历史不能把未保存改动洗白");
     }
 }
