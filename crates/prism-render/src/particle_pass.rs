@@ -35,7 +35,7 @@ const INITIAL_CAPACITY: u32 = 256;
 
 /// 单实例顶点数据 —— 必须与 `particles.slang` 的 `ParticleVertexIn` 一致。
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
 struct ParticleInstance {
     /// xyz = 世界空间中心，w = 世界单位半径。
     center_size: [f32; 4],
@@ -139,10 +139,7 @@ impl ParticlePass {
                 pipeline.layout,
                 vk::ShaderStageFlags::VERTEX,
                 0,
-                std::slice::from_raw_parts(
-                    &push as *const bindings::ParticlePush as *const u8,
-                    bindings::PUSH_CONSTANT_SIZE as usize,
-                ),
+                bytemuck::bytes_of(&push),
             );
             device.cmd_bind_vertex_buffers(cmd, 0, &[self.instance_buffer], &[0]);
             // 6 vertices = 2 triangles, one instance per particle.
@@ -283,7 +280,8 @@ impl ParticlePass {
                     vk::MemoryMapFlags::empty(),
                 )
                 .context("ParticlePass: map instance memory")?;
-            std::ptr::copy_nonoverlapping(instances.as_ptr() as *const u8, ptr as *mut u8, bytes);
+            let payload = bytemuck::cast_slice(&instances);
+            std::ptr::copy_nonoverlapping(payload.as_ptr(), ptr as *mut u8, bytes);
             context.device.unmap_memory(self.instance_memory);
         }
         Ok(())

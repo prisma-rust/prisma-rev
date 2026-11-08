@@ -19,7 +19,7 @@ pub const PUSH_CONSTANT_SIZE: u32 = 128;
 /// explicit `_pad_*` fillers, so `size_of` is 128 bytes and every field sits
 /// where the shader expects it.
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GizmoPush {
     /// offset 0, size 64
     pub viewProj: [[f32; 4]; 4],

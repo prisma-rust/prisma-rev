@@ -427,6 +427,7 @@ pub fn bake_gi(cfg: &BakeGiConfig) -> Result<()> {
         .context("create gi_bake shader module")?;
 
     #[repr(C)]
+    #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
     struct BakePush {
         light_dir: [f32; 4],
         light_color: [f32; 4],
@@ -529,7 +530,7 @@ pub fn bake_gi(cfg: &BakeGiConfig) -> Result<()> {
             pipeline.layout,
             vk::ShaderStageFlags::COMPUTE,
             0,
-            std::slice::from_raw_parts(&pc as *const _ as *const u8, std::mem::size_of_val(&pc)),
+            bytemuck::bytes_of(&pc),
         );
         // Dispatch in 3D: numthreads is (4, 4, 1) in gi_bake.slang.
         context

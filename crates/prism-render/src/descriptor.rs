@@ -179,7 +179,7 @@ pub const GPU_LIGHT_KIND_SPOT: f32 = 1.0;
 /// `direction` / `params` 以支持聚光锥角 —— `.color.w` 是类型位（见
 /// [`GPU_LIGHT_KIND_POINT`] / [`GPU_LIGHT_KIND_SPOT`]）。
 #[repr(C)]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuLight {
     /// xyz = world position, w = range (attenuation radius)
     pub position: [f32; 4],
@@ -213,7 +213,7 @@ pub enum PtLightKind {
 /// The `kind` field selects interpretation of the union-typed payload fields.
 /// Stored in a `StructuredBuffer<PtAnalyticLight>` at PT set 0 binding 8.
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PtAnalyticLight {
     /// .xyz = world position; .w = kind (PtLightKind as u32)
     pub position_kind: [f32; 4],
@@ -266,7 +266,7 @@ pub struct ReSTIRReservoir {
 /// Stored in a `StructuredBuffer<PtEmissiveTri>` at PT set 0 binding 9,
 /// used for explicit emissive NEE in the path tracer.
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PtEmissiveTri {
     pub v0: [f32; 4],       // .xyz = vertex 0
     pub v1: [f32; 4],       // .xyz = vertex 1
@@ -284,7 +284,7 @@ pub struct PtEmissiveTri {
 /// constant block stays under Vulkan's 128-byte limit); the legacy shaders
 /// simply ignore the trailing field.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct FrameUBOData {
     pub view_proj: [[f32; 4]; 4],       // 64 bytes, offset   0
     pub camera_position: [f32; 4],      // 16 bytes, offset  64 (xyz = camera pos, w = light_count)
@@ -405,12 +405,10 @@ impl FrameUBO {
             )
         }
         .context("map frame UBO memory")?;
+        let bytes = bytemuck::bytes_of(data);
+        debug_assert_eq!(bytes.len() as vk::DeviceSize, self.size);
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                data as *const _ as *const u8,
-                ptr as *mut u8,
-                self.size as usize,
-            );
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr as *mut u8, bytes.len());
         }
         unsafe { device.unmap_memory(self.memory) };
         Ok(())

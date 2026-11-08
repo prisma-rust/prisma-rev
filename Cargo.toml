@@ -82,6 +82,8 @@ clap = { version = "4", features = ["derive"] }
 image = { version = "0.25", default-features = false }
 dirs = "6.0.0"
 unicode-width = "0.2"
+# GPU uploads (vertex/index buffers, push constants) cast POD structs to bytes.
+bytemuck = { version = "1.25", features = ["derive"] }
 
 # Windows API 绑定。目前只有 `prism-render/ui-directwrite`（DirectWrite 文本光栅）用，
 # 而且只在 `cfg(windows)` 目标上作为 optional 依赖激活（见 prism-render/Cargo.toml）。

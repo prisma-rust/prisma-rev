@@ -40,7 +40,7 @@ pub struct PtGeometryInstance {
 /// `instance_meta` SSBO and looked up in the shader by
 /// `q.CommittedInstanceID()`.
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PtInstanceMeta {
     pub material_slot: u32,
     pub index_base: u32,
@@ -180,10 +180,7 @@ pub fn create_emissive_buffer(
     let bytes: Vec<u8> = {
         let mut b = Vec::with_capacity(tris.len() * size_of::<PtEmissiveTri>());
         for tri in &tris {
-            let ptr = tri as *const PtEmissiveTri as *const u8;
-            b.extend_from_slice(unsafe {
-                std::slice::from_raw_parts(ptr, size_of::<PtEmissiveTri>())
-            });
+            b.extend_from_slice(bytemuck::bytes_of(tri));
         }
         b
     };
@@ -249,9 +246,7 @@ pub fn build_pt_scene(
         device.get_buffer_device_address(&vk::BufferDeviceAddressInfo::default().buffer(ibuf))
     };
 
-    let meta_bytes = unsafe {
-        std::slice::from_raw_parts(meta.as_ptr() as *const u8, std::mem::size_of_val(&meta[..]))
-    };
+    let meta_bytes = bytemuck::cast_slice(&meta);
     let (mbuf, mmem) = create_storage_buffer(context, meta_bytes)
         .context("build_pt_scene: instance meta buffer")?;
 
@@ -328,16 +323,11 @@ pub fn build_pt_scene(
 // -------------------------------------------------------------------
 
 pub fn vertex_bytes(vertices: &[Vertex]) -> &[u8] {
-    unsafe {
-        std::slice::from_raw_parts(
-            vertices.as_ptr() as *const u8,
-            std::mem::size_of_val(vertices),
-        )
-    }
+    bytemuck::cast_slice(vertices)
 }
 
 pub fn index_bytes(indices: &[u32]) -> &[u8] {
-    unsafe { std::slice::from_raw_parts(indices.as_ptr() as *const u8, indices.len() * 4) }
+    bytemuck::cast_slice(indices)
 }
 
 /// Host-visible storage buffer (also usable as a BLAS build input), initialized

@@ -139,7 +139,7 @@ fn prepare_static_batches_with(
 /// 反向外壳只读取帧 UBO（set 0 binding 0）和一个推送常量块；反射报告
 /// 块大小 96 字节（mat4 + vec4 + float + std140 尾部填充）。
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct OutlinePush {
     model: [[f32; 4]; 4],
     color: [f32; 4],
@@ -1395,7 +1395,7 @@ impl ForwardPass {
             );
             if count > 0 {
                 std::ptr::copy_nonoverlapping(
-                    matrices.as_ptr() as *const u8,
+                    bytemuck::cast_slice(matrices).as_ptr(),
                     dst,
                     count * matrix_size,
                 );
@@ -1437,7 +1437,7 @@ impl ForwardPass {
             );
             if count > 0 {
                 std::ptr::copy_nonoverlapping(
-                    models.as_ptr() as *const u8,
+                    bytemuck::cast_slice(models).as_ptr(),
                     dst,
                     count * matrix_size,
                 );
@@ -1481,7 +1481,7 @@ impl ForwardPass {
             std::ptr::write_bytes(ptr as *mut u8, 0, total_bytes);
             if copy_bytes > 0 {
                 std::ptr::copy_nonoverlapping(
-                    lights.as_ptr() as *const u8,
+                    bytemuck::cast_slice(lights).as_ptr(),
                     ptr as *mut u8,
                     copy_bytes,
                 );
@@ -2488,10 +2488,7 @@ impl RenderPassNode for ForwardPass {
                         scene_layout,
                         vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                         0,
-                        std::slice::from_raw_parts(
-                            &pc as *const _ as *const u8,
-                            scene_frag::PUSH_CONSTANT_SIZE as usize,
-                        ),
+                        bytemuck::bytes_of(&pc),
                     );
 
                     let draw_instances = instance_count.max(1);
@@ -2564,10 +2561,7 @@ impl RenderPassNode for ForwardPass {
                             overlay.layout,
                             vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                             0,
-                            std::slice::from_raw_parts(
-                                &pc as *const _ as *const u8,
-                                std::mem::size_of::<OutlinePush>(),
-                            ),
+                            bytemuck::bytes_of(&pc),
                         );
                         if let Some(ib) = uploaded.mesh.index_buffer {
                             let index_count = item.index_count.unwrap_or(uploaded.mesh.index_count);
@@ -2652,10 +2646,7 @@ impl RenderPassNode for ForwardPass {
                             outline.layout,
                             vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                             0,
-                            std::slice::from_raw_parts(
-                                &pc as *const _ as *const u8,
-                                std::mem::size_of::<OutlinePush>(),
-                            ),
+                            bytemuck::bytes_of(&pc),
                         );
                         if let Some(ib) = uploaded.mesh.index_buffer {
                             let index_count = item.index_count.unwrap_or(uploaded.index_count());

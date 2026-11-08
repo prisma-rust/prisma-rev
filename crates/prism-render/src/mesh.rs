@@ -14,7 +14,7 @@ use crate::context::VulkanContext;
 /// A single vertex: position + normal + color + uv + tangent (interleaved).
 /// `tangent` is vec4: xyz = tangent direction, w = handedness sign (+1/-1)
 /// used to reconstruct the bitangent as `cross(N, T) * tangent.w`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct Vertex {
     pub position: [f32; 3],
@@ -72,7 +72,7 @@ impl Vertex {
 /// Kept out of [`Vertex`] on purpose: unskinned meshes must not pay 24 extra
 /// bytes per vertex, and the static-mesh pipeline does not declare this
 /// binding at all.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct SkinVertex {
     pub joints: [u16; 4],
@@ -179,12 +179,7 @@ impl Mesh {
         )
         .context("create vertex buffer")?;
 
-        let vertex_bytes = unsafe {
-            std::slice::from_raw_parts(
-                vertices.as_ptr() as *const u8,
-                std::mem::size_of_val(vertices),
-            )
-        };
+        let vertex_bytes = bytemuck::cast_slice(vertices);
         unsafe {
             buffer::upload_to_buffer(
                 context,
@@ -208,12 +203,7 @@ impl Mesh {
             )
             .context("create index buffer")?;
 
-            let index_bytes = unsafe {
-                std::slice::from_raw_parts(
-                    indices.as_ptr() as *const u8,
-                    std::mem::size_of_val(indices),
-                )
-            };
+            let index_bytes = bytemuck::cast_slice(indices);
             unsafe {
                 buffer::upload_to_buffer(
                     context,
@@ -262,12 +252,7 @@ impl Mesh {
         )
         .context("create vertex buffer")?;
 
-        let vertex_bytes = unsafe {
-            std::slice::from_raw_parts(
-                vertices.as_ptr() as *const u8,
-                std::mem::size_of_val(vertices),
-            )
-        };
+        let vertex_bytes = bytemuck::cast_slice(vertices);
         uploader
             .upload_buffer(vertex_buffer, vertex_size, vertex_bytes)
             .context("batch upload vertex data")?;
@@ -282,12 +267,7 @@ impl Mesh {
             )
             .context("create index buffer")?;
 
-            let index_bytes = unsafe {
-                std::slice::from_raw_parts(
-                    indices.as_ptr() as *const u8,
-                    std::mem::size_of_val(indices),
-                )
-            };
+            let index_bytes = bytemuck::cast_slice(indices);
             uploader
                 .upload_buffer(buf, index_size, index_bytes)
                 .context("batch upload index data")?;

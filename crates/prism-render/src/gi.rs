@@ -57,7 +57,7 @@ const SH_C4: f32 = 0.546274; // 0.25 * sqrt(15/pi)
 /// a regular grid of SH probes in world space; producer-agnostic — the same
 /// struct describes a baked grid or a DDGI real-time grid.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ProbeVolumeInfo {
     /// xyz = world position of probe `(0,0,0)`; w unused. offset 0.
     pub origin: [f32; 4],

@@ -379,10 +379,7 @@ impl RenderPassNode for RenderTextureScheduler {
                             self.pipelines[&shader].layout,
                             vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                             0,
-                            std::slice::from_raw_parts(
-                                &push as *const _ as *const u8,
-                                std::mem::size_of::<RtRenderPush>(),
-                            ),
+                            bytemuck::bytes_of(&push),
                         );
                     }
                     unsafe { device.cmd_draw(cmd, 3, 1, 0, 0) };

@@ -561,10 +561,7 @@ impl GtaoPass {
                 pipeline.layout,
                 vk::ShaderStageFlags::FRAGMENT,
                 0,
-                std::slice::from_raw_parts(
-                    push as *const _ as *const u8,
-                    bindings::PUSH_CONSTANT_SIZE as usize,
-                ),
+                bytemuck::bytes_of(push),
             );
 
             // Fullscreen triangle (3 verts, no vertex buffer - SV_VertexID).

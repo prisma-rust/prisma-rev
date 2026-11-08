@@ -44,7 +44,7 @@ const INITIAL_CAPACITY: u32 = 256;
 /// 四个角点是**世界空间**坐标（顺序 `BL, BR, TR, TL`）：精灵的模型矩阵在 CPU
 /// 侧展开，折线的三角形直接给顶点（#604）。三角形 = 最后两个角点重合的四边形。
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
 struct SpriteInstance {
     /// 四边形四个角（世界空间）。
     corners: [[f32; 3]; 4],
@@ -250,10 +250,7 @@ impl SpritePass {
                     pipeline.layout,
                     vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                     0,
-                    std::slice::from_raw_parts(
-                        &push as *const bindings::SpritePush as *const u8,
-                        bindings::PUSH_CONSTANT_SIZE as usize,
-                    ),
+                    bytemuck::bytes_of(&push),
                 );
                 device.cmd_bind_vertex_buffers(cmd, 0, &[self.instance_buffer], &[0]);
                 // 6 vertices = 2 triangles; one instance per sprite.
@@ -428,7 +425,8 @@ impl SpritePass {
                     vk::MemoryMapFlags::empty(),
                 )
                 .context("SpritePass: map instance memory")?;
-            std::ptr::copy_nonoverlapping(instances.as_ptr() as *const u8, ptr as *mut u8, bytes);
+            let payload = bytemuck::cast_slice(&instances);
+            std::ptr::copy_nonoverlapping(payload.as_ptr(), ptr as *mut u8, bytes);
             context.device.unmap_memory(self.instance_memory);
         }
         Ok(())

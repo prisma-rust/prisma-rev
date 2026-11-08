@@ -381,12 +381,7 @@ fn upload_skin_vertices(
     let Some(vertices) = skin_vertices(skin, vertex_count) else {
         return Ok(None);
     };
-    let bytes = unsafe {
-        std::slice::from_raw_parts(
-            vertices.as_ptr() as *const u8,
-            std::mem::size_of_val(vertices.as_slice()),
-        )
-    };
+    let bytes = bytemuck::cast_slice(&vertices);
     let (buffer, memory) = crate::buffer::create_buffer(
         context,
         bytes.len() as vk::DeviceSize,
@@ -421,12 +416,7 @@ fn upload_skin_vertices_into(
     let Some(vertices) = skin_vertices(skin, vertex_count) else {
         return Ok(None);
     };
-    let bytes = unsafe {
-        std::slice::from_raw_parts(
-            vertices.as_ptr() as *const u8,
-            std::mem::size_of_val(vertices.as_slice()),
-        )
-    };
+    let bytes = bytemuck::cast_slice(&vertices);
     let (buffer, memory) = crate::buffer::create_buffer(
         context,
         bytes.len() as vk::DeviceSize,

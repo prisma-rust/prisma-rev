@@ -31,7 +31,7 @@ use crate::shader;
 use crate::shader_bindings::taa as bindings;
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct TaaParams {
     inv_view_proj: [[f32; 4]; 4],
     prev_view_proj: [[f32; 4]; 4],
@@ -261,12 +261,10 @@ impl TaaPass {
             )
         }
         .context("TaaPass: map params")?;
+        let bytes = bytemuck::bytes_of(params);
+        debug_assert_eq!(bytes.len() as vk::DeviceSize, size);
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                params as *const TaaParams as *const u8,
-                ptr as *mut u8,
-                size as usize,
-            );
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr as *mut u8, bytes.len());
             device.unmap_memory(self.ubo_memories[index]);
         }
         Ok(())

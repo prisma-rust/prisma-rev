@@ -54,7 +54,7 @@ const _: () = assert!(
 /// converts the normalized velocity into pixels for the trail clamp. Laid out
 /// to match `MotionBlurData` in `post.slang`.
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct MotionBlurUniform {
     inv_view_proj: [[f32; 4]; 4],
     prev_view_proj: [[f32; 4]; 4],
@@ -566,12 +566,10 @@ impl PostPass {
         let size = std::mem::size_of::<MotionBlurUniform>() as vk::DeviceSize;
         let ptr = unsafe { device.map_memory(memory, 0, size, vk::MemoryMapFlags::empty()) }
             .context("PostPass::set_motion_blur: map")?;
+        let bytes = bytemuck::bytes_of(&uniform);
+        debug_assert_eq!(bytes.len() as vk::DeviceSize, size);
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                &uniform as *const MotionBlurUniform as *const u8,
-                ptr as *mut u8,
-                size as usize,
-            );
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr as *mut u8, bytes.len());
             device.unmap_memory(memory);
         }
         Ok(())
@@ -661,10 +659,7 @@ impl PostPass {
                 pipeline.layout,
                 vk::ShaderStageFlags::FRAGMENT,
                 0,
-                std::slice::from_raw_parts(
-                    push as *const _ as *const u8,
-                    std::mem::size_of::<shader_bindings::post::PostPush>(),
-                ),
+                bytemuck::bytes_of(push),
             );
             // Fullscreen triangle (3 verts, no vertex buffer - SV_VertexID).
             device.cmd_draw(cmd, 3, 1, 0, 0);
@@ -1275,11 +1270,8 @@ fn create_lut_image(
         unsafe { device.map_memory(staging_memory, 0, byte_len, vk::MemoryMapFlags::empty()) }
             .context("map LUT staging buffer")?;
     unsafe {
-        std::ptr::copy_nonoverlapping(
-            pixels.as_ptr() as *const u8,
-            ptr as *mut u8,
-            byte_len as usize,
-        );
+        let pixel_bytes = bytemuck::cast_slice(&pixels);
+        std::ptr::copy_nonoverlapping(pixel_bytes.as_ptr(), ptr as *mut u8, byte_len as usize);
         device.unmap_memory(staging_memory);
     }
 

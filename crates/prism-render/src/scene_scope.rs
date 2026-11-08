@@ -242,9 +242,7 @@ impl SceneScope {
             .context("SceneScope: bind GI volume memory")?;
 
         // ---- Upload via staging buffer ----
-        let data_bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(pixels.as_ptr() as *const u8, std::mem::size_of_val(pixels))
-        };
+        let data_bytes: &[u8] = bytemuck::cast_slice(pixels);
         let staging_size = data_bytes.len() as vk::DeviceSize;
         let (staging_buf, staging_mem) = crate::buffer::create_buffer(
             context,
@@ -410,11 +408,9 @@ impl SceneScope {
             let ptr = device
                 .map_memory(info_memory, 0, info_size, vk::MemoryMapFlags::empty())
                 .context("SceneScope: map GI info UBO")?;
-            std::ptr::copy_nonoverlapping(
-                info as *const _ as *const u8,
-                ptr as *mut u8,
-                info_size as usize,
-            );
+            let bytes = bytemuck::bytes_of(info);
+            debug_assert_eq!(bytes.len() as vk::DeviceSize, info_size);
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr as *mut u8, bytes.len());
             device.unmap_memory(info_memory);
         }
 
