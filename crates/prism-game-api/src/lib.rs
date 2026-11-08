@@ -163,8 +163,12 @@ impl<'a> GameWorld<'a> {
     #[cfg(feature = "host")]
     pub fn set_input(&mut self, input: InputSnapshot) {
         self.input = input;
-        if let Backend::Host(world) = &mut self.backend {
-            world.insert_resource(input);
+        match &mut self.backend {
+            Backend::Host(world) => world.insert_resource(input),
+            // The plugin backend reads the input the host hands down every tick
+            // through `HostApi::input`, so there is nothing to write here.
+            #[cfg(feature = "plugin")]
+            Backend::Plugin(_) => {}
         }
     }
 
@@ -274,7 +278,7 @@ impl<'a> GameWorld<'a> {
             #[cfg(feature = "host")]
             Backend::Host(_) => {
                 log::warn!(
-                    "load_scene is only available through the runtime host (HOST_CAP_SCENE)"
+                    "load_scene({path:?}, additive = {additive}) is only available through the runtime host (HOST_CAP_SCENE)"
                 );
                 false
             }
