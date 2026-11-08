@@ -154,3 +154,58 @@ fn file_roundtrip() {
 
     std::fs::remove_file(&path).ok();
 }
+
+#[test]
+fn save_writes_atomically_and_reloads() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("AssetDatabase.json");
+    let db = make_db();
+    db.save(&path).unwrap();
+
+    let expected = serde_json::to_string_pretty(&db).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+
+    let leftovers: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains(".tmp-"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "temp files left behind: {leftovers:?}"
+    );
+
+    assert_eq!(AssetDatabase::load(&path).unwrap().len(), db.len());
+}
+
+#[test]
+fn loading_a_truncated_database_moves_it_aside() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("AssetDatabase.json");
+    let truncated = r#"{"records": [{"id": 1"#;
+    std::fs::write(&path, truncated).unwrap();
+
+    let error = AssetDatabase::load(&path).unwrap_err();
+    let DatabaseError::Corrupt { backup, .. } = error else {
+        panic!("expected Corrupt, got {error}");
+    };
+    assert!(!path.exists(), "the corrupt file must leave the way clear");
+    assert_eq!(std::fs::read_to_string(&backup).unwrap(), truncated);
+    assert!(backup
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .starts_with("AssetDatabase.json.corrupt-"));
+}
+
+#[test]
+fn import_cache_quarantines_a_truncated_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("import_cache.json");
+    std::fs::write(&path, "{\"entries\":").unwrap();
+
+    let error = ImportCache::load(&path).unwrap_err();
+    assert!(matches!(error, DatabaseError::Corrupt { .. }), "{error}");
+    assert!(!path.exists());
+}

@@ -37,6 +37,17 @@ pub enum DatabaseError {
 
     #[error("Duplicate path: {0}")]
     DuplicatePath(PathBuf),
+
+    #[error(
+        "{} is not valid JSON ({source}); moved it to {} — rerun the command to rebuild it",
+        path.display(),
+        backup.display()
+    )]
+    Corrupt {
+        path: PathBuf,
+        backup: PathBuf,
+        source: serde_json::Error,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -269,33 +280,51 @@ impl AssetDatabase {
     // ------------------------------------------------------------------
 
     /// Load the database from a JSON file.
+    ///
+    /// A file that no longer parses (a writer was killed mid-write before saves became
+    /// atomic) is renamed to `<name>.corrupt-<unix seconds>` so the next run can rebuild
+    /// instead of failing the same way forever (#1003).
     pub fn load(path: impl AsRef<Path>) -> Result<Self, DatabaseError> {
-        let content = std::fs::read_to_string(path.as_ref())?;
-        let mut db: Self = serde_json::from_str(&content)?;
-        db.rebuild_index();
-        Ok(db)
+        let path = path.as_ref();
+        let content = std::fs::read_to_string(path)?;
+        AssetDatabase::parse_or_quarantine(path, &content)
     }
 
     /// Async load via tokio.
     pub async fn load_async(path: impl AsRef<Path> + Send) -> Result<Self, DatabaseError> {
-        let content = tokio::fs::read_to_string(path.as_ref()).await?;
-        let mut db: Self = serde_json::from_str(&content)?;
-        db.rebuild_index();
-        Ok(db)
+        let path = path.as_ref();
+        let content = tokio::fs::read_to_string(path).await?;
+        AssetDatabase::parse_or_quarantine(path, &content)
     }
 
     /// Save the database to a JSON file.
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), DatabaseError> {
         let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(path.as_ref(), content)?;
+        crate::fsutil::write_atomic(path.as_ref(), content.as_bytes())?;
         Ok(())
     }
 
     /// Async save via tokio.
     pub async fn save_async(&self, path: impl AsRef<Path> + Send) -> Result<(), DatabaseError> {
         let content = serde_json::to_string_pretty(self)?;
-        tokio::fs::write(path.as_ref(), content).await?;
+        let path = path.as_ref();
+        let staging = crate::fsutil::sibling_temp_path(path);
+        tokio::fs::write(&staging, &content).await?;
+        if let Err(error) = tokio::fs::rename(&staging, path).await {
+            let _ = tokio::fs::remove_file(&staging).await;
+            return Err(error.into());
+        }
         Ok(())
+    }
+
+    fn parse_or_quarantine(path: &Path, content: &str) -> Result<Self, DatabaseError> {
+        match serde_json::from_str::<Self>(content) {
+            Ok(mut db) => {
+                db.rebuild_index();
+                Ok(db)
+            }
+            Err(source) => Err(quarantine_corrupt(path, source)),
+        }
     }
 
     // ------------------------------------------------------------------
@@ -401,22 +430,32 @@ impl ImportCache {
     }
 
     /// Load from JSON file.
+    ///
+    /// Like [`AssetDatabase::load`], a file that no longer parses is moved aside so the
+    /// next import can rebuild the cache (#1003).
     pub fn load(path: impl AsRef<Path>) -> Result<Self, DatabaseError> {
-        let content = std::fs::read_to_string(path.as_ref())?;
-        Ok(serde_json::from_str(&content)?)
+        let path = path.as_ref();
+        let content = std::fs::read_to_string(path)?;
+        serde_json::from_str(&content).map_err(|source| quarantine_corrupt(path, source))
     }
 
     /// Save to JSON file.
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), DatabaseError> {
         let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(path.as_ref(), content)?;
+        crate::fsutil::write_atomic(path.as_ref(), content.as_bytes())?;
         Ok(())
     }
 
     /// Async save.
     pub async fn save_async(&self, path: impl AsRef<Path> + Send) -> Result<(), DatabaseError> {
         let content = serde_json::to_string_pretty(self)?;
-        tokio::fs::write(path.as_ref(), content).await?;
+        let path = path.as_ref();
+        let staging = crate::fsutil::sibling_temp_path(path);
+        tokio::fs::write(&staging, &content).await?;
+        if let Err(error) = tokio::fs::rename(&staging, path).await {
+            let _ = tokio::fs::remove_file(&staging).await;
+            return Err(error.into());
+        }
         Ok(())
     }
 }
@@ -424,6 +463,31 @@ impl ImportCache {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Move a file that failed to parse out of the way and describe the move.
+///
+/// The backup name carries a timestamp so a second failure never overwrites the first
+/// corrupt copy. When the rename itself fails (locked file, read-only directory) the
+/// original JSON error is returned unchanged: leaving the file in place beats deleting it.
+fn quarantine_corrupt(path: &Path, source: serde_json::Error) -> DatabaseError {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0);
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "database".to_string());
+    let backup = path.with_file_name(format!("{name}.corrupt-{stamp}"));
+    match std::fs::rename(path, &backup) {
+        Ok(()) => DatabaseError::Corrupt {
+            path: path.to_path_buf(),
+            backup,
+            source,
+        },
+        Err(_) => DatabaseError::Json(source),
+    }
+}
 
 /// Normalize a path: `/` separators, no trailing slash, no `./` prefix.
 pub fn normalize_path(path: &str) -> String {
