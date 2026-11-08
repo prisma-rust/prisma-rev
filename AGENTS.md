@@ -84,7 +84,7 @@ deviating from those conventions is a bug. (`README.md` is the human-facing over
 - `crates/prism-anim-ik` — 动画 IK 的**纯数学**层（#560 P4）：解析式两骨 IK +
   `apply_two_bone_ik`，只依赖 `prism-anim` + glam，不依赖 engine / render / ECS，
   也还没有被运行时接线。约定见 [`docs/anim-ik.md`](docs/anim-ik.md)。
-- `crates/prism-motion-matching` — 动作匹配的**纯数据 / 纯数学**层（#560 P3）：轨迹、姿态特征、剪辑采样数据库、线性最近邻搜索，只依赖 `prism-anim` + glam。运行时接线（查询、切帧、混合）与加速结构都还没有。约定见 [`docs/anim-motion-matching.md`](docs/anim-motion-matching.md)。
+- `crates/prism-motion-matching` — 动作匹配的**纯数据 / 纯数学**层（#560 P3）：轨迹、姿态特征、剪辑采样数据库、线性最近邻搜索、选择历史（持续 / 重选乘数），只依赖 `prism-anim` + glam。运行时接线（查询、切帧、混合）与加速结构都还没有。约定见 [`docs/anim-motion-matching.md`](docs/anim-motion-matching.md)。
 - `crates/prism-cooker` — **build-time** layer: importers, cookers, asset database, CookProfile,
   and the `prism-cook` CLI (`src/main.rs`). Depends on `prism-asset` + `prism-scene`; never
   pulled into the game runtime. See DESIGN.md §10.

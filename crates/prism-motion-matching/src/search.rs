@@ -2,6 +2,7 @@
 
 use crate::database::MotionDatabase;
 use crate::pose_feature::PoseFeature;
+use crate::selection::{SearchBias, SelectionHistory};
 use crate::trajectory::{Trajectory, TrajectoryWeights};
 
 /// Relative weight of the two halves of the cost.
@@ -46,6 +47,23 @@ pub fn search(
     trajectory: &Trajectory,
     weights: &MatchWeights,
 ) -> Option<MotionMatch> {
+    search_biased(database, pose, trajectory, weights, SearchBias::NONE, None)
+}
+
+/// [`search`] with a sticky decision: the frame that is still playing is kept
+/// unless another frame is clearly better, and frames picked moments ago are
+/// penalised so the choice does not oscillate between near-identical samples.
+///
+/// The returned `cost` includes the multiplier; `pose_cost` and
+/// `trajectory_cost` stay raw so a debug view can show the unmodified distance.
+pub fn search_biased(
+    database: &MotionDatabase,
+    pose: &PoseFeature,
+    trajectory: &Trajectory,
+    weights: &MatchWeights,
+    bias: SearchBias,
+    history: Option<&SelectionHistory>,
+) -> Option<MotionMatch> {
     let pose_weight = sanitize(weights.pose);
     let trajectory_weight = sanitize(weights.trajectory);
     let mut best: Option<MotionMatch> = None;
@@ -58,7 +76,11 @@ pub fn search(
         else {
             continue;
         };
-        let cost = pose_cost * pose_weight + trajectory_cost * trajectory_weight;
+        let raw = pose_cost * pose_weight + trajectory_cost * trajectory_weight;
+        let cost = match history {
+            Some(history) => raw * bias.multiplier(index, history),
+            None => raw,
+        };
         let improves = match best {
             Some(best) => cost < best.cost,
             None => true,
