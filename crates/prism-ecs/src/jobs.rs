@@ -100,23 +100,40 @@ impl Call {
 struct Pool {
     jobs: Mutex<VecDeque<Job>>,
     work_available: Condvar,
+    /// Ids of the threads spawned in [`Pool::new`], for the reuse test only.
+    #[cfg(test)]
+    workers: Arc<Mutex<Vec<std::thread::ThreadId>>>,
 }
 
 impl Pool {
     fn new(threads: usize) -> Arc<Self> {
+        #[cfg(test)]
+        let workers = Arc::new(Mutex::new(Vec::new()));
         let pool = Arc::new(Self {
             jobs: Mutex::new(VecDeque::new()),
             work_available: Condvar::new(),
+            #[cfg(test)]
+            workers: Arc::clone(&workers),
         });
         for index in 0..threads {
             let worker = Arc::clone(&pool);
             let spawned = std::thread::Builder::new()
                 .name(format!("prism-worker-{index}"))
                 .spawn(move || worker.work());
-            if spawned.is_err() {
-                // A partial pool is still correct: the remaining workers plus
-                // the calling threads drain the queue.
-                break;
+            match spawned {
+                Ok(handle) => {
+                    #[cfg(test)]
+                    workers
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(handle.thread().id());
+                    drop(handle);
+                }
+                Err(_) => {
+                    // A partial pool is still correct: the remaining workers plus
+                    // the calling threads drain the queue.
+                    break;
+                }
             }
         }
         pool
@@ -186,6 +203,21 @@ fn worker_pool() -> Option<&'static Arc<Pool>> {
         Some(Pool::new(threads))
     })
     .as_ref()
+}
+
+/// Ids of the threads [`worker_pool`] spawned, for the reuse test.
+///
+/// Empty on hosts where the pool is disabled and chunks run on the caller.
+#[cfg(test)]
+fn pool_thread_ids() -> Vec<std::thread::ThreadId> {
+    worker_pool()
+        .map(|pool| {
+            pool.workers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+        })
+        .unwrap_or_default()
 }
 
 /// Erases the borrow of a chunk so the job can sit in the pool's queue.
@@ -276,31 +308,35 @@ mod tests {
         }
     }
 
-    /// Two calls must reuse the same worker threads (#1031).
+    /// Chunks must run on the pool's own threads (#1031).
     ///
-    /// `ThreadId` is never reused after a thread exits, so any id the second
-    /// call sees must have existed in the first one. The old implementation
-    /// spawned fresh scoped threads per call and fails this.
+    /// The caller helps drain the queue, so a single call cannot prove reuse by
+    /// itself: which workers pick up work depends on timing, and another test
+    /// may be using the pool at the same time. Comparing against the ids the
+    /// pool spawned makes the check independent of that schedule — a
+    /// regression back to per-call scoped threads would hand the chunks to
+    /// threads the pool never created.
     #[test]
-    fn parallel_chunks_reuse_worker_threads() {
-        if available_parallelism() < 2 {
+    fn parallel_chunks_run_on_the_persistent_pool() {
+        // First use builds the pool; the ids are what the assertions compare to.
+        let mut warmup = vec![0usize; 64];
+        scoped_parallel_chunks(&mut warmup, MAX_POOL_THREADS, |_| {});
+        let pool_ids = pool_thread_ids();
+        if pool_ids.is_empty() {
             return;
         }
-        let first = Mutex::new(Vec::new());
-        let mut items = vec![0usize; 256];
-        scoped_parallel_chunks(&mut items, MAX_POOL_THREADS, record_thread(&first));
 
-        let second = Mutex::new(Vec::new());
+        let caller = std::thread::current().id();
+        let seen = Mutex::new(Vec::new());
         let mut items = vec![0usize; 256];
-        scoped_parallel_chunks(&mut items, MAX_POOL_THREADS, record_thread(&second));
+        scoped_parallel_chunks(&mut items, MAX_POOL_THREADS, record_thread(&seen));
 
-        let first = first.into_inner().unwrap_or_else(PoisonError::into_inner);
-        let second = second.into_inner().unwrap_or_else(PoisonError::into_inner);
-        assert!(!first.is_empty());
-        for id in second {
+        let seen = seen.into_inner().unwrap_or_else(PoisonError::into_inner);
+        assert!(!seen.is_empty());
+        for id in seen {
             assert!(
-                first.contains(&id),
-                "second call ran on a thread the first call never used: {id:?}"
+                id == caller || pool_ids.contains(&id),
+                "chunk ran on {id:?}, which the pool never spawned"
             );
         }
     }
