@@ -11602,7 +11602,7 @@ mod close_guard_tests {
         let mut state = UiState::new();
         workspace.add_entity("");
         let active = workspace.active_index();
-        assert!(workspace.document().dirty);
+        assert!(workspace.document().is_dirty());
 
         let count = workspace.docs.len();
         request_close_document(&mut workspace, &mut state, active);
