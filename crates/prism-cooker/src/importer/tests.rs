@@ -1837,3 +1837,28 @@ fn a_broken_sync_marker_file_fails_instead_of_silently_dropping_markers() {
         "错误要点名同步标记表: {message}"
     );
 }
+
+#[test]
+fn normal_matrix_undoes_non_uniform_scale() {
+    // Scale x by 4 and y by 0.5. A normal of (1, 1, 0) on that surface must
+    // come out as (1/4, 1/0.5, 0) normalized — the inverse transpose, not the
+    // plain model matrix (which would stretch it the wrong way).
+    let world = Mat4::from_scale(Vec3::new(4.0, 0.5, 1.0));
+    let normals = normal_matrix(&world);
+    let transformed = apply_normal(&normals, [1.0, 1.0, 0.0]);
+    let expected = Vec3::new(0.25, 2.0, 0.0).normalize().to_array();
+    for (axis, (actual, expected)) in transformed.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (actual - expected).abs() < 1e-5,
+            "axis {axis}: {transformed:?} != {expected:?}"
+        );
+    }
+}
+
+#[test]
+fn a_collapsed_world_matrix_leaves_normals_untouched() {
+    let world = Mat4::from_scale(Vec3::new(0.0, 1.0, 1.0));
+    let normals = normal_matrix(&world);
+    assert_eq!(normals, Mat3::IDENTITY);
+    assert_eq!(apply_normal(&normals, [1.0, 0.0, 0.0]), [1.0, 0.0, 0.0]);
+}

@@ -24,6 +24,7 @@
 mod skinned;
 
 use crate::db::{AssetDatabase, AssetRecord, ImportCache};
+use glam::{Mat3, Mat4, Vec3};
 use prism_asset::core::{AssetId, AssetType};
 use prism_asset::formats_skinned::{AnimClipSectionInfo, AnimClipWarpWindowInfo, AnimNotifyInfo};
 use std::collections::HashMap;
@@ -759,7 +760,7 @@ impl GltfImporter {
             }
         }
 
-        let parent = IDENTITY;
+        let parent = Mat4::IDENTITY;
         for node in &roots {
             collect_node(node, &parent, &buffers, &mut mesh);
         }
@@ -774,7 +775,7 @@ impl GltfImporter {
             // 没有节点信息时无法绑定 skin：顶点保持未蒙皮（网格照常可渲染）。
             for gltf_mesh in document.meshes() {
                 for primitive in gltf_mesh.primitives() {
-                    push_primitive(&primitive, &IDENTITY, &buffers, None, &mut mesh);
+                    push_primitive(&primitive, &Mat4::IDENTITY, &buffers, None, &mut mesh);
                 }
             }
         }
@@ -1633,73 +1634,20 @@ impl Default for MeshData {
     }
 }
 
-/// 列主序 4×4（与 glTF 的 `node.transform().matrix()` 一致）。
-type Mat4 = [[f32; 4]; 4];
-
-const IDENTITY: Mat4 = [
-    [1.0, 0.0, 0.0, 0.0],
-    [0.0, 1.0, 0.0, 0.0],
-    [0.0, 0.0, 1.0, 0.0],
-    [0.0, 0.0, 0.0, 1.0],
-];
-
-fn matrix_mul(a: &Mat4, b: &Mat4) -> Mat4 {
-    let mut out = [[0.0f32; 4]; 4];
-    for (col, slot) in out.iter_mut().enumerate() {
-        for (row, value) in slot.iter_mut().enumerate() {
-            *value = (0..4).map(|k| a[k][row] * b[col][k]).sum();
-        }
-    }
-    out
-}
-
-fn transform_point(m: &Mat4, p: [f32; 3]) -> [f32; 3] {
-    let mut out = [0.0f32; 3];
-    for (row, value) in out.iter_mut().enumerate() {
-        *value = m[0][row] * p[0] + m[1][row] * p[1] + m[2][row] * p[2] + m[3][row];
-    }
-    out
-}
-
 /// 法线矩阵 = 左上 3×3 的逆转置（有非均匀缩放时仍然正确）。
-fn normal_matrix(m: &Mat4) -> [[f32; 3]; 3] {
-    let a = [
-        [m[0][0], m[1][0], m[2][0]],
-        [m[0][1], m[1][1], m[2][1]],
-        [m[0][2], m[1][2], m[2][2]],
-    ];
-    let cofactor = |r: usize, c: usize| -> f32 {
-        let rows: Vec<usize> = (0..3).filter(|i| *i != r).collect();
-        let cols: Vec<usize> = (0..3).filter(|i| *i != c).collect();
-        let minor =
-            a[rows[0]][cols[0]] * a[rows[1]][cols[1]] - a[rows[0]][cols[1]] * a[rows[1]][cols[0]];
-        if (r + c).is_multiple_of(2) {
-            minor
-        } else {
-            -minor
-        }
-    };
-    let det = a[0][0] * cofactor(0, 0) + a[0][1] * cofactor(0, 1) + a[0][2] * cofactor(0, 2);
-    if det.abs() < 1e-12 {
-        return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+fn normal_matrix(m: &Mat4) -> Mat3 {
+    let linear = Mat3::from_mat4(*m);
+    if linear.determinant().abs() < 1e-12 {
+        return Mat3::IDENTITY;
     }
-    // adj(A)[i][j] = cofactor(j, i)；逆转置再做一次转置 → 直接用 adj。
-    let mut out = [[0.0f32; 3]; 3];
-    for (i, row) in out.iter_mut().enumerate() {
-        for (j, value) in row.iter_mut().enumerate() {
-            *value = cofactor(j, i) / det;
-        }
-    }
-    out
+    linear.inverse().transpose()
 }
 
-fn apply_normal(m: &[[f32; 3]; 3], n: [f32; 3]) -> [f32; 3] {
-    let x = m[0][0] * n[0] + m[1][0] * n[1] + m[2][0] * n[2];
-    let y = m[0][1] * n[0] + m[1][1] * n[1] + m[2][1] * n[2];
-    let z = m[0][2] * n[0] + m[1][2] * n[1] + m[2][2] * n[2];
-    let length = (x * x + y * y + z * z).sqrt();
+fn apply_normal(m: &Mat3, n: [f32; 3]) -> [f32; 3] {
+    let transformed = *m * Vec3::from(n);
+    let length = transformed.length();
     if length > 1e-6 {
-        [x / length, y / length, z / length]
+        (transformed / length).to_array()
     } else {
         [0.0, 1.0, 0.0]
     }
@@ -1712,7 +1660,8 @@ fn collect_node(
     out: &mut MeshData,
 ) {
     out.node_count += 1;
-    let world = matrix_mul(parent, &node.transform().matrix());
+    let local = Mat4::from_cols_array_2d(&node.transform().matrix());
+    let world = *parent * local;
     if let Some(mesh) = node.mesh() {
         // `node.skin()` 只作用于这个节点自己的网格；子节点各带各的 skin。
         let skin = node.skin();
@@ -1754,8 +1703,11 @@ fn push_primitive(
     let base = out.positions.len() as u32;
     let index_start = out.indices.len() as u32;
     let normals = normal_matrix(world);
-    out.positions
-        .extend(positions.iter().map(|p| transform_point(world, *p)));
+    out.positions.extend(
+        positions
+            .iter()
+            .map(|p| world.transform_point3(Vec3::from(*p)).to_array()),
+    );
 
     match reader.read_normals() {
         Some(normals_iter) => {

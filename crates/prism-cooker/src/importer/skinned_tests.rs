@@ -28,12 +28,12 @@ fn a_cycle_does_not_hang_the_ordering() {
 
 #[test]
 fn a_translation_only_matrix_decomposes_into_a_clean_transform() {
-    let matrix: Mat4 = [
+    let matrix = Mat4::from_cols_array_2d(&[
         [1.0, 0.0, 0.0, 0.0],
         [0.0, 1.0, 0.0, 0.0],
         [0.0, 0.0, 1.0, 0.0],
         [2.0, 3.0, -4.0, 1.0],
-    ];
+    ]);
     let transform = decompose(&matrix);
     assert_eq!(transform.translation, [2.0, 3.0, -4.0]);
     assert_eq!(transform.scale, [1.0, 1.0, 1.0]);
@@ -47,12 +47,12 @@ fn roughly_ninety_degrees_land_on_the_quaternion() {
     //   [0, 1,  0]
     //   [1, 0,  0]
     // 列：x = [0,0,1]，y = [0,1,0]，z = [-1,0,0]。
-    let matrix: Mat4 = [
+    let matrix = Mat4::from_cols_array_2d(&[
         [0.0, 0.0, 1.0, 0.0],
         [0.0, 1.0, 0.0, 0.0],
         [-1.0, 0.0, 0.0, 0.0],
         [0.0, 0.0, 0.0, 1.0],
-    ];
+    ]);
     let transform = decompose(&matrix);
     // 把 +X 转到 +Z 是绕 +Y 的 −90°（右手系），所以 y 分量是负的。
     let expected = (
@@ -75,12 +75,12 @@ fn roughly_ninety_degrees_land_on_the_quaternion() {
 
 #[test]
 fn uniform_scale_survives_decomposition() {
-    let matrix: Mat4 = [
+    let matrix = Mat4::from_cols_array_2d(&[
         [2.0, 0.0, 0.0, 0.0],
         [0.0, 3.0, 0.0, 0.0],
         [0.0, 0.0, 0.5, 0.0],
         [0.0, 0.0, 0.0, 1.0],
-    ];
+    ]);
     let transform = decompose(&matrix);
     assert_eq!(transform.scale, [2.0, 3.0, 0.5]);
     assert_eq!(transform.rotation, [0.0, 0.0, 0.0, 1.0]);
@@ -88,15 +88,15 @@ fn uniform_scale_survives_decomposition() {
 
 #[test]
 fn inverting_an_affine_matrix_round_trips() {
-    let matrix: Mat4 = [
+    let matrix = Mat4::from_cols_array_2d(&[
         [0.0, -1.0, 0.0, 0.0],
         [1.0, 0.0, 0.0, 0.0],
         [0.0, 0.0, 1.0, 0.0],
         [5.0, -2.0, 7.0, 1.0],
-    ];
+    ]);
     let inverse = invert_affine(&matrix).expect("invertible");
-    let product = matrix_mul(&matrix, &inverse);
-    for (col, column) in product.iter().enumerate() {
+    let product = matrix * inverse;
+    for (col, column) in product.to_cols_array_2d().iter().enumerate() {
         for (row, value) in column.iter().enumerate() {
             let expected = if col == row { 1.0 } else { 0.0 };
             assert!((value - expected).abs() < 1e-5, "m[{col}][{row}] = {value}");
@@ -106,12 +106,12 @@ fn inverting_an_affine_matrix_round_trips() {
 
 #[test]
 fn a_collapsed_matrix_cannot_be_inverted() {
-    let matrix: Mat4 = [
+    let matrix = Mat4::from_cols_array_2d(&[
         [0.0, 0.0, 0.0, 0.0],
         [0.0, 1.0, 0.0, 0.0],
         [0.0, 0.0, 1.0, 0.0],
         [0.0, 0.0, 0.0, 1.0],
-    ];
+    ]);
     assert!(invert_affine(&matrix).is_none());
 }
 
@@ -144,12 +144,12 @@ fn keys_are_sorted_and_non_finite_times_dropped() {
 
 #[test]
 fn inverse_bind_matrices_flatten_in_column_major_order() {
-    let matrix: Mat4 = [
+    let matrix = Mat4::from_cols_array_2d(&[
         [1.0, 2.0, 3.0, 4.0],
         [5.0, 6.0, 7.0, 8.0],
         [9.0, 10.0, 11.0, 12.0],
         [13.0, 14.0, 15.0, 16.0],
-    ];
+    ]);
     assert_eq!(
         flatten_column_major(&matrix),
         [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0]

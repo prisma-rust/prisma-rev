@@ -20,7 +20,7 @@ use prism_asset::formats_skinned::{
     SkinnedMeshInfo, SubmeshInfo as SkinnedSubmeshInfo, Vec3KeyInfo,
 };
 
-use super::{matrix_mul, Mat4};
+use glam::{Mat3, Mat4, Quat, Vec3};
 
 /// 一根骨骼在 glTF 里的来源（重映射用）。
 #[derive(Debug, Clone)]
@@ -80,7 +80,7 @@ pub fn read_skinning(document: &gltf::Document, buffers: &[gltf::buffer::Data]) 
         let reader = skin.reader(|buffer| Some(&buffers[buffer.index()]));
         let inverse_binds: Vec<Mat4> = reader
             .read_inverse_bind_matrices()
-            .map(|iter| iter.collect())
+            .map(|iter| iter.map(|m| Mat4::from_cols_array_2d(&m)).collect())
             .unwrap_or_default();
 
         let mut local_remap = Vec::new();
@@ -164,7 +164,7 @@ pub fn read_skinning(document: &gltf::Document, buffers: &[gltf::buffer::Data]) 
         let local = match (reference_world, parent) {
             (Some(child), Some(parent)) => match world[parent as usize] {
                 Some(parent_world) => invert_affine(&parent_world)
-                    .map(|inverse| matrix_mul(&inverse, &child))
+                    .map(|inverse| inverse * child)
                     .unwrap_or(IDENTITY_4X4),
                 None => child,
             },
@@ -435,12 +435,7 @@ pub(super) fn skinned_mesh_info(
 // 小工具
 // ---------------------------------------------------------------------------
 
-const IDENTITY_4X4: Mat4 = [
-    [1.0, 0.0, 0.0, 0.0],
-    [0.0, 1.0, 0.0, 0.0],
-    [0.0, 0.0, 1.0, 0.0],
-    [0.0, 0.0, 0.0, 1.0],
-];
+const IDENTITY_4X4: Mat4 = Mat4::IDENTITY;
 
 /// 父在子前的顺序；成环的骨骼会被追加到末尾（不会挂死）。
 fn topological_order(parents: &[Option<usize>]) -> Vec<usize> {
@@ -505,129 +500,53 @@ fn node_parents(document: &gltf::Document, nodes: &[gltf::Node<'_>]) -> HashMap<
 
 /// 列主序 4×4 → 16 个 f32（`.rskel` 里 `inverse_bind` 的布局）。
 fn flatten_column_major(m: &Mat4) -> [f32; 16] {
-    let mut out = [0.0f32; 16];
-    for (col, column) in m.iter().enumerate() {
-        for (row, value) in column.iter().enumerate() {
-            out[col * 4 + row] = *value;
-        }
-    }
-    out
+    m.to_cols_array()
 }
 
 /// 仿射 4×4 求逆（列主序）。退化矩阵（行列式接近 0）返回 `None`。
 fn invert_affine(m: &Mat4) -> Option<Mat4> {
-    let a = [
-        [m[0][0], m[1][0], m[2][0]],
-        [m[0][1], m[1][1], m[2][1]],
-        [m[0][2], m[1][2], m[2][2]],
-    ];
-    let det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
-        - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
-        + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
-    if !det.is_finite() || det.abs() < 1e-12 {
+    let determinant = Mat3::from_mat4(*m).determinant();
+    if !determinant.is_finite() || determinant.abs() < 1e-12 {
         return None;
     }
-    let inv_det = 1.0 / det;
-    // 逆矩阵的**行**（后面按列写出）。
-    let rows = [
-        [
-            (a[1][1] * a[2][2] - a[1][2] * a[2][1]) * inv_det,
-            (a[0][2] * a[2][1] - a[0][1] * a[2][2]) * inv_det,
-            (a[0][1] * a[1][2] - a[0][2] * a[1][1]) * inv_det,
-        ],
-        [
-            (a[1][2] * a[2][0] - a[1][0] * a[2][2]) * inv_det,
-            (a[0][0] * a[2][2] - a[0][2] * a[2][0]) * inv_det,
-            (a[0][2] * a[1][0] - a[0][0] * a[1][2]) * inv_det,
-        ],
-        [
-            (a[1][0] * a[2][1] - a[1][1] * a[2][0]) * inv_det,
-            (a[0][1] * a[2][0] - a[0][0] * a[2][1]) * inv_det,
-            (a[0][0] * a[1][1] - a[0][1] * a[1][0]) * inv_det,
-        ],
-    ];
-    let t = [m[3][0], m[3][1], m[3][2]];
-    let translation = [
-        -(rows[0][0] * t[0] + rows[0][1] * t[1] + rows[0][2] * t[2]),
-        -(rows[1][0] * t[0] + rows[1][1] * t[1] + rows[1][2] * t[2]),
-        -(rows[2][0] * t[0] + rows[2][1] * t[1] + rows[2][2] * t[2]),
-    ];
-    Some([
-        [rows[0][0], rows[1][0], rows[2][0], 0.0],
-        [rows[0][1], rows[1][1], rows[2][1], 0.0],
-        [rows[0][2], rows[1][2], rows[2][2], 0.0],
-        [translation[0], translation[1], translation[2], 1.0],
-    ])
+    Some(m.inverse())
 }
 
 /// 把 4×4 仿射矩阵拆成 T/R/S（`JointTransform` 的表达能力）。
 fn decompose(m: &Mat4) -> JointTransform {
-    let translation = [m[3][0], m[3][1], m[3][2]];
-    let col = |index: usize| [m[index][0], m[index][1], m[index][2]];
-    let x = col(0);
-    let y = col(1);
-    let z = col(2);
-    let length = |v: [f32; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    let scale = [length(x), length(y), length(z)];
-    let normalize = |v: [f32; 3], fallback: [f32; 3]| {
-        let len = length(v);
-        if len > 1e-8 {
-            [v[0] / len, v[1] / len, v[2] / len]
+    let x = m.x_axis.truncate();
+    let y = m.y_axis.truncate();
+    let z = m.z_axis.truncate();
+    let scale = [x.length(), y.length(), z.length()];
+    let normalize = |v: Vec3, fallback: Vec3| {
+        if v.length() > 1e-8 {
+            v.normalize()
         } else {
             fallback
         }
     };
-    let bx = normalize(x, [1.0, 0.0, 0.0]);
-    let by = normalize(y, [0.0, 1.0, 0.0]);
-    let bz = normalize(z, [0.0, 0.0, 1.0]);
+    let basis = Mat3::from_cols(
+        normalize(x, Vec3::X),
+        normalize(y, Vec3::Y),
+        normalize(z, Vec3::Z),
+    );
     JointTransform {
-        translation,
-        rotation: quat_from_basis(bx, by, bz),
+        translation: m.w_axis.truncate().to_array(),
+        rotation: quat_from_basis(basis),
         scale,
     }
 }
 
 /// 3×3 旋转矩阵 → 四元数（`xyzw`）。
-fn quat_from_basis(x: [f32; 3], y: [f32; 3], z: [f32; 3]) -> [f32; 4] {
-    // 行主序取元素：m[row][col]
-    let m = [[x[0], y[0], z[0]], [x[1], y[1], z[1]], [x[2], y[2], z[2]]];
-    let trace = m[0][0] + m[1][1] + m[2][2];
-    let (w, x, y, z) = if trace > 0.0 {
-        let s = (trace + 1.0).sqrt() * 2.0;
-        (
-            0.25 * s,
-            (m[2][1] - m[1][2]) / s,
-            (m[0][2] - m[2][0]) / s,
-            (m[1][0] - m[0][1]) / s,
-        )
-    } else if m[0][0] > m[1][1] && m[0][0] > m[2][2] {
-        let s = (1.0 + m[0][0] - m[1][1] - m[2][2]).sqrt() * 2.0;
-        (
-            (m[2][1] - m[1][2]) / s,
-            0.25 * s,
-            (m[0][1] + m[1][0]) / s,
-            (m[0][2] + m[2][0]) / s,
-        )
-    } else if m[1][1] > m[2][2] {
-        let s = (1.0 + m[1][1] - m[0][0] - m[2][2]).sqrt() * 2.0;
-        (
-            (m[0][2] - m[2][0]) / s,
-            (m[0][1] + m[1][0]) / s,
-            0.25 * s,
-            (m[1][2] + m[2][1]) / s,
-        )
-    } else {
-        let s = (1.0 + m[2][2] - m[0][0] - m[1][1]).sqrt() * 2.0;
-        (
-            (m[1][0] - m[0][1]) / s,
-            (m[0][2] + m[2][0]) / s,
-            (m[1][2] + m[2][1]) / s,
-            0.25 * s,
-        )
-    };
-    let length = (w * w + x * x + y * y + z * z).sqrt();
+fn quat_from_basis(basis: Mat3) -> [f32; 4] {
+    let quat = Quat::from_mat3(&basis);
+    let length = quat.length();
     if length > 1e-8 {
-        [x / length, y / length, z / length, w / length]
+        // A quaternion and its negation describe the same rotation. Pinning
+        // the sign (`w >= 0`) keeps the baked data stable instead of letting
+        // the extraction branch decide it.
+        let signed = if quat.w < 0.0 { -quat } else { quat };
+        (signed / length).to_array()
     } else {
         [0.0, 0.0, 0.0, 1.0]
     }
