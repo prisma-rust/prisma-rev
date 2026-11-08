@@ -84,6 +84,11 @@ MCP 工具        → 读端口文件 → TCP 一行 JSON 请求 / 一行 JSON �
 
 - 只监听回环；端口文件在编辑器退出时删除（`PRISMREV_EDITOR_CONTROL` 可覆盖成端口号）。
 - 请求在 UI 线程处理，所以截图和界面状态是**同一帧**的。
+- 失败走 MCP 的 `isError`，文本是控制通道的原始 JSON 回执，带 `kind`
+  （`bad_request` / `not_ready` / `denied` / `internal`）与 `message`：
+  `not_ready` 等一会再试，`bad_request` 改参数，`denied` 不要重试。
+- 编辑器用 `--no-control` 启动（或在 Preferences 里关掉通道）时不会生成端口文件，
+  所有 `editor_*` 工具都会报「读不到控制端口」。
 
 | 工具 | 参数 | 作用 |
 |---|---|---|

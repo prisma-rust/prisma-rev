@@ -10821,10 +10821,30 @@ pub fn preferences(
     preferences: &mut Preferences,
     workspace: &mut Workspace,
     state: &mut UiState,
+    control_cli_disabled: bool,
 ) {
     ui.checkbox(&mut preferences.autosave, "Auto save layout");
     ui.checkbox(&mut preferences.confirm_delete, "Confirm before delete");
     ui.checkbox(&mut preferences.compact, "Compact layout");
+    ui.add_enabled(
+        !control_cli_disabled,
+        egui::Checkbox::new(
+            &mut preferences.control_channel,
+            "Enable local control channel (MCP / automation)",
+        ),
+    )
+    .on_hover_text(
+        "Listen on 127.0.0.1 and write target/editor-egui/control.port so the MCP \
+         server can drive the editor; turning it off stops the listener immediately \
+         (#1008). --no-control disables it for the whole process.",
+    );
+    if control_cli_disabled {
+        ui.label(
+            RichText::new("Control channel disabled by --no-control")
+                .weak()
+                .small(),
+        );
+    }
     ui.checkbox(
         &mut preferences.hot_reload_assets,
         "Rebuild scene pack when loose assets change",
@@ -12176,7 +12196,7 @@ mod window_smoke_tests {
         run_frame(|ui, _workspace, state| project_settings(ui, None, state));
         run_frame(|ui, workspace, state| {
             let mut prefs = Preferences::default();
-            preferences(ui, &mut prefs, workspace, state);
+            preferences(ui, &mut prefs, workspace, state, false);
         });
         run_frame(|ui, workspace, _state| theme(ui, workspace));
         run_frame(|ui, workspace, state| build(ui, workspace, state));
