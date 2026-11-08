@@ -1,4 +1,4 @@
-//! `prism-editor-tool` — Editor tools for PrismaRev.
+//! `prism-terrain-tool` — Terrain tooling for PrismaRev.
 //!
 //! Subcommands:
 //!   heightmap   — procedural heightmap generator with optional erosion
@@ -8,12 +8,12 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use prism_editor_tool::erosion::{self, ErosionKernel};
-use prism_editor_tool::export;
-use prism_editor_tool::heightmap;
+use prism_terrain_tool::erosion::{self, ErosionKernel};
+use prism_terrain_tool::export;
+use prism_terrain_tool::heightmap;
 
 #[derive(Parser)]
-#[command(name = "prism-editor-tool", about = "PrismaRev editor tools")]
+#[command(name = "prism-terrain-tool", about = "PrismaRev terrain tools")]
 struct Cli {
     #[command(subcommand)]
     command: Command,

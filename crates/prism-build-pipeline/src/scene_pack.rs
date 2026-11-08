@@ -172,6 +172,8 @@ pub fn build_scene_package_split(
     // UI 组件的贴图 / 字体（#591 / #583）：`Style.image`、`Tilemap.tileset_path`、
     // `Text.font` 同样得进包，否则打包后图标、瓦片和工程字体全部消失。
     stage_ui_assets(asset_root, &guid_index, staging, &manifest, &mut missing)?;
+    // 场景音频（#990）：`AudioSource.sound_path` 之前完全没进包，发布版静音。
+    stage_audio_assets(asset_root, &guid_index, staging, &manifest, &mut missing)?;
     // 运行时生成的精灵（背景层、鱼、特效）不在场景 JSON 里，所以整个
     // `sprites/` 目录都要烘进包内——和引擎的「Assets 目录即内容」一致。
     stage_sprite_folder(asset_root, staging)?;
@@ -494,6 +496,67 @@ fn stage_ui_assets(
     }
 
     Ok(textures.len() + fonts.len())
+}
+
+/// 把 `AudioSource.sound_path` 引用的音频原样放进包内。
+///
+/// 音频不需要转码（运行时按字节交给解码器），所以和字体一样直接拷贝。
+/// 和贴图一致：路径缺失 / 绝对路径 / 逃出 `assets/` 都进 `missing`，**构建失败**
+/// ——否则场景里写了音频却在发布版静音，而且日志全绿。
+fn stage_audio_assets(
+    asset_root: &Path,
+    guid_index: &GuidIndex,
+    staging: &Path,
+    manifest: &prism_engine::scene::SceneManifest,
+    missing: &mut Vec<String>,
+) -> Result<usize> {
+    let mut clips: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    for entry in &manifest.scenes {
+        let Some(doc_rel) = scene_doc_rel(&entry.path) else {
+            continue;
+        };
+        let Some(doc) = read_scene_document(asset_root, &doc_rel, guid_index) else {
+            continue;
+        };
+        let Some(entities) = doc.get("entities").and_then(|value| value.as_array()) else {
+            continue;
+        };
+        for entity in entities {
+            let Some(components) = entity.get("components").and_then(|value| value.as_object())
+            else {
+                continue;
+            };
+            let Some(value) = components
+                .get("prism_engine::scene::AudioSource")
+                .and_then(|payload| payload.get("sound_path"))
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+            match resolve_asset_path(asset_root, &doc_rel, value) {
+                Some(pak_path)
+                    if clips.insert(pak_path.clone()) && asset_root.join(&pak_path).is_file() =>
+                {
+                    let bytes = fs::read(asset_root.join(&pak_path))
+                        .with_context(|| format!("read audio clip {pak_path}"))?;
+                    write_staged(staging, Path::new(&pak_path), &bytes)?;
+                    log::info!("packaged audio clip: {pak_path}");
+                }
+                Some(pak_path) => {
+                    if !asset_root.join(&pak_path).is_file() {
+                        missing.push(format!("{doc_rel}: audio clip '{pak_path}' not found"));
+                    }
+                }
+                None => missing.push(format!(
+                    "{doc_rel}: audio clip '{value}' is absolute or escapes assets/"
+                )),
+            }
+        }
+    }
+
+    Ok(clips.len())
 }
 
 /// 把场景里 `MeshRenderer.mesh_path` 引用的模型烘成 RMES 并放进包内（#530）。
@@ -1587,6 +1650,80 @@ mod tests {
         let texture_id = rm.id_by_path("textures/icon.png").expect("texture path");
         let cooked = rm.load_with_deps_raw(texture_id).unwrap();
         assert_ne!(cooked, TINY_PNG, "贴图必须过 cooker");
+    }
+
+    /// #990：`AudioSource.sound_path` 必须进包（原样字节），路径写错必须让构建失败。
+    #[test]
+    fn audio_clip_references_are_packaged_and_missing_ones_fail() {
+        let temp = tempfile::tempdir().unwrap();
+        let assets = temp.path().join("assets");
+        fs::create_dir_all(assets.join("scenes")).unwrap();
+        fs::create_dir_all(assets.join("audio")).unwrap();
+        fs::write(assets.join("audio/splash.ogg"), b"not-a-real-ogg").unwrap();
+        fs::write(
+            assets.join("scenes/lake.scene.json"),
+            br#"{
+                "version": 1,
+                "entities": [{
+                    "name": "Splash",
+                    "parent": null,
+                    "transform": {},
+                    "components": {
+                        "prism_engine::scene::AudioSource": {
+                            "sound_path": "audio/splash.ogg"
+                        }
+                    }
+                }]
+            }"#,
+        )
+        .unwrap();
+        write_manifest(
+            &assets,
+            r#"{"scenes":[{"name":"lake","path":"scenes/lake.scene.json","enabled":true}]}"#,
+        );
+
+        let output = temp.path().join("scenes.pak");
+        let staging = temp.path().join("cooked");
+        let summary =
+            build_scene_package(assets.join("scenes.json"), &staging, &output, 0).unwrap();
+
+        let meta_text = fs::read_to_string(summary.pack.manifest_path.clone()).unwrap();
+        let mut rm = ResourceManager::new();
+        rm.load_package_bytes(&fs::read(&output).unwrap()).unwrap();
+        rm.load_path_manifest_from_str(&meta_text).unwrap();
+        let clip_id = rm.id_by_path("audio/splash.ogg").expect("audio path");
+        assert_eq!(rm.load_with_deps_raw(clip_id).unwrap(), b"not-a-real-ogg");
+
+        // 引用了不存在的音频时构建必须失败，而不是静默出一个没有声音的包。
+        fs::write(
+            assets.join("scenes/lake.scene.json"),
+            br#"{
+                "version": 1,
+                "entities": [{
+                    "name": "Splash",
+                    "parent": null,
+                    "transform": {},
+                    "components": {
+                        "prism_engine::scene::AudioSource": {
+                            "sound_path": "audio/missing.ogg"
+                        }
+                    }
+                }]
+            }"#,
+        )
+        .unwrap();
+        let error = build_scene_package(
+            assets.join("scenes.json"),
+            temp.path().join("cooked2"),
+            temp.path().join("scenes2.pak"),
+            0,
+        )
+        .expect_err("missing audio clip must fail the build");
+        let text = format!("{error:#}");
+        assert!(
+            text.contains("audio/missing.ogg"),
+            "error should name the missing clip: {text}"
+        );
     }
 
     /// #509：`build-scenes --optional-dir` 把 staged 子目录拆成独立包，

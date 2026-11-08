@@ -163,13 +163,20 @@ impl Gizmo {
         let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
             .color_write_mask(vk::ColorComponentFlags::RGBA)
             .blend_enable(false);
-        // The gizmo draws inside ForwardPass's 渲染 pass which now has 2
-        // 颜色 attachments 颜色 + view-normal MRT). Every 管线 bound in
+        // The gizmo draws inside ForwardPass's 渲染 pass which has 3
+        // 颜色 attachments 颜色 + view-normal MRT + motion vectors). Every 管线 bound in
         // that 渲染 pass must declare a matching attachmentCount, so we 列表
-        // 2 混合 states: 附件 0 颜色 writes RGBA 附件 1
+        // 3 混合 states: 附件 0 颜色 writes RGBA，附件 1 / 2 不写
         // 法线 has an 空 写入 遮罩 so the cleared value is preserved.
         let blend_attachments = [
             color_blend_attachment,
+            // 附件 1 = view-space 法线 MRT：空写入遮罩，保留 ForwardPass 清好的值。
+            vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::empty())
+                .blend_enable(false),
+            // 附件 2 = 运动矢量（#883）：同样只写 0 号附件，否则
+            // `pColorBlendState->attachmentCount` 与渲染 pass 的
+            // 3 个颜色附件不一致（#973，VUID-...-renderPass-07609）。
             vk::PipelineColorBlendAttachmentState::default()
                 .color_write_mask(vk::ColorComponentFlags::empty())
                 .blend_enable(false),

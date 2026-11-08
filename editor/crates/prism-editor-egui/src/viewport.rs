@@ -2620,6 +2620,27 @@ fn collider_bounds(doc: &prism_editor_core::SceneDoc, index: usize) -> Option<vm
     })
 }
 
+/// 每个实体的局部包围盒（索引 = 实体下标，`None` = 文档和引擎都不知道尺寸）。
+///
+/// 取景（Frame Selection / Frame All）和拾取共用这一份：数据层读不到贴图像素
+/// 尺寸，只有引擎解析完资产之后才知道，所以必须由编辑器进程算好再灌回去。
+pub(crate) fn bounds_table(
+    workspace: &Workspace,
+    host: Option<&EngineHost>,
+) -> Vec<Option<vm::PickBounds>> {
+    let doc = &workspace.document().doc;
+    (0..doc.entities.len())
+        .map(|index| {
+            collider_bounds(doc, index)
+                .or_else(|| sprite_bounds(doc, index, host))
+                .or_else(|| {
+                    host.and_then(|host| host.mesh_bounds(index))
+                        .map(|(min, max)| vm::PickBounds { min, max })
+                })
+        })
+        .collect()
+}
+
 fn proxies(
     workspace: &Workspace,
     host: Option<&EngineHost>,
@@ -2627,18 +2648,14 @@ fn proxies(
     let doc = &workspace.document().doc;
     let hidden: std::collections::HashSet<u32> =
         workspace.hidden_entity_ids().into_iter().collect();
+    let bounds = bounds_table(workspace, host);
     (0..doc.entities.len())
         .filter(|index| {
             !doc.id_of_index(*index)
                 .is_some_and(|id| hidden.contains(&id))
         })
         .map(|index| {
-            let bounds = collider_bounds(doc, index)
-                .or_else(|| sprite_bounds(doc, index, host))
-                .or_else(|| {
-                    host.and_then(|host| host.mesh_bounds(index))
-                        .map(|(min, max)| vm::PickBounds { min, max })
-                });
+            let bounds = bounds.get(index).copied().flatten();
             (
                 index,
                 TransformJson {

@@ -366,9 +366,11 @@ impl RenderPassNode for TaaPass {
     }
 
     fn execute(&mut self, ctx: &RenderContext, resources: &mut GraphResources) -> Result<()> {
-        eprintln!(
+        // 每帧都走这里：只在 trace 级别输出，`RUST_LOG` 默认不打开。
+        log::trace!(
             "TAA exec taa={} jitter={:?}",
-            ctx.settings.taa, ctx.frame.view_proj_jitter
+            ctx.settings.taa,
+            ctx.frame.view_proj_jitter
         );
         if !ctx.settings.taa {
             // Drop history while TAA is off so re-enabling does not blend a

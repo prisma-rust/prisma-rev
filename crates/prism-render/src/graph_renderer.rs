@@ -2603,11 +2603,19 @@ impl GraphRenderer {
                                 std::slice::from_ref(&barrier),
                             );
                         }
+                        // #988：UI 使用与 PostPass 相同的目标矩形，跟随
+                        // `internal_resolution` 的整数倍缩放并留在黑边之内。
+                        let dest = crate::render_graph::post_destination(
+                            extent,
+                            render_extent,
+                            self.settings.internal_scale_mode,
+                        );
                         record = gpu
                             .record(
                                 &self.runtime.context,
                                 cmd,
                                 extent,
+                                dest,
                                 sw.views[image_index as usize],
                                 ui_overlay.unwrap(),
                                 bindless_set,
@@ -2675,11 +2683,17 @@ impl GraphRenderer {
                                 std::slice::from_ref(&barrier),
                             );
                         }
+                        // 离屏目标没有交换链缩放，UI 铺满整张图。
+                        let dest = vk::Rect2D {
+                            offset: vk::Offset2D { x: 0, y: 0 },
+                            extent: target_extent,
+                        };
                         record = gpu
                             .record(
                                 &self.runtime.context,
                                 cmd,
                                 target_extent,
+                                dest,
                                 view,
                                 ui_overlay.unwrap(),
                                 bindless_set,

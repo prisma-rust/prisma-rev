@@ -722,7 +722,7 @@ mod tests {
     }
 
     #[test]
-    fn scene_frag_padding_keeps_its_reflected_offset() {
+    fn scene_frag_push_layout_is_pinned() {
         let refl = load("scene_frag.json");
         let (name, fields) = push_constant_structs(&refl)
             .pop()
@@ -736,9 +736,16 @@ mod tests {
             })
         };
 
-        // The shader reserves `_padding` at 96; the dense layout used to put it at 84.
-        assert_eq!(offset_of("_padding"), Some(96), "{name}");
-        assert_eq!(total, 108, "{name}");
+        // `model`(64) + 14 packed scalars. The block used to carry a
+        // `float3 _padding` after `skin_mode`; #491 / #883 / #517 replaced it
+        // with real fields (instance_*, prev_draw_index, reactive_mask,
+        // splat_*), so no filler is left and the size is exactly 120.
+        assert_eq!(name, "PbrBindlessPush");
+        assert_eq!(offset_of("model"), Some(0));
+        assert_eq!(offset_of("material_slot"), Some(64));
+        assert_eq!(offset_of("reactive_mask"), Some(96));
+        assert_eq!(offset_of("splat_tiling"), Some(116));
+        assert_eq!(total, 120, "{name}");
 
         let holes: u64 = members
             .iter()
@@ -747,7 +754,7 @@ mod tests {
                 _ => 0,
             })
             .sum();
-        assert_eq!(holes, 12, "{name} must fill the 84..96 hole");
+        assert_eq!(holes, 0, "{name} must stay hole-free: {members:?}");
     }
 
     #[test]
@@ -771,14 +778,35 @@ mod tests {
     #[test]
     fn generated_const_matches_the_emitted_struct_size() {
         let path = reflection_dir().join("scene_frag.json");
+        let refl = load("scene_frag.json");
+        let (_, fields) = push_constant_structs(&refl)
+            .pop()
+            .expect("scene_frag declares a push block");
+        let (members, total) = layout_push_fields(fields).unwrap();
+
+        // Derive the expected constant from the reflected layout instead of
+        // pinning a byte count: the previous literal (108) went stale when the
+        // block grew to 120, and nothing noticed because `crates/xtask` is
+        // excluded from the default workspace.
         let (module, text) = process_file(&path).expect("generate scene_frag bindings");
         assert_eq!(module, "scene_frag");
-        // 108 = model(64) + 5×4 scalars + the 12-byte hole + `_padding`(12).
         assert!(
-            text.contains("pub const PUSH_CONSTANT_SIZE: u32 = 108;"),
+            text.contains(&format!("pub const PUSH_CONSTANT_SIZE: u32 = {total};")),
             "{text}"
         );
-        assert!(text.contains("pub _pad_84: [u8; 12],"), "{text}");
+
+        let last_end = members
+            .iter()
+            .filter_map(|member| match member {
+                PushMember::Field { offset, size, .. } => Some(offset + size),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+        assert_eq!(
+            last_end, total,
+            "the last field must end at the struct size"
+        );
     }
 
     #[test]
