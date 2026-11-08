@@ -90,6 +90,8 @@ mod physics_runner;
 /// same runtime the app uses without creating a window.
 #[cfg(feature = "physics")]
 pub use physics_runner::PhysicsRuntime;
+#[cfg(feature = "audio")]
+pub mod one_shot;
 mod render_graph_report;
 mod render_runner;
 mod render_shared;

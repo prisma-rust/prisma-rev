@@ -217,6 +217,12 @@ pub fn tick(state: &mut Option<FishingState>, world: &mut GameWorld<'_>, dt: f32
                 current.caught += 1;
                 current.phase = Phase::Caught;
                 current.elapsed = 0.0;
+                log::info!("fishing: landed fish #{}", current.caught);
+                // 上钩的水花声（#987）：玩家和编辑器 Play 都能听到。
+                match world.play_sound("audio/splash.wav", 0.8, false) {
+                    Some(id) => log::info!("fishing: splash sound id {id}"),
+                    None => log::warn!("fishing: splash sound unavailable"),
+                }
                 // #984：落袋即存档，退出游戏不会丢进度。
                 let saved = world.save_data("caught", &current.caught.to_string());
                 log::info!("fishing: landed fish #{} (saved: {saved})", current.caught);

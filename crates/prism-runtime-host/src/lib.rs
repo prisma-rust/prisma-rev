@@ -17,8 +17,9 @@ use std::path::{Path, PathBuf};
 use libloading::{Library, Symbol};
 use prism_project_api::{
     GetProjectApi, HostApi, ProjectApi, RaycastHit, ABI_VERSION, BUFFER_TOO_SMALL, HOST_CAP_ASSET,
-    HOST_CAP_COMPONENTS, HOST_CAP_DRAW, HOST_CAP_LOGGING, HOST_CAP_PHYSICS, HOST_CAP_SCENE,
-    HOST_CAP_STATE, HOST_CAP_WORLD_COMMANDS, INVALID_ARGUMENT, SUCCESS, UNKNOWN_TYPE,
+    HOST_CAP_AUDIO, HOST_CAP_COMPONENTS, HOST_CAP_DRAW, HOST_CAP_LOGGING, HOST_CAP_PHYSICS,
+    HOST_CAP_SAVE, HOST_CAP_SCENE, HOST_CAP_STATE, HOST_CAP_WORLD_COMMANDS, INVALID_ARGUMENT,
+    SUCCESS, UNKNOWN_TYPE,
 };
 use prism_reflect::rtti_bin;
 use thiserror::Error;
@@ -117,8 +118,34 @@ pub struct RaycastResult {
     pub is_trigger: bool,
 }
 
+/// Host implementation of one-shot sound (#987).
+///
+/// This crate does not depend on `prism-engine` / `prism-audio` (that would pull in
+/// a second implementation), so the mixer is injected as a trait object: the player
+/// uses `App`'s `AudioEngine`, the editor uses its own preview engine.
+pub trait AudioIo {
+    /// Starts playback; returns the host-side sound id (`0` = failure).
+    fn play_sound(&mut self, path: &str, volume: f32, repeat: bool) -> u32;
+    /// Stops a sound id; unknown ids count as success.
+    fn stop_sound(&mut self, id: u32);
+}
+
 /// Signature of a raycast implementation (the equivalent of `prism_engine::physics::raycast`).
 pub type RaycastFn = fn(&prism_ecs::World, [f32; 3], [f32; 3], f32, u32) -> Option<RaycastResult>;
+
+/// Host implementation of player saves (#984).
+///
+/// This crate does not depend on `prism-engine`, so where a save lives and what it
+/// looks like are up to the host: the player writes the real user directory
+/// (`prism_engine::user_data`), the editor's Play mode writes
+/// `<project>/target/play-data/` and never touches the real saves. Keys and values
+/// are byte strings; the business schema is up to the project.
+pub trait SaveIo {
+    /// Writes one key/value pair; `true` = already on disk.
+    fn save_value(&mut self, key: &str, value: &[u8]) -> bool;
+    /// Reads one key; `None` when the key is absent (not an error).
+    fn load_value(&mut self, key: &str) -> Option<Vec<u8>>;
+}
 
 /// Per-tick command context on the host side.
 ///
@@ -147,6 +174,10 @@ struct CommandContext<'a> {
     scene_switch: bool,
     /// The host's raycast implementation (#522); `HOST_CAP_PHYSICS` is not advertised when `None`.
     raycast: Option<RaycastFn>,
+    /// The host's player-save implementation (#984); `HOST_CAP_SAVE` is not advertised when `None`.
+    save: Option<&'a mut dyn SaveIo>,
+    /// The host's one-shot sound implementation (#987); `HOST_CAP_AUDIO` is not advertised when `None`.
+    audio: Option<&'a mut dyn AudioIo>,
 }
 
 /// Wraps the host world into the [`HostApi`] function table.
@@ -175,6 +206,8 @@ impl<'a> WorldCommands<'a> {
                 scene_request: None,
                 scene_switch: false,
                 raycast: None,
+                save: None,
+                audio: None,
             },
         }
     }
@@ -216,6 +249,21 @@ impl<'a> WorldCommands<'a> {
     /// passes an adapter over `prism_engine::physics::raycast` (see `engine_raycast`).
     pub fn with_raycast(mut self, raycast: RaycastFn) -> Self {
         self.context.raycast = Some(raycast);
+        self
+    }
+
+    /// Injects the player-save implementation (#984); advertises `HOST_CAP_SAVE`.
+    ///
+    /// The player writes the real user directory, the editor's Play mode writes
+    /// `<project>/target/play-data/`.
+    pub fn with_save(mut self, save: &'a mut dyn SaveIo) -> Self {
+        self.context.save = Some(save);
+        self
+    }
+
+    /// Injects the one-shot sound implementation (#987); advertises [`HOST_CAP_AUDIO`].
+    pub fn with_audio(mut self, audio: &'a mut dyn AudioIo) -> Self {
+        self.context.audio = Some(audio);
         self
     }
 
@@ -261,6 +309,16 @@ impl<'a> WorldCommands<'a> {
                     HOST_CAP_PHYSICS
                 } else {
                     0
+                }
+                | if self.context.save.is_some() {
+                    HOST_CAP_SAVE
+                } else {
+                    0
+                }
+                | if self.context.audio.is_some() {
+                    HOST_CAP_AUDIO
+                } else {
+                    0
                 },
             scene_generation: self.context.scene_generation,
             user_data: (&mut self.context as *mut CommandContext).cast(),
@@ -287,12 +345,32 @@ impl<'a> WorldCommands<'a> {
             } else {
                 None
             },
+            play_sound: if self.context.audio.is_some() {
+                Some(host_play_sound)
+            } else {
+                None
+            },
+            stop_sound: if self.context.audio.is_some() {
+                Some(host_stop_sound)
+            } else {
+                None
+            },
             query_entities: Some(host_query_entities),
             get_component: Some(host_get_component),
             set_component: Some(host_set_component),
             remove_component: Some(host_remove_component),
             despawn_entity: Some(host_despawn_entity),
             is_alive: Some(host_is_alive),
+            save_value: if self.context.save.is_some() {
+                Some(host_save_value)
+            } else {
+                None
+            },
+            load_value: if self.context.save.is_some() {
+                Some(host_load_value)
+            } else {
+                None
+            },
             draw_quad: Some(host_draw_quad),
         }
     }
@@ -318,6 +396,14 @@ unsafe fn type_name<'a>(ptr: *const u8, len: usize) -> Option<&'a str> {
     }
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     std::str::from_utf8(bytes).ok()
+}
+
+/// ABI 字符串参数 → `&str`（与 [`type_name`] 同一套校验）。
+///
+/// # Safety
+/// `ptr`/`len` 必须描述一块调用期间有效的 UTF-8 字节。
+unsafe fn path_str<'a>(ptr: *const u8, len: usize) -> Option<&'a str> {
+    unsafe { type_name(ptr, len) }
 }
 
 fn handle_to_entity(handle: EntityHandle) -> prism_ecs::Entity {
@@ -575,6 +661,133 @@ unsafe extern "C" fn host_is_alive(user_data: *mut std::ffi::c_void, entity: Ent
     i32::from(context.world.is_alive(handle_to_entity(entity)))
 }
 
+/// Writes a player save (#984): keys and values are byte strings, the schema is up to the project.
+///
+/// # Safety
+/// `key` must point to UTF-8 valid for the call; `value` must point to `value_len`
+/// bytes (may be `null` when `value_len == 0`).
+unsafe extern "C" fn host_save_value(
+    user_data: *mut std::ffi::c_void,
+    key: *const u8,
+    key_len: usize,
+    value: *const u8,
+    value_len: usize,
+) -> i32 {
+    let Some(context) = (unsafe { context(user_data) }) else {
+        return INVALID_ARGUMENT;
+    };
+    let Some(key) = (unsafe { type_name(key, key_len) }) else {
+        return INVALID_ARGUMENT;
+    };
+    let value = if value_len == 0 {
+        &[][..]
+    } else {
+        if value.is_null() {
+            return INVALID_ARGUMENT;
+        }
+        unsafe { std::slice::from_raw_parts(value, value_len) }
+    };
+    match context.save.as_mut() {
+        Some(save) => {
+            if save.save_value(key, value) {
+                SUCCESS
+            } else {
+                -1
+            }
+        }
+        None => -1,
+    }
+}
+
+/// Reads a player save (#984): returns the **full length**.
+///
+/// When `out == null` or `out_cap` is too small only the length is returned, so the
+/// project can read in two passes; a missing key returns a negative code.
+///
+/// # Safety
+/// Same as [`host_save_value`]; `out` must point to `out_cap` bytes.
+unsafe extern "C" fn host_load_value(
+    user_data: *mut std::ffi::c_void,
+    key: *const u8,
+    key_len: usize,
+    out: *mut u8,
+    out_cap: usize,
+) -> i32 {
+    let Some(context) = (unsafe { context(user_data) }) else {
+        return INVALID_ARGUMENT;
+    };
+    let Some(key) = (unsafe { type_name(key, key_len) }) else {
+        return INVALID_ARGUMENT;
+    };
+    let Some(value) = context.save.as_mut().and_then(|save| save.load_value(key)) else {
+        return -1;
+    };
+    let len = value.len();
+    if len > i32::MAX as usize {
+        return -1;
+    }
+    if out.is_null() || out_cap < len {
+        return len as i32;
+    }
+    unsafe { std::ptr::copy_nonoverlapping(value.as_ptr(), out, len) };
+    len as i32
+}
+/// One-shot sound (#987): mixing is injected by the host, this crate only adapts the ABI.
+///
+/// # Safety
+/// `path` must point to UTF-8 valid for the call; `out_id` may be `null`.
+unsafe extern "C" fn host_play_sound(
+    user_data: *mut std::ffi::c_void,
+    path: *const u8,
+    path_len: usize,
+    volume: f32,
+    repeat: u8,
+    out_id: *mut u32,
+) -> i32 {
+    let Some(context) = (unsafe { context(user_data) }) else {
+        return INVALID_ARGUMENT;
+    };
+    if !out_id.is_null() {
+        unsafe { *out_id = 0 };
+    }
+    let Some(path) = (unsafe { path_str(path, path_len) }) else {
+        return INVALID_ARGUMENT;
+    };
+    let Some(audio) = context.audio.as_mut() else {
+        return -2;
+    };
+    let volume = if volume.is_finite() {
+        volume.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let id = audio.play_sound(path, volume, repeat != 0);
+    if id == 0 {
+        return -1;
+    }
+    if !out_id.is_null() {
+        unsafe { *out_id = id };
+    }
+    SUCCESS
+}
+
+/// Stops a one-shot sound (#987).
+///
+/// # Safety
+/// Same as [`host_play_sound`].
+unsafe extern "C" fn host_stop_sound(user_data: *mut std::ffi::c_void, id: u32) -> i32 {
+    let Some(context) = (unsafe { context(user_data) }) else {
+        return INVALID_ARGUMENT;
+    };
+    if id != 0 {
+        if let Some(audio) = context.audio.as_mut() {
+            audio.stop_sound(id);
+        }
+    }
+    SUCCESS
+}
+
+/// 射线查询（#522）：几何实现由宿主注入，本 crate 只做 ABI 适配。
 /// Raycast query (#522): the geometry implementation is injected by the host; this
 /// crate only adapts the ABI.
 unsafe extern "C" fn host_raycast(
@@ -942,6 +1155,73 @@ mod tests {
         }
     }
 
+    /// #987: the one-shot sound capability is injected optionally too; without it the
+    /// host advertises nothing and the callbacks return negative codes.
+    #[test]
+    fn audio_capability_requires_an_injected_implementation() {
+        struct FakeAudio {
+            played: Vec<(String, f32, bool)>,
+            stopped: Vec<u32>,
+        }
+        impl AudioIo for FakeAudio {
+            fn play_sound(&mut self, path: &str, volume: f32, repeat: bool) -> u32 {
+                self.played.push((path.to_string(), volume, repeat));
+                7
+            }
+            fn stop_sound(&mut self, id: u32) {
+                self.stopped.push(id);
+            }
+        }
+
+        let mut world = prism_ecs::World::new();
+        let registry = registry();
+
+        let mut plain = WorldCommands::new(&mut world, &registry, 1);
+        let api = plain.api();
+        assert_eq!(
+            api.capabilities & HOST_CAP_AUDIO,
+            0,
+            "the bit must stay unset without an injected implementation"
+        );
+        assert!(api.play_sound.is_none());
+
+        let mut fake = FakeAudio {
+            played: Vec::new(),
+            stopped: Vec::new(),
+        };
+        let mut wired = WorldCommands::new(&mut world, &registry, 1).with_audio(&mut fake);
+        {
+            let api = wired.api();
+            assert_ne!(api.capabilities & HOST_CAP_AUDIO, 0);
+            let play = api.play_sound.expect("play callback");
+            let mut id = 0u32;
+            let status = unsafe {
+                play(
+                    api.user_data,
+                    "audio/splash.wav".as_ptr(),
+                    "audio/splash.wav".len(),
+                    0.8,
+                    0,
+                    &mut id,
+                )
+            };
+            assert_eq!(status, prism_project_api::SUCCESS);
+            assert_eq!(id, 7);
+
+            let stop = api.stop_sound.expect("stop callback");
+            assert_eq!(
+                unsafe { stop(api.user_data, id) },
+                prism_project_api::SUCCESS
+            );
+        }
+        assert_eq!(
+            fake.played,
+            vec![("audio/splash.wav".to_string(), 0.8, false)]
+        );
+        assert_eq!(fake.stopped, vec![7]);
+    }
+
+    /// #484: the state capability is injected optionally; it is not advertised when missing.
     /// #484: the state capability is injected optionally; it is not advertised when missing.
     #[test]
     fn scene_state_capability_requires_an_injected_implementation() {
@@ -1128,6 +1408,65 @@ mod tests {
             },
             prism_project_api::INVALID_ARGUMENT
         );
+    }
+
+    /// The loose asset access the project module gets uses the same host implementation
+    /// (through `HOST_CAP_ASSET`).
+    /// #984: player saves are injected optionally too; reads return the full length so the
+    /// caller can do a two-pass read.
+    #[test]
+    fn save_capability_roundtrips_values() {
+        #[derive(Default)]
+        struct FakeSave(std::collections::BTreeMap<String, Vec<u8>>);
+        impl SaveIo for FakeSave {
+            fn save_value(&mut self, key: &str, value: &[u8]) -> bool {
+                self.0.insert(key.to_string(), value.to_vec());
+                true
+            }
+            fn load_value(&mut self, key: &str) -> Option<Vec<u8>> {
+                self.0.get(key).cloned()
+            }
+        }
+
+        let mut world = prism_ecs::World::new();
+        let registry = registry();
+
+        let mut plain = WorldCommands::new(&mut world, &registry, 1);
+        let api = plain.api();
+        assert_eq!(
+            api.capabilities & HOST_CAP_SAVE,
+            0,
+            "the bit must stay unset without an injected implementation"
+        );
+        assert!(api.save_value.is_none());
+        assert!(api.load_value.is_none());
+
+        let mut fake = FakeSave::default();
+        let mut wired = WorldCommands::new(&mut world, &registry, 1).with_save(&mut fake);
+        {
+            let api = wired.api();
+            assert_ne!(api.capabilities & HOST_CAP_SAVE, 0);
+            let save = api.save_value.expect("save callback");
+            assert_eq!(
+                unsafe { save(api.user_data, "caught".as_ptr(), 6, b"3".as_ptr(), 1) },
+                SUCCESS
+            );
+
+            let load = api.load_value.expect("load callback");
+            // Two-pass read: ask for the length, then fetch the bytes.
+            let len = unsafe { load(api.user_data, "caught".as_ptr(), 6, std::ptr::null_mut(), 0) };
+            assert_eq!(len, 1);
+            let mut out = [0u8; 8];
+            let got = unsafe { load(api.user_data, "caught".as_ptr(), 6, out.as_mut_ptr(), 8) };
+            assert_eq!(got, 1);
+            assert_eq!(&out[..1], b"3");
+
+            // A missing key returns a negative code, not a zero length.
+            let missing =
+                unsafe { load(api.user_data, "missing".as_ptr(), 7, out.as_mut_ptr(), 8) };
+            assert!(missing < 0, "missing key should be negative, got {missing}");
+        }
+        assert_eq!(fake.0.get("caught"), Some(&b"3".to_vec()));
     }
 
     /// The loose asset access the project module gets uses the same host implementation

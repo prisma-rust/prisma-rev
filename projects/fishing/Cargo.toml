@@ -22,7 +22,7 @@ required-features = ["player"]
 # - `preview-module`：编辑器 Play 加载的动态模块，只依赖跨 ABI 的纯数据层。
 [features]
 default = ["player"]
-player = ["dep:prism-app", "dep:prism-engine", "prism-game-api/host"]
+player = ["dep:prism-app", "dep:prism-engine", "prism-game-api/host", "prism-app/audio"]
 # 组件 schema 必须和编辑器宿主**完全一致**：宿主用 prism-scene 默认分组编译，
 # 模块是独立 workspace、拿不到引擎的 feature 统一，所以这里显式打开三组。
 # 少了任何一组，`ProjectModule::load` 的 schema fingerprint 校验会拒绝模块，

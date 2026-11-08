@@ -199,7 +199,8 @@ impl<'a> GameWorld<'a> {
     ///
     /// 键值都是字符串：结构由工程自己序列化（`serde_json` 也好、只看
     /// `"caught"` 这种计数也好），引擎不理解业务 schema。
-    /// 插件后端（编辑器 Play）还没有存档能力位，此时返回 `false`。
+    /// 插件后端走 `HostApi::save_value`（能力位 `HOST_CAP_SAVE`）；宿主没有
+    /// 存档实现时返回 `false`。
     pub fn save_data(&mut self, key: &str, value: &str) -> bool {
         match &mut self.backend {
             #[cfg(feature = "host")]
@@ -221,10 +222,7 @@ impl<'a> GameWorld<'a> {
                 }
             }
             #[cfg(feature = "plugin")]
-            Backend::Plugin(_) => {
-                log::warn!("save_data is not available in the preview module yet");
-                false
-            }
+            Backend::Plugin(backend) => backend.save_value(key, value.as_bytes()),
         }
     }
 
@@ -237,7 +235,9 @@ impl<'a> GameWorld<'a> {
                 .and_then(|store| store.get(key))
                 .map(str::to_string),
             #[cfg(feature = "plugin")]
-            Backend::Plugin(_) => None,
+            Backend::Plugin(backend) => backend
+                .load_value(key)
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
         }
     }
 
@@ -275,6 +275,55 @@ impl<'a> GameWorld<'a> {
             }
             #[cfg(feature = "plugin")]
             Backend::Plugin(backend) => backend.unload_scene(),
+        }
+    }
+
+    /// Plays a one-shot sound (#987): `path` is relative to `assets/`, `volume` is a
+    /// linear gain in `0..1`.
+    ///
+    /// Returns the host-assigned sound id (usable with [`Self::stop_sound`]); `None`
+    /// means the clip is missing, decoding failed, or the backend has no audio.
+    ///
+    /// - the host backend queues the request into
+    ///   `prism_engine::sound::SoundCommands`; `App` plays it after the tick ends;
+    /// - the plugin backend goes through `HostApi::play_sound` (capability bit
+    ///   `HOST_CAP_AUDIO`); the editor returns `None` when no audio implementation
+    ///   was injected instead of silently swallowing the call.
+    pub fn play_sound(&mut self, path: &str, volume: f32, repeat: bool) -> Option<u32> {
+        match &mut self.backend {
+            #[cfg(feature = "host")]
+            Backend::Host(backend) => {
+                // `Engine::empty` inserts this resource; add one for custom hosts.
+                if backend
+                    .get_resource::<prism_engine::sound::SoundCommands>()
+                    .is_none()
+                {
+                    backend.insert_resource(prism_engine::sound::SoundCommands::default());
+                }
+                let commands = backend
+                    .get_resource_mut::<prism_engine::sound::SoundCommands>()
+                    .expect("SoundCommands was just inserted");
+                Some(commands.play(path, volume, repeat))
+            }
+            #[cfg(feature = "plugin")]
+            Backend::Plugin(backend) => backend.play_sound(path, volume, repeat),
+        }
+    }
+
+    /// Stops the sound id returned by [`Self::play_sound`]; unknown or finished ids
+    /// are a no-op.
+    pub fn stop_sound(&mut self, id: u32) {
+        match &mut self.backend {
+            #[cfg(feature = "host")]
+            Backend::Host(backend) => {
+                if let Some(commands) =
+                    backend.get_resource_mut::<prism_engine::sound::SoundCommands>()
+                {
+                    commands.stop(id);
+                }
+            }
+            #[cfg(feature = "plugin")]
+            Backend::Plugin(backend) => backend.stop_sound(id),
         }
     }
 
@@ -608,6 +657,39 @@ pub fn install_host_logger(host: &HostApi) {
 
 #[cfg(feature = "plugin")]
 impl PluginBackend<'_> {
+    /// 一次性音效（#987）：没有 `HOST_CAP_AUDIO` 时返回 `None`。
+    fn play_sound(&self, path: &str, volume: f32, repeat: bool) -> Option<u32> {
+        if self.api.capabilities & prism_project_api::HOST_CAP_AUDIO == 0 {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                log::warn!("host does not expose one-shot audio (HOST_CAP_AUDIO)");
+            });
+            return None;
+        }
+        let play = self.api.play_sound?;
+        let mut id = 0u32;
+        let status = unsafe {
+            play(
+                self.api.user_data,
+                path.as_ptr(),
+                path.len(),
+                volume,
+                u8::from(repeat),
+                &mut id,
+            )
+        };
+        (status == SUCCESS && id != 0).then_some(id)
+    }
+
+    fn stop_sound(&self, id: u32) {
+        if self.api.capabilities & prism_project_api::HOST_CAP_AUDIO == 0 {
+            return;
+        }
+        if let Some(stop) = self.api.stop_sound {
+            unsafe { stop(self.api.user_data, id) };
+        }
+    }
+
     fn spawn(&self) -> EntityHandle {
         let Some(spawn) = self.api.spawn_entity else {
             return EntityHandle::PLACEHOLDER;
@@ -639,6 +721,71 @@ impl PluginBackend<'_> {
             // query; reads and writes still validate separately.
             None => !entity.is_placeholder(),
         }
+    }
+
+    /// 写入玩家存档（#984）；宿主没有能力位时只警告一次。
+    fn save_value(&self, key: &str, value: &[u8]) -> bool {
+        if self.api.capabilities & prism_project_api::HOST_CAP_SAVE == 0 {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                log::warn!("host does not expose player saves (HOST_CAP_SAVE)");
+            });
+            return false;
+        }
+        let Some(save) = self.api.save_value else {
+            return false;
+        };
+        let key = key.as_bytes();
+        let status = unsafe {
+            save(
+                self.api.user_data,
+                key.as_ptr(),
+                key.len(),
+                value.as_ptr(),
+                value.len(),
+            )
+        };
+        status == SUCCESS
+    }
+
+    /// 读玩家存档（#984）：先问长度再取内容，和宿主的两段读取一致。
+    fn load_value(&self, key: &str) -> Option<Vec<u8>> {
+        if self.api.capabilities & prism_project_api::HOST_CAP_SAVE == 0 {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                log::warn!("host does not expose player saves (HOST_CAP_SAVE)");
+            });
+            return None;
+        }
+        let load = self.api.load_value?;
+        let key = key.as_bytes();
+        let len = unsafe {
+            load(
+                self.api.user_data,
+                key.as_ptr(),
+                key.len(),
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if len < 0 {
+            return None;
+        }
+        let mut out = vec![0u8; len as usize];
+        let status = unsafe {
+            load(
+                self.api.user_data,
+                key.as_ptr(),
+                key.len(),
+                out.as_mut_ptr(),
+                out.len(),
+            )
+        };
+        if status < 0 {
+            return None;
+        }
+        out.truncate(status as usize);
+        Some(out)
     }
 
     fn draw(&self, quad: UiQuad) {

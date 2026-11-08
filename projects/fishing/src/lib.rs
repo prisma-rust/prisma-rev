@@ -19,9 +19,11 @@ pub mod game;
 /// 构造应用：引擎从 `assets/scenes.pak` 加载湖面场景，本项目注册玩法 system。
 #[cfg(feature = "player")]
 pub fn build_app() -> prism_app::App {
-    // 音频子系统（`prism-app/audio`，默认关）不在这里启用：本项目没有 AudioSource，
-    // 开了也只是建一个空引擎 + 解码线程。要放声音时同时打开 feature 与这一行。
-    let mut app = prism_app::app().with_subsystem(prism_app::Subsystem::Render);
+    // 音频子系统（`prism-app/audio`，feature 默认关，工程在 `[features] player`
+    // 里打开）：一次性音效（上钩水花）走 `GameWorld::play_sound`，需要混音器。
+    let mut app = prism_app::app()
+        .with_subsystem(prism_app::Subsystem::Render)
+        .with_subsystem(prism_app::Subsystem::Audio);
 
     app.add_system("game::world", world_system);
     app.add_system("game::fishing", fishing_system)
