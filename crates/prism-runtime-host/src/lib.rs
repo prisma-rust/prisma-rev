@@ -16,7 +16,8 @@ use std::path::{Path, PathBuf};
 use libloading::{Library, Symbol};
 use prism_project_api::{
     GetProjectApi, HostApi, ProjectApi, RaycastHit, ABI_VERSION, BUFFER_TOO_SMALL, HOST_CAP_ASSET,
-    HOST_CAP_AUDIO, HOST_CAP_COMPONENTS, HOST_CAP_DRAW, HOST_CAP_LOGGING, HOST_CAP_PHYSICS,
+    HOST_CAP_AUDIO, HOST_CAP_COMPONENTS, HOST_CAP_DRAW, HOST_CAP_LOGGING,
+    HOST_CAP_PHYSICS, HOST_CAP_SAVE,
     HOST_CAP_SCENE, HOST_CAP_STATE, HOST_CAP_WORLD_COMMANDS, INVALID_ARGUMENT, SUCCESS,
     UNKNOWN_TYPE,
 };
@@ -132,6 +133,19 @@ pub trait AudioIo {
 /// 射线查询实现的签名（`prism_engine::physics::raycast` 的等价物）。
 pub type RaycastFn = fn(&prism_ecs::World, [f32; 3], [f32; 3], f32, u32) -> Option<RaycastResult>;
 
+/// 玩家存档的宿主实现（#984）。
+///
+/// 本 crate 不依赖 `prism-engine`，所以「存档放在哪、什么格式」由宿主决定：
+/// 玩家写真实的用户目录（`prism_engine::user_data`），编辑器 Play 写
+/// `<project>/target/play-data/`，不污染真实存档。键值都是字节串，业务
+/// schema 由工程自己解释。
+pub trait SaveIo {
+    /// 写入一条键值；`true` = 已经落盘。
+    fn save_value(&mut self, key: &str, value: &[u8]) -> bool;
+    /// 读一条键值；没有这个键返回 `None`（不是错误）。
+    fn load_value(&mut self, key: &str) -> Option<Vec<u8>>;
+}
+
 struct CommandContext<'a> {
     world: &'a mut prism_ecs::World,
     registry: &'a prism_scene::ComponentRegistry,
@@ -154,6 +168,9 @@ struct CommandContext<'a> {
     scene_switch: bool,
     /// 宿主的射线查询实现（#522）；`None` 时不声明 `HOST_CAP_PHYSICS`。
     raycast: Option<RaycastFn>,
+    /// 宿主的玩家存档实现（#984）；`None` 时不声明 `HOST_CAP_SAVE`。
+    save: Option<&'a mut dyn SaveIo>,
+
     /// 宿主的一次性音效实现（#987）；`None` 时不声明 `HOST_CAP_AUDIO`。
     audio: Option<&'a mut dyn AudioIo>,
 }
@@ -184,6 +201,7 @@ impl<'a> WorldCommands<'a> {
                 scene_request: None,
                 scene_switch: false,
                 raycast: None,
+                save: None,
                 audio: None,
             },
         }
@@ -223,6 +241,14 @@ impl<'a> WorldCommands<'a> {
     /// `prism_engine::physics::raycast` 的适配器（见 `engine_raycast`）。
     pub fn with_raycast(mut self, raycast: RaycastFn) -> Self {
         self.context.raycast = Some(raycast);
+        self
+    }
+
+    /// 注入玩家存档实现（#984）；声明 `HOST_CAP_SAVE`。
+    ///
+    /// 玩家写真实用户目录，编辑器 Play 写 `<project>/target/play-data/`。
+    pub fn with_save(mut self, save: &'a mut dyn SaveIo) -> Self {
+        self.context.save = Some(save);
         self
     }
 
@@ -272,6 +298,11 @@ impl<'a> WorldCommands<'a> {
                 } else {
                     0
                 }
+                | if self.context.save.is_some() {
+                    HOST_CAP_SAVE
+                } else {
+                    0
+                }
                 | if self.context.audio.is_some() {
                     HOST_CAP_AUDIO
                 } else {
@@ -318,6 +349,16 @@ impl<'a> WorldCommands<'a> {
             remove_component: Some(host_remove_component),
             despawn_entity: Some(host_despawn_entity),
             is_alive: Some(host_is_alive),
+            save_value: if self.context.save.is_some() {
+                Some(host_save_value)
+            } else {
+                None
+            },
+            load_value: if self.context.save.is_some() {
+                Some(host_load_value)
+            } else {
+                None
+            },
             draw_quad: Some(host_draw_quad),
         }
     }
@@ -603,6 +644,77 @@ unsafe extern "C" fn host_is_alive(user_data: *mut std::ffi::c_void, entity: Ent
     i32::from(context.world.is_alive(handle_to_entity(entity)))
 }
 
+/// 写入玩家存档（#984）：键值都是字节串，schema 由工程自己解释。
+///
+/// # Safety
+/// `key` 必须指向调用期间有效的 UTF-8；`value` 必须指向 `value_len`
+/// 字节（`value_len == 0` 时可以为 `null`）。
+unsafe extern "C" fn host_save_value(
+    user_data: *mut std::ffi::c_void,
+    key: *const u8,
+    key_len: usize,
+    value: *const u8,
+    value_len: usize,
+) -> i32 {
+    let Some(context) = (unsafe { context(user_data) }) else {
+        return INVALID_ARGUMENT;
+    };
+    let Some(key) = (unsafe { type_name(key, key_len) }) else {
+        return INVALID_ARGUMENT;
+    };
+    let value = if value_len == 0 {
+        &[][..]
+    } else {
+        if value.is_null() {
+            return INVALID_ARGUMENT;
+        }
+        unsafe { std::slice::from_raw_parts(value, value_len) }
+    };
+    match context.save.as_mut() {
+        Some(save) => {
+            if save.save_value(key, value) {
+                SUCCESS
+            } else {
+                -1
+            }
+        }
+        None => -1,
+    }
+}
+
+/// 读取玩家存档（#984）：返回**完整长度**。
+///
+/// `out == null` 或 `out_cap` 不足时只返回长度，项目侧据此做两段读取；
+/// 键不存在返回负码。
+///
+/// # Safety
+/// 同 [`host_save_value`]；`out` 必须指向 `out_cap` 字节。
+unsafe extern "C" fn host_load_value(
+    user_data: *mut std::ffi::c_void,
+    key: *const u8,
+    key_len: usize,
+    out: *mut u8,
+    out_cap: usize,
+) -> i32 {
+    let Some(context) = (unsafe { context(user_data) }) else {
+        return INVALID_ARGUMENT;
+    };
+    let Some(key) = (unsafe { type_name(key, key_len) }) else {
+        return INVALID_ARGUMENT;
+    };
+    let Some(value) = context.save.as_mut().and_then(|save| save.load_value(key)) else {
+        return -1;
+    };
+    let len = value.len();
+    if len > i32::MAX as usize {
+        return -1;
+    }
+    if out.is_null() || out_cap < len {
+        return len as i32;
+    }
+    unsafe { std::ptr::copy_nonoverlapping(value.as_ptr(), out, len) };
+    len as i32
+}
 /// 一次性音效（#987）：混音由宿主注入，本 crate 只做 ABI 适配。
 ///
 /// # Safety
@@ -1274,6 +1386,62 @@ mod tests {
     }
 
     /// 项目模块拿到的松散资产访问与宿主同一份实现（走 `HOST_CAP_ASSET`）。
+    /// #984：玩家存档同样是可选注入的；读取按完整长度两段返回。
+    #[test]
+    fn save_capability_roundtrips_values() {
+        #[derive(Default)]
+        struct FakeSave(std::collections::BTreeMap<String, Vec<u8>>);
+        impl SaveIo for FakeSave {
+            fn save_value(&mut self, key: &str, value: &[u8]) -> bool {
+                self.0.insert(key.to_string(), value.to_vec());
+                true
+            }
+            fn load_value(&mut self, key: &str) -> Option<Vec<u8>> {
+                self.0.get(key).cloned()
+            }
+        }
+
+        let mut world = prism_ecs::World::new();
+        let registry = registry();
+
+        let mut plain = WorldCommands::new(&mut world, &registry, 1);
+        let api = plain.api();
+        assert_eq!(
+            api.capabilities & HOST_CAP_SAVE,
+            0,
+            "没注入就不该声明能力位"
+        );
+        assert!(api.save_value.is_none());
+        assert!(api.load_value.is_none());
+
+        let mut fake = FakeSave::default();
+        let mut wired = WorldCommands::new(&mut world, &registry, 1).with_save(&mut fake);
+        {
+            let api = wired.api();
+            assert_ne!(api.capabilities & HOST_CAP_SAVE, 0);
+            let save = api.save_value.expect("save callback");
+            assert_eq!(
+                unsafe { save(api.user_data, "caught".as_ptr(), 6, b"3".as_ptr(), 1) },
+                SUCCESS
+            );
+
+            let load = api.load_value.expect("load callback");
+            // 两段读取：先问长度，再取内容。
+            let len = unsafe { load(api.user_data, "caught".as_ptr(), 6, std::ptr::null_mut(), 0) };
+            assert_eq!(len, 1);
+            let mut out = [0u8; 8];
+            let got = unsafe { load(api.user_data, "caught".as_ptr(), 6, out.as_mut_ptr(), 8) };
+            assert_eq!(got, 1);
+            assert_eq!(&out[..1], b"3");
+
+            // 不存在的键返回负码，不是长度为 0。
+            let missing =
+                unsafe { load(api.user_data, "missing".as_ptr(), 7, out.as_mut_ptr(), 8) };
+            assert!(missing < 0, "missing key should be negative, got {missing}");
+        }
+        assert_eq!(fake.0.get("caught"), Some(&b"3".to_vec()));
+    }
+
     #[test]
     fn asset_capability_reads_through_host_callbacks() {
         let mut world = prism_ecs::World::new();

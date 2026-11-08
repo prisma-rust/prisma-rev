@@ -1446,6 +1446,9 @@ impl App {
                     );
                 }
             }
+            // 重新打包后也校验一次构建戳（#976）：包和文档对不上时立刻提示，
+            // 而不是等玩家发现画面不对。
+            self.asset_resolver.check_cook_stamp(pak);
             reloaded += 1;
         }
         if reloaded == 0 {

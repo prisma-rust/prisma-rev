@@ -86,9 +86,13 @@ pub const HOST_CAP_STATE: u64 = 1 << 5;
 pub const HOST_CAP_SCENE: u64 = 1 << 6;
 /// 物理查询（`raycast`，#522）。宿主注入查询实现后才会声明该能力位。
 pub const HOST_CAP_PHYSICS: u64 = 1 << 7;
+/// 玩家存档（`save_value` / `load_value`，#984）。与引擎自带的场景存档
+/// （[`HOST_CAP_STATE`]）分开：这是工程自己决定 schema 的键值存储。
+pub const HOST_CAP_SAVE: u64 = 1 << 8;
+
 /// 一次性音效（`play_sound` / `stop_sound`，#987）。宿主注入音频实现后才会
 /// 声明该能力位；没有它时编辑器 Play 是一次性音效的哑巴。
-pub const HOST_CAP_AUDIO: u64 = 1 << 8;
+pub const HOST_CAP_AUDIO: u64 = 1 << 9;
 
 // ---------------------------------------------------------------------------
 // POD payloads
@@ -365,6 +369,29 @@ pub type Raycast = unsafe extern "C" fn(
     out_hit: *mut RaycastHit,
 ) -> i32;
 
+/// 写入一条玩家存档（#984）：`0` = 已落盘，负数为错误码（没有能力 / 写失败）。
+///
+/// `key`/`value` 都是字节串，schema 由工程自己解释；`value_len == 0` 时
+/// `value` 可以是 `null`。
+pub type SaveValue = unsafe extern "C" fn(
+    user_data: *mut core::ffi::c_void,
+    key: *const u8,
+    key_len: usize,
+    value: *const u8,
+    value_len: usize,
+) -> i32;
+
+/// 读取一条玩家存档（#984）：返回**完整字节长度**。
+///
+/// `out == null` 或 `out_cap` 不足时只返回长度（两段读取）；键不存在返回负数。
+pub type LoadValue = unsafe extern "C" fn(
+    user_data: *mut core::ffi::c_void,
+    key: *const u8,
+    key_len: usize,
+    out: *mut u8,
+    out_cap: usize,
+) -> i32;
+
 /// 播放一个一次性音效（#987）：`path` 是相对 `assets/` 的 UTF-8 路径，
 /// `volume` 是 0..1 的线性增益，`repeat = 1` 表示循环。
 ///
@@ -502,6 +529,10 @@ pub struct HostApi {
     pub unload_scene: Option<UnloadScene>,
     /// 物理射线查询（#522）；能力位 [`HOST_CAP_PHYSICS`]。
     pub raycast: Option<Raycast>,
+    /// 玩家存档（#984）；能力位 [`HOST_CAP_SAVE`]。
+    pub save_value: Option<SaveValue>,
+    pub load_value: Option<LoadValue>,
+
     /// 一次性音效（#987）；能力位 [`HOST_CAP_AUDIO`]。
     pub play_sound: Option<PlaySound>,
     pub stop_sound: Option<StopSound>,
@@ -534,6 +565,9 @@ impl HostApi {
             load_scene: None,
             unload_scene: None,
             raycast: None,
+            save_value: None,
+            load_value: None,
+
             play_sound: None,
             stop_sound: None,
         }
