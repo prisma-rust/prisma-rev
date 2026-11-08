@@ -134,7 +134,8 @@ pub fn tick(state: &mut Option<FishingState>, world: &mut GameWorld<'_>, dt: f32
     // --- 输入（宿主每帧下发的输入快照） ---
     let input = world.input();
     let clicked = input.left_clicked;
-    let pressed_space = input.key(keys::SPACE);
+    // Cast and hook-set are edge-triggered: holding the key counts once, like `left_clicked`.
+    let pressed_space = input.key_pressed(keys::SPACE);
     // `FISHING_AUTOPLAY=1` 让状态机自己推进：用于演示与自动化截图，
     // 正常游玩时不设这个变量，完全由输入驱动。
     let autoplay = std::env::var_os("FISHING_AUTOPLAY").is_some();
