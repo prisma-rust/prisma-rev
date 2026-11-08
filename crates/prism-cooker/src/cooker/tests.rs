@@ -1158,3 +1158,38 @@ fn shader_cooker_can_cook_shader_only() {
     assert!(!cooker.can_cook(AssetType::Mesh));
     assert!(!cooker.can_cook(AssetType::Material));
 }
+
+#[test]
+fn downscale_averages_rgb_in_premultiplied_space() {
+    // 2×2 → 1×1: one opaque red pixel and three fully transparent black pixels.
+    // Premultiplied filtering must keep the red, only the alpha drops (#1037).
+    let pixels = [255u8, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let out = TextureCooker::resize_rgba(2, 2, &pixels, 1, 1);
+    assert_eq!(out, vec![255, 0, 0, 63]);
+}
+
+#[test]
+fn downscale_of_a_fully_transparent_image_stays_transparent() {
+    let pixels = [0u8; 2 * 2 * 4];
+    let out = TextureCooker::resize_rgba(2, 2, &pixels, 1, 1);
+    assert_eq!(out, vec![0, 0, 0, 0]);
+}
+
+#[test]
+fn downscale_of_an_opaque_image_matches_a_plain_average() {
+    let pixels = [
+        10u8, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255,
+    ];
+    let out = TextureCooker::resize_rgba(2, 2, &pixels, 1, 1);
+    assert_eq!(out, vec![55, 65, 75, 255]);
+}
+
+#[test]
+fn mip_generation_averages_rgb_in_premultiplied_space() {
+    let pixels = [255u8, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let mips = TextureCooker::generate_mips(2, 2, &pixels);
+    assert_eq!(mips.len(), 2);
+    assert_eq!(mips[1].0, 1);
+    assert_eq!(mips[1].1, 1);
+    assert_eq!(mips[1].2, vec![255, 0, 0, 63]);
+}

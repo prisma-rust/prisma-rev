@@ -247,6 +247,27 @@ const MAX_MIP_LEVELS: u32 = 16;
 /// ```
 pub struct TextureCooker;
 
+/// Average RGBA samples that were accumulated as `rgb * alpha`.
+///
+/// Weighting RGB by alpha before the average keeps a transparent pixel from
+/// contributing color, which is what removes the dark fringe around downscaled or
+/// mipped sprites. Averages with every sample transparent come out as all zeros,
+/// the conventional premultiplied result. Gamma is not handled here: filtering still
+/// happens in storage space, because the texture format decides sRGB-ness later.
+fn average_premultiplied(rgb: [u64; 3], alpha: u64, count: u64) -> [u8; 4] {
+    let count = count.max(1);
+    if alpha == 0 {
+        return [0, 0, 0, 0];
+    }
+    let unpremultiply = |sum: u64| ((sum + alpha / 2) / alpha).min(255) as u8;
+    [
+        unpremultiply(rgb[0]),
+        unpremultiply(rgb[1]),
+        unpremultiply(rgb[2]),
+        (alpha / count) as u8,
+    ]
+}
+
 impl TextureCooker {
     fn parse_intermediate(data: &[u8]) -> Option<(u32, u32, &[u8])> {
         if data.len() < 12 || &data[..4] != RTXI_MAGIC {
@@ -290,7 +311,10 @@ impl TextureCooker {
         )
     }
 
-    /// 面积平均缩放（只用于缩小）。
+    /// Area-average scaling (shrink only).
+    ///
+    /// RGB is averaged in premultiplied space: a fully transparent pixel must not
+    /// bleed its color into an opaque neighbor, or sprites grow a dark fringe (#1037).
     fn resize_rgba(width: u32, height: u32, rgba: &[u8], new_w: u32, new_h: u32) -> Vec<u8> {
         let mut out = Vec::with_capacity(new_w as usize * new_h as usize * 4);
         for y in 0..new_h {
@@ -299,26 +323,28 @@ impl TextureCooker {
             for x in 0..new_w {
                 let x0 = x * width / new_w;
                 let x1 = ((x + 1) * width / new_w).max(x0 + 1).min(width);
-                let mut acc = [0u32; 4];
-                let mut count = 0u32;
+                let mut rgb = [0u64; 3];
+                let mut alpha = 0u64;
+                let mut count = 0u64;
                 for sy in y0..y1 {
                     for sx in x0..x1 {
                         let idx = ((sy * width) + sx) as usize * 4;
-                        for channel in 0..4 {
-                            acc[channel] += rgba[idx + channel] as u32;
+                        let a = rgba[idx + 3] as u64;
+                        for channel in 0..3 {
+                            rgb[channel] += rgba[idx + channel] as u64 * a;
                         }
+                        alpha += a;
                         count += 1;
                     }
                 }
-                for channel in acc {
-                    out.push((channel / count.max(1)) as u8);
-                }
+                out.extend_from_slice(&average_premultiplied(rgb, alpha, count));
             }
         }
         out
     }
 
-    /// Generate a mip chain using simple 2×2 box filtering.
+    /// Generate a mip chain using 2×2 box filtering in premultiplied alpha space,
+    /// for the same reason as [`Self::resize_rgba`] (#1037).
     fn generate_mips(width: u32, height: u32, rgba: &[u8]) -> Vec<(u32, u32, Vec<u8>)> {
         let mut mips = Vec::new();
         mips.push((width, height, rgba.to_vec()));
@@ -335,11 +361,9 @@ impl TextureCooker {
             for y in 0..dst_h {
                 for x in 0..dst_w {
                     // 2×2 box filter.
-                    let mut r = 0u32;
-                    let mut g = 0u32;
-                    let mut b = 0u32;
-                    let mut a = 0u32;
-                    let mut count = 0u32;
+                    let mut rgb = [0u64; 3];
+                    let mut alpha = 0u64;
+                    let mut count = 0u64;
 
                     for dy in 0..2 {
                         for dx in 0..2 {
@@ -348,19 +372,17 @@ impl TextureCooker {
                             // Guard against source dimensions (not the target).
                             if sx < src_w && sy < src_h {
                                 let idx = ((sy * src_w) + sx) as usize * 4;
-                                r += prev[idx] as u32;
-                                g += prev[idx + 1] as u32;
-                                b += prev[idx + 2] as u32;
-                                a += prev[idx + 3] as u32;
+                                let a = prev[idx + 3] as u64;
+                                for channel in 0..3 {
+                                    rgb[channel] += prev[idx + channel] as u64 * a;
+                                }
+                                alpha += a;
                                 count += 1;
                             }
                         }
                     }
 
-                    next.push((r / count) as u8);
-                    next.push((g / count) as u8);
-                    next.push((b / count) as u8);
-                    next.push((a / count) as u8);
+                    next.extend_from_slice(&average_premultiplied(rgb, alpha, count));
                 }
             }
 
