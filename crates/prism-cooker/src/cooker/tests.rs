@@ -1158,3 +1158,38 @@ fn shader_cooker_can_cook_shader_only() {
     assert!(!cooker.can_cook(AssetType::Mesh));
     assert!(!cooker.can_cook(AssetType::Material));
 }
+
+// --- Premultiplied alpha in texture downscale / mip generation (#1037) ---
+
+#[test]
+fn texture_resize_does_not_tint_from_transparent_pixels() {
+    // Transparent red next to opaque green: the reduced pixel must stay green
+    // with half alpha instead of picking up the red.
+    let rgba = [255, 0, 0, 0, 0, 255, 0, 255];
+    let out = TextureCooker::resize_rgba(2, 1, &rgba, 1, 1);
+    assert_eq!(out, vec![0, 255, 0, 127]);
+}
+
+#[test]
+fn texture_resize_averages_opaque_pixels() {
+    let rgba = [0, 0, 0, 255, 100, 200, 255, 255];
+    let out = TextureCooker::resize_rgba(2, 1, &rgba, 1, 1);
+    assert_eq!(out, vec![50, 100, 127, 255]);
+}
+
+#[test]
+fn texture_resize_of_fully_transparent_pixels_stays_zero() {
+    let rgba = [255, 0, 0, 0, 0, 255, 0, 0];
+    let out = TextureCooker::resize_rgba(2, 1, &rgba, 1, 1);
+    assert_eq!(out, vec![0, 0, 0, 0]);
+}
+
+#[test]
+fn texture_mips_do_not_tint_from_transparent_pixels() {
+    // 2x2: three transparent red pixels and one opaque green pixel.
+    let rgba = [255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 0, 255, 0, 255];
+    let mips = TextureCooker::generate_mips(2, 2, &rgba);
+    assert_eq!(mips.len(), 2);
+    assert_eq!((mips[1].0, mips[1].1), (1, 1));
+    assert_eq!(mips[1].2, vec![0, 255, 0, 63]);
+}
