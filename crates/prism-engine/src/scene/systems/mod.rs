@@ -24,3 +24,4 @@ pub mod skinned_draw;
 pub mod terrain;
 pub mod tilemap;
 pub mod time_of_day;
+pub mod ui_particles;

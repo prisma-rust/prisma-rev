@@ -505,6 +505,8 @@ pub fn register_builtin_components(registry: &mut ComponentRegistry) {
     // ── 粒子发射器（作者态；活粒子在运行时 `ParticleEmitter` 里）──
     registry.register_reflect_serde::<ParticleSystem>("prism_engine::scene::ParticleSystem");
     registry.register_reflect_serde::<ParticleEmitter2D>("prism_engine::scene::ParticleEmitter2D");
+    // Screen-space emitter: simulated in the engine, emitted as UI quads (#1057).
+    registry.register_reflect_serde::<UiParticleEmitter>("prism_engine::scene::UiParticleEmitter");
 
     // ── 音频（作者态；解码与混音在宿主层 `prism-app::scene_audio`）──
     registry.register_reflect_serde::<AudioSource>("prism_engine::scene::AudioSource");

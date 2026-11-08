@@ -553,6 +553,10 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   frame by `prism-engine/src/ui/layout.rs`, so authors write only `Node` + `Style`. It is
   registered as a type only (same list / same reason), and old documents that still
   author it are stripped by migration.
+- **屏幕空间粒子是场景组件**：`UiParticleEmitter`（`prism_engine::scene::UiParticleEmitter`）
+  只写作者参数，引擎在 `scene::systems::ui_particles` 每帧按像素模拟，并把四边形塞进
+  `ExternalUiQuads`，由 `ui::render` 并入 `UiDrawList` —— 因此它画在 UI 层，能盖在全屏遮罩之上。
+  世界坐标的 2D 粒子仍用 `ParticleEmitter2D`（走精灵通道）；项目里不要再手写发射器（#1057）。
 - Skybox and gizmo are **ECS-authored**, not renderer constants: `Skybox` owns
   `hdr_path/enabled/rotation_degrees/intensity` and drives both IBL loading and the sky
   pass; `EnvironmentLighting` is legacy fallback only. `Gizmo` uses the entity

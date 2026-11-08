@@ -13,7 +13,12 @@
 //! `layer` 排序）再所有文本，因此把雨的 `layer` 设为 1，雨就落在黑场
 //! （layer 0）之上、标题文本之下。
 //!
-//! 用法（见 `projects/prisma/src/intro.rs` 的开屏动画）：
+//! 场景里请直接挂 `prism_engine::scene::UiParticleEmitter` 组件：引擎为每个发射器
+//! 实体持有一个 `ParticleSystem2D`，每帧推进并把四边形并入 UI 绘制列表（#1057），
+//! 项目不需要写模拟代码。
+//!
+//! 下面是宿主自己驱动资源的写法，只在需要完全控制发射参数（例如随动画曲线改
+//! `intensity`）时使用：
 //!
 //! ```ignore
 //! // 构造时插入资源（雨预设，尺寸随后每帧按 ScreenSize 更新）。
@@ -31,6 +36,7 @@
 //! ```
 
 use super::render::UiQuad;
+use crate::scene::components::{UiParticleEmitter, UiParticleKind};
 
 // ── 单个粒子 ───────────────────────────────────────────────────
 
@@ -114,6 +120,8 @@ pub struct ParticleSystem2D {
     pub height: f32,
     /// 软上限：粒子数超过此值则暂停发射（保护顶点缓冲与性能）。
     pub max_particles: usize,
+    /// 输出四边形的 UI 层级（`UiQuad::layer`）。
+    pub layer: i32,
     /// 雪花的水平摆动幅度（px/s），仅 `Snow` 用。
     pub sway: f32,
     rng: u64,
@@ -152,6 +160,7 @@ impl ParticleSystem2D {
             width,
             height,
             max_particles: (900.0 * area_scale) as usize,
+            layer: 1,
             sway: 0.0,
             rng: 0x9E37_79B9_7F4A_7C15,
             spawn_accum: 0.0,
@@ -181,6 +190,7 @@ impl ParticleSystem2D {
             width,
             height,
             max_particles: (400.0 * area_scale) as usize,
+            layer: 1,
             sway: 40.0,
             rng: 0x1B87_3D5E_9C2A_4F11,
             spawn_accum: 0.0,
@@ -191,6 +201,61 @@ impl ParticleSystem2D {
     pub fn set_bounds(&mut self, width: f32, height: f32) {
         self.width = width;
         self.height = height;
+    }
+
+    /// Deterministic seed for the spawn stream.
+    ///
+    /// Emitters without an explicit seed all share the preset constant, so two
+    /// instances would look identical; the engine seeds each entity from its id.
+    pub fn set_seed(&mut self, seed: u64) {
+        self.rng = if seed == 0 {
+            0x9E37_79B9_7F4A_7C15
+        } else {
+            seed
+        };
+    }
+
+    /// Copy the author knobs from a [`UiParticleEmitter`] component.
+    ///
+    /// Live particles are kept, so this is safe to call every tick: editing
+    /// color / rate / layer in the editor takes effect immediately instead of
+    /// restarting the emitter. `max_particles == 0` keeps the preset limit.
+    pub fn apply_emitter(&mut self, emitter: &UiParticleEmitter) {
+        self.kind = match emitter.kind {
+            UiParticleKind::Rain => SpawnKind::Rain,
+            UiParticleKind::Snow => SpawnKind::Snow,
+            UiParticleKind::Spark => SpawnKind::Spark,
+        };
+        self.spawn_rate = emitter.rate();
+        self.gravity = finite_or(emitter.gravity, 0.0);
+        self.wind = finite_or(emitter.wind, 0.0);
+        let (speed_min, speed_max) = sorted_range(emitter.speed);
+        self.speed_min = speed_min.max(0.0);
+        self.speed_max = speed_max.max(0.0);
+        let (len_min, len_max) = sorted_range(emitter.length);
+        self.len_min = len_min.max(0.0);
+        self.len_max = len_max.max(0.0);
+        let (width_min, width_max) = sorted_range(emitter.width);
+        self.width_min = width_min.max(0.0);
+        self.width_max = width_max.max(0.0);
+        let (alpha_min, alpha_max) = sorted_range(emitter.alpha);
+        self.alpha_min = alpha_min.clamp(0.0, 1.0);
+        self.alpha_max = alpha_max.clamp(0.0, 1.0);
+        self.color = [
+            finite_or(emitter.color[0], 0.0).clamp(0.0, 1.0),
+            finite_or(emitter.color[1], 0.0).clamp(0.0, 1.0),
+            finite_or(emitter.color[2], 0.0).clamp(0.0, 1.0),
+        ];
+        self.layer = emitter.layer;
+        // Snow is the only preset that sways; the component has no knob for it.
+        self.sway = if self.kind == SpawnKind::Snow {
+            40.0
+        } else {
+            0.0
+        };
+        if emitter.max_particles > 0 {
+            self.max_particles = emitter.max_particles as usize;
+        }
     }
 
     /// 每帧推进模拟 `dt` 秒：按 `intensity` 发射新粒子，积分运动并回收离场粒子。
@@ -292,7 +357,7 @@ impl ParticleSystem2D {
                 rect,
                 color: [self.color[0], self.color[1], self.color[2], a],
                 border_radius: p.width * 0.5, // 胶囊状端点
-                layer: 1,
+                layer: self.layer,
                 ..UiQuad::default()
             });
         }
@@ -320,4 +385,94 @@ impl ParticleSystem2D {
 /// 线性插值。
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
+}
+
+fn finite_or(value: f32, fallback: f32) -> f32 {
+    if value.is_finite() {
+        value
+    } else {
+        fallback
+    }
+}
+
+/// Sort a `[min, max]` range and replace non-finite ends with zero.
+fn sorted_range(range: [f32; 2]) -> (f32, f32) {
+    let a = finite_or(range[0], 0.0);
+    let b = finite_or(range[1], 0.0);
+    if a <= b {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_emitter_copies_the_author_knobs() {
+        let mut system = ParticleSystem2D::new();
+        let emitter = UiParticleEmitter {
+            kind: UiParticleKind::Snow,
+            emission_rate: 12.5,
+            gravity: 5.0,
+            wind: -1.0,
+            speed: [40.0, 10.0],
+            length: [0.0, 0.0],
+            width: [3.0, 1.5],
+            color: [0.1, 0.2, 0.3],
+            alpha: [0.9, 0.4],
+            layer: 42,
+            max_particles: 8,
+            ..UiParticleEmitter::default()
+        };
+
+        system.apply_emitter(&emitter);
+
+        assert_eq!(system.kind, SpawnKind::Snow);
+        assert_eq!(system.spawn_rate, 12.5);
+        assert_eq!(system.speed_min, 10.0, "reversed ranges are sorted");
+        assert_eq!(system.speed_max, 40.0);
+        assert_eq!(system.width_min, 1.5);
+        assert_eq!(system.width_max, 3.0);
+        assert_eq!(system.color, [0.1, 0.2, 0.3]);
+        assert_eq!(system.layer, 42);
+        assert_eq!(system.max_particles, 8);
+        assert!(system.sway > 0.0, "snow sways");
+    }
+
+    #[test]
+    fn apply_emitter_keeps_live_particles() {
+        let mut system = ParticleSystem2D::rain_preset(800.0, 600.0);
+        system.update(0.5);
+        let before = system.particles.len();
+        assert!(before > 0);
+
+        system.apply_emitter(&UiParticleEmitter::default());
+
+        assert_eq!(
+            system.particles.len(),
+            before,
+            "re-applying the config must not restart the emitter"
+        );
+    }
+
+    #[test]
+    fn the_seed_decides_the_spawn_stream() {
+        let mut first = ParticleSystem2D::rain_preset(800.0, 600.0);
+        first.set_seed(7);
+        let mut second = ParticleSystem2D::rain_preset(800.0, 600.0);
+        second.set_seed(7);
+        let mut other = ParticleSystem2D::rain_preset(800.0, 600.0);
+        other.set_seed(8);
+
+        first.update(0.3);
+        second.update(0.3);
+        other.update(0.3);
+
+        assert_eq!(first.particles.len(), second.particles.len());
+        assert_eq!(first.particles[0].x, second.particles[0].x);
+        assert_ne!(first.particles[0].x, other.particles[0].x);
+    }
 }
