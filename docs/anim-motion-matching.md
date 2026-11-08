@@ -61,10 +61,31 @@ multiplier = bias.continuing   若 frame 是 `SelectionHistory` 里最后选中�
 - `DatabaseSettings::tracking_all` 追踪全部关节，适合先跑通；项目随后可以挑一组
   关节（左右脚、骨盆、手）缩小特征维度。
 
+## 脚部锁定
+
+换帧时新旧帧的步态相位不同，脚会瞬移几厘米，看起来像地面在脚下滑。
+`FootLock` 记住「这只脚已经踩实的位置」，之后每次求值把脚拉回原位，直到它自己迈步：
+
+```rust
+let mut lock = FootLock::new(2);
+let settings = FootLockSettings { joints: vec![left_foot, right_foot], ..Default::default() };
+let report = lock.update(&skeleton, &mut pose, &settings, dt);
+```
+
+- **踩实 / 松脚按速度判定**：单帧速度 ≤ `plant_speed`（默认 0.35 m/s）算踩实，
+  > `release_speed`（默认 0.9 m/s）立刻松开。速度用的是「上次求值后的位置」，
+  锁定修正本身不计入，否则会自我抵消。
+- **修正有上限**：`max_offset`（默认 0.25 m）夹住单帧位移，锁太久会把腿拉成
+  长短腿；宁可松脚也不要毁掉姿态。
+- `weight = 0`（或非有限）直接关闭，姿态一个字节都不改；`dt <= 0` 或非有限时
+  只记录位置、不做速度判定。
+- 修正量先转到父关节空间再写回局部平移，所以子关节（脚趾）跟着走。
+- 换场景 / 传送后调用 `reset()`，否则脚会被拉回旧位置。
+
 ## 还没做
 
 - 没有接进 `Animator`：查询、切帧、跨剪辑混合的运行时接线是下一片。
 - 没有加速结构：几帧到几千帧的线性扫描足够，KD-tree / VP-tree 等被 profiling 要求再说。
-- 没有 foot locking / 惯性化（inertialization）混合。
+- 没有惯性化（inertialization）混合：换帧目前还是硬切 + 脚部锁定。
 - 历史上的「最近选中过」只看帧号，没有按时间衰减的权重；需要时可以在 `SearchBias`
   之外再加一层年龄权重。

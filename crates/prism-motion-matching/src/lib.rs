@@ -22,12 +22,14 @@
 //! entity transform is applied later, and `+Y` is up.
 
 pub mod database;
+pub mod foot_lock;
 pub mod pose_feature;
 pub mod search;
 pub mod selection;
 pub mod trajectory;
 
 pub use database::{DatabaseSettings, MotionDatabase, MotionFrame};
+pub use foot_lock::{FootLock, FootLockReport, FootLockSettings};
 pub use pose_feature::PoseFeature;
 pub use search::{search, search_biased, MatchWeights, MotionMatch};
 pub use selection::{SearchBias, SelectionHistory};
