@@ -425,6 +425,12 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
 - `PUSH_CONSTANT_SIZE` is that std140 struct size, maxed with the reflected block size and
   `PUSH_SIZE_FALLBACK`. `VkPushConstantRange::size` may stay larger than `size_of` (it only needs
   to be a superset of the shader's block); `cmd_push_constants` sends `size_of`.
+- Generated push-constant structs derive `bytemuck::Pod` / `bytemuck::Zeroable` (#1036). Upload
+  them with `bytemuck::bytes_of(&push)`; GPU mirrors (vertices, instance buffers, UBO/SSBO
+  structs) derive the same traits and go through `bytes_of` / `cast_slice` instead of
+  `std::slice::from_raw_parts` casts. Hand-rolled pointer casts stay only where the bytes are
+  not a POD mirror (Vulkan `p_*` pointer arrays, mapped-memory readback, C ABI strings,
+  SPIR-V).
 - Layout regressions are covered by `cargo test --manifest-path crates/xtask/Cargo.toml`, which
   checks every committed reflection JSON against the generated offsets.
 - If a Slang shader lacks `emit_reflection` in `compile.sh`, add it so the bindgen covers it.

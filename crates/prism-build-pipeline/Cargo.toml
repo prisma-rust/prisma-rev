@@ -17,6 +17,7 @@ prism-asset = { path = "../prism-asset", default-features = false, features = ["
 prism-cooker = { path = "../prism-cooker", default-features = false }
 prism-scene = { path = "../prism-scene" }
 ash = { workspace = true }
+bytemuck = { workspace = true }
 anyhow = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true, features = ["auto-color", "humantime", "regex"] }

@@ -2720,6 +2720,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ash",
+ "bytemuck",
  "clap",
  "env_logger",
  "log",
@@ -2798,6 +2799,7 @@ version = "0.1.0"
 dependencies = [
  "android-activity",
  "anyhow",
+ "bytemuck",
  "dirs",
  "glam 0.33.2",
  "jni",
@@ -2889,6 +2891,7 @@ dependencies = [
  "anyhow",
  "ash",
  "ash-window",
+ "bytemuck",
  "fontdue",
  "image",
  "log",

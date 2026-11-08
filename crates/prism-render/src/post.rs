@@ -54,7 +54,7 @@ const _: () = assert!(
 /// converts the normalized velocity into pixels for the trail clamp. Laid out
 /// to match `MotionBlurData` in `post.slang`.
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct MotionBlurUniform {
     inv_view_proj: [[f32; 4]; 4],
     prev_view_proj: [[f32; 4]; 4],
@@ -568,7 +568,7 @@ impl PostPass {
             .context("PostPass::set_motion_blur: map")?;
         unsafe {
             std::ptr::copy_nonoverlapping(
-                &uniform as *const MotionBlurUniform as *const u8,
+                bytemuck::bytes_of(&uniform).as_ptr(),
                 ptr as *mut u8,
                 size as usize,
             );
@@ -661,10 +661,7 @@ impl PostPass {
                 pipeline.layout,
                 vk::ShaderStageFlags::FRAGMENT,
                 0,
-                std::slice::from_raw_parts(
-                    push as *const _ as *const u8,
-                    std::mem::size_of::<shader_bindings::post::PostPush>(),
-                ),
+                bytemuck::bytes_of(push),
             );
             // Fullscreen triangle (3 verts, no vertex buffer - SV_VertexID).
             device.cmd_draw(cmd, 3, 1, 0, 0);

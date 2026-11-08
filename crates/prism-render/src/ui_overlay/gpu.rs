@@ -7,6 +7,7 @@
 //! 字形位图由 `text` 里的光栅后端提供（`ui-fontdue` / `ui-directwrite`），
 //! 这里只负责图集打包、四边形展开与 Vulkan 绘制——与后端无关。
 #[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct UiVertex {
     pos: [f32; 2],
     uv: [f32; 2],
@@ -926,7 +927,7 @@ impl UiOverlay {
                 )
                 .context("UiOverlay: map")?;
             std::ptr::copy_nonoverlapping(
-                vertices.as_ptr() as *const u8,
+                bytemuck::cast_slice(&vertices).as_ptr(),
                 ptr as *mut u8,
                 vert_bytes,
             );

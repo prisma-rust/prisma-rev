@@ -17,7 +17,7 @@ const GIZMO_VERT_SPV: &[u8] = include_bytes!("../../../assets/shaders/gizmo.vert
 const GIZMO_FRAG_SPV: &[u8] = include_bytes!("../../../assets/shaders/gizmo.frag.spv");
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct GridVertex {
     pos: [f32; 3],
     color: [f32; 3],
@@ -72,7 +72,7 @@ fn upload_grid(
             .map_memory(memory, 0, buf_size, vk::MemoryMapFlags::empty())
             .context("map ground grid vertex memory")?;
         std::ptr::copy_nonoverlapping(
-            verts.as_ptr() as *const u8,
+            bytemuck::cast_slice(verts).as_ptr(),
             ptr as *mut u8,
             buf_size as usize,
         );
@@ -252,7 +252,7 @@ impl GroundGrid {
                 self.layout,
                 vk::ShaderStageFlags::VERTEX,
                 0,
-                std::slice::from_raw_parts(&push as *const _ as *const u8, size_of::<GizmoPush>()),
+                bytemuck::bytes_of(&push),
             );
             device.cmd_draw(cmd, count, 1, 0, 0);
         }

@@ -1587,8 +1587,7 @@ fn env_content_hash(bytes: &[u8]) -> String {
 fn save_f32_cache(path: &Path, data: &[f32]) {
     use std::io::Write;
     let count = data.len() as u32;
-    // SAFETY: reinterpreting &[f32] as &[u8] is safe.
-    let bytes = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4) };
+    let bytes: &[u8] = bytemuck::cast_slice(data);
     match std::fs::File::create(path) {
         Ok(mut f) => {
             let _ = f.write_all(&count.to_le_bytes());

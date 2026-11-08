@@ -222,21 +222,19 @@ impl SkyboxPass {
                 &[],
             );
 
-            // 推送 `invViewRot` (inverse 视图 旋转 as the SkyboxPush。
-            // 缓冲区大小与管线布局都来自 Slang 反射。
-            let mut push_data = [0u8; bindings::PUSH_CONSTANT_SIZE as usize];
-            push_data[..64].copy_from_slice(std::slice::from_raw_parts(
-                inv_view_rot as *const _ as *const u8,
-                64,
-            ));
-            push_data[64..68].copy_from_slice(&params.rotation.to_le_bytes());
-            push_data[68..72].copy_from_slice(&params.intensity.max(0.0).to_le_bytes());
+            // Push the inverse view rotation plus the sky parameters; the block
+            // layout and size come from the Slang reflection.
+            let push = bindings::SkyboxPush {
+                invViewRot: *inv_view_rot,
+                params: [params.rotation, params.intensity.max(0.0), 0.0, 0.0],
+                ..Default::default()
+            };
             device.cmd_push_constants(
                 cmd,
                 pipeline.layout,
                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                 0,
-                &push_data,
+                bytemuck::bytes_of(&push),
             );
 
             // 6 vertices = 2 triangles full-screen quad (see skybox.slang).
