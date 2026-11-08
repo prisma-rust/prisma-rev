@@ -52,6 +52,32 @@ use prism_platform::{
     required_vulkan_extensions, Key, Modifiers, PlatformContext, PlatformEvent, PlatformWindow,
     WindowConfig,
 };
+
+/// 「窗口像素 → UI 布局空间」的映射（#988）。
+///
+/// 没有 `internal_resolution` 时是恒等映射（旧行为）。生效时 UI 与 PostPass 的
+/// 目标矩形重合，缩放比例 = 矩形宽度 / 窗口宽度，偏移 = 矩形的居中偏移。
+fn ui_layout_mapping(
+    surface_w: u32,
+    surface_h: u32,
+    internal: [u32; 2],
+    mode: prism_render::InternalScaleMode,
+) -> prism_engine::ui::UiScreenMapping {
+    if internal[0] == 0 || internal[1] == 0 || surface_w == 0 || surface_h == 0 {
+        return prism_engine::ui::UiScreenMapping::default();
+    }
+    let (offset, extent) =
+        prism_render::render_graph::post_destination_px([surface_w, surface_h], internal, mode);
+    let scale = extent[0] as f32 / surface_w as f32;
+    if !(scale.is_finite() && scale > 0.0) {
+        return prism_engine::ui::UiScreenMapping::default();
+    }
+    prism_engine::ui::UiScreenMapping {
+        scale,
+        offset: [offset[0] as f32, offset[1] as f32],
+    }
+}
+
 #[cfg(feature = "winit-backend")]
 use winit::application::ApplicationHandler;
 #[cfg(feature = "winit-backend")]
@@ -285,7 +311,17 @@ impl App {
         // 存档目录跟随工程 `[app] company/name`（AppConfig 已从 settings 读好）。
         // 以前 `scene_state_path()` 用默认配置，所有项目共用一个目录（#484）。
         if let Some(dir) = prism_engine::config::app_data_dir_for(&config) {
+            // 玩家存档（#984）与场景存档同目录：都跟着 `[app] company/name` 走。
+            // 设了 `PRISMREV_USER_DATA` 时改用它（便携版 / Android 宿主）。
+            let player_data = if std::env::var_os(prism_engine::user_data::ENV_OVERRIDE).is_some() {
+                prism_engine::user_data::save_path(&config.app.name)
+            } else {
+                dir.join(prism_engine::user_data::FILE_NAME)
+            };
             engine.set_save_directory(dir);
+            engine
+                .world_mut()
+                .insert_resource(prism_engine::user_data::UserStore::open(player_data));
         }
 
         // 运行时 startup callbacks
@@ -770,6 +806,7 @@ impl App {
         self.apply_launch_config();
         // 日志兜底（try_init 幂等，已初始化时静默失败）。
         let _ = env_logger::try_init();
+        Self::log_asset_root();
         let event_loop = winit::event_loop::EventLoop::new().expect("failed to create event loop");
         self.run_on(event_loop).expect("fatal application error");
     }
@@ -795,7 +832,19 @@ impl App {
     pub fn run(self) {
         self.apply_launch_config();
         let _ = env_logger::try_init();
+        Self::log_asset_root();
         self.run_win32().expect("fatal application error");
+    }
+
+    /// 日志可用之后打一行资产根目录（#985）。
+    ///
+    /// `asset_paths::asset_root()` 每个资产查询都会调用一次，那里只能留 `trace`；
+    /// 启动日志里有一行就够定位「assets/ 到底解析到了哪」，也不用再让编辑器
+    /// 的日志面板被几百行同样的路径刷满。
+    fn log_asset_root() {
+        if let Some(root) = prism_engine::asset_paths::asset_root() {
+            log::debug!("asset root: {}", root.display());
+        }
     }
 
     /// 恢复时重启随挂起释放的子系统（音频流 / 解码线程）。
@@ -1157,10 +1206,20 @@ impl App {
             };
 
             // --- 同步屏幕尺寸（ECS UI 布局依赖 ScreenSize resource） ---
+            //
+            // 布局仍按窗口像素算；`internal_resolution` 生效时 UI 与场景一起
+            // 画在 PostPass 的目标矩形里，所以再告诉引擎「窗口 → 布局空间」
+            // 的换算，指针命中测试才不会偏（#988）。
             if surface_w > 0 && surface_h > 0 {
-                engine
-                    .world_mut()
-                    .insert_resource(prism_engine::ui::ScreenSize::new(surface_w, surface_h));
+                let mapping = ui_layout_mapping(
+                    surface_w,
+                    surface_h,
+                    self.render_settings.internal_resolution,
+                    self.render_settings.internal_scale_mode,
+                );
+                let world = engine.world_mut();
+                world.insert_resource(prism_engine::ui::ScreenSize::new(surface_w, surface_h));
+                world.insert_resource(mapping);
             }
 
             // --- 输入：帧开始，清空瞬时状态 ---
@@ -1968,6 +2027,39 @@ mod tests {
         assert_eq!(touches[0].phase, prism_engine::input::TouchPhase::Started);
         assert_eq!(touches[0].position, [40.0, 50.0]);
         assert_eq!(touches[1].phase, prism_engine::input::TouchPhase::Moved);
+    }
+
+    /// #988：UI 与 PostPass 的目标矩形重合，指针换算用同一组参数。
+    #[test]
+    fn ui_layout_mapping_follows_the_internal_resolution_letterbox() {
+        let mapping = ui_layout_mapping(
+            1600,
+            900,
+            [640, 360],
+            prism_render::InternalScaleMode::Integer,
+        );
+        // 整数倍向下取整：2 倍 → 1280×720，居中留 160 / 90 的黑边。
+        assert!(
+            (mapping.scale - 0.8).abs() < 1e-6,
+            "scale {}",
+            mapping.scale
+        );
+        assert_eq!(mapping.offset, [160.0, 90.0]);
+        // 窗口中心就是布局中心（画面中心），点哪里选哪里。
+        assert_eq!(mapping.window_to_layout([800.0, 450.0]), [800.0, 450.0]);
+    }
+
+    #[test]
+    fn ui_layout_mapping_is_identity_without_an_internal_resolution() {
+        for internal in [[0, 0], [0, 360], [640, 0]] {
+            let mapping = ui_layout_mapping(
+                1600,
+                900,
+                internal,
+                prism_render::InternalScaleMode::Stretch,
+            );
+            assert_eq!(mapping, prism_engine::ui::UiScreenMapping::default());
+        }
     }
 
     /// 锁定态下窗口光标位置不再参与累加（confinement 会把它夹在窗口内）。

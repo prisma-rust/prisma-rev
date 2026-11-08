@@ -3,7 +3,7 @@
 //! 层级只认场景的 `Parent`（`prism_scene::HierarchyHelper` 维护），没有第二份
 //! `UiParent` 状态。
 
-use super::{ui_layout_system, ScreenSize};
+use super::{ui_layout_system, ScreenSize, UiScreenMapping};
 use crate::ui::components::*;
 use prism_ecs::{Entity, World};
 use prism_scene::HierarchyHelper;
@@ -544,4 +544,31 @@ fn children_without_a_layout_group_keep_their_anchors() {
         rect_of(&world, child),
         [root_rect[0] + 80.0, root_rect[1] + 40.0, 40.0, 20.0]
     );
+}
+
+/// #988：UI 画在 PostPass 的目标矩形里时，指针要换算回布局空间。
+#[test]
+fn ui_screen_mapping_maps_window_pixels_back_into_layout_space() {
+    // 1600×900 窗口、640×360 内部 → 目标矩形 1280×720 居中，偏移 (160, 90)。
+    let mapping = UiScreenMapping {
+        scale: 0.8,
+        offset: [160.0, 90.0],
+    };
+    // 布局里的点 `p` 画在 `offset + p * 0.8`，反解必须回到 `p`。
+    assert_eq!(mapping.window_to_layout([160.0, 90.0]), [0.0, 0.0]);
+    assert_eq!(mapping.window_to_layout([800.0, 450.0]), [800.0, 450.0]);
+    assert_eq!(mapping.window_to_layout([320.0, 250.0]), [200.0, 200.0]);
+}
+
+#[test]
+fn ui_screen_mapping_is_identity_without_an_internal_resolution() {
+    let default = UiScreenMapping::default();
+    assert_eq!(default.window_to_layout([123.0, 456.0]), [123.0, 456.0]);
+    for scale in [0.0, -1.0, f32::NAN] {
+        let broken = UiScreenMapping {
+            scale,
+            offset: [10.0, 10.0],
+        };
+        assert_eq!(broken.window_to_layout([5.0, 6.0]), [5.0, 6.0]);
+    }
 }

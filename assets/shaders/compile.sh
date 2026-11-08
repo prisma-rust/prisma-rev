@@ -202,9 +202,12 @@ echo "  harness_bench :: main -> harness_bench.comp.spv"
   -fvk-use-entrypoint-name -o "$OUT/harness_bench.comp.spv"
 
 # ui_overlay: vertex + fragment (coloured quads on top of the scene output).
-# Self-contained pipeline (no bindless/IBL).
+# The fragment stage samples the scene's bindless texture table for
+# background images (#591), so Slang's illegal ArrayStride on bindless opaque
+# runtime arrays applies here too (#580) — some slangc builds emit it.
 compile_stage ui_overlay vertexMain vertex
 compile_stage ui_overlay fragmentMain fragment
+fix_spv "$OUT/ui_overlay.frag.spv"
 emit_reflection ui_overlay vertexMain vertex fragmentMain fragment
 
 # sprites: vertex + fragment (2D sprite quads sampled through the bindless

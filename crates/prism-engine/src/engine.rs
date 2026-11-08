@@ -440,8 +440,16 @@ impl Engine {
 
         // ── 填充 UI 输入状态 ──────────────────────────────────────
         let pos = input_manager.mouse_position();
+        // 窗口像素 → UI 布局空间（#988）：UI 画在 PostPass 的目标矩形里，
+        // 不换算的话点击会和看到的位置错开。
+        let mapping = self
+            .world
+            .get_resource::<crate::ui::UiScreenMapping>()
+            .copied()
+            .unwrap_or_default();
+        let cursor = mapping.window_to_layout([pos[0] as f32, pos[1] as f32]);
         self.world.insert_resource(crate::ui::UiInputState {
-            cursor_pos: [pos[0] as f32, pos[1] as f32],
+            cursor_pos: cursor,
             left_clicked: input_manager.mouse_just_pressed(crate::input::MouseButton::Left),
             left_held: input_manager.mouse_held(crate::input::MouseButton::Left),
             left_released: input_manager.mouse_just_released(crate::input::MouseButton::Left),
@@ -662,6 +670,13 @@ fn default_schedule() -> Schedule {
     // 场景格式一致，提取阶段读到的已经是本帧推进后的粒子。
     s.add_system("fx::particles2d", |world, dt| {
         crate::scene::systems::particles2d::particle_emitter_2d_system(world, dt);
+    });
+
+    // ── 昼夜（#983）────────────────────────────────────────
+    // 推进 `TimeOfDay` 并刷新环境光。放在粒子之前、`hierarchy_system` 之前：
+    // 本帧的 `sprite_light_entries` 要读到推进后的环境光，否则画面晚一帧。
+    s.add_system("time::of_day", |world, dt| {
+        crate::scene::systems::time_of_day::time_of_day_system(world, dt);
     });
 
     // ── UI 布局 ─────────────────────────────────────────────

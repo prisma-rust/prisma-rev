@@ -31,6 +31,7 @@ pub mod scene;
 pub mod scene_state;
 pub mod sound;
 pub mod ui;
+pub mod user_data;
 pub mod util;
 
 pub use app::{AppBuilder, DefaultSubsystems, ScheduleLabel, Subsystem, System};

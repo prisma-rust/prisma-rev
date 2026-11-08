@@ -2784,19 +2784,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "prism-editor-tool"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "env_logger",
- "image",
- "log",
- "rand",
- "rayon",
-]
-
-[[package]]
 name = "prism-engine"
 version = "0.1.0"
 dependencies = [
@@ -2920,6 +2907,19 @@ dependencies = [
  "prism-reflect",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "prism-terrain-tool"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "env_logger",
+ "image",
+ "log",
+ "rand",
+ "rayon",
 ]
 
 [[package]]
