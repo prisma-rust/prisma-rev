@@ -2945,6 +2945,7 @@ dependencies = [
  "clap",
  "ctt-astcenc",
  "ctt-etcpak",
+ "glam 0.33.2",
  "gltf",
  "image",
  "prism-asset",

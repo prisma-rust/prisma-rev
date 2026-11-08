@@ -438,24 +438,15 @@ fn ensure_sprite_ref(world: &mut World, entity: Entity) {
 }
 
 fn quat_to_yaw_pitch(quat: [f32; 4]) -> (f32, f32) {
-    let [qx, qy, qz, qw] = quat;
+    let rotation = glam::Quat::from_array(quat);
     // Normalize to avoid degenerate input skewing the result.
-    let n = (qx * qx + qy * qy + qz * qz + qw * qw).sqrt();
-    if n < 1e-6 {
+    if rotation.length() < 1e-6 {
         log::warn!("scene camera quaternion is degenerate (|q|≈0); using identity");
         return (0.0, 0.0);
     }
-    let (qx, qy, qz, qw) = (qx / n, qy / n, qz / n, qw / n);
-    // forward = R · (0,0,-1), where R is the quaternion's rotation matrix.
-    // Column 2 of R is `R·(0,0,1)` = `[2(xz+wy), 2(yz-wx), 1-2(x²+y²)]`;
-    // negating it gives `R·(0,0,-1)`. (Same matrix as `LocalTransform::to_model_matrix`.)
-    let forward = [
-        -2.0 * (qx * qz + qw * qy),
-        -2.0 * (qy * qz - qw * qx),
-        -(1.0 - 2.0 * (qx * qx + qy * qy)),
-    ];
-    let pitch = forward[1].clamp(-1.0, 1.0).asin();
-    let yaw = (-forward[0]).atan2(-forward[2]);
+    let forward = rotation.normalize() * glam::Vec3::NEG_Z;
+    let pitch = forward.y.clamp(-1.0, 1.0).asin();
+    let yaw = (-forward.x).atan2(-forward.z);
     (yaw, pitch)
 }
 
