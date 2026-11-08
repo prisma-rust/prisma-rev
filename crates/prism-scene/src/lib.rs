@@ -22,7 +22,9 @@ pub use components::*;
 pub use helpers::HierarchyHelper;
 pub use json::{EntityJson, SceneJson, TransformJson};
 pub use migrate::{doc_version, migrate_scene_doc, normalize_scene_doc, SCENE_DOC_VERSION};
-pub use registry::{builtin_schema_fingerprint, register_builtin_components, ComponentRegistry};
+pub use registry::{
+    builtin_registry, builtin_schema_fingerprint, register_builtin_components, ComponentRegistry,
+};
 pub use render_enums::{
     correlated_color_temperature_to_rgb, BlendMode, CameraClearFlags, CompareFunction, CullMode,
     LightRenderMode, LightShadows, LightType, RenderQueue, ShadowCastingMode,

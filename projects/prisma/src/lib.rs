@@ -34,8 +34,6 @@ pub fn build_app() -> prism_app::App {
 
 #[cfg(feature = "preview-module")]
 mod preview {
-    use std::sync::OnceLock;
-
     use prism_game_api::GameWorld;
     use prism_project_api::{HostApi, ProjectApi, ABI_VERSION, INVALID_ARGUMENT, SUCCESS};
 
@@ -49,16 +47,6 @@ mod preview {
         scene_generation: Option<u64>,
     }
 
-    /// 组件 schema：编码组件时生成 RTTIBin 的类型表。只需建一次。
-    fn registry() -> &'static prism_scene::ComponentRegistry {
-        static REGISTRY: OnceLock<prism_scene::ComponentRegistry> = OnceLock::new();
-        REGISTRY.get_or_init(|| {
-            let mut registry = prism_scene::ComponentRegistry::new();
-            prism_scene::register_builtin_components(&mut registry);
-            registry
-        })
-    }
-
     pub unsafe extern "C" fn get_api(out: *mut ProjectApi) -> i32 {
         if out.is_null() {
             return INVALID_ARGUMENT;
@@ -66,7 +54,7 @@ mod preview {
         unsafe {
             *out = ProjectApi {
                 abi_version: ABI_VERSION,
-                schema_fingerprint: registry().schema_fingerprint(),
+                schema_fingerprint: prism_scene::builtin_registry().schema_fingerprint(),
                 create: Some(create),
                 tick: Some(tick),
                 shutdown: Some(shutdown),
@@ -81,7 +69,7 @@ mod preview {
         }
         let host = unsafe { &*host };
         if host.abi_version != ABI_VERSION
-            || host.schema_fingerprint != registry().schema_fingerprint()
+            || host.schema_fingerprint != prism_scene::builtin_registry().schema_fingerprint()
         {
             return INVALID_ARGUMENT;
         }
@@ -116,7 +104,7 @@ mod preview {
             state.scene_generation = Some(host.scene_generation);
         }
 
-        let mut world = GameWorld::plugin(host, registry().type_registry());
+        let mut world = GameWorld::plugin(host, prism_scene::builtin_registry().type_registry());
         intro::tick(&mut state.intro, &mut world, dt);
         SUCCESS
     }

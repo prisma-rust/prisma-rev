@@ -396,14 +396,24 @@ impl Default for ComponentRegistry {
 /// 注册所有内置场景与 UI 组件到 registry。
 ///
 /// 这是作者 JSON、cook 工具和运行时共用的唯一 schema 入口。
+/// The builtin component registry, created once per process.
+///
+/// Project modules need it to encode RTTIBin for `prism_game_api::GameWorld::plugin`;
+/// building their own copy risks drifting from the host schema (#1055). The fingerprint
+/// below is derived from this same instance.
+pub fn builtin_registry() -> &'static ComponentRegistry {
+    static REGISTRY: std::sync::OnceLock<ComponentRegistry> = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        let mut registry = ComponentRegistry::new();
+        register_builtin_components(&mut registry);
+        registry
+    })
+}
+
 /// Returns the builtin components schema fingerprint.
 pub fn builtin_schema_fingerprint() -> u64 {
     static FINGERPRINT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *FINGERPRINT.get_or_init(|| {
-        let mut registry = ComponentRegistry::new();
-        register_builtin_components(&mut registry);
-        registry.schema_fingerprint()
-    })
+    *FINGERPRINT.get_or_init(|| builtin_registry().schema_fingerprint())
 }
 
 pub fn register_builtin_components(registry: &mut ComponentRegistry) {
@@ -632,6 +642,9 @@ mod tests {
         assert_ne!(fp1, 0);
         let fp2 = builtin_schema_fingerprint();
         assert_eq!(fp1, fp2);
+        // The shared instance must be the one the fingerprint describes.
+        assert_eq!(builtin_registry().schema_fingerprint(), fp1);
+        assert!(std::ptr::eq(builtin_registry(), builtin_registry()));
         assert!(names.contains(&"prism_engine::scene::Camera"));
         for name in &names {
             let default = registry
