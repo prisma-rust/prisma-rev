@@ -12,20 +12,27 @@ const ROT_MAT: [[f64; 2]; 2] = [[0.8, -0.6], [0.6, 0.8]];
 // Hash helpers
 // ---------------------------------------------------------------------------
 
-/// Pseudo-random hash from a 2D coordinate, returning value in [0, 1).
+/// SplitMix64 finalizer: integer-only, so every platform produces the same bits.
 #[inline]
-fn hash2(p: [f64; 2]) -> f64 {
-    let dot = p[0] * 12.9898 + p[1] * 78.233;
-    let frac = (dot.sin() * 43758.5453).fract();
-    frac.abs()
+fn mix64(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^ (x >> 31)
 }
 
-/// Integer-based hash for 1D input.
-#[allow(dead_code)]
+/// Pseudo-random hash from a 2D lattice coordinate, returning value in [0, 1).
+///
+/// Only integer arithmetic is involved: `f64::sin` comes from the platform
+/// libm, so a sine hash is not reproducible across Windows / Linux / Android,
+/// and it loses precision on large coordinates.
 #[inline]
-fn hash1(n: f64) -> f64 {
-    let x = n * std::f64::consts::FRAC_1_PI;
-    (n * 17.0 * x.fract()).fract().abs()
+fn hash2(p: [f64; 2]) -> f64 {
+    let ix = p[0].floor() as i64 as u64;
+    let iy = p[1].floor() as i64 as u64;
+    let h = mix64(ix ^ mix64(iy));
+    // Keep the 53 bits an f64 mantissa can represent exactly.
+    (h >> 11) as f64 * (1.0 / 9_007_199_254_740_992.0)
 }
 
 // ---------------------------------------------------------------------------
@@ -152,7 +159,6 @@ pub fn ridge_domain_warp(
     let mut a = 0.0f64;
     let mut b = 1.0f64;
     let mut d = [0.0f64; 2];
-    let mut m = [[1.0, 0.0], [0.0, 1.0]];
 
     for _ in 0..octaves {
         let n = noised_2d(p);
@@ -165,11 +171,6 @@ pub fn ridge_domain_warp(
 
         b *= gain;
         p = rotate(p, lacunarity);
-        let new_m00 = lacunarity * (ROT_MAT[0][0] * m[0][0] + ROT_MAT[0][1] * m[1][0]);
-        let new_m01 = lacunarity * (ROT_MAT[0][0] * m[0][1] + ROT_MAT[0][1] * m[1][1]);
-        let new_m10 = lacunarity * (ROT_MAT[1][0] * m[0][0] + ROT_MAT[1][1] * m[1][0]);
-        let new_m11 = lacunarity * (ROT_MAT[1][0] * m[0][1] + ROT_MAT[1][1] * m[1][1]);
-        m = [[new_m00, new_m01], [new_m10, new_m11]];
     }
 
     a

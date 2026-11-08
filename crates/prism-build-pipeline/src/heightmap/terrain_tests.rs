@@ -5,6 +5,23 @@
 use super::*;
 
 #[test]
+fn hash_is_portable_integer_mix() {
+    // Lattice coordinates and the seed are the only inputs; integer mixing
+    // must reproduce the same bits on every platform (a sine hash did not).
+    assert_eq!(hash2([0.0, 0.0], 0), 0.138_709_410_145_554_27);
+    assert_eq!(hash2([3.0, -2.0], 42), 0.319_982_729_224_393_5);
+    assert_eq!(hash2([3.75, -1.25], 42), hash2([3.0, -2.0], 42));
+}
+
+#[test]
+fn hash_stays_in_range_for_large_coordinates() {
+    for p in [[-1e9, 1e9], [1e12, -1e12], [-0.5, -0.5]] {
+        let v = hash2(p, 7);
+        assert!((0.0..1.0).contains(&v), "hash2({p:?}) = {v}");
+    }
+}
+
+#[test]
 fn terrain_bounds_and_size() {
     let hm = generate_terrain(128, 96, 42, 128.0);
     assert_eq!(hm.width, 128);
