@@ -432,6 +432,17 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   when the codegen needs to parse or transform existing Rust code, or emit deeply nested
   generics/traits — none of which this tool does.
 
+## Shader resource budgets
+- `assets/shaders/budgets.json` 记录每个 shader 模块的资源上限：采样纹理 / 采样纹理数组 /
+  sampler / UBO / SSBO / 加速结构 / descriptor 总数 / push constant 字节。
+- `crates/xtask/src/shader_budget.rs`（`shader-budget`）从已提交的 `reflection/*.json`
+  汇总实际用量并与这张表比对，超出即失败，并列出超标的 binding 名；
+  `python scripts/pr_ready.py` 在改动 `assets/shaders/` 或 `crates/xtask/` 时会跑这一项。
+- 表是棘轮：只有确实要增加资源时才改，用
+  `cd crates/xtask && cargo run --bin shader-budget -- --write-budget` 重写，
+  这样 diff 里能直接看到哪个 pass 涨了多少，跟 shader 改动一起 review。
+- `--json <path>` 把「实测 vs 上限」导出成 JSON，供把预算接进 render graph 报告时使用。
+
 ## Coordinate & matrix conventions (do not mix up)
 - Right-handed; camera looks down **−Z**; +X right, +Y up, +Z toward viewer.
 - Column-major `mat4` = `[[f32;4];4]` indexed `[col][row]`; `clip = projection * view * model`.
