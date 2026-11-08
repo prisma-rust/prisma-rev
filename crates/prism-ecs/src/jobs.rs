@@ -19,7 +19,10 @@
 //! - Dropping a [`JobHandle`] without `complete()` detaches the threads (the
 //!   job still runs to completion); it does not wait automatically.
 
-use std::sync::Arc;
+use std::panic::{self, AssertUnwindSafe};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
 use std::thread::JoinHandle;
 
 /// `IJob`: a job that runs exactly once.
@@ -158,7 +161,153 @@ fn available_parallelism() -> usize {
         .unwrap_or(1)
 }
 
-/// Splits `items` into chunks processed in parallel by scoped threads.
+/// One chunk handed to a pool thread.
+struct Chunk<'a, T, F> {
+    start: *mut T,
+    len: usize,
+    work: &'a F,
+    completion: Arc<Completion>,
+}
+
+/// A type-erased task in the job pool queue.
+///
+/// The payload borrows caller-owned memory, which is sound because the caller
+/// does not return from [`scoped_parallel_chunks`] until every task reported
+/// completion. `Send` is asserted manually: the pointee is `Send` and the work
+/// closure is `Sync`, both enforced by the caller's bounds.
+struct Task {
+    run: unsafe fn(*mut ()),
+    data: *mut (),
+}
+
+// SAFETY: `scoped_parallel_chunks` keeps every referenced value alive and
+// immovable until `Completion::wait` observes all tasks finished.
+unsafe impl Send for Task {}
+
+/// Shared completion state for one [`scoped_parallel_chunks`] call.
+#[derive(Default)]
+struct Completion {
+    state: Mutex<CompletionState>,
+    idle: Condvar,
+}
+
+#[derive(Default)]
+struct CompletionState {
+    remaining: usize,
+    panics: Vec<Box<dyn std::any::Any + Send>>,
+}
+
+impl Completion {
+    fn new(remaining: usize) -> Self {
+        Self {
+            state: Mutex::new(CompletionState {
+                remaining,
+                panics: Vec::new(),
+            }),
+            idle: Condvar::new(),
+        }
+    }
+
+    fn finish(&self, result: std::thread::Result<()>) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Err(payload) = result {
+            state.panics.push(payload);
+        }
+        state.remaining -= 1;
+        let done = state.remaining == 0;
+        drop(state);
+        if done {
+            self.idle.notify_all();
+        }
+    }
+
+    fn wait(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while state.remaining > 0 {
+            state = self
+                .idle
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        let panics = std::mem::take(&mut state.panics);
+        drop(state);
+        if let Some(payload) = panics.into_iter().next() {
+            panic::resume_unwind(payload);
+        }
+    }
+}
+
+/// Persistent worker threads, created once per process.
+///
+/// Creating threads per frame is measurable next to skinning work, and the
+/// players must not grow a scheduler dependency (DESIGN §12 rules out rayon), so
+/// this is the smallest pool that keeps [`scoped_parallel_chunks`]'s API.
+struct Pool {
+    sender: mpsc::Sender<Task>,
+}
+
+#[cfg(test)]
+static POOL_INITIALIZATIONS: AtomicUsize = AtomicUsize::new(0);
+
+fn pool() -> &'static Pool {
+    static POOL: OnceLock<Pool> = OnceLock::new();
+    POOL.get_or_init(|| {
+        #[cfg(test)]
+        POOL_INITIALIZATIONS.fetch_add(1, Ordering::SeqCst);
+        let (sender, receiver) = mpsc::channel::<Task>();
+        let receiver = Arc::new(Mutex::new(receiver));
+        for index in 0..available_parallelism() {
+            let receiver = Arc::clone(&receiver);
+            std::thread::Builder::new()
+                .name(format!("prism-job-{index}"))
+                .spawn(move || worker(receiver))
+                .expect("spawn job worker");
+        }
+        Pool { sender }
+    })
+}
+
+fn worker(receiver: Arc<Mutex<mpsc::Receiver<Task>>>) {
+    loop {
+        let task = {
+            let queue = receiver
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            queue.recv()
+        };
+        match task {
+            // SAFETY: the payload stays valid until its completion is reported,
+            // and `run_chunk` reports completion even when the work panics.
+            Ok(task) => unsafe { (task.run)(task.data) },
+            Err(_) => return,
+        }
+    }
+}
+
+unsafe fn run_chunk<T, F>(data: *mut ())
+where
+    T: Send,
+    F: Fn(&mut T) + Sync,
+{
+    // SAFETY: the pointer comes from a `Chunk<T, F>` that outlives this call.
+    let chunk = unsafe { &*(data as *const Chunk<'_, T, F>) };
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: the chunk owns an exclusive sub-slice of the caller's items.
+        let items = unsafe { std::slice::from_raw_parts_mut(chunk.start, chunk.len) };
+        for item in items {
+            (chunk.work)(item);
+        }
+    }));
+    chunk.completion.finish(result);
+}
+
+/// Splits `items` into chunks processed in parallel by the job pool.
 ///
 /// Unlike [`schedule_parallel_for`], this has **exclusive** semantics: each
 /// chunk gets its own `&mut [T]`, so no `Arc<Mutex<_>>` or atomics are needed
@@ -166,7 +315,11 @@ fn available_parallelism() -> usize {
 /// each element already owns mutable state (for example, per-character
 /// animation evaluators). `max_threads` is an upper bound; the actual count is
 /// also limited by available parallelism and the length of `items`. With a
-/// single thread it runs sequentially without spawning.
+/// single thread it runs sequentially without touching the pool.
+///
+/// The worker threads are created once and reused, so calling this every frame
+/// does not spawn threads (#1031). It is **not reentrant**: a work closure must
+/// not call it again, because the caller blocks until every chunk finishes.
 pub fn scoped_parallel_chunks<T, F>(items: &mut [T], max_threads: usize, work: F)
 where
     T: Send,
@@ -184,16 +337,44 @@ where
         }
         return;
     }
-    let chunk = items.len().div_ceil(threads);
-    std::thread::scope(|scope| {
-        for group in items.chunks_mut(chunk) {
-            scope.spawn(|| {
-                for item in group {
-                    work(item);
-                }
-            });
+
+    let work = &work;
+    let chunk_len = items.len().div_ceil(threads);
+    // Fewer chunks than threads is normal (10 items over 6 threads gives 5 chunks), so the
+    // completion counter must match the chunks actually queued.
+    let chunk_count = items.len().div_ceil(chunk_len);
+    let completion = Arc::new(Completion::new(chunk_count));
+
+    // Split first and keep the chunks in a fixed allocation: the tasks below
+    // borrow these addresses, so the vector must not move afterwards.
+    let mut chunks: Vec<Chunk<'_, T, F>> = Vec::with_capacity(threads);
+    let mut rest = items;
+    while !rest.is_empty() {
+        let take = chunk_len.min(rest.len());
+        let (head, tail) = rest.split_at_mut(take);
+        chunks.push(Chunk {
+            start: head.as_mut_ptr(),
+            len: head.len(),
+            work,
+            completion: Arc::clone(&completion),
+        });
+        rest = tail;
+    }
+
+    let pool = pool();
+    for chunk in &chunks {
+        let task = Task {
+            run: run_chunk::<T, F> as unsafe fn(*mut ()),
+            data: chunk as *const Chunk<'_, T, F> as *mut (),
+        };
+        if let Err(task) = pool.sender.send(task) {
+            // The pool is gone (for example, a caller shut it down); the chunk
+            // still has to run, otherwise `wait` never completes.
+            // SAFETY: the chunk is alive for the whole call, as for pooled tasks.
+            unsafe { (task.0.run)(task.0.data) };
         }
-    });
+    }
+    completion.wait();
 }
 
 #[cfg(test)]
@@ -281,6 +462,37 @@ mod tests {
         let mut items: Vec<usize> = (0..37).collect();
         scoped_parallel_chunks(&mut items, 4, |item| *item *= 2);
         assert_eq!(items, (0..37).map(|item| item * 2).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn scoped_chunks_with_fewer_chunks_than_threads_complete() {
+        let mut items: Vec<usize> = (0..10).collect();
+        scoped_parallel_chunks(&mut items, 6, |item| *item += 1);
+        assert_eq!(items, (1..=10).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn scoped_chunks_reuse_one_worker_pool() {
+        for round in 0..8u32 {
+            let mut items: Vec<u32> = (0..64).collect();
+            scoped_parallel_chunks(&mut items, 4, |item| *item += round);
+        }
+        assert_eq!(
+            POOL_INITIALIZATIONS.load(Ordering::SeqCst),
+            1,
+            "the pool must be created once, not per call"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "chunk worker panic")]
+    fn scoped_chunks_propagate_a_worker_panic() {
+        let mut items: Vec<usize> = (0..64).collect();
+        scoped_parallel_chunks(&mut items, 2, |item| {
+            if *item == 7 {
+                panic!("chunk worker panic");
+            }
+        });
     }
 
     #[test]
