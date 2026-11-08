@@ -207,6 +207,32 @@ pub fn extract_frame_packet_into_with_shadow_cascades(
     shadow_cascade_count: u32,
     packet: &mut FramePacket,
 ) {
+    extract_frame_packet_into_with_shadow_cascades_and_render_height(
+        world,
+        display_aspect,
+        surface_rotation,
+        shadow_distance,
+        shadow_cascade_count,
+        0.0,
+        packet,
+    );
+}
+
+/// [`extract_frame_packet_into_with_shadow_cascades`] plus the scene's render
+/// target height in pixels (#978).
+///
+/// 2D lines thinner than 1 render pixel are widened so they stay continuous;
+/// the host passes the actual scene extent height (`RenderSettings::render_height`),
+/// or `0.0` to keep pure world-space geometry.
+pub fn extract_frame_packet_into_with_shadow_cascades_and_render_height(
+    world: &mut World,
+    display_aspect: f32,
+    surface_rotation: &Mat4,
+    shadow_distance: f32,
+    shadow_cascade_count: u32,
+    render_height: f32,
+    packet: &mut FramePacket,
+) {
     // 1. Collect per-frame scene state (needs orientation).
     collect_scene_changes_into(
         world,
@@ -274,7 +300,15 @@ pub fn extract_frame_packet_into_with_shadow_cascades(
     } else {
         None
     };
-    scene_view.sprite_items_with_frustum_into(primary_frustum, &mut packet.sprite_items);
+    // 折线像素比例（#978）：用主相机的投影把「1 像素」换算成世界单位。
+    // 没有渲染高度（离线提取 / 单测）时保持纯世界空间几何。
+    let line_scale =
+        crate::scene::systems::render::LineScreenScale::new(packet.scene.view_proj, render_height);
+    scene_view.sprite_items_with_frustum_and_line_scale_into(
+        primary_frustum,
+        line_scale,
+        &mut packet.sprite_items,
+    );
     // 2D 光照（#611）：只有 `receive_lights` 的精灵会用到，没灯光时为空。
     scene_view.sprite_lights_into(&mut packet.sprite_lights);
     // 3D 粒子：世界空间 billboard，按到眼睛的距离远到近排序（透明混合）。
