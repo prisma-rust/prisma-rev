@@ -34,6 +34,7 @@ use prism_engine::scene::components::{
     BodyType, Collider, ColliderShape, LocalTransform, Parent, Rigidbody,
 };
 use prism_engine::scene::systems::terrain::TerrainData;
+use rapier3d::control::{CharacterLength, KinematicCharacterController};
 use rapier3d::dynamics::{
     CCDSolver, ImpulseJointSet, IntegrationParameters, IslandManager, MultibodyJointSet,
     RigidBodyBuilder, RigidBodyHandle, RigidBodySet, RigidBodyType,
@@ -43,7 +44,7 @@ use rapier3d::geometry::{
     CollisionEventFlags, NarrowPhase,
 };
 use rapier3d::math::{Pose, Rotation, Vector};
-use rapier3d::pipeline::{ActiveEvents, ChannelEventCollector, PhysicsPipeline};
+use rapier3d::pipeline::{ActiveEvents, ChannelEventCollector, PhysicsPipeline, QueryFilter};
 
 use flume::{Receiver, Sender};
 
@@ -90,6 +91,11 @@ pub enum PhysicsCommand {
     },
     DespawnTerrain {
         entity: EntityId,
+    },
+    /// 运动学角色移动（#560 P2）：在 `step` 之后用最新 broad phase 求解，
+    /// 结果经 `PhysicsResult::character_moves` 回传。
+    MoveCharacter {
+        request: CharacterMoveRequest,
     },
 }
 
@@ -139,12 +145,88 @@ pub enum ColliderDesc {
     },
 }
 
+/// 一次运动学角色移动的参数（#560 P2）。
+///
+/// 形状固定是竖直胶囊：脚下的射线、台阶、坡度和贴地都由 rapier 的
+/// `KinematicCharacterController` 处理，调用方只提供「想走多远」。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CharacterMoveSettings {
+    /// 胶囊圆柱段半高（不含两端半球）。
+    pub half_height: f32,
+    pub radius: f32,
+    /// 与环境的间隙，必须为非零小数才数值稳定。
+    pub offset: f32,
+    /// 撞到斜面时是否沿表面滑动。
+    pub slide: bool,
+    /// 能爬的最大坡度（度）。
+    pub max_slope_deg: f32,
+    /// 超过这个坡度就开始下滑（度）。
+    pub min_slide_slope_deg: f32,
+    /// 离地小于这个距离时自动贴地；`None` 关闭。
+    pub snap_to_ground: Option<f32>,
+    /// 「上」方向，默认 +Y。
+    pub up: [f32; 3],
+}
+
+impl Default for CharacterMoveSettings {
+    fn default() -> Self {
+        Self {
+            half_height: 0.6,
+            radius: 0.3,
+            offset: 0.01,
+            slide: true,
+            max_slope_deg: 45.0,
+            min_slide_slope_deg: 45.0,
+            snap_to_ground: Some(0.3),
+            up: [0.0, 1.0, 0.0],
+        }
+    }
+}
+
+/// 一条移动请求：由 `CharacterMovement`（下一片）每步写进
+/// `CharacterMoveRequests`，物理线程计算后写回 `CharacterMoveResults`。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CharacterMoveRequest {
+    pub entity: EntityId,
+    /// 本步想移动的位移（已经乘过 dt，米）。
+    pub desired: [f32; 3],
+    /// 物理步长，rapier 用它做摩擦与贴地计算。
+    pub dt: f32,
+    pub settings: CharacterMoveSettings,
+}
+
+/// 物理线程对一条移动请求的回答。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CharacterMoveResult {
+    pub entity: EntityId,
+    /// 实际允许的位移（撞墙 / 上坡后可能小于请求值）。
+    pub translation: [f32; 3],
+    /// 移动之后是否站在地上。
+    pub grounded: bool,
+    /// 是否因为坡度过大而自动下滑。
+    pub sliding_down_slope: bool,
+}
+
+/// 每步的移动请求队列（写进 World，`PhysicsRuntime::step` 消费并清空）。
+#[derive(Debug, Clone, Default)]
+pub struct CharacterMoveRequests {
+    pub requests: Vec<CharacterMoveRequest>,
+}
+
+/// 每步移动结果（由 `PhysicsRuntime::step` 写进 World，供角色系统读取）。
+#[derive(Debug, Clone, Default)]
+pub struct CharacterMoveResults {
+    pub moves: Vec<CharacterMoveResult>,
+}
+
 // ── Results (physics → main) ──────────────────────────────────────────
 
 pub struct PhysicsResult {
     pub transforms: Vec<BodyTransform>,
     /// 本步 rapier 报告的 Started/Stopped，已映射为 ECS 实体。
     pub events: Vec<PhysicsEvent>,
+    /// 本步计算的运动学角色移动结果。
+    pub character_moves: Vec<CharacterMoveResult>,
 }
 
 pub struct BodyTransform {
@@ -162,6 +244,44 @@ fn array_to_pose(position: [f32; 3], rotation: [f32; 4]) -> Pose {
         Vector::new(position[0], position[1], position[2]),
         Rotation::from_xyzw(rotation[0], rotation[1], rotation[2], rotation[3]),
     )
+}
+
+fn sanitize(value: f32) -> f32 {
+    if value.is_finite() {
+        value
+    } else {
+        0.0
+    }
+}
+
+/// Build rapier's character controller from the authored settings.
+fn character_controller(settings: &CharacterMoveSettings) -> KinematicCharacterController {
+    let max_slope = sanitize(settings.max_slope_deg)
+        .clamp(0.0, 89.0)
+        .to_radians();
+    let min_slide = sanitize(settings.min_slide_slope_deg)
+        .clamp(0.0, 89.0)
+        .to_radians();
+    let up = Vector::new(
+        sanitize(settings.up[0]),
+        sanitize(settings.up[1]),
+        sanitize(settings.up[2]),
+    );
+    KinematicCharacterController {
+        up: if up.length_squared() > 1e-8 {
+            up.normalize()
+        } else {
+            Vector::Y
+        },
+        offset: CharacterLength::Absolute(sanitize(settings.offset).max(1.0e-4)),
+        slide: settings.slide,
+        max_slope_climb_angle: max_slope,
+        min_slope_slide_angle: min_slide,
+        snap_to_ground: settings
+            .snap_to_ground
+            .map(|distance| CharacterLength::Absolute(sanitize(distance).max(0.0))),
+        ..KinematicCharacterController::default()
+    }
 }
 
 fn rapier_status(status: PhysicsBodyStatus) -> RigidBodyType {
@@ -230,6 +350,8 @@ pub fn physics_thread_main(step_rx: Receiver<PhysicsStep>, result_tx: Sender<Phy
     // 地形是固定的 heightfield body，不参与 `entity_map` 的姿势回写（#517）。
     let mut terrain_bodies: HashMap<EntityId, RigidBodyHandle> = HashMap::new();
     let mut terrain_colliders: HashMap<EntityId, ColliderHandle> = HashMap::new();
+    // 角色移动要等 `step` 之后 broad phase 才是这一帧的，所以先收集。
+    let mut character_requests: Vec<CharacterMoveRequest> = Vec::new();
 
     // rapier 在 step 内通过 EventHandler 报告 Started/Stopped；这里用官方
     // ChannelEventCollector 把事件排到通道，step 后统一映射回实体。
@@ -372,6 +494,9 @@ pub fn physics_thread_main(step_rx: Receiver<PhysicsStep>, result_tx: Sender<Phy
                     terrain_colliders.insert(entity, collider_handle);
                     collider_entities.insert(collider_handle, entity_from_key(entity));
                 }
+                PhysicsCommand::MoveCharacter { request } => {
+                    character_requests.push(request);
+                }
                 PhysicsCommand::DespawnTerrain { entity } => {
                     TerrainBodies {
                         bodies: &mut terrain_bodies,
@@ -452,7 +577,78 @@ pub fn physics_thread_main(step_rx: Receiver<PhysicsStep>, result_tx: Sender<Phy
             })
             .collect();
 
-        let _ = result_tx.send(PhysicsResult { transforms, events });
+        // 2d. Kinematic character moves (#560 P2). Run after the step so the
+        // broad phase reflects this frame's colliders; each request resolves
+        // against the current pose and writes the corrected position back.
+        let mut character_moves = Vec::new();
+        for request in character_requests.drain(..) {
+            let (Some(handle), Some(collider_handle)) = (
+                entity_map.get(&request.entity).copied(),
+                body_colliders.get(&request.entity).copied(),
+            ) else {
+                log::warn!(
+                    "physics: character move for entity {} without a body/collider",
+                    request.entity
+                );
+                continue;
+            };
+            let (Some(body), Some(collider)) = (
+                rigid_body_set.get(handle),
+                collider_set.get(collider_handle),
+            ) else {
+                continue;
+            };
+            let pose = *body.position();
+            let controller = character_controller(&request.settings);
+            let desired = Vector::new(
+                sanitize(request.desired[0]),
+                sanitize(request.desired[1]),
+                sanitize(request.desired[2]),
+            );
+            let filter = QueryFilter {
+                exclude_collider: Some(collider_handle),
+                ..QueryFilter::default()
+            };
+            let pipeline = broad_phase.as_query_pipeline(
+                narrow_phase.query_dispatcher(),
+                &rigid_body_set,
+                &collider_set,
+                filter,
+            );
+            let movement = controller.move_shape(
+                sanitize(request.dt).max(0.0),
+                &pipeline,
+                collider.shape(),
+                &pose,
+                desired,
+                |_| {},
+            );
+            let mut new_pose = pose;
+            new_pose.translation += movement.translation;
+            if let Some(body) = rigid_body_set.get_mut(handle) {
+                // Keep the next kinematic target in sync: a kinematic body is
+                // integrated towards `next_position`, so setting only the
+                // current pose would be undone by the next step.
+                body.set_next_kinematic_position(new_pose);
+                body.set_position(new_pose, false);
+            }
+            character_moves.push(CharacterMoveResult {
+                entity: request.entity,
+                translation: [
+                    movement.translation.x,
+                    movement.translation.y,
+                    movement.translation.z,
+                ],
+                grounded: movement.grounded,
+                sliding_down_slope: movement.is_sliding_down_slope,
+            });
+        }
+
+        let _ = result_tx.send(PhysicsResult {
+            transforms,
+            events,
+            character_moves,
+        });
     }
 
     log::info!("Physics thread exiting");
@@ -570,7 +766,7 @@ impl PhysicsRuntime {
         }
     }
 
-    fn collect_commands(&mut self, world: &World) -> Vec<PhysicsCommand> {
+    fn collect_commands(&mut self, world: &mut World) -> Vec<PhysicsCommand> {
         // 先收集实体，避免在 query 的借用里再 get 组件。
         let mut current: HashMap<EntityId, Entity> = HashMap::new();
         for (entity, _) in world.query::<Rigidbody>() {
@@ -733,6 +929,14 @@ impl PhysicsRuntime {
             self.terrains.insert(key, desired);
         }
 
+        // Character moves are per-step requests (#560 P2): take them out of the
+        // world so a stale request is not replayed on every step.
+        if let Some(requests) = world.remove_resource::<CharacterMoveRequests>() {
+            for request in requests.requests {
+                commands.push(PhysicsCommand::MoveCharacter { request });
+            }
+        }
+
         commands
     }
 }
@@ -779,6 +983,37 @@ fn apply_result(world: &mut World, result: &PhysicsResult) {
         .filter(|event| world.is_alive(event.entity_a) && world.is_alive(event.entity_b))
         .collect();
     world.insert_resource(PhysicsEvents { events });
+
+    for movement in &result.character_moves {
+        let entity = entity_from_key(movement.entity);
+        if !world.is_alive(entity) {
+            continue;
+        }
+        let delta = glam::Vec3::from_array(movement.translation);
+        if !delta.is_finite() {
+            continue;
+        }
+        let Some(mut local) = world.get::<LocalTransform>(entity).cloned() else {
+            continue;
+        };
+        // rapier works in world space; entities parented to something else need
+        // the delta rotated (and unscaled) back into parent space.
+        let delta = match world.get::<Parent>(entity).map(|parent| parent.0) {
+            Some(parent) => {
+                let Some(parent_matrix) = world_matrix(world, parent) else {
+                    continue;
+                };
+                let (scale, rotation, _) = parent_matrix.inverse().to_scale_rotation_translation();
+                rotation * (delta * scale)
+            }
+            None => delta,
+        };
+        local.position += delta;
+        world.insert(entity, local);
+    }
+    world.insert_resource(CharacterMoveResults {
+        moves: result.character_moves.clone(),
+    });
 
     for body in &result.transforms {
         let entity = entity_from_key(body.entity);
@@ -948,6 +1183,117 @@ mod tests {
         );
     }
 
+    /// #560 P2：运动学胶囊站在地板上、撞到墙时被挡住（不是穿过去）。
+    #[test]
+    fn kinematic_character_stands_on_the_floor_and_is_blocked_by_a_wall() {
+        let (step_tx, step_rx) = flume::unbounded();
+        let (result_tx, result_rx) = flume::unbounded();
+        let thread = std::thread::spawn(move || physics_thread_main(step_rx, result_tx));
+
+        let character = 0x0000_0011_0000_0001u64;
+        let floor = 0x0000_0012_0000_0001u64;
+        let wall = 0x0000_0013_0000_0001u64;
+        step_tx
+            .send(PhysicsStep {
+                commands: vec![
+                    PhysicsCommand::SpawnBody {
+                        entity: character,
+                        position: [0.0, 1.2, 0.0],
+                        rotation: [0.0, 0.0, 0.0, 1.0],
+                        body_status: PhysicsBodyStatus::KinematicPosition,
+                        settings: BodySettings::default(),
+                        shape: ColliderDesc::Capsule {
+                            half_height: 0.6,
+                            radius: 0.3,
+                            center: [0.0; 3],
+                        },
+                        sensor: false,
+                    },
+                    PhysicsCommand::SpawnBody {
+                        entity: floor,
+                        position: [0.0, -0.1, 0.0],
+                        rotation: [0.0, 0.0, 0.0, 1.0],
+                        body_status: PhysicsBodyStatus::Static,
+                        settings: BodySettings::default(),
+                        shape: ColliderDesc::Box {
+                            half_extents: [10.0, 0.1, 10.0],
+                            center: [0.0; 3],
+                        },
+                        sensor: false,
+                    },
+                    PhysicsCommand::SpawnBody {
+                        entity: wall,
+                        position: [1.5, 1.0, 0.0],
+                        rotation: [0.0, 0.0, 0.0, 1.0],
+                        body_status: PhysicsBodyStatus::Static,
+                        settings: BodySettings::default(),
+                        shape: ColliderDesc::Box {
+                            half_extents: [0.1, 1.0, 5.0],
+                            center: [0.0; 3],
+                        },
+                        sensor: false,
+                    },
+                ],
+            })
+            .unwrap();
+
+        // The spawn step answers with its own (empty) result; drain it so every
+        // send below is paired with the result of the same step.
+        let _ = result_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        let settings = CharacterMoveSettings::default();
+        let mut grounded = false;
+        // Fall onto the floor first.
+        for _ in 0..30 {
+            step_tx
+                .send(PhysicsStep {
+                    commands: vec![PhysicsCommand::MoveCharacter {
+                        request: CharacterMoveRequest {
+                            entity: character,
+                            desired: [0.0, -0.05, 0.0],
+                            dt: 1.0 / 60.0,
+                            settings,
+                        },
+                    }],
+                })
+                .unwrap();
+            let result = result_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            if let Some(movement) = result.character_moves.first() {
+                grounded = movement.grounded;
+            }
+        }
+        assert!(grounded, "character should end up standing on the floor");
+
+        // Walk into the wall: the allowed translation must stop short.
+        step_tx
+            .send(PhysicsStep {
+                commands: vec![PhysicsCommand::MoveCharacter {
+                    request: CharacterMoveRequest {
+                        entity: character,
+                        desired: [3.0, 0.0, 0.0],
+                        dt: 1.0 / 60.0,
+                        settings,
+                    },
+                }],
+            })
+            .unwrap();
+        let result = result_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let movement = result.character_moves.first().expect("one move result");
+        assert!(
+            movement.translation[0] > 0.5,
+            "character should walk up to the wall, got {:?}",
+            movement.translation
+        );
+        assert!(
+            movement.translation[0] < 2.9,
+            "wall must stop the character, got {:?}",
+            movement.translation
+        );
+
+        drop(step_tx);
+        thread.join().unwrap();
+    }
+
     /// #517：`TerrainData` 自动变成静态 heightfield collider，动态球落在地形上。
     ///
     /// 高度用 2.0 而不是 0：如果高度数组根本没传给 rapier，球会停在 y≈0.5，
@@ -1013,6 +1359,86 @@ mod tests {
         // 地形被销毁后下一步安全 despawn。
         world.despawn(terrain);
         assert!(runtime.step(&mut world));
+    }
+
+    /// #560 P2：`CharacterMoveRequests` 资源 → 物理线程 → `LocalTransform` +
+    /// `CharacterMoveResults`，且请求只消费一次（下一步重复执行不会再次移动）。
+    #[test]
+    fn character_move_requests_move_the_transform_and_are_consumed_once() {
+        use prism_engine::scene::components::{BodyType, ColliderShape, Rigidbody};
+
+        let mut world = World::new();
+        let floor = world.spawn();
+        world.insert(floor, LocalTransform::default());
+        world.insert(
+            floor,
+            Collider {
+                half_extents: [10.0, 0.1, 10.0],
+                ..Default::default()
+            },
+        );
+
+        let character = world.spawn();
+        world.insert(
+            character,
+            Rigidbody {
+                body_type: BodyType::Kinematic,
+                ..Default::default()
+            },
+        );
+        world.insert(
+            character,
+            Collider {
+                shape: ColliderShape::Capsule,
+                radius: 0.3,
+                half_height: 0.6,
+                ..Default::default()
+            },
+        );
+        world.insert(
+            character,
+            LocalTransform {
+                position: glam::Vec3::new(0.0, 0.9, 0.0),
+                ..Default::default()
+            },
+        );
+
+        let mut runtime = PhysicsRuntime::spawn();
+        assert!(runtime.step(&mut world));
+
+        world.insert_resource(CharacterMoveRequests {
+            requests: vec![CharacterMoveRequest {
+                entity: entity_key(character),
+                desired: [0.5, 0.0, 0.0],
+                dt: 1.0 / 60.0,
+                settings: CharacterMoveSettings::default(),
+            }],
+        });
+        assert!(runtime.step(&mut world));
+
+        let x = world
+            .get::<LocalTransform>(character)
+            .expect("character transform")
+            .position
+            .x;
+        assert!((x - 0.5).abs() < 0.05, "character should move +x, got {x}");
+        let results = world
+            .get_resource::<CharacterMoveResults>()
+            .expect("move results");
+        assert_eq!(results.moves.len(), 1);
+        assert_eq!(results.moves[0].entity, entity_key(character));
+
+        // The request resource was consumed: another step must not move again.
+        assert!(runtime.step(&mut world));
+        let x_after = world
+            .get::<LocalTransform>(character)
+            .expect("character transform")
+            .position
+            .x;
+        assert!(
+            (x_after - x).abs() < 1e-4,
+            "request replayed: {x} -> {x_after}"
+        );
     }
 
     /// 作者的 `center` 与实体缩放都要烘进 rapier 形状。
