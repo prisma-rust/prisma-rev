@@ -7,6 +7,7 @@
 #![deny(warnings)]
 #![allow(clippy::all)]
 
+pub mod anim_ground;
 pub mod app;
 pub mod asset;
 pub mod asset_paths;

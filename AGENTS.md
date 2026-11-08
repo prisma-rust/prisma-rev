@@ -87,8 +87,10 @@ deviating from those conventions is a bug. (`README.md` is the human-facing over
 - `crates/prism-asset` — **runtime** asset layer only: `AssetId`/`Handle`, `.pak`
   (`core`/`package`/`runtime`/`types`/`streaming`/`hot-reload`). No importer/cooker/db/CLI.
 - `crates/prism-anim-ik` — 动画 IK 的**纯数学**层（#560 P4）：解析式两骨 IK +
-  `apply_two_bone_ik`，只依赖 `prism-anim` + glam，不依赖 engine / render / ECS，
-  也还没有被运行时接线。约定见 [`docs/anim-ik.md`](docs/anim-ik.md)。
+  `apply_two_bone_ik` + Foot Placement，只依赖 `prism-anim` + glam，不依赖 engine / render /
+  ECS。地面查询由调用方注入；引擎侧的现成实现是
+  `prism_engine::anim_ground::SceneGroundQuery`（走 `physics::raycast_excluding`，纯 ECS 几何，
+  不需要 `prism-app/physics`），逐帧接线尚未完成。约定见 [`docs/anim-ik.md`](docs/anim-ik.md)。
 - `crates/prism-cooker` — **build-time** layer: importers, cookers, asset database, CookProfile,
   and the `prism-cook` CLI (`src/main.rs`). Depends on `prism-asset` + `prism-scene`; never
   pulled into the game runtime. See DESIGN.md §10.
