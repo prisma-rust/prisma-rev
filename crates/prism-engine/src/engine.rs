@@ -672,6 +672,13 @@ fn default_schedule() -> Schedule {
         crate::scene::systems::particles2d::particle_emitter_2d_system(world, dt);
     });
 
+    // ── 屏幕空间（UI 层）粒子（#1057）────────────────────────
+    // 模拟在像素空间，输出并入 `ExternalUiQuads`；必须排在本帧的 `ui::render`
+    // 之前，四边形才会进入同一帧的 `UiDrawList`。
+    s.add_system("fx::ui_particles", |world, dt| {
+        crate::scene::systems::ui_particles::ui_particle_emitter_system(world, dt);
+    });
+
     // ── 昼夜（#983）────────────────────────────────────────
     // 推进 `TimeOfDay` 并刷新环境光。放在粒子之前、`hierarchy_system` 之前：
     // 本帧的 `sprite_light_entries` 要读到推进后的环境光，否则画面晚一帧。

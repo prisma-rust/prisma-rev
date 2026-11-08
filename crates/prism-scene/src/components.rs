@@ -6,7 +6,7 @@
 //! | 变换     | `LocalTransform`, `LocalToWorld`, `TransformDirty` |
 //! | 渲染     | `MeshRenderer`, `LodGroup`（距离 LOD）, `SpriteRenderer`, `Tilemap`, `Active` |
 //! | 动画     | `SpriteAnimation`（2D 帧）, `KeyframeAnimation`（曲线） |
-//! | 粒子     | `ParticleSystem`（世界空间 3D CPU 粒子）、`ParticleEmitter2D`（世界 XY 平面 2D 粒子） |
+//! | 粒子     | `ParticleSystem`（世界空间 3D CPU 粒子）、`ParticleEmitter2D`（世界 XY 平面 2D 粒子）、`UiParticleEmitter`（屏幕空间，画在 UI 图层） |
 //! | 光源 | `Light`（形状）, `DirectionalLight`, `PointLight`, `SpotLight`（旧）, `Light2D`（2D 精灵光照） |
 //! | 相机     | `Camera`, `FlyCameraController` |
 //! | 天空盒   | `Skybox` |
@@ -1334,6 +1334,140 @@ impl ParticleEmitter2D {
             [self.direction[0] / length, self.direction[1] / length]
         } else {
             [0.0, -1.0]
+        }
+    }
+}
+
+/// Motion preset for [`UiParticleEmitter`] (#1057).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum UiParticleKind {
+    /// Fast falling streaks with a faint tail; wind tilts them.
+    #[default]
+    Rain,
+    /// Slow drifting dots that sway sideways; no tail.
+    Snow,
+    /// Short-lived dots sprayed in every direction.
+    Spark,
+}
+
+impl ReflectType for UiParticleKind {
+    fn field_type() -> FieldType {
+        FieldType::U8
+    }
+
+    fn enum_variants() -> Option<&'static [&'static str]> {
+        Some(&["Rain", "Snow", "Spark"])
+    }
+
+    fn to_value(&self) -> Value {
+        Value::U64(match self {
+            Self::Rain => 0,
+            Self::Snow => 1,
+            Self::Spark => 2,
+        })
+    }
+
+    fn from_value(value: Value) -> Result<Self, ReflectError> {
+        match value.as_u64()? {
+            0 => Ok(Self::Rain),
+            1 => Ok(Self::Snow),
+            2 => Ok(Self::Spark),
+            other => Err(ReflectError::BadData(format!(
+                "invalid UiParticleKind discriminant {other}"
+            ))),
+        }
+    }
+}
+
+/// Screen-space particle emitter, drawn through the UI layer (#1057).
+///
+/// [`ParticleEmitter2D`] integrates in world XY and draws through the sprite
+/// channel, so a full-screen UI panel (a fade-in black screen, a menu backdrop)
+/// covers it. This emitter integrates in **pixel screen space** — origin at the
+/// top-left, y down, the same space as `ComputedLayout::rect` — and emits plain
+/// quads into the UI draw list, so particles can sit above UI panels.
+///
+/// Only the author parameters live here. The engine keeps the live particles in
+/// a runtime state component and advances them every tick; a scene therefore
+/// needs nothing but this component:
+///
+/// ```json
+/// "prism_engine::scene::UiParticleEmitter": {
+///   "kind": "Rain", "emission_rate": 420, "intensity": 0.8
+/// }
+/// ```
+///
+/// Distances and speeds are screen pixels, so the same values mean different
+/// things on different resolutions; the defaults are tuned for 1080p.
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
+#[reflect(name = "prism_engine::scene::UiParticleEmitter")]
+#[serde(default)]
+pub struct UiParticleEmitter {
+    /// `false` stops spawning new particles; live ones finish their life.
+    pub playing: bool,
+    /// Motion preset (see [`UiParticleKind`]).
+    pub kind: UiParticleKind,
+    /// Particles spawned per second at `intensity = 1`.
+    pub emission_rate: f32,
+    /// Downward acceleration (px/s²).
+    pub gravity: f32,
+    /// Rightward acceleration (px/s²); tilts rain.
+    pub wind: f32,
+    /// Initial vertical speed range (px/s).
+    pub speed: [f32; 2],
+    /// Trail length range (px); `0` gives round dots.
+    pub length: [f32; 2],
+    /// Quad thickness range (px); the trailing edge is rounded.
+    pub width: [f32; 2],
+    /// RGB color 0..=1 (sRGB authoring value).
+    pub color: [f32; 3],
+    /// Base alpha range 0..=1, further scaled by `intensity`.
+    pub alpha: [f32; 2],
+    /// Global 0..=1 multiplier for spawn rate and alpha; `0` fades out.
+    pub intensity: f32,
+    /// UI layer of the emitted quads (`UiQuad::layer`). Must be above the panel
+    /// the particles should cover.
+    pub layer: i32,
+    /// Soft cap on live particles; `0` keeps the preset limit.
+    pub max_particles: u32,
+}
+
+impl Default for UiParticleEmitter {
+    fn default() -> Self {
+        Self {
+            playing: true,
+            kind: UiParticleKind::Rain,
+            emission_rate: 420.0,
+            gravity: 240.0,
+            wind: 90.0,
+            speed: [900.0, 1500.0],
+            length: [16.0, 42.0],
+            width: [1.0, 2.4],
+            color: [0.72, 0.82, 0.96],
+            alpha: [0.16, 0.42],
+            intensity: 1.0,
+            layer: 1,
+            max_particles: 0,
+        }
+    }
+}
+
+impl UiParticleEmitter {
+    /// Spawn rate with non-finite / negative input treated as zero.
+    pub fn rate(&self) -> f32 {
+        if self.emission_rate.is_finite() && self.emission_rate > 0.0 {
+            self.emission_rate
+        } else {
+            0.0
+        }
+    }
+
+    /// Global intensity clamped to `0..=1`; non-finite input becomes zero.
+    pub fn clamped_intensity(&self) -> f32 {
+        if self.intensity.is_finite() {
+            self.intensity.clamp(0.0, 1.0)
+        } else {
+            0.0
         }
     }
 }
