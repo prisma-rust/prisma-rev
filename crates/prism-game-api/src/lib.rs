@@ -195,6 +195,52 @@ impl<'a> GameWorld<'a> {
         }
     }
 
+    /// 写入一条玩家存档并立即落盘（#984）。
+    ///
+    /// 键值都是字符串：结构由工程自己序列化（`serde_json` 也好、只看
+    /// `"caught"` 这种计数也好），引擎不理解业务 schema。
+    /// 插件后端（编辑器 Play）还没有存档能力位，此时返回 `false`。
+    pub fn save_data(&mut self, key: &str, value: &str) -> bool {
+        match &mut self.backend {
+            #[cfg(feature = "host")]
+            Backend::Host(world) => {
+                let Some(store) = world.get_resource_mut::<prism_engine::user_data::UserStore>()
+                else {
+                    log::warn!(
+                        "save_data: no UserStore resource; the host did not open a save file"
+                    );
+                    return false;
+                };
+                store.set(key, value);
+                match store.flush() {
+                    Ok(_) => true,
+                    Err(error) => {
+                        log::warn!("save_data {key}: {error}");
+                        false
+                    }
+                }
+            }
+            #[cfg(feature = "plugin")]
+            Backend::Plugin(_) => {
+                log::warn!("save_data is not available in the preview module yet");
+                false
+            }
+        }
+    }
+
+    /// 读一条玩家存档；没有这个键 = `None`（不是错误）。
+    pub fn load_data(&self, key: &str) -> Option<String> {
+        match &self.backend {
+            #[cfg(feature = "host")]
+            Backend::Host(world) => world
+                .get_resource::<prism_engine::user_data::UserStore>()
+                .and_then(|store| store.get(key))
+                .map(str::to_string),
+            #[cfg(feature = "plugin")]
+            Backend::Plugin(_) => None,
+        }
+    }
+
     /// Requests a scene switch (#482): `additive = true` keeps the old scene
     /// (`LoadSceneMode::Additive`).
     ///

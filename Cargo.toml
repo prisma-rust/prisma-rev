@@ -14,7 +14,7 @@ members = [
     "crates/prism-project-api",
     "crates/prism-runtime-host",
     "crates/prism-platform",
-    "crates/prism-editor-tool",
+    "crates/prism-terrain-tool",
     "crates/prism-editor-api",
     "crates/prism-editor-mcp",
     "crates/prism-build-pipeline",
@@ -76,7 +76,7 @@ thiserror = "2.0.19"
 clap = { version = "4", features = ["derive"] }
 # 运行时的 image 依赖必须**零默认 codec**：每个 crate 只声明自己真正用到的格式。
 #   - 玩家运行时（prism-render 截图）：png
-#   - 构建期（prism-cooker 导入 / prism-editor-tool 导出）：各自的全部格式
+#   - 构建期（prism-cooker 导入 / prism-terrain-tool 导出）：各自的全部格式
 # 这样 jpeg/tga/bmp/exr 的编解码器不会被打进玩家的二进制。
 image = { version = "0.25", default-features = false }
 dirs = "6.0.0"

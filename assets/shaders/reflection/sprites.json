@@ -1,4 +1,5 @@
 {
+    "version": "1.1",
     "parameters": [
         {
             "name": "globalSamplers",
@@ -7,8 +8,14 @@
                 "kind": "array",
                 "elementCount": 0,
                 "elementType": {
-                    "kind": "samplerState"
-                }
+                    "kind": "samplerState",
+                    "sizes": [
+                        {"kind": "descriptorTableSlot", "value": 1}
+                    ]
+                },
+                "sizes": [
+                    {"kind": "descriptorTableSlot", "value": 1}
+                ]
             }
         },
         {
@@ -27,8 +34,14 @@
                             "kind": "scalar",
                             "scalarType": "float32"
                         }
-                    }
-                }
+                    },
+                    "sizes": [
+                        {"kind": "descriptorTableSlot", "value": 1}
+                    ]
+                },
+                "sizes": [
+                    {"kind": "descriptorTableSlot", "value": 1}
+                ]
             }
         },
         {
@@ -49,9 +62,12 @@
                                 "elementType": {
                                     "kind": "scalar",
                                     "scalarType": "float32"
-                                }
+                                },
+                                "sizes": [
+                                    {"kind": "uniform", "value": 16, "alignment": 16}
+                                ]
                             },
-                            "binding": {"kind": "uniform", "offset": 0, "size": 16}
+                            "binding": {"kind": "uniform", "offset": 0, "size": 16, "elementStride": 4}
                         },
                         {
                             "name": "colorKind",
@@ -61,9 +77,12 @@
                                 "elementType": {
                                     "kind": "scalar",
                                     "scalarType": "float32"
-                                }
+                                },
+                                "sizes": [
+                                    {"kind": "uniform", "value": 16, "alignment": 16}
+                                ]
                             },
-                            "binding": {"kind": "uniform", "offset": 16, "size": 16}
+                            "binding": {"kind": "uniform", "offset": 16, "size": 16, "elementStride": 4}
                         },
                         {
                             "name": "direction",
@@ -73,12 +92,21 @@
                                 "elementType": {
                                     "kind": "scalar",
                                     "scalarType": "float32"
-                                }
+                                },
+                                "sizes": [
+                                    {"kind": "uniform", "value": 16, "alignment": 16}
+                                ]
                             },
-                            "binding": {"kind": "uniform", "offset": 32, "size": 16}
+                            "binding": {"kind": "uniform", "offset": 32, "size": 16, "elementStride": 4}
                         }
+                    ],
+                    "sizes": [
+                        {"kind": "uniform", "value": 48, "alignment": 16}
                     ]
-                }
+                },
+                "sizes": [
+                    {"kind": "descriptorTableSlot", "value": 1}
+                ]
             }
         },
         {
@@ -99,9 +127,12 @@
                                 "elementType": {
                                     "kind": "scalar",
                                     "scalarType": "float32"
-                                }
+                                },
+                                "sizes": [
+                                    {"kind": "uniform", "value": 64, "alignment": 16}
+                                ]
                             },
-                            "binding": {"kind": "uniform", "offset": 0, "size": 64}
+                            "binding": {"kind": "uniform", "offset": 0, "size": 64, "elementStride": 0}
                         },
                         {
                             "name": "lightParams",
@@ -111,10 +142,16 @@
                                 "elementType": {
                                     "kind": "scalar",
                                     "scalarType": "float32"
-                                }
+                                },
+                                "sizes": [
+                                    {"kind": "uniform", "value": 16, "alignment": 16}
+                                ]
                             },
-                            "binding": {"kind": "uniform", "offset": 64, "size": 16}
+                            "binding": {"kind": "uniform", "offset": 64, "size": 16, "elementStride": 4}
                         }
+                    ],
+                    "sizes": [
+                        {"kind": "uniform", "value": 80, "alignment": 16}
                     ]
                 },
                 "containerVarLayout": {
@@ -134,9 +171,12 @@
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "float32"
-                                    }
+                                    },
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 64, "alignment": 16}
+                                    ]
                                 },
-                                "binding": {"kind": "uniform", "offset": 0, "size": 64}
+                                "binding": {"kind": "uniform", "offset": 0, "size": 64, "elementStride": 0}
                             },
                             {
                                 "name": "lightParams",
@@ -146,21 +186,405 @@
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "float32"
-                                    }
+                                    },
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 16, "alignment": 16}
+                                    ]
                                 },
-                                "binding": {"kind": "uniform", "offset": 64, "size": 16}
+                                "binding": {"kind": "uniform", "offset": 64, "size": 16, "elementStride": 4}
                             }
+                        ],
+                        "sizes": [
+                            {"kind": "uniform", "value": 80, "alignment": 16}
                         ]
                     },
-                    "binding": {"kind": "uniform", "offset": 0, "size": 80}
-                }
+                    "binding": {"kind": "uniform", "offset": 0, "size": 80, "elementStride": 0}
+                },
+                "sizes": [
+                    {"kind": "pushConstantBuffer", "value": 1}
+                ]
             }
         }
     ],
+    "globalScope": {
+        "kind": "none",
+        "parameters": [
+            {
+                "name": "globalSamplers",
+                "binding": {"kind": "descriptorTableSlot", "index": 0},
+                "type": {
+                    "kind": "array",
+                    "elementCount": 0,
+                    "elementType": {
+                        "kind": "samplerState",
+                        "sizes": [
+                            {"kind": "descriptorTableSlot", "value": 1}
+                        ]
+                    },
+                    "sizes": [
+                        {"kind": "descriptorTableSlot", "value": 1}
+                    ]
+                }
+            },
+            {
+                "name": "bindlessSrvs",
+                "binding": {"kind": "descriptorTableSlot", "index": 1},
+                "type": {
+                    "kind": "array",
+                    "elementCount": 0,
+                    "elementType": {
+                        "kind": "resource",
+                        "baseShape": "texture2D",
+                        "resultType": {
+                            "kind": "vector",
+                            "elementCount": 4,
+                            "elementType": {
+                                "kind": "scalar",
+                                "scalarType": "float32"
+                            }
+                        },
+                        "sizes": [
+                            {"kind": "descriptorTableSlot", "value": 1}
+                        ]
+                    },
+                    "sizes": [
+                        {"kind": "descriptorTableSlot", "value": 1}
+                    ]
+                }
+            },
+            {
+                "name": "spriteLights",
+                "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 0},
+                "type": {
+                    "kind": "resource",
+                    "baseShape": "structuredBuffer",
+                    "resultType": {
+                        "kind": "struct",
+                        "name": "SpriteLight",
+                        "fields": [
+                            {
+                                "name": "positionRange",
+                                "type": {
+                                    "kind": "vector",
+                                    "elementCount": 4,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    },
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 16, "alignment": 16}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 16, "elementStride": 4}
+                            },
+                            {
+                                "name": "colorKind",
+                                "type": {
+                                    "kind": "vector",
+                                    "elementCount": 4,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    },
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 16, "alignment": 16}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 16, "size": 16, "elementStride": 4}
+                            },
+                            {
+                                "name": "direction",
+                                "type": {
+                                    "kind": "vector",
+                                    "elementCount": 4,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    },
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 16, "alignment": 16}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 32, "size": 16, "elementStride": 4}
+                            }
+                        ],
+                        "sizes": [
+                            {"kind": "uniform", "value": 48, "alignment": 16}
+                        ]
+                    },
+                    "sizes": [
+                        {"kind": "descriptorTableSlot", "value": 1}
+                    ]
+                }
+            },
+            {
+                "name": "pc",
+                "binding": {"kind": "pushConstantBuffer", "index": 0},
+                "type": {
+                    "kind": "constantBuffer",
+                    "elementType": {
+                        "kind": "struct",
+                        "name": "SpritePush",
+                        "fields": [
+                            {
+                                "name": "viewProj",
+                                "type": {
+                                    "kind": "matrix",
+                                    "rowCount": 4,
+                                    "columnCount": 4,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    },
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 64, "alignment": 16}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 64, "elementStride": 0}
+                            },
+                            {
+                                "name": "lightParams",
+                                "type": {
+                                    "kind": "vector",
+                                    "elementCount": 4,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    },
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 16, "alignment": 16}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 64, "size": 16, "elementStride": 4}
+                            }
+                        ],
+                        "sizes": [
+                            {"kind": "uniform", "value": 80, "alignment": 16}
+                        ]
+                    },
+                    "containerVarLayout": {
+                        "binding": {"kind": "pushConstantBuffer", "index": 0}
+                    },
+                    "elementVarLayout": {
+                        "type": {
+                            "kind": "struct",
+                            "name": "SpritePush",
+                            "fields": [
+                                {
+                                    "name": "viewProj",
+                                    "type": {
+                                        "kind": "matrix",
+                                        "rowCount": 4,
+                                        "columnCount": 4,
+                                        "elementType": {
+                                            "kind": "scalar",
+                                            "scalarType": "float32"
+                                        },
+                                        "sizes": [
+                                            {"kind": "uniform", "value": 64, "alignment": 16}
+                                        ]
+                                    },
+                                    "binding": {"kind": "uniform", "offset": 0, "size": 64, "elementStride": 0}
+                                },
+                                {
+                                    "name": "lightParams",
+                                    "type": {
+                                        "kind": "vector",
+                                        "elementCount": 4,
+                                        "elementType": {
+                                            "kind": "scalar",
+                                            "scalarType": "float32"
+                                        },
+                                        "sizes": [
+                                            {"kind": "uniform", "value": 16, "alignment": 16}
+                                        ]
+                                    },
+                                    "binding": {"kind": "uniform", "offset": 64, "size": 16, "elementStride": 4}
+                                }
+                            ],
+                            "sizes": [
+                                {"kind": "uniform", "value": 80, "alignment": 16}
+                            ]
+                        },
+                        "binding": {"kind": "uniform", "offset": 0, "size": 80, "elementStride": 0}
+                    },
+                    "sizes": [
+                        {"kind": "pushConstantBuffer", "value": 1}
+                    ]
+                }
+            }
+        ]
+    },
     "entryPoints": [
         {
             "name": "vertexMain",
             "stage": "vertex",
+            "scope": {
+                "kind": "none",
+                "parameters": [
+                    {
+                        "name": "in",
+                        "stage": "vertex",
+                        "binding": {"kind": "varyingInput", "index": 0, "count": 9},
+                        "type": {
+                            "kind": "struct",
+                            "name": "SpriteVertexIn",
+                            "fields": [
+                                {
+                                    "name": "corner0",
+                                    "type": {
+                                        "kind": "vector",
+                                        "elementCount": 3,
+                                        "elementType": {
+                                            "kind": "scalar",
+                                            "scalarType": "float32"
+                                        },
+                                        "sizes": [
+                                            {"kind": "varyingInput", "value": 1}
+                                        ]
+                                    },
+                                    "stage": "vertex",
+                                    "binding": {"kind": "varyingInput", "index": 0}
+                                },
+                                {
+                                    "name": "corner1",
+                                    "type": {
+                                        "kind": "vector",
+                                        "elementCount": 3,
+                                        "elementType": {
+                                            "kind": "scalar",
+                                            "scalarType": "float32"
+                                        },
+                                        "sizes": [
+                                            {"kind": "varyingInput", "value": 1}
+                                        ]
+                                    },
+                                    "stage": "vertex",
+                                    "binding": {"kind": "varyingInput", "index": 1}
+                                },
+                                {
+                                    "name": "corner2",
+                                    "type": {
+                                        "kind": "vector",
+                                        "elementCount": 3,
+                                        "elementType": {
+                                            "kind": "scalar",
+                                            "scalarType": "float32"
+                                        },
+                                        "sizes": [
+                                            {"kind": "varyingInput", "value": 1}
+                                        ]
+                                    },
+                                    "stage": "vertex",
+                                    "binding": {"kind": "varyingInput", "index": 2}
+                                },
+                                {
+                                    "name": "corner3",
+                                    "type": {
+                                        "kind": "vector",
+                                        "elementCount": 3,
+                                        "elementType": {
+                                            "kind": "scalar",
+                                            "scalarType": "float32"
+                                        },
+                                        "sizes": [
+                                            {"kind": "varyingInput", "value": 1}
+                                        ]
+                                    },
+                                    "stage": "vertex",
+                                    "binding": {"kind": "varyingInput", "index": 3}
+                                },
+                                {
+                                    "name": "uvRect",
+                                    "type": {
+                                        "kind": "vector",
+                                        "elementCount": 4,
+                                        "elementType": {
+                                            "kind": "scalar",
+                                            "scalarType": "float32"
+                                        },
+                                        "sizes": [
+                                            {"kind": "varyingInput", "value": 1}
+                                        ]
+                                    },
+                                    "stage": "vertex",
+                                    "binding": {"kind": "varyingInput", "index": 4}
+                                },
+                                {
+                                    "name": "color",
+                                    "type": {
+                                        "kind": "vector",
+                                        "elementCount": 4,
+                                        "elementType": {
+                                            "kind": "scalar",
+                                            "scalarType": "float32"
+                                        },
+                                        "sizes": [
+                                            {"kind": "varyingInput", "value": 1}
+                                        ]
+                                    },
+                                    "stage": "vertex",
+                                    "binding": {"kind": "varyingInput", "index": 5}
+                                },
+                                {
+                                    "name": "textureIndex",
+                                    "type": {
+                                        "kind": "scalar",
+                                        "scalarType": "uint32",
+                                        "sizes": [
+                                            {"kind": "varyingInput", "value": 1}
+                                        ]
+                                    },
+                                    "stage": "vertex",
+                                    "binding": {"kind": "varyingInput", "index": 6}
+                                },
+                                {
+                                    "name": "clip",
+                                    "type": {
+                                        "kind": "vector",
+                                        "elementCount": 4,
+                                        "elementType": {
+                                            "kind": "scalar",
+                                            "scalarType": "float32"
+                                        },
+                                        "sizes": [
+                                            {"kind": "varyingInput", "value": 1}
+                                        ]
+                                    },
+                                    "stage": "vertex",
+                                    "binding": {"kind": "varyingInput", "index": 7}
+                                },
+                                {
+                                    "name": "flags",
+                                    "type": {
+                                        "kind": "scalar",
+                                        "scalarType": "uint32",
+                                        "sizes": [
+                                            {"kind": "varyingInput", "value": 1}
+                                        ]
+                                    },
+                                    "stage": "vertex",
+                                    "binding": {"kind": "varyingInput", "index": 8}
+                                }
+                            ],
+                            "sizes": [
+                                {"kind": "varyingInput", "value": 9}
+                            ]
+                        }
+                    },
+                    {
+                        "name": "vertexId",
+                        "semanticName": "SV_VERTEXID",
+                        "type": {
+                            "kind": "scalar",
+                            "scalarType": "uint32",
+                            "sizes": [
+
+                            ]
+                        }
+                    }
+                ]
+            },
             "parameters": [
                 {
                     "name": "in",
@@ -178,7 +602,10 @@
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "float32"
-                                    }
+                                    },
+                                    "sizes": [
+                                        {"kind": "varyingInput", "value": 1}
+                                    ]
                                 },
                                 "stage": "vertex",
                                 "binding": {"kind": "varyingInput", "index": 0}
@@ -191,7 +618,10 @@
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "float32"
-                                    }
+                                    },
+                                    "sizes": [
+                                        {"kind": "varyingInput", "value": 1}
+                                    ]
                                 },
                                 "stage": "vertex",
                                 "binding": {"kind": "varyingInput", "index": 1}
@@ -204,7 +634,10 @@
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "float32"
-                                    }
+                                    },
+                                    "sizes": [
+                                        {"kind": "varyingInput", "value": 1}
+                                    ]
                                 },
                                 "stage": "vertex",
                                 "binding": {"kind": "varyingInput", "index": 2}
@@ -217,7 +650,10 @@
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "float32"
-                                    }
+                                    },
+                                    "sizes": [
+                                        {"kind": "varyingInput", "value": 1}
+                                    ]
                                 },
                                 "stage": "vertex",
                                 "binding": {"kind": "varyingInput", "index": 3}
@@ -230,7 +666,10 @@
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "float32"
-                                    }
+                                    },
+                                    "sizes": [
+                                        {"kind": "varyingInput", "value": 1}
+                                    ]
                                 },
                                 "stage": "vertex",
                                 "binding": {"kind": "varyingInput", "index": 4}
@@ -243,7 +682,10 @@
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "float32"
-                                    }
+                                    },
+                                    "sizes": [
+                                        {"kind": "varyingInput", "value": 1}
+                                    ]
                                 },
                                 "stage": "vertex",
                                 "binding": {"kind": "varyingInput", "index": 5}
@@ -252,7 +694,10 @@
                                 "name": "textureIndex",
                                 "type": {
                                     "kind": "scalar",
-                                    "scalarType": "uint32"
+                                    "scalarType": "uint32",
+                                    "sizes": [
+                                        {"kind": "varyingInput", "value": 1}
+                                    ]
                                 },
                                 "stage": "vertex",
                                 "binding": {"kind": "varyingInput", "index": 6}
@@ -265,7 +710,10 @@
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "float32"
-                                    }
+                                    },
+                                    "sizes": [
+                                        {"kind": "varyingInput", "value": 1}
+                                    ]
                                 },
                                 "stage": "vertex",
                                 "binding": {"kind": "varyingInput", "index": 7}
@@ -274,11 +722,17 @@
                                 "name": "flags",
                                 "type": {
                                     "kind": "scalar",
-                                    "scalarType": "uint32"
+                                    "scalarType": "uint32",
+                                    "sizes": [
+                                        {"kind": "varyingInput", "value": 1}
+                                    ]
                                 },
                                 "stage": "vertex",
                                 "binding": {"kind": "varyingInput", "index": 8}
                             }
+                        ],
+                        "sizes": [
+                            {"kind": "varyingInput", "value": 9}
                         ]
                     }
                 },
@@ -287,7 +741,10 @@
                     "semanticName": "SV_VERTEXID",
                     "type": {
                         "kind": "scalar",
-                        "scalarType": "uint32"
+                        "scalarType": "uint32",
+                        "sizes": [
+
+                        ]
                     }
                 }
             ],
@@ -306,7 +763,10 @@
                                 "elementType": {
                                     "kind": "scalar",
                                     "scalarType": "float32"
-                                }
+                                },
+                                "sizes": [
+
+                                ]
                             },
                             "semanticName": "SV_POSITION"
                         },
@@ -318,7 +778,10 @@
                                 "elementType": {
                                     "kind": "scalar",
                                     "scalarType": "float32"
-                                }
+                                },
+                                "sizes": [
+                                    {"kind": "varyingOutput", "value": 1}
+                                ]
                             },
                             "stage": "vertex",
                             "binding": {"kind": "varyingOutput", "index": 0},
@@ -332,7 +795,10 @@
                                 "elementType": {
                                     "kind": "scalar",
                                     "scalarType": "float32"
-                                }
+                                },
+                                "sizes": [
+                                    {"kind": "varyingOutput", "value": 1}
+                                ]
                             },
                             "stage": "vertex",
                             "binding": {"kind": "varyingOutput", "index": 1},
@@ -342,7 +808,10 @@
                             "name": "textureIndex",
                             "type": {
                                 "kind": "scalar",
-                                "scalarType": "uint32"
+                                "scalarType": "uint32",
+                                "sizes": [
+                                    {"kind": "varyingOutput", "value": 1}
+                                ]
                             },
                             "stage": "vertex",
                             "binding": {"kind": "varyingOutput", "index": 2},
@@ -357,7 +826,10 @@
                                 "elementType": {
                                     "kind": "scalar",
                                     "scalarType": "float32"
-                                }
+                                },
+                                "sizes": [
+                                    {"kind": "varyingOutput", "value": 1}
+                                ]
                             },
                             "stage": "vertex",
                             "binding": {"kind": "varyingOutput", "index": 3},
@@ -372,7 +844,10 @@
                                 "elementType": {
                                     "kind": "scalar",
                                     "scalarType": "float32"
-                                }
+                                },
+                                "sizes": [
+                                    {"kind": "varyingOutput", "value": 1}
+                                ]
                             },
                             "stage": "vertex",
                             "binding": {"kind": "varyingOutput", "index": 4},
@@ -383,13 +858,19 @@
                             "name": "flags",
                             "type": {
                                 "kind": "scalar",
-                                "scalarType": "uint32"
+                                "scalarType": "uint32",
+                                "sizes": [
+                                    {"kind": "varyingOutput", "value": 1}
+                                ]
                             },
                             "stage": "vertex",
                             "binding": {"kind": "varyingOutput", "index": 5},
                             "semanticName": "TEXCOORD",
                             "semanticIndex": 4
                         }
+                    ],
+                    "sizes": [
+                        {"kind": "varyingOutput", "value": 6}
                     ]
                 }
             },
@@ -415,6 +896,138 @@
         {
             "name": "fragmentMain",
             "stage": "fragment",
+            "scope": {
+                "kind": "none",
+                "parameters": [
+                    {
+                        "name": "in",
+                        "stage": "fragment",
+                        "binding": {"kind": "varyingInput", "index": 0, "count": 6},
+                        "type": {
+                            "kind": "struct",
+                            "name": "SpriteVaryings",
+                            "fields": [
+                                {
+                                    "name": "clipPos",
+                                    "type": {
+                                        "kind": "vector",
+                                        "elementCount": 4,
+                                        "elementType": {
+                                            "kind": "scalar",
+                                            "scalarType": "float32"
+                                        },
+                                        "sizes": [
+
+                                        ]
+                                    },
+                                    "semanticName": "SV_POSITION"
+                                },
+                                {
+                                    "name": "uv",
+                                    "type": {
+                                        "kind": "vector",
+                                        "elementCount": 2,
+                                        "elementType": {
+                                            "kind": "scalar",
+                                            "scalarType": "float32"
+                                        },
+                                        "sizes": [
+                                            {"kind": "varyingInput", "value": 1}
+                                        ]
+                                    },
+                                    "stage": "fragment",
+                                    "binding": {"kind": "varyingInput", "index": 0},
+                                    "semanticName": "TEXCOORD"
+                                },
+                                {
+                                    "name": "color",
+                                    "type": {
+                                        "kind": "vector",
+                                        "elementCount": 4,
+                                        "elementType": {
+                                            "kind": "scalar",
+                                            "scalarType": "float32"
+                                        },
+                                        "sizes": [
+                                            {"kind": "varyingInput", "value": 1}
+                                        ]
+                                    },
+                                    "stage": "fragment",
+                                    "binding": {"kind": "varyingInput", "index": 1},
+                                    "semanticName": "COLOR"
+                                },
+                                {
+                                    "name": "textureIndex",
+                                    "type": {
+                                        "kind": "scalar",
+                                        "scalarType": "uint32",
+                                        "sizes": [
+                                            {"kind": "varyingInput", "value": 1}
+                                        ]
+                                    },
+                                    "stage": "fragment",
+                                    "binding": {"kind": "varyingInput", "index": 2},
+                                    "semanticName": "TEXCOORD",
+                                    "semanticIndex": 1
+                                },
+                                {
+                                    "name": "worldPos",
+                                    "type": {
+                                        "kind": "vector",
+                                        "elementCount": 3,
+                                        "elementType": {
+                                            "kind": "scalar",
+                                            "scalarType": "float32"
+                                        },
+                                        "sizes": [
+                                            {"kind": "varyingInput", "value": 1}
+                                        ]
+                                    },
+                                    "stage": "fragment",
+                                    "binding": {"kind": "varyingInput", "index": 3},
+                                    "semanticName": "TEXCOORD",
+                                    "semanticIndex": 2
+                                },
+                                {
+                                    "name": "clip",
+                                    "type": {
+                                        "kind": "vector",
+                                        "elementCount": 4,
+                                        "elementType": {
+                                            "kind": "scalar",
+                                            "scalarType": "float32"
+                                        },
+                                        "sizes": [
+                                            {"kind": "varyingInput", "value": 1}
+                                        ]
+                                    },
+                                    "stage": "fragment",
+                                    "binding": {"kind": "varyingInput", "index": 4},
+                                    "semanticName": "TEXCOORD",
+                                    "semanticIndex": 3
+                                },
+                                {
+                                    "name": "flags",
+                                    "type": {
+                                        "kind": "scalar",
+                                        "scalarType": "uint32",
+                                        "sizes": [
+                                            {"kind": "varyingInput", "value": 1}
+                                        ]
+                                    },
+                                    "stage": "fragment",
+                                    "binding": {"kind": "varyingInput", "index": 5},
+                                    "semanticName": "TEXCOORD",
+                                    "semanticIndex": 4
+                                }
+                            ],
+                            "sizes": [
+                                {"kind": "varyingInput", "value": 6}
+                            ]
+                        }
+                    }
+                ]
+            },
             "parameters": [
                 {
                     "name": "in",
@@ -432,7 +1045,10 @@
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "float32"
-                                    }
+                                    },
+                                    "sizes": [
+
+                                    ]
                                 },
                                 "semanticName": "SV_POSITION"
                             },
@@ -444,7 +1060,10 @@
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "float32"
-                                    }
+                                    },
+                                    "sizes": [
+                                        {"kind": "varyingInput", "value": 1}
+                                    ]
                                 },
                                 "stage": "fragment",
                                 "binding": {"kind": "varyingInput", "index": 0},
@@ -458,7 +1077,10 @@
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "float32"
-                                    }
+                                    },
+                                    "sizes": [
+                                        {"kind": "varyingInput", "value": 1}
+                                    ]
                                 },
                                 "stage": "fragment",
                                 "binding": {"kind": "varyingInput", "index": 1},
@@ -468,7 +1090,10 @@
                                 "name": "textureIndex",
                                 "type": {
                                     "kind": "scalar",
-                                    "scalarType": "uint32"
+                                    "scalarType": "uint32",
+                                    "sizes": [
+                                        {"kind": "varyingInput", "value": 1}
+                                    ]
                                 },
                                 "stage": "fragment",
                                 "binding": {"kind": "varyingInput", "index": 2},
@@ -483,7 +1108,10 @@
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "float32"
-                                    }
+                                    },
+                                    "sizes": [
+                                        {"kind": "varyingInput", "value": 1}
+                                    ]
                                 },
                                 "stage": "fragment",
                                 "binding": {"kind": "varyingInput", "index": 3},
@@ -498,7 +1126,10 @@
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "float32"
-                                    }
+                                    },
+                                    "sizes": [
+                                        {"kind": "varyingInput", "value": 1}
+                                    ]
                                 },
                                 "stage": "fragment",
                                 "binding": {"kind": "varyingInput", "index": 4},
@@ -509,13 +1140,19 @@
                                 "name": "flags",
                                 "type": {
                                     "kind": "scalar",
-                                    "scalarType": "uint32"
+                                    "scalarType": "uint32",
+                                    "sizes": [
+                                        {"kind": "varyingInput", "value": 1}
+                                    ]
                                 },
                                 "stage": "fragment",
                                 "binding": {"kind": "varyingInput", "index": 5},
                                 "semanticName": "TEXCOORD",
                                 "semanticIndex": 4
                             }
+                        ],
+                        "sizes": [
+                            {"kind": "varyingInput", "value": 6}
                         ]
                     }
                 }
@@ -530,7 +1167,10 @@
                     "elementType": {
                         "kind": "scalar",
                         "scalarType": "float32"
-                    }
+                    },
+                    "sizes": [
+                        {"kind": "varyingOutput", "value": 1}
+                    ]
                 }
             },
             "bindings": [
@@ -552,5 +1192,6 @@
                 }
             ]
         }
-    ]
+    ],
+    "bindlessSpaceIndex": 2
 }

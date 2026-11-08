@@ -4,7 +4,7 @@
 //! 拾取优先用实体真实局部包围盒（网格 AABB / 精灵尺寸），没有数据时退回
 //! 单位立方体（`[-0.5,0.5]³` × scale）。
 
-use crate::doc::{SceneDoc, TransformJson};
+use crate::doc::{EntityJson, SceneDoc, TransformJson};
 use crate::workspace::OrbitCamera;
 
 pub const GIZMO_SCREEN_PIXELS: f32 = 90.0;
@@ -373,6 +373,94 @@ pub fn world_scale(doc: &SceneDoc, index: usize) -> [f32; 3] {
 /// 越界索引、非有限变换、空集合都只跳过；全空时返回 `None`。半径下限 `0.25`，
 /// 免得零缩放 / 单点实体的取景距离塌到相机最小距离。
 pub fn world_bounds(doc: &SceneDoc, indices: &[usize]) -> Option<([f32; 3], f32)> {
+    world_bounds_with(doc, indices, |index| authored_local_bounds(doc, index))
+}
+
+/// 从**作者文档**能推出来的局部包围盒（精灵 / 碰撞体）。
+///
+/// 精灵只在写了 `frame_size` 时才算得出来（`[0, 0]` = 整张纹理，尺寸只有引擎
+/// 知道）；碰撞体形状是作者数据，随时可用。推不出来返回 `None`，调用方退回
+/// 单位立方体。
+pub fn authored_local_bounds(doc: &SceneDoc, index: usize) -> Option<PickBounds> {
+    let entity = doc.entities.get(index)?;
+    collider_local_bounds(entity).or_else(|| sprite_local_bounds(entity))
+}
+
+fn number(value: Option<&serde_json::Value>, default: f32) -> f32 {
+    value
+        .and_then(serde_json::Value::as_f64)
+        .map(|value| value as f32)
+        .unwrap_or(default)
+}
+
+fn collider_local_bounds(entity: &EntityJson) -> Option<PickBounds> {
+    let collider = entity.component("prism_engine::scene::Collider")?;
+    let center = [0usize, 1, 2].map(|axis| {
+        number(
+            collider.get("center").and_then(|center| center.get(axis)),
+            0.0,
+        )
+    });
+    let shape = collider
+        .get("shape")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("Box");
+    let (half_x, half_y, half_z) = match shape {
+        "Sphere" => {
+            let radius = number(collider.get("radius"), 0.5).max(1.0e-4);
+            (radius, radius, radius)
+        }
+        "Capsule" => {
+            let radius = number(collider.get("radius"), 0.5).max(1.0e-4);
+            let half_height = number(collider.get("half_height"), 0.5).max(0.0);
+            (radius, half_height + radius, radius)
+        }
+        _ => {
+            let half = collider.get("half_extents");
+            (
+                number(half.and_then(|value| value.get(0)), 0.5).max(1.0e-4),
+                number(half.and_then(|value| value.get(1)), 0.5).max(1.0e-4),
+                number(half.and_then(|value| value.get(2)), 0.5).max(1.0e-4),
+            )
+        }
+    };
+    Some(PickBounds {
+        min: [center[0] - half_x, center[1] - half_y, center[2] - half_z],
+        max: [center[0] + half_x, center[1] + half_y, center[2] + half_z],
+    })
+}
+
+fn sprite_local_bounds(entity: &EntityJson) -> Option<PickBounds> {
+    let sprite = entity.component("prism_engine::scene::SpriteRenderer")?;
+    let size = sprite.get("frame_size");
+    let frame_w = number(size.and_then(|value| value.get(0)), 0.0);
+    let frame_h = number(size.and_then(|value| value.get(1)), 0.0);
+    if frame_w <= 0.0 || frame_h <= 0.0 {
+        return None;
+    }
+    let ppu = number(sprite.get("pixels_per_unit"), 100.0);
+    let ppu = if ppu > 0.0 { ppu } else { 100.0 };
+    let pivot = sprite.get("pivot");
+    let pivot_x = number(pivot.and_then(|value| value.get(0)), 0.5);
+    let pivot_y = number(pivot.and_then(|value| value.get(1)), 0.5);
+    let width = frame_w / ppu;
+    let height = frame_h / ppu;
+    Some(PickBounds {
+        min: [-pivot_x * width, -pivot_y * height, -0.05],
+        max: [(1.0 - pivot_x) * width, (1.0 - pivot_y) * height, 0.05],
+    })
+}
+
+/// [`world_bounds`] 的可注入版本：`bounds_for` 返回实体的**局部**包围盒
+/// （`None` = 退回单位立方体）。
+///
+/// 编辑器进程里引擎知道贴图尺寸（`frame_size` 没写时也能算），数据层只读文档
+/// 不知道，所以取景时由调用方把「带纹理尺寸的 bounds」注进来。
+pub fn world_bounds_with(
+    doc: &SceneDoc,
+    indices: &[usize],
+    bounds_for: impl Fn(usize) -> Option<PickBounds>,
+) -> Option<([f32; 3], f32)> {
     let mut points: Vec<[f32; 3]> = Vec::new();
     for index in indices {
         if *index >= doc.entities.len() {
@@ -387,16 +475,45 @@ pub fn world_bounds(doc: &SceneDoc, indices: &[usize]) -> Option<([f32; 3], f32)
         {
             continue;
         }
-        let half = [
-            scale[0].abs() * 0.5,
-            scale[1].abs() * 0.5,
-            scale[2].abs() * 0.5,
-        ];
+        // 有真实局部包围盒就用它：单位立方体对 2D 精灵来说差了整整一个
+        // 「贴图像素尺寸」，取景会贴到脸上（#991）。
+        let local = bounds_for(*index);
+        let half = match &local {
+            Some(bounds) => {
+                let half = bounds.half();
+                [
+                    half[0] * scale[0].abs(),
+                    half[1] * scale[1].abs(),
+                    half[2] * scale[2].abs(),
+                ]
+            }
+            None => [
+                scale[0].abs() * 0.5,
+                scale[1].abs() * 0.5,
+                scale[2].abs() * 0.5,
+            ],
+        };
+        // 局部中心不为零时（精灵轴心、碰撞体中心）先跟着旋转缩放搬到世界。
+        let offset = local
+            .as_ref()
+            .map(|bounds| {
+                let center = bounds.center();
+                quat_rotate(
+                    rotation,
+                    [
+                        center[0] * scale[0],
+                        center[1] * scale[1],
+                        center[2] * scale[2],
+                    ],
+                )
+            })
+            .unwrap_or([0.0; 3]);
+        let origin = add(center, offset);
         for sx in [-1.0f32, 1.0] {
             for sy in [-1.0f32, 1.0] {
                 for sz in [-1.0f32, 1.0] {
                     let corner = quat_rotate(rotation, [half[0] * sx, half[1] * sy, half[2] * sz]);
-                    points.push(add(center, corner));
+                    points.push(add(origin, corner));
                 }
             }
         }
@@ -1727,6 +1844,77 @@ mod tests {
         doc.entities[parent].transform.rotation = euler_degrees_to_quat([30.0, 45.0, 10.0]);
         let (_, rotated_radius) = world_bounds(&doc, &[child]).expect("bounds");
         assert!((rotated_radius - radius).abs() < 1e-3, "旋转不该改变半径");
+    }
+
+    /// #991：2D 精灵要按贴图尺寸取景，不能拿单位立方体顶替。
+    #[test]
+    fn world_bounds_uses_the_sprite_extent_from_the_document() {
+        let mut doc = SceneDoc::default();
+        let entity = doc.add_named_child(None, "Boat");
+        doc.entities[entity].components.insert(
+            "prism_engine::scene::SpriteRenderer".to_string(),
+            serde_json::json!({
+                "sprite_path": "sprites/boat.png",
+                "frame_size": [64, 16],
+                "pixels_per_unit": 1.0,
+                "pivot": [0.5, 0.5],
+            }),
+        );
+        let (_, radius) = world_bounds(&doc, &[entity]).expect("bounds");
+        // 64×16 贴图 @1 ppu → 32×8 半尺寸，再加 ±0.05 的厚度。
+        let expected = (32.0f32 * 32.0 + 8.0 * 8.0 + 0.05 * 0.05).sqrt();
+        assert!(
+            (radius - expected).abs() < 1e-2,
+            "半径应来自贴图尺寸 {expected}，实际 {radius}"
+        );
+
+        // 没写 `frame_size` 时退回单位立方体（引擎才知道整张纹理多大）。
+        doc.entities[entity].components.insert(
+            "prism_engine::scene::SpriteRenderer".to_string(),
+            serde_json::json!({
+                "sprite_path": "sprites/boat.png",
+                "frame_size": [0, 0],
+                "pixels_per_unit": 1.0,
+            }),
+        );
+        let (_, unit) = world_bounds(&doc, &[entity]).expect("bounds");
+        assert!((unit - 0.866_025).abs() < 1e-3, "退回单位立方体: {unit}");
+    }
+
+    /// 碰撞体比精灵更贴形状，取景时优先用它。
+    #[test]
+    fn world_bounds_prefers_the_collider_shape() {
+        let mut doc = SceneDoc::default();
+        let entity = doc.add_named_child(None, "Crate");
+        doc.entities[entity].components.insert(
+            "prism_engine::scene::SpriteRenderer".to_string(),
+            serde_json::json!({ "frame_size": [4, 4], "pixels_per_unit": 1.0 }),
+        );
+        doc.entities[entity].components.insert(
+            "prism_engine::scene::Collider".to_string(),
+            serde_json::json!({ "shape": "Box", "half_extents": [2.0, 1.0, 0.5] }),
+        );
+        let (_, radius) = world_bounds(&doc, &[entity]).expect("bounds");
+        let expected = (4.0f32 + 1.0 + 0.25).sqrt();
+        assert!(
+            (radius - expected).abs() < 1e-3,
+            "碰撞体半尺寸 2×1×0.5 → 半径 {expected}，实际 {radius}"
+        );
+    }
+
+    /// 编辑器注入的 bounds 优先于文档里能算出来的部分（贴图尺寸只有引擎知道）。
+    #[test]
+    fn world_bounds_with_uses_the_injected_bounds() {
+        let mut doc = SceneDoc::default();
+        let entity = doc.add_named_child(None, "Boat");
+        let injected = PickBounds {
+            min: [-32.0, -8.0, -0.05],
+            max: [32.0, 8.0, 0.05],
+        };
+        let (_, radius) = world_bounds_with(&doc, &[entity], |_| Some(injected)).expect("bounds");
+        assert!(radius > 32.0, "注入 64×16 后半径应大于 32，实际 {radius}");
+        let (_, unit) = world_bounds(&doc, &[entity]).expect("bounds");
+        assert!(unit < 1.0, "同一实体没有注入时仍是单位立方体: {unit}");
     }
 
     #[test]

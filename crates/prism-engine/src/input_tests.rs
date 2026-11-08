@@ -145,6 +145,26 @@ fn begin_frame_clears_all_transient() {
 
 /// #589：静态 Player 读的是 `InputSnapshot` 资源，映射必须把按键、边沿、
 /// 鼠标位置与滚轮都带上（以前 host 后端只回 `InputSnapshot::default()`）。
+/// #986：放不进位图的键码必须被丢弃，且**不能**留下任何别的键的位。
+#[test]
+fn snapshot_drops_key_codes_that_do_not_fit_the_bitmap() {
+    let mut input = InputManager::new();
+    // 452 以前会被折叠到 30 + 452 % 226 = 30，看起来像另一个键被按住。
+    input.handle_keyboard(KeyCode::Other(452), ElementState::Pressed);
+    // 一个正常的、放得下的键码同时按下，用来确认其它键不受影响。
+    input.handle_keyboard(KeyCode::Other(10), ElementState::Pressed);
+
+    let snapshot = input_snapshot(&input, [640.0, 360.0]);
+    assert!(snapshot.key(30 + 10), "vk 10 应该正常上报");
+    assert!(!snapshot.key(30), "vk 452 不能被折叠到 30 上");
+    let set_bits: usize = snapshot
+        .keys
+        .iter()
+        .map(|word| word.count_ones() as usize)
+        .sum();
+    assert_eq!(set_bits, 1, "只该有 vk 10 一个键位被点亮");
+}
+
 #[test]
 fn snapshot_carries_cursor_keys_edges_and_scroll() {
     use prism_project_api::keys;

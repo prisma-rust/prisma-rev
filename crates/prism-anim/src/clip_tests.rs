@@ -226,6 +226,7 @@ fn notified_clip(duration: f32, looped: bool, notifies: &[(f32, &str)]) -> Clip 
             .collect(),
         sync_markers: Vec::new(),
         sections: Vec::new(),
+        warp_windows: Vec::new(),
     }
 }
 

@@ -34,7 +34,7 @@
 //! bind_pose: 10×f32
 //! ```
 //!
-//! ## RANI v4（animation clip + notifies + sync markers + montage sections）
+//! ## RANI v5（animation clip + notifies + sync markers + montage ranges）
 //!
 //! ```text
 //! [magic:4 "RANI"][version:1][name_len:u16][name][duration:f32][fps:f32][flags:u16][track_count:4]
@@ -49,11 +49,14 @@
 //! montage sections: section_count:4, section_count × {
 //!     start:f32, end:f32, name_len:u16, name
 //! }
+//! montage warp windows: window_count:4, window_count × {
+//!     start:f32, end:f32, name_len:u16, name
+//! }
 //! ```
 //!
 //! v2 在 v1 末尾追加事件表；v3 再追加同步标记表（`marker_count` = 0 时就是一个
-//! u32 的零）；v4 再追加 Montage 段表。头与轨道布局不变，v1 / v2 / v3 剪辑仍然
-//! 可读，缺的表解出来为空。
+//! u32 的零）；v4 再追加 Montage 段表；v5 再追加 Montage warp window 表。头与轨道
+//! 布局不变，v1–v4 剪辑仍然可读，缺的表解出来为空。
 
 /// RSKL magic。
 pub const RSKL_MAGIC: &[u8; 4] = b"RSKL";
@@ -69,7 +72,7 @@ pub const SKINNED_FORMAT_VERSION: u8 = 1;
 ///
 /// 与 [`SKINNED_FORMAT_VERSION`] 分开，是因为骨架 / 蒙皮网格没有需要加字段的理由，
 /// 而剪辑需要；混在一起会让 RSKL/RSKN 也跟着无谓地跳版本。
-pub const RANI_VERSION: u8 = 4;
+pub const RANI_VERSION: u8 = 5;
 
 /// 首次带 Notify 事件表的 RANI 版本。
 pub const RANI_NOTIFY_VERSION: u8 = 2;
@@ -79,6 +82,9 @@ pub const RANI_SYNC_MARKER_VERSION: u8 = 3;
 
 /// 首次带 Montage 段表的 RANI 版本。
 pub const RANI_SECTION_VERSION: u8 = 4;
+
+/// 首次带 Montage warp window 表的 RANI 版本。
+pub const RANI_WARP_WINDOW_VERSION: u8 = 5;
 
 /// 每根骨骼的 cooked 记录大小：parent(4) + flags(1) + pad(3) + local(40) + inverse_bind(64)。
 pub const RSKL_JOINT_RECORD_SIZE: usize = 4 + 1 + 3 + 40 + 64;
@@ -565,6 +571,15 @@ pub struct AnimClipSectionInfo {
     pub end: f32,
 }
 
+/// 一段 MotionWarping 窗口（#560 P4）：root motion 只在这个时间区间内允许被
+/// 目标点 / 朝向扭曲。`start` / `end` 是剪辑本地时间（秒）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnimClipWarpWindowInfo {
+    pub name: String,
+    pub start: f32,
+    pub end: f32,
+}
+
 /// 解码后的 `.ranim`。
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnimClipInfo {
@@ -580,6 +595,8 @@ pub struct AnimClipInfo {
     pub sync_markers: Vec<f32>,
     /// Montage 段（按 `start` 升序；v1–v3 剪辑为空）。
     pub sections: Vec<AnimClipSectionInfo>,
+    /// MotionWarping 窗口（按 `start` 升序；v1–v4 剪辑为空）。
+    pub warp_windows: Vec<AnimClipWarpWindowInfo>,
 }
 
 impl AnimClipInfo {
@@ -756,6 +773,36 @@ pub fn decode_ranim(data: &[u8]) -> Option<AnimClipInfo> {
         });
     }
 
+    // v5 追加 MotionWarping 窗口表；v1–v4 没有。
+    let mut warp_windows = Vec::new();
+    if version >= RANI_WARP_WINDOW_VERSION {
+        let window_count = reader.u32()? as usize;
+        if window_count > 1 << 12 {
+            return None;
+        }
+        warp_windows.reserve(window_count);
+        for _ in 0..window_count {
+            let start = reader.f32()?;
+            let end = reader.f32()?;
+            let name_len = reader.u16()? as usize;
+            let name = String::from_utf8(reader.take(name_len)?.to_vec()).ok()?;
+            if name.trim().is_empty()
+                || !start.is_finite()
+                || !end.is_finite()
+                || start < 0.0
+                || end < start
+            {
+                return None;
+            }
+            warp_windows.push(AnimClipWarpWindowInfo { name, start, end });
+        }
+        warp_windows.sort_by(|a, b| {
+            a.start
+                .total_cmp(&b.start)
+                .then_with(|| a.name.cmp(&b.name))
+        });
+    }
+
     if reader.remaining() != 0 {
         return None;
     }
@@ -770,6 +817,7 @@ pub fn decode_ranim(data: &[u8]) -> Option<AnimClipInfo> {
         notifies,
         sync_markers,
         sections,
+        warp_windows,
     })
 }
 

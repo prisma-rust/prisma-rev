@@ -1,4 +1,5 @@
 {
+    "version": "1.1",
     "parameters": [
         {
             "name": "push",
@@ -18,9 +19,12 @@
                                 "elementType": {
                                     "kind": "scalar",
                                     "scalarType": "float32"
-                                }
+                                },
+                                "sizes": [
+                                    {"kind": "uniform", "value": 64, "alignment": 16}
+                                ]
                             },
-                            "binding": {"kind": "uniform", "offset": 0, "size": 64}
+                            "binding": {"kind": "uniform", "offset": 0, "size": 64, "elementStride": 0}
                         },
                         {
                             "name": "model",
@@ -31,10 +35,16 @@
                                 "elementType": {
                                     "kind": "scalar",
                                     "scalarType": "float32"
-                                }
+                                },
+                                "sizes": [
+                                    {"kind": "uniform", "value": 64, "alignment": 16}
+                                ]
                             },
-                            "binding": {"kind": "uniform", "offset": 64, "size": 64}
+                            "binding": {"kind": "uniform", "offset": 64, "size": 64, "elementStride": 0}
                         }
+                    ],
+                    "sizes": [
+                        {"kind": "uniform", "value": 128, "alignment": 16}
                     ]
                 },
                 "containerVarLayout": {
@@ -54,9 +64,12 @@
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "float32"
-                                    }
+                                    },
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 64, "alignment": 16}
+                                    ]
                                 },
-                                "binding": {"kind": "uniform", "offset": 0, "size": 64}
+                                "binding": {"kind": "uniform", "offset": 0, "size": 64, "elementStride": 0}
                             },
                             {
                                 "name": "model",
@@ -67,21 +80,186 @@
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "float32"
-                                    }
+                                    },
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 64, "alignment": 16}
+                                    ]
                                 },
-                                "binding": {"kind": "uniform", "offset": 64, "size": 64}
+                                "binding": {"kind": "uniform", "offset": 64, "size": 64, "elementStride": 0}
                             }
+                        ],
+                        "sizes": [
+                            {"kind": "uniform", "value": 128, "alignment": 16}
                         ]
                     },
-                    "binding": {"kind": "uniform", "offset": 0, "size": 128}
-                }
+                    "binding": {"kind": "uniform", "offset": 0, "size": 128, "elementStride": 0}
+                },
+                "sizes": [
+                    {"kind": "pushConstantBuffer", "value": 1}
+                ]
             }
         }
     ],
+    "globalScope": {
+        "kind": "none",
+        "parameters": [
+            {
+                "name": "push",
+                "binding": {"kind": "pushConstantBuffer", "index": 0},
+                "type": {
+                    "kind": "constantBuffer",
+                    "elementType": {
+                        "kind": "struct",
+                        "name": "GizmoPush",
+                        "fields": [
+                            {
+                                "name": "viewProj",
+                                "type": {
+                                    "kind": "matrix",
+                                    "rowCount": 4,
+                                    "columnCount": 4,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    },
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 64, "alignment": 16}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 0, "size": 64, "elementStride": 0}
+                            },
+                            {
+                                "name": "model",
+                                "type": {
+                                    "kind": "matrix",
+                                    "rowCount": 4,
+                                    "columnCount": 4,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    },
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 64, "alignment": 16}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 64, "size": 64, "elementStride": 0}
+                            }
+                        ],
+                        "sizes": [
+                            {"kind": "uniform", "value": 128, "alignment": 16}
+                        ]
+                    },
+                    "containerVarLayout": {
+                        "binding": {"kind": "pushConstantBuffer", "index": 0}
+                    },
+                    "elementVarLayout": {
+                        "type": {
+                            "kind": "struct",
+                            "name": "GizmoPush",
+                            "fields": [
+                                {
+                                    "name": "viewProj",
+                                    "type": {
+                                        "kind": "matrix",
+                                        "rowCount": 4,
+                                        "columnCount": 4,
+                                        "elementType": {
+                                            "kind": "scalar",
+                                            "scalarType": "float32"
+                                        },
+                                        "sizes": [
+                                            {"kind": "uniform", "value": 64, "alignment": 16}
+                                        ]
+                                    },
+                                    "binding": {"kind": "uniform", "offset": 0, "size": 64, "elementStride": 0}
+                                },
+                                {
+                                    "name": "model",
+                                    "type": {
+                                        "kind": "matrix",
+                                        "rowCount": 4,
+                                        "columnCount": 4,
+                                        "elementType": {
+                                            "kind": "scalar",
+                                            "scalarType": "float32"
+                                        },
+                                        "sizes": [
+                                            {"kind": "uniform", "value": 64, "alignment": 16}
+                                        ]
+                                    },
+                                    "binding": {"kind": "uniform", "offset": 64, "size": 64, "elementStride": 0}
+                                }
+                            ],
+                            "sizes": [
+                                {"kind": "uniform", "value": 128, "alignment": 16}
+                            ]
+                        },
+                        "binding": {"kind": "uniform", "offset": 0, "size": 128, "elementStride": 0}
+                    },
+                    "sizes": [
+                        {"kind": "pushConstantBuffer", "value": 1}
+                    ]
+                }
+            }
+        ]
+    },
     "entryPoints": [
         {
             "name": "vertexMain",
             "stage": "vertex",
+            "scope": {
+                "kind": "none",
+                "parameters": [
+                    {
+                        "name": "in",
+                        "stage": "vertex",
+                        "binding": {"kind": "varyingInput", "index": 0, "count": 2},
+                        "type": {
+                            "kind": "struct",
+                            "name": "GizmoVertexIn",
+                            "fields": [
+                                {
+                                    "name": "position",
+                                    "type": {
+                                        "kind": "vector",
+                                        "elementCount": 3,
+                                        "elementType": {
+                                            "kind": "scalar",
+                                            "scalarType": "float32"
+                                        },
+                                        "sizes": [
+                                            {"kind": "varyingInput", "value": 1}
+                                        ]
+                                    },
+                                    "stage": "vertex",
+                                    "binding": {"kind": "varyingInput", "index": 0},
+                                    "semanticName": "POSITION"
+                                },
+                                {
+                                    "name": "color",
+                                    "type": {
+                                        "kind": "vector",
+                                        "elementCount": 3,
+                                        "elementType": {
+                                            "kind": "scalar",
+                                            "scalarType": "float32"
+                                        },
+                                        "sizes": [
+                                            {"kind": "varyingInput", "value": 1}
+                                        ]
+                                    },
+                                    "stage": "vertex",
+                                    "binding": {"kind": "varyingInput", "index": 1},
+                                    "semanticName": "COLOR"
+                                }
+                            ],
+                            "sizes": [
+                                {"kind": "varyingInput", "value": 2}
+                            ]
+                        }
+                    }
+                ]
+            },
             "parameters": [
                 {
                     "name": "in",
@@ -99,7 +277,10 @@
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "float32"
-                                    }
+                                    },
+                                    "sizes": [
+                                        {"kind": "varyingInput", "value": 1}
+                                    ]
                                 },
                                 "stage": "vertex",
                                 "binding": {"kind": "varyingInput", "index": 0},
@@ -113,12 +294,18 @@
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "float32"
-                                    }
+                                    },
+                                    "sizes": [
+                                        {"kind": "varyingInput", "value": 1}
+                                    ]
                                 },
                                 "stage": "vertex",
                                 "binding": {"kind": "varyingInput", "index": 1},
                                 "semanticName": "COLOR"
                             }
+                        ],
+                        "sizes": [
+                            {"kind": "varyingInput", "value": 2}
                         ]
                     }
                 }
@@ -138,7 +325,10 @@
                                 "elementType": {
                                     "kind": "scalar",
                                     "scalarType": "float32"
-                                }
+                                },
+                                "sizes": [
+
+                                ]
                             },
                             "semanticName": "SV_POSITION"
                         },
@@ -150,12 +340,18 @@
                                 "elementType": {
                                     "kind": "scalar",
                                     "scalarType": "float32"
-                                }
+                                },
+                                "sizes": [
+                                    {"kind": "varyingOutput", "value": 1}
+                                ]
                             },
                             "stage": "vertex",
                             "binding": {"kind": "varyingOutput", "index": 0},
                             "semanticName": "COLOR"
                         }
+                    ],
+                    "sizes": [
+                        {"kind": "varyingOutput", "value": 1}
                     ]
                 }
             },
@@ -169,6 +365,57 @@
         {
             "name": "fragmentMain",
             "stage": "fragment",
+            "scope": {
+                "kind": "none",
+                "parameters": [
+                    {
+                        "name": "in",
+                        "stage": "fragment",
+                        "binding": {"kind": "varyingInput", "index": 0},
+                        "type": {
+                            "kind": "struct",
+                            "name": "GizmoVaryings",
+                            "fields": [
+                                {
+                                    "name": "clipPos",
+                                    "type": {
+                                        "kind": "vector",
+                                        "elementCount": 4,
+                                        "elementType": {
+                                            "kind": "scalar",
+                                            "scalarType": "float32"
+                                        },
+                                        "sizes": [
+
+                                        ]
+                                    },
+                                    "semanticName": "SV_POSITION"
+                                },
+                                {
+                                    "name": "color",
+                                    "type": {
+                                        "kind": "vector",
+                                        "elementCount": 3,
+                                        "elementType": {
+                                            "kind": "scalar",
+                                            "scalarType": "float32"
+                                        },
+                                        "sizes": [
+                                            {"kind": "varyingInput", "value": 1}
+                                        ]
+                                    },
+                                    "stage": "fragment",
+                                    "binding": {"kind": "varyingInput", "index": 0},
+                                    "semanticName": "COLOR"
+                                }
+                            ],
+                            "sizes": [
+                                {"kind": "varyingInput", "value": 1}
+                            ]
+                        }
+                    }
+                ]
+            },
             "parameters": [
                 {
                     "name": "in",
@@ -186,7 +433,10 @@
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "float32"
-                                    }
+                                    },
+                                    "sizes": [
+
+                                    ]
                                 },
                                 "semanticName": "SV_POSITION"
                             },
@@ -198,12 +448,18 @@
                                     "elementType": {
                                         "kind": "scalar",
                                         "scalarType": "float32"
-                                    }
+                                    },
+                                    "sizes": [
+                                        {"kind": "varyingInput", "value": 1}
+                                    ]
                                 },
                                 "stage": "fragment",
                                 "binding": {"kind": "varyingInput", "index": 0},
                                 "semanticName": "COLOR"
                             }
+                        ],
+                        "sizes": [
+                            {"kind": "varyingInput", "value": 1}
                         ]
                     }
                 }
@@ -218,7 +474,10 @@
                     "elementType": {
                         "kind": "scalar",
                         "scalarType": "float32"
-                    }
+                    },
+                    "sizes": [
+                        {"kind": "varyingOutput", "value": 1}
+                    ]
                 }
             },
             "bindings": [
@@ -228,5 +487,6 @@
                 }
             ]
         }
-    ]
+    ],
+    "bindlessSpaceIndex": 0
 }

@@ -467,6 +467,11 @@ const LEGACY_CONFIG_PATH: &str = "settings.toml";
 /// 这样编辑器把 `[build]` 等自有段写进同一份文件时引擎不会报错。
 const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("app", &["company", "name"]),
+    // 引擎不读 `[build]`（`lib_name` / `output_dir` / `profile` 是编辑器和打包
+    // 流程用的），但它确实是项目配置的合法段。列成「已知但无键」，
+    // `log_unknown_entries` 就不会每读一次 settings.ini 报一句
+    // "ignoring unknown section [build]"（#985）。
+    ("build", &[]),
     (
         "window",
         &[

@@ -25,13 +25,20 @@ mod skinned;
 
 use crate::db::{AssetDatabase, AssetRecord, ImportCache};
 use prism_asset::core::{AssetId, AssetType};
-use prism_asset::formats_skinned::{AnimClipSectionInfo, AnimNotifyInfo};
+use prism_asset::formats_skinned::{AnimClipSectionInfo, AnimClipWarpWindowInfo, AnimNotifyInfo};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thiserror::Error;
 
 use serde_json::Value;
+
+/// 作者侧 `*.skinning/montages.json` 里一个剪辑的 Montage 数据（#560 P4）。
+#[derive(Debug, Clone, Default)]
+pub struct AuthoredMontage {
+    pub sections: Vec<AnimClipSectionInfo>,
+    pub warp_windows: Vec<AnimClipWarpWindowInfo>,
+}
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -928,7 +935,7 @@ impl GltfImporter {
     /// 失败，避免打错的段被静默忽略。
     pub fn authored_montages(
         source: &Path,
-    ) -> Result<std::collections::HashMap<String, Vec<AnimClipSectionInfo>>, ImportError> {
+    ) -> Result<std::collections::HashMap<String, AuthoredMontage>, ImportError> {
         let mut side = source.to_path_buf().into_os_string();
         side.push(".skinning/montages.json");
         let path = std::path::PathBuf::from(side);
@@ -939,10 +946,12 @@ impl GltfImporter {
         #[derive(serde::Deserialize)]
         struct Entry {
             #[serde(default)]
-            sections: Vec<Section>,
+            sections: Vec<Range>,
+            #[serde(default)]
+            warp_windows: Vec<Range>,
         }
         #[derive(serde::Deserialize)]
-        struct Section {
+        struct Range {
             name: String,
             start: f32,
             end: f32,
@@ -956,48 +965,61 @@ impl GltfImporter {
         let parsed: File = serde_json::from_str(&text).map_err(|error| {
             ImportError::ImportFailed(format!("{}: invalid montage file: {error}", path.display()))
         })?;
-        let mut out = std::collections::HashMap::new();
-        for (clip, entry) in parsed.clips {
-            let mut sections = Vec::with_capacity(entry.sections.len());
-            for section in entry.sections {
-                let name = section.name.trim();
+
+        let parse_ranges = |clip: &str, kind: &str, ranges: Vec<Range>| {
+            let mut out = Vec::with_capacity(ranges.len());
+            for range in ranges {
+                let name = range.name.trim();
                 if name.is_empty() {
                     return Err(ImportError::ImportFailed(format!(
-                        "{}: clip '{clip}' has a montage section without a name",
+                        "{}: clip '{clip}' has a montage {kind} without a name",
                         path.display()
                     )));
                 }
-                if !section.start.is_finite()
-                    || !section.end.is_finite()
-                    || section.start < 0.0
-                    || section.end < section.start
+                if !range.start.is_finite()
+                    || !range.end.is_finite()
+                    || range.start < 0.0
+                    || range.end < range.start
                 {
                     return Err(ImportError::ImportFailed(format!(
-                        "{}: clip '{clip}' section '{name}' needs finite 0 <= start <= end",
+                        "{}: clip '{clip}' {kind} '{name}' needs finite 0 <= start <= end",
                         path.display()
                     )));
                 }
-                if sections
+                if out
                     .iter()
-                    .any(|existing: &AnimClipSectionInfo| existing.name == name)
+                    .any(|existing: &(String, f32, f32)| existing.0 == name)
                 {
                     return Err(ImportError::ImportFailed(format!(
-                        "{}: clip '{clip}' has duplicate montage section '{name}'",
+                        "{}: clip '{clip}' has duplicate montage {kind} '{name}'",
                         path.display()
                     )));
                 }
-                sections.push(AnimClipSectionInfo {
-                    name: name.to_string(),
-                    start: section.start,
-                    end: section.end,
-                });
+                out.push((name.to_string(), range.start, range.end));
             }
-            sections.sort_by(|a, b| {
-                a.start
-                    .total_cmp(&b.start)
-                    .then_with(|| a.name.cmp(&b.name))
+            out.sort_by(|a: &(String, f32, f32), b: &(String, f32, f32)| {
+                a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0))
             });
-            out.insert(clip, sections);
+            Ok(out)
+        };
+
+        let mut out = std::collections::HashMap::new();
+        for (clip, entry) in parsed.clips {
+            let sections = parse_ranges(&clip, "section", entry.sections)?
+                .into_iter()
+                .map(|(name, start, end)| AnimClipSectionInfo { name, start, end })
+                .collect();
+            let warp_windows = parse_ranges(&clip, "warp window", entry.warp_windows)?
+                .into_iter()
+                .map(|(name, start, end)| AnimClipWarpWindowInfo { name, start, end })
+                .collect();
+            out.insert(
+                clip,
+                AuthoredMontage {
+                    sections,
+                    warp_windows,
+                },
+            );
         }
         Ok(out)
     }
@@ -1205,9 +1227,9 @@ impl GltfImporter {
                     used_markers.insert(clip.name.clone());
                     clip.sync_markers = markers.clone();
                 }
-                if let Some(sections) = authored_montages.get(&clip.name) {
+                if let Some(montage) = authored_montages.get(&clip.name) {
                     let duration = clip.clip_duration();
-                    for section in sections {
+                    for section in &montage.sections {
                         if section.end > duration {
                             return Err(ImportError::ImportFailed(format!(
                                 "{}: clip '{}' section '{}' ends at {:.3}s, beyond the {:.3}s clip",
@@ -1219,8 +1241,21 @@ impl GltfImporter {
                             )));
                         }
                     }
+                    for window in &montage.warp_windows {
+                        if window.end > duration {
+                            return Err(ImportError::ImportFailed(format!(
+                                "{}: clip '{}' warp window '{}' ends at {:.3}s, beyond the {:.3}s clip",
+                                path.display(),
+                                clip.name,
+                                window.name,
+                                window.end,
+                                duration
+                            )));
+                        }
+                    }
                     used_montages.insert(clip.name.clone());
-                    clip.sections = sections.clone();
+                    clip.sections = montage.sections.clone();
+                    clip.warp_windows = montage.warp_windows.clone();
                 }
                 let clip = &clip;
                 let name = sanitize_asset_name(Some(&clip.name), "clip");

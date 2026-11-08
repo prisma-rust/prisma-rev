@@ -744,6 +744,32 @@ pub fn post_destination(
     }
 }
 
+/// [`post_destination`] 的纯数据版本：`(offset, extent)`，不依赖 `ash`。
+///
+/// 宿主（`prism-app`）用它推导「窗口像素 → UI 布局空间」的映射（#988），
+/// 保证叠在画面上的 HUD 与 PostPass 放大后的矩形完全重合。
+pub fn post_destination_px(
+    swapchain: [u32; 2],
+    internal: [u32; 2],
+    mode: InternalScaleMode,
+) -> ([u32; 2], [u32; 2]) {
+    let rect = post_destination(
+        vk::Extent2D {
+            width: swapchain[0],
+            height: swapchain[1],
+        },
+        vk::Extent2D {
+            width: internal[0],
+            height: internal[1],
+        },
+        mode,
+    );
+    (
+        [rect.offset.x.max(0) as u32, rect.offset.y.max(0) as u32],
+        [rect.extent.width, rect.extent.height],
+    )
+}
+
 /// Post-processing knobs consumed by `PostPass` (#502).
 ///
 /// `contrast` / `saturation` / `vignette` are display-referred and run **after**

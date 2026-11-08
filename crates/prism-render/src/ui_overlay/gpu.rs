@@ -824,6 +824,9 @@ impl UiOverlay {
         context: &VulkanContext,
         cmd: vk::CommandBuffer,
         extent: vk::Extent2D,
+        // 目标矩形（#988）：`internal_resolution` 生效时 UI 只画在这一块里，
+        // 与 PostPass 等比放大后的画面重合，不压到黑边上。
+        dest: vk::Rect2D,
         target_view: vk::ImageView,
         input: &UiOverlayInput,
         // 场景 bindless 纹理表（set 1）；UI 背景图按 `UiQuad::texture` 取样。
@@ -840,8 +843,8 @@ impl UiOverlay {
 
         // Build 顶点 (quads + 逐字形展开的 texts)。
         let mut vertices: Vec<UiVertex> = Vec::with_capacity(estimated_vertices as usize);
-        let w = extent.width as f32;
-        let h = extent.height as f32;
+        let w = dest.extent.width as f32;
+        let h = dest.extent.height as f32;
 
         // 按引擎算好的层级顺序交错画矩形和文本（旧路径没有顺序时退化成
         // 「先全部矩形、再全部文本」）。
@@ -1022,16 +1025,16 @@ impl UiOverlay {
                 );
             }
 
+            // NDC [-1,1] 映射到 `dest`：UI 与场景一起被整数倍放大并居中，
+            // 黑边留在外面（scissor 同时挡住越界像素）。
             let vp = vk::Viewport::default()
-                .x(0.0)
-                .y(0.0)
-                .width(extent.width as f32)
-                .height(extent.height as f32)
+                .x(dest.offset.x as f32)
+                .y(dest.offset.y as f32)
+                .width(dest.extent.width as f32)
+                .height(dest.extent.height as f32)
                 .min_depth(0.0)
                 .max_depth(1.0);
-            let sc = vk::Rect2D::default()
-                .offset(vk::Offset2D { x: 0, y: 0 })
-                .extent(extent);
+            let sc = dest;
             context
                 .device
                 .cmd_set_viewport(cmd, 0, std::slice::from_ref(&vp));

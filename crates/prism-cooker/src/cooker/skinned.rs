@@ -295,6 +295,32 @@ pub fn encode_ranim(clip: &AnimClipInfo) -> Option<Vec<u8>> {
         out.extend_from_slice(section.name.as_bytes());
     }
 
+    // v5 MotionWarping 窗口（#560 P4）：同样的排序 / 过滤规则。
+    let mut windows: Vec<&prism_asset::formats_skinned::AnimClipWarpWindowInfo> = clip
+        .warp_windows
+        .iter()
+        .filter(|window| {
+            !window.name.trim().is_empty()
+                && window.name.len() <= u16::MAX as usize
+                && window.start.is_finite()
+                && window.end.is_finite()
+                && window.start >= 0.0
+                && window.end >= window.start
+        })
+        .collect();
+    windows.sort_by(|a, b| {
+        a.start
+            .total_cmp(&b.start)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    out.extend_from_slice(&(windows.len() as u32).to_le_bytes());
+    for window in windows {
+        out.extend_from_slice(&window.start.to_le_bytes());
+        out.extend_from_slice(&window.end.to_le_bytes());
+        out.extend_from_slice(&(window.name.len() as u16).to_le_bytes());
+        out.extend_from_slice(window.name.as_bytes());
+    }
+
     Some(out)
 }
 

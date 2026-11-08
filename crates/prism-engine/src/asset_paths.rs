@@ -55,7 +55,9 @@ pub fn search_roots() -> Vec<PathBuf> {
 pub fn asset_root() -> Option<PathBuf> {
     let root = find_asset_root(&search_roots());
     match &root {
-        Some(root) => log::debug!("asset root: {}", root.display()),
+        // 每次资产查询都会走到这里（一次会话几十次），所以常驻日志只留在
+        // `trace`；启动时 `prism-app` 会单独打一行 `asset root:`。
+        Some(root) => log::trace!("asset root: {}", root.display()),
         None => {
             if !WARNED_MISSING_ROOT.swap(true, Ordering::Relaxed) {
                 log::warn!(

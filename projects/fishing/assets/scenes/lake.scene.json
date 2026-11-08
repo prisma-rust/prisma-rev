@@ -207,6 +207,175 @@
           "playing": true
         }
       }
+    },
+    {
+      "name": "day_night",
+      "parent": null,
+      "transform": {
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      "components": {
+        "prism_engine::scene::TimeOfDay": {
+          "hours": 8.0,
+          "day_length_seconds": 60.0,
+          "paused": false,
+          "sunrise_hour": 6.0,
+          "sunset_hour": 18.0,
+          "twilight_hours": 1.5,
+          "day_color": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "day_intensity": 1.0,
+          "night_color": [
+            0.22,
+            0.26,
+            0.42
+          ],
+          "night_intensity": 0.85
+        },
+        "prism_engine::scene::Light2D": {
+          "kind": "Ambient",
+          "color": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "intensity": 1.0,
+          "radius": 0.0,
+          "enabled": true
+        }
+      },
+      "id": 7
+    },
+    {
+      "id": 5,
+      "name": "ui_canvas",
+      "parent": null,
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "components": {
+        "prism_engine::ui::Node": {},
+        "prism_engine::ui::Style": {
+          "anchors": {
+            "min_x": 0.0,
+            "min_y": 0.0,
+            "max_x": 1.0,
+            "max_y": 1.0
+          },
+          "background": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "visible": true
+        },
+        "prism_engine::ui::Canvas": {
+          "reference_resolution": [
+            640.0,
+            360.0
+          ],
+          "scale_mode": "ScaleWithScreenSize",
+          "match_width_or_height": 0.5
+        }
+      }
+    },
+    {
+      "id": 6,
+      "name": "title",
+      "parent": 5,
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "components": {
+        "prism_engine::ui::Node": {},
+        "prism_engine::ui::Style": {
+          "anchors": {
+            "min_x": 0.0,
+            "min_y": 0.0,
+            "max_x": 1.0,
+            "max_y": 0.0
+          },
+          "height": 22.0,
+          "margin": {
+            "left": 10.0,
+            "right": 10.0,
+            "top": 8.0,
+            "bottom": 0.0
+          },
+          "pivot": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "background": [
+            0.0,
+            0.0,
+            0.0,
+            0.35
+          ],
+          "visible": true
+        },
+        "prism_engine::ui::Text": {
+          "content": "CATCH LOG",
+          "font_size": 16.0,
+          "color": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "alignment": "Left",
+          "wrap": false
+        }
+      }
     }
   ]
 }

@@ -707,9 +707,14 @@ impl ForwardPass {
         // and the (shared) light SSBO at binding 2.
         // Built once here; never rewritten at runtime.
         let frame_set_bindings = [
+            // Binding 0 is DYNAMIC: the pass composites several cameras from
+            // one set by passing `camera_index * stride` as a dynamic offset
+            // (#461). A plain `UNIFORM_BUFFER` here made every
+            // `vkCmdBindDescriptorSets` report
+            // `dynamicOffsetCount-00359` (0 dynamic descriptors, 1 offset).
             vk::DescriptorSetLayoutBinding::default()
                 .binding(scene_frag::FRAME_BINDING)
-                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT),
             vk::DescriptorSetLayoutBinding::default()
@@ -755,7 +760,8 @@ impl ForwardPass {
         self.frame_sets.clear();
 
         let fif_count = frame_ubo_buffers.len();
-        // 池 needs: UNIFORM_BUFFER fif_count, plus three STORAGE_BUFFER
+        // 池 needs: UNIFORM_BUFFER_DYNAMIC fif_count (the frame UBO is bound
+        // with a per-camera dynamic offset), plus three STORAGE_BUFFER
         // bindings per set (materials, point lights, bone palette).
         let frame_pool = unsafe {
             device.create_descriptor_pool(
@@ -763,7 +769,7 @@ impl ForwardPass {
                     .max_sets(fif_count as u32)
                     .pool_sizes(&[
                         vk::DescriptorPoolSize {
-                            ty: vk::DescriptorType::UNIFORM_BUFFER,
+                            ty: vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC,
                             descriptor_count: fif_count as u32,
                         },
                         vk::DescriptorPoolSize {
@@ -966,7 +972,8 @@ impl ForwardPass {
                 vk::WriteDescriptorSet::default()
                     .dst_set(*set)
                     .dst_binding(scene_frag::FRAME_BINDING)
-                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+                    // 必须与布局里的 DYNAMIC 类型一致，否则写入被忽略。
+                    .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC)
                     .buffer_info(std::slice::from_ref(&ubo_infos[i])),
             );
             writes.push(
@@ -1494,10 +1501,14 @@ impl ForwardPass {
         let color_attachment = vk::AttachmentDescription::default()
             .format(self.color_format)
             .samples(vk::SampleCountFlags::TYPE_1)
-            // #461: every camera after the first must preserve what came
-            // before, so the load op is LOAD and the pass clears explicitly
-            // with `vkCmdClearAttachments` according to `Camera.clearFlags`.
-            .load_op(vk::AttachmentLoadOp::LOAD)
+            // #972: `initial_layout` is UNDEFINED (the 渲染 graph emits no
+            // barrier before this pass, see `setup`), and Vulkan forbids
+            // LOAD with an UNDEFINED initial layout — the load would read
+            // undefined texels. Every camera clears explicitly with
+            // `vkCmdClearAttachments` according to `Camera.clearFlags`, and
+            // the "preserve what came before" case (#461) happens **inside**
+            // this single 渲染 pass instance, where DONT_CARE never applies.
+            .load_op(vk::AttachmentLoadOp::DONT_CARE)
             .store_op(vk::AttachmentStoreOp::STORE)
             .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
             .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
@@ -1520,7 +1531,9 @@ impl ForwardPass {
         let depth_attachment = vk::AttachmentDescription::default()
             .format(vk::Format::D32_SFLOAT)
             .samples(vk::SampleCountFlags::TYPE_1)
-            .load_op(vk::AttachmentLoadOp::LOAD)
+            // 同 #972：UNDEFINED 起始布局只能用 CLEAR / DONT_CARE，深度由
+            // 每个 相机 的 clear flags 显式清空。
+            .load_op(vk::AttachmentLoadOp::DONT_CARE)
             .store_op(vk::AttachmentStoreOp::STORE)
             .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
             .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
@@ -1537,7 +1550,8 @@ impl ForwardPass {
         let normal_attachment = vk::AttachmentDescription::default()
             .format(self.normal_format)
             .samples(vk::SampleCountFlags::TYPE_1)
-            .load_op(vk::AttachmentLoadOp::LOAD)
+            // 同 #972。
+            .load_op(vk::AttachmentLoadOp::DONT_CARE)
             .store_op(vk::AttachmentStoreOp::STORE)
             .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
             .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
@@ -1640,9 +1654,10 @@ impl ForwardPass {
             .render_pass
             .context("ForwardPass: render_pass not created before pipeline")?;
 
-        // Vertex: reuse mesh_vert.vert.spv (MeshPush{model}, 64 bytes). The pipeline
-        // pushes PbrBindlessPushConstants (96 bytes); the vertex stage only
-        // reads the first 64 bytes (model), which Vulkan permits.
+        // Vertex: reuse mesh_vert.vert.spv (`MeshPush { model }`, 64 bytes). The
+        // pipeline pushes the same `shader_bindings::scene_frag::PbrBindlessPush`
+        // block (120 bytes); the vertex stage only reads the leading `model`, and
+        // Vulkan allows the push range to exceed what a stage actually reads.
         // Fragment: scene_frag.frag.spv (bindless PBR + shadow).
         const VERT_SPV: &[u8] = include_bytes!("../../../assets/shaders/mesh_vert.vert.spv");
         const FRAG_SPV: &[u8] = include_bytes!("../../../assets/shaders/scene_frag.frag.spv");
