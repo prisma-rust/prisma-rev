@@ -93,6 +93,9 @@ deviating from those conventions is a bug. (`README.md` is the human-facing over
   不需要 `prism-app/physics`）。场景实体加 `FootIk` 组件即接线：`animator_system` 在算骨骼
   调色板之前跑 `scene::systems::foot_ik`（动画图与普通剪辑分支都跑，LOD 冻结的远处实体跳过），
   关节名解析失败时姿态原样保留。约定见 [`docs/anim-ik.md`](docs/anim-ik.md)。
+- `crates/prism-anim-retarget` — 姿态重定向的**纯数学**层（#560 P5）：关节映射 + 相对 rest pose 的
+  旋转搬运 + 按骨长比例缩放位移，只依赖 `prism-anim` + glam。IK goal / `RetargeterDef` 资产 /
+  链类型映射 / 编辑器预览都还没有。约定见 [`docs/anim-retarget.md`](docs/anim-retarget.md)。
 - `crates/prism-motion-matching` — 动作匹配的**纯数据 / 纯数学**层（#560 P3）：轨迹、姿态特征、剪辑采样数据库、线性最近邻搜索，只依赖 `prism-anim` + glam。运行时接线（查询、切帧、混合）与加速结构都还没有。约定见 [`docs/anim-motion-matching.md`](docs/anim-motion-matching.md)。
 - `crates/prism-cooker` — **build-time** layer: importers, cookers, asset database, CookProfile,
   and the `prism-cook` CLI (`src/main.rs`). Depends on `prism-asset` + `prism-scene`; never
