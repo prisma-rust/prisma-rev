@@ -18,6 +18,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from lib.console import force_utf8_streams  # noqa: E402
 
 # (标签, cargo 参数)。每条都必须是「项目模板会真的这样构建」的组合。
 MATRIX: list[tuple[str, list[str]]] = [
@@ -52,6 +55,7 @@ MATRIX: list[tuple[str, list[str]]] = [
 
 
 def main() -> int:
+    force_utf8_streams()
     parser = argparse.ArgumentParser(description="PrismaRev feature matrix check")
     parser.add_argument("--list", action="store_true")
     args = parser.parse_args()
@@ -64,7 +68,14 @@ def main() -> int:
     failed: list[str] = []
     for label, cmd in MATRIX:
         sys.stderr.write(f"→ {label}: cargo {' '.join(cmd)}\n")
-        proc = subprocess.run(["cargo", *cmd], cwd=ROOT, capture_output=True, text=True)
+        proc = subprocess.run(
+            ["cargo", *cmd],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
         if proc.returncode != 0:
             failed.append(label)
             sys.stderr.write(proc.stderr[-4000:] + "\n")

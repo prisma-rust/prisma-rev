@@ -33,6 +33,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 IS_WINDOWS = os.name == "nt"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from lib.console import force_utf8_streams  # noqa: E402
 
 # 这些文件变化会影响整个根 workspace。
 WORKSPACE_WIDE = {
@@ -65,15 +68,7 @@ BAD_NAMES = {".env", "local.properties", "id_rsa", "id_ed25519"}
 # 基础设施
 # --------------------------------------------------------------------------- #
 
-def _force_utf8_streams() -> None:
-    """Windows 控制台默认 GBK：打印 ✅ / ⚠ 会抛 UnicodeEncodeError（PR 自检假红）。"""
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is not None:
-            reconfigure(encoding="utf-8", errors="replace")
-
-
-_force_utf8_streams()
+force_utf8_streams()
 
 
 def eprint(*args: object) -> None:
@@ -95,6 +90,7 @@ def run(cmd: list[str], cwd: Path = ROOT) -> tuple[int, str]:
             text=True,
             encoding="utf-8",
             errors="replace",
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
         )
     except FileNotFoundError:
         return 127, f"command not found: {cmd[0]}"
@@ -529,10 +525,6 @@ def main() -> int:
     parser.add_argument("--verbose", action="store_true", help="失败时打印完整输出")
     args = parser.parse_args()
 
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-
     ensure_toolchain_in_path()
     base = resolve_base(args.base)
     changed = changed_files(base)
@@ -675,6 +667,24 @@ def main() -> int:
         detail = check.detail.replace("|", "\\|")
         lines.append(f"| {check.name} | {icons[check.status]} | {detail} |")
     lines.append("")
+    if failed:
+        # A check can fail because the tool itself crashed (bad console encoding,
+        # missing binary). Keep the tail in the report so a red row is never a
+        # mystery that has to be re-run with --verbose.
+        lines.append("<details><summary>Failed check output (last 25 lines each)</summary>")
+        lines.append("")
+        for check in checks:
+            if check.status != "fail":
+                continue
+            tail = "\n".join(check.output.rstrip().splitlines()[-25:]).strip()
+            lines.append(f"**`{check.name}`**")
+            lines.append("")
+            lines.append("```text")
+            lines.extend(tail.splitlines() or ["(no output)"])
+            lines.append("```")
+            lines.append("")
+        lines.append("</details>")
+        lines.append("")
     if failed:
         lines.append("**Result: ❌ checks failed**")
     elif any(check.status == "warn" for check in checks):

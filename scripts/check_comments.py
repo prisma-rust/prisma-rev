@@ -32,6 +32,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from lib.console import force_utf8_streams  # noqa: E402
 from lib.rust_comments import comment_body, has_module_doc, lex  # noqa: E402
 
 # CJK ideographs, CJK punctuation and fullwidth forms. Typographic symbols
@@ -209,6 +210,7 @@ def markdown_row(total: int, counts: dict[str, int], warn_only: bool) -> str:
 
 
 def main() -> int:
+    force_utf8_streams()
     parser = argparse.ArgumentParser(description="Check Rust comments against the repository style")
     parser.add_argument("paths", nargs="*", help="explicit files or directories; overrides selection flags")
     selection = parser.add_mutually_exclusive_group()
