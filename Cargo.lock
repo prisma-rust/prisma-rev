@@ -2725,6 +2725,7 @@ dependencies = [
  "rayon",
  "serde_json",
  "tempfile",
+ "xxhash-rust",
 ]
 
 [[package]]
@@ -2920,6 +2921,7 @@ dependencies = [
  "log",
  "rand",
  "rayon",
+ "xxhash-rust",
 ]
 
 [[package]]

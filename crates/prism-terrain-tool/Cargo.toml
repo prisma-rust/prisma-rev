@@ -22,3 +22,4 @@ clap = { workspace = true }
 image = { workspace = true, features = ["png", "exr"] }
 rayon = { workspace = true }
 rand = { workspace = true }
+xxhash-rust = { workspace = true }

@@ -40,3 +40,11 @@ fn terrain_deterministic() {
     let b = generate_terrain(64, 64, 7, 64.0);
     assert_eq!(a.data, b.data);
 }
+
+#[test]
+fn hash_is_platform_independent() {
+    // Pin the integer hash so nobody reintroduces a libm path: the old
+    // `sin(dot)` hash differed between Windows, glibc and bionic, which made
+    // the same seed generate different terrain per platform.
+    assert_eq!(hash2([3, -7], 42), 0.224_541_710_977_518_85);
+}

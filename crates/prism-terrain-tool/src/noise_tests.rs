@@ -32,6 +32,13 @@ fn test_reproducibility_seed_equivalent() {
 }
 
 #[test]
+fn test_hash_is_platform_independent() {
+    // Pin the integer hash so nobody reintroduces a libm path: the old
+    // `sin(dot)` hash differed between Windows, glibc and bionic.
+    assert_eq!(hash2([3, -7]), 0.097_449_656_353_044_15);
+}
+
+#[test]
 fn test_noised_derivative_finite() {
     let n = noised_2d([std::f64::consts::PI, 2.71]);
     assert!(n[1].is_finite());

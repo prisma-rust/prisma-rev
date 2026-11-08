@@ -12,20 +12,19 @@ const ROT_MAT: [[f64; 2]; 2] = [[0.8, -0.6], [0.6, 0.8]];
 // Hash helpers
 // ---------------------------------------------------------------------------
 
-/// Pseudo-random hash from a 2D coordinate, returning value in [0, 1).
+/// Pseudo-random hash from an integer lattice cell, returning value in [0, 1).
+///
+/// Integer-only mixing (xxh3) instead of `sin(dot)`: `f64::sin` comes from the
+/// platform libm and differs between Windows, glibc and bionic, so the same
+/// input produced different maps. The cell is hashed as a little-endian `i64`
+/// pair so the bytes are identical everywhere.
 #[inline]
-fn hash2(p: [f64; 2]) -> f64 {
-    let dot = p[0] * 12.9898 + p[1] * 78.233;
-    let frac = (dot.sin() * 43758.5453).fract();
-    frac.abs()
-}
-
-/// Integer-based hash for 1D input.
-#[allow(dead_code)]
-#[inline]
-fn hash1(n: f64) -> f64 {
-    let x = n * std::f64::consts::FRAC_1_PI;
-    (n * 17.0 * x.fract()).fract().abs()
+fn hash2(cell: [i64; 2]) -> f64 {
+    let mut bytes = [0u8; 16];
+    bytes[..8].copy_from_slice(&cell[0].to_le_bytes());
+    bytes[8..].copy_from_slice(&cell[1].to_le_bytes());
+    // Top 53 bits are exactly representable in f64; map them to [0, 1).
+    (xxhash_rust::xxh3::xxh3_64(&bytes) >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
 }
 
 // ---------------------------------------------------------------------------
@@ -34,8 +33,8 @@ fn hash1(n: f64) -> f64 {
 
 /// 2D value noise returning `(value, dx, dy)`.
 pub fn noised_2d(p: [f64; 2]) -> [f64; 3] {
-    let i = [p[0].floor(), p[1].floor()];
-    let w = [p[0] - i[0], p[1] - i[1]];
+    let i = [p[0].floor() as i64, p[1].floor() as i64];
+    let w = [p[0] - i[0] as f64, p[1] - i[1] as f64];
 
     // Quintic blend for C2 continuity (IQ's preferred).
     let u = [
@@ -48,9 +47,9 @@ pub fn noised_2d(p: [f64; 2]) -> [f64; 3] {
     ];
 
     let a = hash2(i);
-    let b = hash2([i[0] + 1.0, i[1]]);
-    let c = hash2([i[0], i[1] + 1.0]);
-    let d = hash2([i[0] + 1.0, i[1] + 1.0]);
+    let b = hash2([i[0] + 1, i[1]]);
+    let c = hash2([i[0], i[1] + 1]);
+    let d = hash2([i[0] + 1, i[1] + 1]);
 
     let k0 = a;
     let k1 = b - a;
@@ -66,17 +65,17 @@ pub fn noised_2d(p: [f64; 2]) -> [f64; 3] {
 
 /// 2D value noise without derivatives (slightly faster).
 pub fn noise_2d(p: [f64; 2]) -> f64 {
-    let i = [p[0].floor(), p[1].floor()];
-    let w = [p[0] - i[0], p[1] - i[1]];
+    let i = [p[0].floor() as i64, p[1].floor() as i64];
+    let w = [p[0] - i[0] as f64, p[1] - i[1] as f64];
     let u = [
         w[0] * w[0] * (3.0 - 2.0 * w[0]),
         w[1] * w[1] * (3.0 - 2.0 * w[1]),
     ];
 
     let a = hash2(i);
-    let b = hash2([i[0] + 1.0, i[1]]);
-    let c = hash2([i[0], i[1] + 1.0]);
-    let d = hash2([i[0] + 1.0, i[1] + 1.0]);
+    let b = hash2([i[0] + 1, i[1]]);
+    let c = hash2([i[0], i[1] + 1]);
+    let d = hash2([i[0] + 1, i[1] + 1]);
 
     -1.0 + 2.0 * (a + (b - a) * u[0] + (c - a) * u[1] + (a - b - c + d) * u[0] * u[1])
 }
@@ -152,7 +151,6 @@ pub fn ridge_domain_warp(
     let mut a = 0.0f64;
     let mut b = 1.0f64;
     let mut d = [0.0f64; 2];
-    let mut m = [[1.0, 0.0], [0.0, 1.0]];
 
     for _ in 0..octaves {
         let n = noised_2d(p);
@@ -165,11 +163,6 @@ pub fn ridge_domain_warp(
 
         b *= gain;
         p = rotate(p, lacunarity);
-        let new_m00 = lacunarity * (ROT_MAT[0][0] * m[0][0] + ROT_MAT[0][1] * m[1][0]);
-        let new_m01 = lacunarity * (ROT_MAT[0][0] * m[0][1] + ROT_MAT[0][1] * m[1][1]);
-        let new_m10 = lacunarity * (ROT_MAT[1][0] * m[0][0] + ROT_MAT[1][1] * m[1][0]);
-        let new_m11 = lacunarity * (ROT_MAT[1][0] * m[0][1] + ROT_MAT[1][1] * m[1][1]);
-        m = [[new_m00, new_m01], [new_m10, new_m11]];
     }
 
     a

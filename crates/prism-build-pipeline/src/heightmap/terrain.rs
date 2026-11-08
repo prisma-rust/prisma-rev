@@ -9,18 +9,25 @@ use super::Heightmap;
 // Hash / noise
 // ---------------------------------------------------------------------------
 
-/// 2D 值噪声哈希，seed 混入相位。返回 [0, 1)。
+/// 2D 值噪声哈希，seed 混入整数混合。返回 [0, 1)。
+///
+/// 用纯整数哈希（xxh3）而不是 `sin(dot)`：`f64::sin` 来自平台的 libm，
+/// Windows / glibc / bionic 结果不同，同一个 seed 会生成不同的地形。
+/// 坐标按 little-endian `i64` 对写进 16 字节再哈希，保证各平台字节一致。
 #[inline]
-fn hash2(p: [f64; 2], seed: u64) -> f64 {
-    let dot = p[0] * 12.9898 + p[1] * 78.233 + (seed as f64) * 0.0000017;
-    (dot.sin() * 43_758.545_3).fract().abs()
+fn hash2(cell: [i64; 2], seed: u64) -> f64 {
+    let mut bytes = [0u8; 16];
+    bytes[..8].copy_from_slice(&cell[0].to_le_bytes());
+    bytes[8..].copy_from_slice(&cell[1].to_le_bytes());
+    // 取高 53 位，f64 可精确表示，映射到 [0, 1)。
+    (xxhash_rust::xxh3::xxh3_64_with_seed(&bytes, seed) >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
 }
 
 /// 2D 值噪声，返回 [−1, 1]。
 #[inline]
 fn noise_2d(p: [f64; 2], seed: u64) -> f64 {
-    let i = [p[0].floor(), p[1].floor()];
-    let w = [p[0] - i[0], p[1] - i[1]];
+    let i = [p[0].floor() as i64, p[1].floor() as i64];
+    let w = [p[0] - i[0] as f64, p[1] - i[1] as f64];
     // 平滑插值（3次 Hermite）。
     let u = [
         w[0] * w[0] * (3.0 - 2.0 * w[0]),
@@ -28,9 +35,9 @@ fn noise_2d(p: [f64; 2], seed: u64) -> f64 {
     ];
 
     let a = hash2(i, seed);
-    let b = hash2([i[0] + 1.0, i[1]], seed);
-    let c = hash2([i[0], i[1] + 1.0], seed);
-    let d = hash2([i[0] + 1.0, i[1] + 1.0], seed);
+    let b = hash2([i[0] + 1, i[1]], seed);
+    let c = hash2([i[0], i[1] + 1], seed);
+    let d = hash2([i[0] + 1, i[1] + 1], seed);
 
     -1.0 + 2.0 * (a + (b - a) * u[0] + (c - a) * u[1] + (a - b - c + d) * u[0] * u[1])
 }
