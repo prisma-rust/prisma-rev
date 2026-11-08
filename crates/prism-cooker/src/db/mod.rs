@@ -29,6 +29,14 @@ pub enum DatabaseError {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
+    #[error("corrupt JSON in {path}: {source} (moved aside to {backup})")]
+    Corrupt {
+        path: PathBuf,
+        backup: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+
     #[error("Asset not found: {0}")]
     AssetNotFound(AssetId),
 
@@ -269,9 +277,12 @@ impl AssetDatabase {
     // ------------------------------------------------------------------
 
     /// Load the database from a JSON file.
+    ///
+    /// A file that fails to parse is moved to `<name>.corrupt-<unix>` and
+    /// reported as [`DatabaseError::Corrupt`], so the next command starts from an
+    /// empty database instead of hitting the same parse error forever.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, DatabaseError> {
-        let content = std::fs::read_to_string(path.as_ref())?;
-        let mut db: Self = serde_json::from_str(&content)?;
+        let mut db: Self = read_json(path.as_ref())?;
         db.rebuild_index();
         Ok(db)
     }
@@ -285,16 +296,19 @@ impl AssetDatabase {
     }
 
     /// Save the database to a JSON file.
+    ///
+    /// The write is atomic: the JSON is staged next to the target and renamed
+    /// into place, so an interrupted command leaves the previous database intact.
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), DatabaseError> {
         let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(path.as_ref(), content)?;
+        crate::fs_atomic::write_atomic(path.as_ref(), content.as_bytes())?;
         Ok(())
     }
 
     /// Async save via tokio.
     pub async fn save_async(&self, path: impl AsRef<Path> + Send) -> Result<(), DatabaseError> {
         let content = serde_json::to_string_pretty(self)?;
-        tokio::fs::write(path.as_ref(), content).await?;
+        crate::fs_atomic::write_atomic_async(path.as_ref(), content.as_bytes()).await?;
         Ok(())
     }
 
@@ -401,22 +415,23 @@ impl ImportCache {
     }
 
     /// Load from JSON file.
+    ///
+    /// A corrupt file is moved aside like [`AssetDatabase::load`] does.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, DatabaseError> {
-        let content = std::fs::read_to_string(path.as_ref())?;
-        Ok(serde_json::from_str(&content)?)
+        read_json(path.as_ref())
     }
 
-    /// Save to JSON file.
+    /// Save to JSON file, atomically.
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), DatabaseError> {
         let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(path.as_ref(), content)?;
+        crate::fs_atomic::write_atomic(path.as_ref(), content.as_bytes())?;
         Ok(())
     }
 
     /// Async save.
     pub async fn save_async(&self, path: impl AsRef<Path> + Send) -> Result<(), DatabaseError> {
         let content = serde_json::to_string_pretty(self)?;
-        tokio::fs::write(path.as_ref(), content).await?;
+        crate::fs_atomic::write_atomic_async(path.as_ref(), content.as_bytes()).await?;
         Ok(())
     }
 }
@@ -424,6 +439,40 @@ impl ImportCache {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Read and parse a JSON file, moving a corrupt one out of the way first.
+///
+/// Returns the parse error unchanged when the backup rename itself fails; the
+/// original file is still on disk in that case.
+fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, DatabaseError> {
+    let content = std::fs::read_to_string(path)?;
+    match serde_json::from_str(&content) {
+        Ok(value) => Ok(value),
+        Err(source) => match backup_corrupt(path) {
+            Ok(backup) => Err(DatabaseError::Corrupt {
+                path: path.to_path_buf(),
+                backup,
+                source,
+            }),
+            Err(_) => Err(DatabaseError::Json(source)),
+        },
+    }
+}
+
+/// Move `path` to a sibling `<name>.corrupt-<unix seconds>` file.
+fn backup_corrupt(path: &Path) -> std::io::Result<PathBuf> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0);
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "database.json".to_string());
+    let backup = path.with_file_name(format!("{name}.corrupt-{stamp}"));
+    std::fs::rename(path, &backup)?;
+    Ok(backup)
+}
 
 /// Normalize a path: `/` separators, no trailing slash, no `./` prefix.
 pub fn normalize_path(path: &str) -> String {

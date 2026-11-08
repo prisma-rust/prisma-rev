@@ -231,7 +231,7 @@ pub fn pack_directory_split(
     manifest["optional_paks"] = serde_json::Value::Array(manifest_entries);
     let manifest_json = serde_json::to_string_pretty(&manifest)
         .context("serialize .pak manifest with optional packages")?;
-    fs::write(&manifest_path, manifest_json)
+    crate::fs_atomic::write_atomic(&manifest_path, manifest_json.as_bytes())
         .with_context(|| format!("write {}", manifest_path.display()))?;
 
     Ok(SplitPackSummary {
@@ -286,22 +286,12 @@ fn pack_files(
     }
 
     let pak = builder.build().context("build .pak")?;
-    if let Some(parent) = output.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("create output directory {}", parent.display()))?;
-        }
-    }
     // 先写同目录的临时文件再改名：`#509` 之后运行时不再把整个 `.pak` 读进内存，
     // 而是按偏移读同一个文件，就地截断+重写会让正在运行的编辑器或游戏读到半截包。
     // 同目录 rename 是原子的，旧句柄继续指向旧文件（Windows 也允许被共享删除的
     // 文件被替换）。
-    let staging = pak_staging_path(output);
-    fs::write(&staging, &pak).with_context(|| format!("write {}", staging.display()))?;
-    if let Err(error) = fs::rename(&staging, output) {
-        let _ = fs::remove_file(&staging);
-        return Err(error).with_context(|| format!("replace {}", output.display()));
-    }
+    crate::fs_atomic::write_atomic(output, &pak)
+        .with_context(|| format!("write {}", output.display()))?;
 
     let reader = PackageReader::from_bytes(&pak).context("read back generated .pak")?;
     let assets: Vec<_> = entries
@@ -335,7 +325,7 @@ fn pack_files(
     let manifest_path = output.with_extension("pak.meta.json");
     let manifest_json =
         serde_json::to_string_pretty(&manifest).context("serialize .pak manifest")?;
-    fs::write(&manifest_path, manifest_json)
+    crate::fs_atomic::write_atomic(&manifest_path, manifest_json.as_bytes())
         .with_context(|| format!("write {}", manifest_path.display()))?;
 
     Ok(PackSummary {
@@ -426,15 +416,6 @@ fn is_package_artifact(path: &Path) -> bool {
             .file_name()
             .and_then(|name| name.to_str())
             .is_some_and(|name| name.ends_with(".pak.meta.json"))
-}
-
-/// 写入用的临时文件名：同目录、带进程号，正常路径上会在 `rename` 后消失。
-fn pak_staging_path(output: &Path) -> PathBuf {
-    let name = output
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "package.pak".to_string());
-    output.with_file_name(format!("{name}.tmp-{}", std::process::id()))
 }
 
 #[cfg(test)]
