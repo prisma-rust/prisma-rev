@@ -10,24 +10,8 @@
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 
-/// `.Collections`-shaped containers (`NativeArray` / `NativeList` / ...).
-pub mod collections;
-/// DOTS `EntityManager`-shaped [`World`] facade.
-pub mod entity_manager;
-/// `.Jobs`-shaped jobs and completion handles.
+/// Scoped parallel chunk helper for batch work that owns its per-item state.
 pub mod jobs;
-/// DOTS `ISystem` / `SystemBase` / `ComponentSystemGroup`-shaped systems.
-pub mod systems;
-
-pub use collections::{Allocator, NativeArray, NativeList, NativeReference, NativeSlice};
-pub use entity_manager::EntityManager;
-pub use jobs::{
-    schedule, schedule_for, schedule_parallel_for, IJob, IJobFor, IJobParallelFor, JobHandle,
-};
-pub use systems::{
-    ComponentSystemGroup, ISystem, SystemBase, SystemGroup, INITIALIZATION_SYSTEM_GROUP,
-    PRESENTATION_SYSTEM_GROUP, SIMULATION_SYSTEM_GROUP,
-};
 
 /// A lightweight handle to a game object. Carries a generation so stale
 /// handles left over after deletion are distinguishable from recycled ones.
@@ -107,12 +91,6 @@ impl World {
             pools: HashMap::new(),
             resources: HashMap::new(),
         }
-    }
-
-    /// Borrow this world as the DOTS-shaped [`EntityManager`] (mirrors
-    /// `World.EntityManager`).
-    pub fn entity_manager(&mut self) -> EntityManager<'_> {
-        EntityManager::new(self)
     }
 
     /// Allocate a fresh entity handle (starts active).
