@@ -4,7 +4,7 @@ mod support;
 
 use std::collections::BTreeSet;
 
-use prism_editor_mcp::{protocol, tools};
+use prism_editor_mcp::tools;
 use serde_json::{json, Value};
 use support::{McpHarness, SCENE};
 
@@ -179,11 +179,7 @@ fn tool_schema_and_protocol_shape_are_stable() {
         }
     }
 
-    let init = protocol::initialize_result();
-    assert_eq!(init["protocolVersion"], "2025-06-18");
-    assert_eq!(init["serverInfo"]["name"], "prism-editor-mcp");
-
-    let content = protocol::text_content("boom", true);
-    assert_eq!(content["content"][0]["type"], "text");
-    assert_eq!(content["isError"], true);
+    // The wire format itself is `rmcp`'s responsibility now; what this crate
+    // still owns is the tool table, so the schema checks above are the part
+    // that has to keep holding.
 }

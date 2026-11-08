@@ -13,7 +13,7 @@ use prism_editor_api::scene::{self, DocKind};
 use prism_editor_api::schema::{build_schema, Schema};
 use serde_json::{json, Map, Value};
 
-use crate::protocol::ToolDef;
+use crate::ToolDef;
 
 pub fn definitions() -> Vec<ToolDef> {
     vec![

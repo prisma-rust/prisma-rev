@@ -13,7 +13,8 @@ cargo run -p prism-editor-mcp -- --project projects/fishing
 ```
 
 项目根也可以用 `PRISMREV_PROJECT` 指定；都没给时从 cwd 向上找 `assets/`。
-传输是 stdio，一行一条 JSON-RPC 消息。
+传输是 stdio，一行一条 JSON-RPC 消息；握手、协议版本协商和 notifications 由
+[`rmcp`](https://docs.rs/rmcp) 负责，这个 crate 只提供工具表与调用分发。
 
 在 `.mcp.json` 里挂上去（示例）：
 
