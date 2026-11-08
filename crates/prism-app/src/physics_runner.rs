@@ -25,13 +25,13 @@
 //! * 没有速度组件：初速度恒为 0，代码改 `LocalTransform` 的动力学实体会在下一步
 //!   被物理结果覆盖（Kinematic 例外，每步同步）。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::thread::JoinHandle;
 
 use prism_engine::ecs::{Entity, World};
 use prism_engine::physics::{PhysicsEvent, PhysicsEventKind, PhysicsEvents};
 use prism_engine::scene::components::{
-    BodyType, Collider, ColliderShape, LocalTransform, Parent, Rigidbody,
+    BodyType, CharacterController, Collider, ColliderShape, LocalTransform, Parent, Rigidbody,
 };
 use prism_engine::scene::systems::terrain::TerrainData;
 use rapier3d::control::{CharacterLength, KinematicCharacterController};
@@ -217,6 +217,22 @@ pub struct CharacterMoveRequests {
 #[derive(Debug, Clone, Default)]
 pub struct CharacterMoveResults {
     pub moves: Vec<CharacterMoveResult>,
+}
+
+/// 每步的角色输入（#560 P2）：世界空间方向，`y` 忽略，长度会被归一化。
+///
+/// 由玩法层每帧写入；没有这个资源时角色不移动，也不会产生任何请求。
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct CharacterMoveInput {
+    pub direction: [f32; 3],
+    pub jump: bool,
+    pub sprint: bool,
+}
+
+/// 角色移动的内部状态（上一帧的水平速度，用于加速 / 减速）。
+#[derive(Debug, Clone, Copy, Default)]
+struct CharacterMotionState {
+    horizontal: [f32; 2],
 }
 
 // ── Results (physics → main) ──────────────────────────────────────────
@@ -670,6 +686,8 @@ pub struct PhysicsRuntime {
     sleeping: HashMap<EntityId, bool>,
     /// 线程已退出 / 通道已断：之后 `step` 直接返回，不再刷日志。
     failed: bool,
+    /// 角色移动状态（#560 P2），按实体记账。
+    motion: HashMap<EntityId, CharacterMotionState>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -720,6 +738,7 @@ impl PhysicsRuntime {
             terrains: HashMap::new(),
             sleeping: HashMap::new(),
             failed: false,
+            motion: HashMap::new(),
         }
     }
 
@@ -737,6 +756,7 @@ impl PhysicsRuntime {
         if self.failed {
             return false;
         }
+        self.update_character_movement(world);
         let commands = self.collect_commands(world);
         let Some(step_tx) = self.step_tx.as_ref() else {
             self.failed = true;
@@ -764,6 +784,88 @@ impl PhysicsRuntime {
                 false
             }
         }
+    }
+
+    /// Turn `CharacterController` + `CharacterMoveInput` into move requests
+    /// (#560 P2): gravity, jump, acceleration and the capsule settings that the
+    /// physics thread needs. Runs before `collect_commands`, so the requests it
+    /// writes are consumed by the step that is about to happen.
+    fn update_character_movement(&mut self, world: &mut World) {
+        /// Matches the fixed step in `App::host_tick` / the winit loop.
+        const FIXED_DT: f32 = 1.0 / 60.0;
+
+        let Some(input) = world.get_resource::<CharacterMoveInput>().copied() else {
+            return;
+        };
+
+        let direction = glam::Vec3::from_array(input.direction);
+        let direction = glam::Vec3::new(direction.x, 0.0, direction.z);
+        let direction = if direction.length_squared() > 1e-6 {
+            direction.normalize()
+        } else {
+            glam::Vec3::ZERO
+        };
+
+        let mut requests = Vec::new();
+        let mut seen: HashSet<EntityId> = HashSet::new();
+        for (entity, controller) in world.query::<CharacterController>() {
+            let key = entity_key(entity);
+            let Some(collider) = world.get::<Collider>(entity) else {
+                continue;
+            };
+            if collider.shape != ColliderShape::Capsule {
+                continue;
+            }
+            let Some(body) = world.get::<Rigidbody>(entity) else {
+                continue;
+            };
+            if body.body_type != BodyType::Kinematic {
+                continue;
+            }
+            if world.get::<LocalTransform>(entity).is_none() {
+                continue;
+            }
+            seen.insert(key);
+
+            let state = self.motion.entry(key).or_default();
+            let speed = if input.sprint {
+                controller.run_speed.max(0.0)
+            } else {
+                controller.walk_speed.max(0.0)
+            };
+            let target = direction * speed;
+            let current = glam::Vec3::new(state.horizontal[0], 0.0, state.horizontal[1]);
+            let blend = (controller.acceleration.max(0.0) * FIXED_DT).clamp(0.0, 1.0);
+            let horizontal = current + (target - current) * blend;
+            state.horizontal = [horizontal.x, horizontal.z];
+
+            // Gravity / jump are not wired yet: the kinematic controller does
+            // not settle onto the floor with small downward steps, so the
+            // vertical axis stays with the caller until that is understood.
+            requests.push(CharacterMoveRequest {
+                entity: key,
+                desired: [horizontal.x * FIXED_DT, 0.0, horizontal.z * FIXED_DT],
+                dt: FIXED_DT,
+                settings: CharacterMoveSettings {
+                    half_height: collider.half_height.max(0.0),
+                    radius: collider.radius.max(1.0e-4),
+                    offset: controller.skin_offset,
+                    slide: true,
+                    max_slope_deg: controller.max_slope_degrees,
+                    min_slide_slope_deg: controller.max_slope_degrees,
+                    snap_to_ground: Some(controller.snap_distance.max(0.0)),
+                    up: [0.0, 1.0, 0.0],
+                },
+            });
+        }
+        self.motion.retain(|key, _| seen.contains(key));
+
+        // Keep requests written by gameplay this frame; ours are appended.
+        let mut queue = world
+            .remove_resource::<CharacterMoveRequests>()
+            .unwrap_or_default();
+        queue.requests.extend(requests);
+        world.insert_resource(queue);
     }
 
     fn collect_commands(&mut self, world: &mut World) -> Vec<PhysicsCommand> {
@@ -1438,6 +1540,83 @@ mod tests {
         assert!(
             (x_after - x).abs() < 1e-4,
             "request replayed: {x} -> {x_after}"
+        );
+    }
+
+    /// #560 P2：`CharacterController` + `CharacterMoveInput` 让角色按作者速度行走，
+    /// 松开输入后减速停下。
+    #[test]
+    fn character_movement_walks_at_the_authored_speed() {
+        use prism_engine::scene::components::{BodyType, CharacterController, ColliderShape};
+
+        let mut world = World::new();
+        let floor = world.spawn();
+        world.insert(floor, LocalTransform::default());
+        world.insert(
+            floor,
+            Collider {
+                half_extents: [20.0, 0.1, 20.0],
+                ..Default::default()
+            },
+        );
+        let character = world.spawn();
+        world.insert(
+            character,
+            Rigidbody {
+                body_type: BodyType::Kinematic,
+                ..Default::default()
+            },
+        );
+        world.insert(
+            character,
+            Collider {
+                shape: ColliderShape::Capsule,
+                radius: 0.3,
+                half_height: 0.6,
+                ..Default::default()
+            },
+        );
+        world.insert(character, CharacterController::default());
+        world.insert(
+            character,
+            LocalTransform {
+                position: glam::Vec3::new(0.0, 0.9, 0.0),
+                ..Default::default()
+            },
+        );
+
+        world.insert_resource(CharacterMoveInput {
+            direction: [0.0, 0.0, -1.0],
+            ..Default::default()
+        });
+        let mut runtime = PhysicsRuntime::spawn();
+        for _ in 0..60 {
+            assert!(runtime.step(&mut world));
+        }
+        let walked = world
+            .get::<LocalTransform>(character)
+            .expect("character transform")
+            .position;
+        let distance = -walked.z;
+        assert!(
+            (1.6..2.4).contains(&distance),
+            "walk speed 2.0 should cover ~2 m in one second, got {distance}"
+        );
+        assert!((walked.y - 0.9).abs() < 0.02, "walking must stay grounded");
+
+        // Releasing the input decelerates to a stop instead of sliding forever.
+        world.insert_resource(CharacterMoveInput::default());
+        for _ in 0..60 {
+            assert!(runtime.step(&mut world));
+        }
+        let stopped = world
+            .get::<LocalTransform>(character)
+            .expect("character transform")
+            .position;
+        assert!(
+            (stopped.z - walked.z).abs() < 0.1,
+            "character should stop after releasing input, drifted {}",
+            stopped.z - walked.z
         );
     }
 

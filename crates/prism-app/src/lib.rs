@@ -96,8 +96,8 @@ pub use physics_runner::PhysicsRuntime;
 /// `CharacterMoveResults` after the step.
 #[cfg(feature = "physics")]
 pub use physics_runner::{
-    CharacterMoveRequest, CharacterMoveRequests, CharacterMoveResult, CharacterMoveResults,
-    CharacterMoveSettings,
+    CharacterMoveInput, CharacterMoveRequest, CharacterMoveRequests, CharacterMoveResult,
+    CharacterMoveResults, CharacterMoveSettings,
 };
 #[cfg(feature = "audio")]
 pub mod one_shot;

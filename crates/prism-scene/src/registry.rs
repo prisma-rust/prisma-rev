@@ -532,6 +532,8 @@ pub fn register_builtin_components(registry: &mut ComponentRegistry) {
         .register_reflect_serde::<SkinnedMeshRenderer>("prism_engine::scene::SkinnedMeshRenderer");
     registry.register_reflect_serde::<Collider>("prism_engine::scene::Collider");
     registry.register_reflect_serde::<Rigidbody>("prism_engine::scene::Rigidbody");
+    registry
+        .register_reflect_serde::<CharacterController>("prism_engine::scene::CharacterController");
     registry.register_reflect_serde::<AudioListener>("prism_engine::scene::AudioListener");
 
     // ── 预制体实例（编辑器元数据）──

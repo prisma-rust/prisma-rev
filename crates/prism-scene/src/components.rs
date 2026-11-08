@@ -2466,6 +2466,48 @@ impl Default for Collider {
     }
 }
 
+/// 运动学角色的移动参数（#560 P2）。
+///
+/// 实体同时需要 `Rigidbody { body_type: Kinematic }` 与胶囊 `Collider`；
+/// `prism-app/physics` 的角色系统按这些参数把输入方向、重力和跳跃换成
+/// `CharacterMoveRequests`，碰撞由 rapier 的 `KinematicCharacterController` 求解。
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
+#[reflect(name = "prism_engine::scene::CharacterController")]
+#[serde(default)]
+pub struct CharacterController {
+    /// 走路速度（米/秒）。
+    pub walk_speed: f32,
+    /// 冲刺速度（米/秒）。
+    pub run_speed: f32,
+    /// 水平速度趋近目标速度的加速度（米/秒²）。
+    pub acceleration: f32,
+    /// 起跳初速度（米/秒）。
+    pub jump_speed: f32,
+    /// 重力加速度（米/秒²）。
+    pub gravity: f32,
+    /// 能爬的最大坡度（度）；超过后角色会沿坡下滑。
+    pub max_slope_degrees: f32,
+    /// 离地小于这个距离就贴回地面（米）。
+    pub snap_distance: f32,
+    /// 与环境的间隙（米）；太小会抖，不能为 0。
+    pub skin_offset: f32,
+}
+
+impl Default for CharacterController {
+    fn default() -> Self {
+        Self {
+            walk_speed: 2.0,
+            run_speed: 5.5,
+            acceleration: 20.0,
+            jump_speed: 5.0,
+            gravity: 20.0,
+            max_slope_degrees: 45.0,
+            snap_distance: 0.3,
+            skin_offset: 0.01,
+        }
+    }
+}
+
 /// 刚体 = `Rigidbody`。
 ///
 /// 真正的积分/求解由 `prism-app` 的 rapier 线程完成（#522），支持父子层级；
