@@ -32,7 +32,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from lib.console import force_utf8_streams  # noqa: E402
 from lib.rust_comments import comment_body, has_module_doc, lex  # noqa: E402
+
+force_utf8_streams()
 
 # CJK ideographs, CJK punctuation and fullwidth forms. Typographic symbols
 # such as arrows or em dashes are allowed in English prose.

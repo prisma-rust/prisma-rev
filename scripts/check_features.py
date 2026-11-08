@@ -18,6 +18,11 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from lib.console import force_utf8_streams  # noqa: E402
+
+force_utf8_streams()
 
 # (标签, cargo 参数)。每条都必须是「项目模板会真的这样构建」的组合。
 MATRIX: list[tuple[str, list[str]]] = [

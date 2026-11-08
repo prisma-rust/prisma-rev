@@ -24,6 +24,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from lib.console import force_utf8_streams  # noqa: E402
 
 PLAYER_CRATE = "prism-app"
 
@@ -50,15 +53,8 @@ BANNED: dict[str, str] = {
 }
 
 
-def _force_utf8_streams() -> None:
-    """Windows 控制台默认 GBK：打印 ✅ / ⚠ 会抛 UnicodeEncodeError（PR 自检假红）。"""
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is not None:
-            reconfigure(encoding="utf-8", errors="replace")
+force_utf8_streams()
 
-
-_force_utf8_streams()
 
 def player_tree() -> list[str]:
     """解析 `cargo tree -p prism-app`，返回唯一的 crate 名列表。"""
