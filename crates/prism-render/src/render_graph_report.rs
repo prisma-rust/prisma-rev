@@ -39,6 +39,11 @@ pub struct ReportStats {
     pub mesh_bytes: u64,
     pub materials: usize,
     pub material_bytes: u64,
+    /// 遮挡剔除参与测试 / 被剔除的绘制数（#1007）；关闭时为 0。
+    #[serde(default)]
+    pub occlusion_tested: usize,
+    #[serde(default)]
+    pub occlusion_culled: usize,
 }
 
 impl ReportStats {
@@ -585,6 +590,8 @@ mod tests {
             mesh_bytes: 2048,
             materials: 4,
             material_bytes: 384,
+            occlusion_tested: 0,
+            occlusion_culled: 0,
         };
         assert_eq!(stats.total_bytes(), 3456);
         let report = RenderGraphReport::from_snapshot(&snapshot(), ReportSettings::default(), 1)

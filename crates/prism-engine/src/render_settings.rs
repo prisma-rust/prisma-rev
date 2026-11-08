@@ -72,6 +72,11 @@ pub struct RenderSettings {
     /// PostPass debug render-target viewer (Tab cycles). 0 = normal tonemapped
     /// HDR, 1 = linearized depth, 2 = view-space normal.
     pub debug_rt: u32,
+    /// 遮挡剔除（#1007）：用上一帧的粗深度剔掉被完全挡住的绘制项。
+    ///
+    /// 默认关。开启后画面应保持一致（保守测试 + 一帧延迟），只是少提交
+    /// draw；阴影通道不受影响，被挡住的物体仍然会投影。
+    pub occlusion_culling: bool,
     /// 前向管线用 `POLYGON_MODE_LINE` 画网格（#431）。设备不支持时为 no-op。
     pub wireframe: bool,
     /// 正常填充渲染 + 线框叠加（#431）。设备不支持 `fillModeNonSolid` 时为 no-op；
@@ -217,6 +222,7 @@ impl Default for RenderSettings {
             tonemap_mode: 0,
             aa_mode: 0,
             debug_rt: 0,
+            occlusion_culling: false,
             wireframe: false,
             shaded_wireframe: false,
             render_mode: RenderMode::Raster,

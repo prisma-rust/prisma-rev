@@ -814,9 +814,19 @@ pub fn render_system(
     let pt_bounces_dirty = dirty_router.pt_bounces_dirty(settings.pt_max_bounces);
 
     // 3. Drive the render-graph phase API.
+    renderer.set_occlusion_culling(settings.occlusion_culling);
     let ctx = match renderer.begin_frame()? {
         Some(c) => c,
         None => return Ok(()),
+    };
+    // #1007：遮挡剔除只在本帧需要时克隆绘制列表；关闭时零开销，列表原样传下去。
+    let mut occlusion_items = Vec::new();
+    let main_pass_items: &[prism_render::render_graph::DrawItem] = if settings.occlusion_culling {
+        occlusion_items.extend_from_slice(draw_items);
+        renderer.cull_occluded_draws(&mut occlusion_items);
+        &occlusion_items
+    } else {
+        draw_items
     };
     // #502：PostProcessVolume 可以覆盖调色参数，但 LUT 是全局资源；强度
     // 始终跟随全局设置，路径解析到 assets/ 下（失败时渲染器保留上一张）。
@@ -828,7 +838,7 @@ pub fn render_system(
         crate::asset_paths::asset_path(settings.lut.trim())
     };
     let input = prism_render::FrameInput {
-        draw_items,
+        draw_items: main_pass_items,
         gizmos,
         sprite_items,
         sprite_lights,

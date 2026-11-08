@@ -42,6 +42,8 @@ pub struct RenderConfig {
     pub tonemap_mode: Option<u32>,
     /// 后处理抗锯齿：0 = 关（默认），1 = FXAA。
     pub aa_mode: Option<u32>,
+    /// 遮挡剔除（#1007）：用上一帧粗深度剔掉被完全挡住的绘制项。
+    pub occlusion_culling: Option<bool>,
     /// 显示空间对比度（`1.0` = 不变，#502）。
     pub contrast: Option<f32>,
     /// 主方向光阴影覆盖距离（米，见 `RenderSettings::shadow_distance`）。
@@ -129,6 +131,9 @@ impl RenderConfig {
         }
         if let Some(mode) = self.aa_mode {
             settings.aa_mode = mode;
+        }
+        if let Some(enabled) = self.occlusion_culling {
+            settings.occlusion_culling = enabled;
         }
         if let Some(distance) = self.shadow_distance {
             // 0 或负数的盒子没有任何意义，挡住并留个日志。
@@ -253,6 +258,7 @@ impl RenderConfig {
             debug_flags: ini.get_u32("render", "debug_flags"),
             tonemap_mode: ini.get_u32("render", "tonemap_mode"),
             aa_mode: ini.get_u32("render", "aa_mode"),
+            occlusion_culling: ini.get_bool("render", "occlusion_culling"),
             contrast: ini.get_f32("render", "contrast"),
             shadow_distance: ini.get_f32("render", "shadow_distance"),
             shadow_map_size: ini.get_u32("render", "shadow_map_size"),
@@ -499,6 +505,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "debug_flags",
             "tonemap_mode",
             "aa_mode",
+            "occlusion_culling",
             "contrast",
             "shadow_distance",
             "shadow_map_size",
@@ -642,13 +649,14 @@ mod tests {
         use crate::render_settings::{RenderMode, RenderSettings};
 
         let cfg = AppConfig::from_ini(
-            "[render]\nrender_mode = \"path_trace\"\ntonemap_mode = 1\naa_mode = 1\ncontrast = 1.4\nsaturation = 0.6\nvignette = 0.3\nbloom = true\nbloom_intensity = 0.4\nbloom_threshold = 2.5\nchromatic_aberration = 0.25\nfilm_grain = 0.35\ntemperature = -0.4\ntint = 0.2\ndof_focus_distance = 4.5\ndof_aperture = 0.6\ndof_max_blur = 12\nlut = \"luts/grade.cube\"\nlut_strength = 0.8\nmotion_blur = 0.7\nmotion_blur_max_pixels = 24\ntaa = true\ntaa_strength = 0.75\nshadow_distance = 120.0\nshadow_map_size = 1024\nshadow_cascade_count = 2\nwireframe = true\nshaded_wireframe = true\npt_max_bounces = 7\n",
+            "[render]\nrender_mode = \"path_trace\"\ntonemap_mode = 1\naa_mode = 1\nocclusion_culling = true\ncontrast = 1.4\nsaturation = 0.6\nvignette = 0.3\nbloom = true\nbloom_intensity = 0.4\nbloom_threshold = 2.5\nchromatic_aberration = 0.25\nfilm_grain = 0.35\ntemperature = -0.4\ntint = 0.2\ndof_focus_distance = 4.5\ndof_aperture = 0.6\ndof_max_blur = 12\nlut = \"luts/grade.cube\"\nlut_strength = 0.8\nmotion_blur = 0.7\nmotion_blur_max_pixels = 24\ntaa = true\ntaa_strength = 0.75\nshadow_distance = 120.0\nshadow_map_size = 1024\nshadow_cascade_count = 2\nwireframe = true\nshaded_wireframe = true\npt_max_bounces = 7\n",
         );
         let mut settings = RenderSettings::default();
         cfg.render.apply(&mut settings);
         assert_eq!(settings.render_mode, RenderMode::PathTrace);
         assert_eq!(settings.tonemap_mode, 1);
         assert_eq!(settings.aa_mode, 1);
+        assert!(settings.occlusion_culling);
         // #502 color grading knobs ride in the same section.
         assert_eq!(settings.contrast, 1.4);
         assert_eq!(settings.saturation, 0.6);
