@@ -25,11 +25,13 @@
 ## 1. 先搜重复
 
 ```bash
-gh issue list --state all --search "prefab parent" --limit 20
-gh issue list --state all --search "SystemGroup on_start_running" --limit 20
+gh issue list --state open --search "prefab parent" --limit 20
+gh issue list --state open --search "SystemGroup on_start_running" --limit 20
 ```
 
-搜标题、关键词、文件路径。已有 issue 就补证据/复现，不新开。
+搜标题、关键词、文件路径。已有 issue 就补证据/复现，不新开。查重以 **open** issue 为准；
+closed 只用于背景引用，不作为「已经提过」的依据——closed 的问题如果当前代码仍然存在，按新
+问题提并引用旧号。
 
 ## 2. 标题
 
@@ -167,7 +169,7 @@ gh issue view <number>
 
 ## 8. 提交前自检
 
-- [ ] 搜过 open + closed，确认不重复
+- [ ] 搜过 open issue，确认不重复（closed 只用于背景引用，不作为查重依据）
 - [ ] 有最小复现 / 证据（文件:行、命令、日志）
 - [ ] 首行 AI 声明
 - [ ] 标题 `bug(scope): ...`，≤ 72 字符

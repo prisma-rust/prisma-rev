@@ -660,3 +660,10 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
 - App icons are build inputs, not screenshots: the blanket `*.png` ignore in `.gitignore` has
   explicit `!` re-includes for `launcher/src-tauri/icons/*.png` and the Android `res/mipmap-*`
   PNGs. A missing `icons/32x32.png` fails `tauri android build` inside `generate_context!`.
+
+## Issue 查重范围
+
+- 查重只对比 **open** issue，不对比 closed。closed 只用于背景引用，不作为「已经提过」的依据；
+  如果 closed 的问题在当前代码里仍然存在，按新问题提并引用旧号。
+- 「重复造轮子」只指「已有成熟 crate / 标准实现却自行重写更差的替代」；纯架构取舍（自研 ECS、
+  反射、RSCN、`.pak`、render graph 等）不在此列，不要再按此主题报。
