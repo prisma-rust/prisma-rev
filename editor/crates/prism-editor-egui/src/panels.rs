@@ -1648,7 +1648,7 @@ mod asset_inspector_tests {
             workspace.undo_history().is_empty(),
             "只读的资产检查器不该产生撤销步"
         );
-        assert!(!workspace.document().dirty);
+        assert!(!workspace.document().is_dirty());
     }
 
     /// 实体选择优先：两者同时存在时仍然是实体检查器。
@@ -9373,7 +9373,7 @@ pub fn request_close_document(workspace: &mut Workspace, state: &mut UiState, in
     let dirty = workspace
         .docs
         .get(index)
-        .map(|document| document.dirty)
+        .map(|document| document.is_dirty())
         .unwrap_or(false);
     if dirty {
         state.pending_close = Some(CloseTarget::Document(index));

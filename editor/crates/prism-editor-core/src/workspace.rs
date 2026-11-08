@@ -119,6 +119,10 @@ pub struct Document {
     pub path: Option<String>,
     pub doc: SceneDoc,
     pub undo: crate::undo::UndoStack,
+    /// 撤销历史之外的未保存改动（资产引用批量改写、恢复出来的文档等）。
+    ///
+    /// 撤销 / 重做能回退的改动不写这个字段 —— 它们由 [`Document::is_dirty`]
+    /// 从撤销栈的状态编号推导，这样撤销回保存点后脏标记会自动消失（#992）。
     pub dirty: bool,
     /// 上一次读 / 写这份文件时的版本戳（mtime + 长度，#495）；`None` = 还没落过盘。
     pub saved_stamp: Option<project::FileStamp>,
@@ -170,8 +174,23 @@ impl Document {
         }
     }
 
+    /// 文档是否有未保存的改动。
+    ///
+    /// `dirty` 只是「撤销历史管不到」的那部分；能撤销的改动由撤销栈比较
+    /// 当前状态与最后一次保存时的状态得出，所以撤销回保存点就会变回干净。
+    pub fn is_dirty(&self) -> bool {
+        self.dirty || self.undo.is_dirty()
+    }
+
+    /// 记下「当前内容就是磁盘上的内容」：清掉撤销历史之外的标记，并把撤销栈
+    /// 的保存基线移到当前位置。
+    pub fn mark_saved(&mut self) {
+        self.dirty = false;
+        self.undo.mark_saved();
+    }
+
     pub fn title_with_dirty(&self) -> String {
-        if self.dirty {
+        if self.is_dirty() {
             format!("{} *", self.title())
         } else {
             self.title()
@@ -1970,7 +1989,7 @@ impl Workspace {
         let clean = self
             .docs
             .get(prefab_index)
-            .map(|doc| !doc.dirty)
+            .map(|doc| !doc.is_dirty())
             .unwrap_or(false);
 
         self.set_active(origin.scene_index);
@@ -2164,7 +2183,7 @@ impl Workspace {
         {
             let document = self.docs.get_mut(index).expect("checked above");
             document.path = Some(path.clone());
-            document.dirty = false;
+            document.mark_saved();
             document.note_disk_state(Some(&root));
         }
         self.refresh_project_files();
@@ -2174,7 +2193,7 @@ impl Workspace {
 
     /// 自动保存用：只在文档有未保存修改时才写盘。
     pub fn save_active_if_dirty(&mut self) -> Option<io::Result<String>> {
-        if !self.document().dirty {
+        if !self.document().is_dirty() {
             return None;
         }
         Some(self.save_active())
@@ -2191,7 +2210,7 @@ impl Workspace {
         let entries: Vec<crate::recovery::RecoveredDocument> = self
             .docs
             .iter()
-            .filter(|document| document.dirty)
+            .filter(|document| document.is_dirty())
             .map(|document| crate::recovery::RecoveredDocument {
                 path: document.path.clone(),
                 kind: document.kind,
@@ -2298,7 +2317,7 @@ impl Workspace {
         {
             let document = self.document_mut();
             document.path = Some(path.clone());
-            document.dirty = false;
+            document.mark_saved();
         }
         self.refresh_project_files();
         self.log(
@@ -2324,7 +2343,7 @@ impl Workspace {
             let document = self.document_mut();
             document.doc = doc;
             document.undo.clear();
-            document.dirty = false;
+            document.mark_saved();
         }
         self.hydrate_documents();
         // 外部文件可能比当前文档短（git checkout / 脚本重写）。选中集存的是
@@ -2546,7 +2565,7 @@ impl Workspace {
     pub fn mark_saved(&mut self) {
         let title = {
             let document = self.document_mut();
-            document.dirty = false;
+            document.mark_saved();
             document.title()
         };
         self.log(LogSource::Editor, LogLevel::Info, format!("已保存 {title}"));
@@ -2578,7 +2597,6 @@ impl Workspace {
                 }),
                 &after,
             );
-            document.dirty = true;
         }
         result
     }
@@ -3297,7 +3315,7 @@ impl Workspace {
         }
         let document = self.document_mut();
         document.undo.push_snapshot("重命名实体", base, &after);
-        document.dirty = true;
+        document.dirty = was_dirty;
     }
 
     /// 放弃就地重命名：把文档还原成开始编辑前的快照（含脏标记），不记撤销步。
@@ -3606,7 +3624,6 @@ impl Workspace {
             value,
             now_ms,
         );
-        document.dirty = true;
     }
 
     /// 改 UI 锚点，同时补偿边距 / 固定尺寸，让元素**视觉矩形不动**（#429）。
@@ -3825,7 +3842,6 @@ impl Workspace {
         document
             .undo
             .push_transform(&mut document.doc, entity_id, before, after, now);
-        document.dirty = true;
     }
 
     /// 多选 gizmo 旋转：每个实体绕自身位置旋转（局部模式各用自身轴），
@@ -3920,7 +3936,6 @@ impl Workspace {
                 .undo
                 .push_transform_batch(&mut document.doc, changes, key, now);
         }
-        document.dirty = true;
     }
 
     /// 选中实体的 gizmo 基准（世界空间三轴）。世界模式恒为单位基。
@@ -3993,7 +4008,6 @@ impl Workspace {
         document
             .undo
             .push_transform(&mut document.doc, entity_id, before, after, now);
-        document.dirty = true;
     }
 
     /// 去掉「祖先也在本次操作集合里」的后代。
@@ -4062,7 +4076,6 @@ impl Workspace {
                 .undo
                 .push_transform_batch(&mut document.doc, changes, key, now);
         }
-        document.dirty = true;
     }
 
     /// 缩放 gizmo：只改一个轴（下限 0.01，避免退化矩阵）。
@@ -4081,7 +4094,6 @@ impl Workspace {
         document
             .undo
             .push_transform(&mut document.doc, entity_id, before, after, now);
-        document.dirty = true;
     }
 
     /// 多选 gizmo 缩放：`targets` 是 (实体 id, 拖动开始时的轴缩放值)，`ratio` 为整体倍数。
@@ -4126,7 +4138,6 @@ impl Workspace {
                 .undo
                 .push_transform_batch(&mut document.doc, changes, key, now);
         }
-        document.dirty = true;
     }
 
     /// 多选 gizmo 缩放（#416）：`targets` = `(实体 id, 本地缩放轴, 起始缩放)`。
@@ -4222,7 +4233,6 @@ impl Workspace {
                 .undo
                 .push_transform_batch(&mut document.doc, changes, key, now);
         }
-        document.dirty = true;
     }
 
     /// 检查器里拖动 Transform 的一个分量（按实体合并撤销步）。
@@ -4243,7 +4253,6 @@ impl Workspace {
         document
             .undo
             .push_transform(&mut document.doc, entity_id, before, after, now_ms);
-        document.dirty = true;
     }
 
     /// 整体写一个向量分量（`position` / `scale`）。
@@ -4269,7 +4278,6 @@ impl Workspace {
         document
             .undo
             .push_transform(&mut document.doc, entity_id, before, after, now_ms);
-        document.dirty = true;
     }
 
     /// 多选：整体写向量分量，整次拖动一个撤销步。
@@ -4313,7 +4321,6 @@ impl Workspace {
                 .undo
                 .push_transform_batch(&mut document.doc, changes, key, now);
         }
-        document.dirty = true;
     }
 
     /// 多选 Transform 字段：把同一个分量值写到所有选中实体（整次拖动一个撤销步）。
@@ -4361,7 +4368,6 @@ impl Workspace {
                 .undo
                 .push_transform_batch(&mut document.doc, changes, key, now);
         }
-        document.dirty = true;
     }
 
     /// 整体写一个实体的 `rotation`（检查器按欧拉角编辑后换回四元数）。
@@ -4383,7 +4389,6 @@ impl Workspace {
         document
             .undo
             .push_transform(&mut document.doc, entity_id, before, after, now_ms);
-        document.dirty = true;
     }
 
     /// 多选：把同一个 `rotation` 写到所有选中实体（一次撤销步）。
@@ -4423,7 +4428,6 @@ impl Workspace {
                 .undo
                 .push_transform_batch(&mut document.doc, changes, key, now);
         }
-        document.dirty = true;
     }
 
     // ── 撤销 ────────────────────────────────────────────────────────────
@@ -4436,7 +4440,7 @@ impl Workspace {
         let Some(outcome) = outcome else {
             return;
         };
-        self.document_mut().dirty = true;
+
         self.restore_selection(outcome.selection);
     }
 
@@ -4448,7 +4452,7 @@ impl Workspace {
         let Some(outcome) = outcome else {
             return;
         };
-        self.document_mut().dirty = true;
+
         self.restore_selection(outcome.selection);
     }
 
@@ -5430,7 +5434,7 @@ impl Workspace {
             .docs
             .iter()
             .find(|document| document.path.as_deref() == Some(root_id.as_str()))
-            .map(|document| !document.dirty);
+            .map(|document| !document.is_dirty());
         if let Some(document) = self
             .docs
             .iter_mut()
@@ -7202,12 +7206,12 @@ mod tests {
 
         workspace.preview_rename(0, "F");
         workspace.preview_rename(0, "Floor");
-        assert!(workspace.document().dirty, "预览阶段就要有未保存标记");
+        assert!(workspace.document().is_dirty(), "预览阶段就要有未保存标记");
         assert!(!workspace.can_undo(), "预览阶段不产生撤销步");
 
         workspace.finish_rename(base, was_dirty);
         assert_eq!(workspace.document().undo.history().len(), 1);
-        assert!(workspace.document().dirty);
+        assert!(workspace.document().is_dirty());
         workspace.undo();
         assert_eq!(
             workspace.document().doc.entities[0].display_name(),
@@ -7225,7 +7229,7 @@ mod tests {
         workspace.preview_rename(0, "Camera");
         workspace.finish_rename(base, false);
 
-        assert!(!workspace.document().dirty);
+        assert!(!workspace.document().is_dirty());
         assert!(!workspace.can_undo());
     }
 
@@ -7236,14 +7240,14 @@ mod tests {
         let base = workspace.document().doc.clone();
 
         workspace.preview_rename(0, "Floor");
-        assert!(workspace.document().dirty);
+        assert!(workspace.document().is_dirty());
         workspace.cancel_rename(base, false);
 
         assert_eq!(
             workspace.document().doc.entities[0].display_name(),
             "Camera"
         );
-        assert!(!workspace.document().dirty);
+        assert!(!workspace.document().is_dirty());
         assert!(!workspace.can_undo());
     }
 
@@ -7451,12 +7455,37 @@ mod tests {
                 ["fov_y_degrees"],
             json!(75.0)
         );
-        assert!(workspace.document().dirty);
+        assert!(workspace.document().is_dirty());
         workspace.undo();
         assert_eq!(
             workspace.document().doc.entities[0].components["prism_engine::scene::Camera"]
                 ["fov_y_degrees"],
             json!(60.0)
+        );
+        assert!(
+            !workspace.document().is_dirty(),
+            "撤销回保存点后文档应该恢复干净"
+        );
+    }
+
+    #[test]
+    fn saving_moves_the_dirty_baseline() {
+        let mut workspace = Workspace::load_fixture(&fixture());
+        workspace.set_field(
+            1,
+            "prism_engine::scene::Camera",
+            "fov_y_degrees",
+            json!(75.0),
+        );
+        workspace.mark_saved();
+        assert!(!workspace.document().is_dirty());
+
+        workspace.undo();
+        assert!(workspace.document().is_dirty(), "保存后再撤销同样算未保存");
+        workspace.redo();
+        assert!(
+            !workspace.document().is_dirty(),
+            "重做回保存点后应该恢复干净"
         );
     }
 
@@ -7952,7 +7981,7 @@ mod tests {
         workspace.selection = vec![index];
         workspace.delete_selection();
         assert!(workspace.document().doc.entities.len() < entities_before);
-        assert!(workspace.document().dirty);
+        assert!(workspace.document().is_dirty());
 
         workspace.stop();
         assert!(!workspace.playing);
@@ -7963,7 +7992,7 @@ mod tests {
             restored.transform, before,
             "Transform 要回到进入 Play 前的值"
         );
-        assert!(!workspace.document().dirty, "运行期编辑不能把文档标脏");
+        assert!(!workspace.document().is_dirty(), "运行期编辑不能把文档标脏");
         assert_eq!(workspace.selection, selection_before);
         assert!(!workspace.can_undo(), "撤销栈不能混进运行期的步骤");
     }
@@ -8231,7 +8260,7 @@ mod tests {
             .iter()
             .find(|document| document.path.as_deref() == Some("assets/scenes/main.scene.json"))
             .expect("scene is open");
-        assert!(scene.dirty, "打开着的场景要标脏");
+        assert!(scene.is_dirty(), "打开着的场景要标脏");
         let hero = scene
             .doc
             .entities
@@ -8333,7 +8362,7 @@ mod tests {
             .iter()
             .find(|document| document.path.as_deref() == Some("assets/scenes/main.scene.json"))
             .expect("scene is open");
-        assert!(!scene.dirty);
+        assert!(!scene.is_dirty());
         assert_eq!(
             scene.doc.entities[0].components["prism_engine::scene::Animator"]["state"],
             "Idle"
@@ -8418,7 +8447,7 @@ mod tests {
             .map(|entity| entity.name.clone().unwrap_or_default())
             .collect();
         assert_eq!(names, vec!["Theirs".to_string()]);
-        assert!(!workspace.docs[index].dirty);
+        assert!(!workspace.docs[index].is_dirty());
         assert!(!workspace.docs[index].externally_modified);
         assert!(workspace.save_conflict(index).is_none());
     }
@@ -8584,7 +8613,7 @@ mod tests {
             .and_then(|component| component.get("mesh_path"))
             .and_then(|value| value.as_str());
         assert_eq!(value, Some("assets/moved/cube.fbx"));
-        assert!(document.dirty, "文档被改写了就该是 dirty");
+        assert!(document.is_dirty(), "文档被改写了就该是 dirty");
     }
 
     /// #478：目录改名要把目录里每个资产的引用都跟着改写。
@@ -8619,7 +8648,7 @@ mod tests {
             .and_then(|component| component.get("sprite_path"))
             .and_then(|value| value.as_str());
         assert_eq!(value, Some("assets/wood/wood.png"));
-        assert!(workspace.document().dirty);
+        assert!(workspace.document().is_dirty());
         assert!(workspace
             .assets
             .iter()
@@ -8813,7 +8842,7 @@ mod tests {
         let path = workspace.save_document(index).unwrap();
         assert_eq!(workspace.active, 0);
         assert_eq!(workspace.docs[index].path.as_deref(), Some(path.as_str()));
-        assert!(!workspace.docs[index].dirty);
+        assert!(!workspace.docs[index].is_dirty());
         assert!(project.root.join(&path).exists());
     }
 
@@ -8965,10 +8994,10 @@ mod tests {
             "fov_y_degrees",
             json!(42.0),
         );
-        assert!(workspace.document().dirty);
+        assert!(workspace.document().is_dirty());
         let path = workspace.save_active().unwrap();
         assert_eq!(path, "assets/scenes/disk.scene.json");
-        assert!(!workspace.document().dirty);
+        assert!(!workspace.document().is_dirty());
 
         // 再改（不保存）→ reload 丢弃修改。
         workspace.set_field(
@@ -9173,7 +9202,7 @@ mod tests {
                 .len(),
             1
         );
-        assert!(workspace.document().dirty, "引用改写后应标记未保存");
+        assert!(workspace.document().is_dirty(), "引用改写后应标记未保存");
 
         // 场景文档不允许走资产重命名。
         assert!(workspace
@@ -9223,7 +9252,7 @@ mod tests {
         );
         assert_eq!(references, 0);
         assert!(affected.is_empty());
-        assert!(!workspace.document().dirty, "文档不应被改写");
+        assert!(!workspace.document().is_dirty(), "文档不应被改写");
         assert_eq!(std::fs::read_to_string(&scene_path).unwrap(), scene);
         assert!(project.root.join("assets/textures/b.png.rmeta").is_file());
         assert!(!project.root.join("assets/textures/a.png.rmeta").exists());
@@ -9366,7 +9395,7 @@ mod tests {
             open.doc.field_references("assets/textures/oak.png").len(),
             1
         );
-        assert!(open.dirty, "内存里的引用改完要标脏");
+        assert!(open.is_dirty(), "内存里的引用改完要标脏");
     }
 
     /// 建一个「预制体在磁盘上 + 场景里实例化一份」的工程。
@@ -10516,7 +10545,7 @@ mod tests {
             .iter()
             .find(|document| document.path.as_deref() == Some("assets/scenes/recovery.scene.json"))
             .expect("恢复出来的文档要出现在工作区");
-        assert!(recovered.dirty, "恢复的文档必须保持 dirty");
+        assert!(recovered.is_dirty(), "恢复的文档必须保持 dirty");
         assert_eq!(recovered.doc, expected);
     }
 
@@ -10544,7 +10573,7 @@ mod tests {
             tabs,
             "同路径文档应就地替换，不能多开一个 tab"
         );
-        assert!(fresh.document().dirty);
+        assert!(fresh.document().is_dirty());
         assert!(fresh
             .document()
             .doc
@@ -10585,7 +10614,7 @@ mod visibility_tests {
         assert!(workspace.is_entity_hidden(1));
         assert!(workspace.is_entity_hidden(3));
         assert!(!workspace.is_entity_hidden(0));
-        assert!(!workspace.document().dirty, "可见性不是作者数据");
+        assert!(!workspace.document().is_dirty(), "可见性不是作者数据");
 
         workspace.set_entity_hidden(3, false);
         assert!(workspace.is_entity_hidden(1));

@@ -19,11 +19,11 @@ fn transform_edit_undo_and_redo_round_trip() {
     let mut harness = EditorHarness::new();
     let cube = harness.entity_index("Cube");
     assert_eq!(harness.transform(cube), [1.0, 2.0, 3.0]);
-    assert!(!harness.workspace().document().dirty);
+    assert!(!harness.workspace().document().is_dirty());
 
     harness.set_transform(cube, [7.0, 8.0, 9.0]);
     assert_eq!(harness.transform(cube), [7.0, 8.0, 9.0]);
-    assert!(harness.workspace().document().dirty);
+    assert!(harness.workspace().document().is_dirty());
     assert!(harness.workspace().can_undo());
 
     harness.undo();
@@ -77,7 +77,7 @@ fn save_reload_and_external_conflict_are_observable() {
     let scene_index = harness.workspace().active_index();
     let saved_path = harness.workspace_mut().save_active().expect("save");
     assert_eq!(saved_path, "assets/scenes/main.scene.json");
-    assert!(!harness.workspace().document().dirty);
+    assert!(!harness.workspace().document().is_dirty());
     assert_eq!(
         entity_json(&harness.disk_json(), "Cube")["components"][HEALTH]["hp"].as_i64(),
         Some(42)
@@ -114,7 +114,7 @@ fn save_reload_and_external_conflict_are_observable() {
         .expect("reload external version");
     let cube = harness.entity_index("Cube");
     assert_eq!(harness.health(cube), Some(999));
-    assert!(!harness.workspace().document().dirty);
+    assert!(!harness.workspace().document().is_dirty());
 }
 
 #[test]

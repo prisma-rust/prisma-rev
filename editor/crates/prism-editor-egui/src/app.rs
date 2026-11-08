@@ -1040,7 +1040,7 @@ impl EditorApp {
                         .workspace
                         .docs
                         .iter()
-                        .filter(|document| document.dirty)
+                        .filter(|document| document.is_dirty())
                         .count();
                     (
                         format!("{count} document(s) have unsaved changes."),
@@ -2046,7 +2046,12 @@ impl EditorApp {
     /// 唯一生效的路径是给根视口发 `Close`：winit 的 `CloseRequested` →
     /// `event_loop.exit()`。
     fn request_quit(&mut self, ctx: &egui::Context) {
-        if self.workspace.docs.iter().any(|document| document.dirty) {
+        if self
+            .workspace
+            .docs
+            .iter()
+            .any(|document| document.is_dirty())
+        {
             self.state.pending_close = Some(panels::CloseTarget::App);
         } else {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -2089,7 +2094,7 @@ impl EditorApp {
                         })
                     }),
                 "scene": self.workspace.document().path.clone(),
-                "dirty": self.workspace.document().dirty,
+                "dirty": self.workspace.document().is_dirty(),
                 "project_root": self
                     .project_root
                     .as_ref()
@@ -2336,7 +2341,7 @@ impl EditorApp {
                     .workspace
                     .docs
                     .iter()
-                    .filter(|document| document.dirty)
+                    .filter(|document| document.is_dirty())
                     .map(|document| document.path.clone().unwrap_or_else(|| document.title()))
                     .collect();
                 self.request_quit(ctx);
@@ -2481,7 +2486,7 @@ impl EditorApp {
         let mut failures = Vec::new();
         let mut saved = 0usize;
         for index in 0..count {
-            if self.workspace.docs[index].dirty {
+            if self.workspace.docs[index].is_dirty() {
                 match self.workspace.save_document(index) {
                     Ok(_) => saved += 1,
                     Err(error) if self.workspace.save_conflict(index).is_some() => {
@@ -4930,7 +4935,7 @@ impl EditorApp {
                     .workspace
                     .docs
                     .iter()
-                    .filter(|document| document.dirty)
+                    .filter(|document| document.is_dirty())
                     .count();
                 (
                     format!("{count} document(s) have unsaved changes."),
@@ -5061,7 +5066,7 @@ impl EditorApp {
             panels::CloseTarget::App => {
                 let mut failure: Option<String> = None;
                 for index in 0..self.workspace.docs.len() {
-                    if !self.workspace.docs[index].dirty {
+                    if !self.workspace.docs[index].is_dirty() {
                         continue;
                     }
                     if let Err(error) = self.workspace.save_document(index) {
@@ -5892,7 +5897,13 @@ impl App for EditorApp {
 
         // 关闭窗口 = 退出（与游戏窗口一致的行为）；有未保存改动时先拦截。
         if ctx.input(|input| input.viewport().close_requested()) {
-            if !self.force_quit && self.workspace.docs.iter().any(|document| document.dirty) {
+            if !self.force_quit
+                && self
+                    .workspace
+                    .docs
+                    .iter()
+                    .any(|document| document.is_dirty())
+            {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.state.pending_close = Some(panels::CloseTarget::App);
             } else {
