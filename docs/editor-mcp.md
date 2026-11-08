@@ -129,3 +129,27 @@ egui 没有 DOM，也拿不到可以外部点击的控件句柄，所以节点�
 之后取样，所以 Vulkan 交换链内容和 UI 一起抓到，窗口部分在屏幕外也行；其它平台
 只支持 `scene` / `game`（引擎离屏图，不需要窗口）。编辑器菜单
 「Window → Capture Window」是同一套实现的本地快捷键。
+
+## 协议实现：手写 JSON-RPC 子集，暂不引入 `rmcp`
+
+`crates/prism-editor-mcp/src/protocol.rs` 自己实现了 MCP 的 JSON-RPC 2.0 子集：
+`initialize`、`tools/list`、`tools/call`、`ping`。`main.rs` 逐行读 stdin，
+无 `id` 的消息（notification，例如 `notifications/initialized`）直接跳过，
+未知方法回 `-32601`。工具调用是同步的，结果直接写回同一行 JSON，没有
+resources、prompts、sampling、progress 通知，也不需要 async 运行时。
+
+协议版本只在 `protocol::PROTOCOL_VERSION` 一处写死（当前 `2025-06-18`），
+`initialize` 的 `capabilities` 只声明 `tools`；`protocol.rs` 的单测钉住这三点，
+避免手改 JSON 时悄悄漂移。
+
+官方 Rust SDK `rmcp` 能覆盖更完整的规范，但它把 tokio 带进依赖图。当前这份实现
+只有 60 余行、没有 async，也没有外部调用者依赖更宽的协议面，所以**保留手写实现**，
+按以下条件重新评估：
+
+- 需要 resources / prompts / sampling / progress 通知中的任意一项；
+- 规范升级后 `initialize` 的握手或 capabilities 结构发生不兼容变化；
+- 这份实现超过约 300 行，或开始需要并发处理多个请求。
+
+换之前先确认 `rmcp` 与 tokio 只出现在 `prism-editor-mcp` 进程里：
+`cargo tree -p prism-editor-mcp` 可以带，`scripts/check_deps.py` 守的玩家树
+（`prisma → prism-app → prism-engine …`）不能出现。
