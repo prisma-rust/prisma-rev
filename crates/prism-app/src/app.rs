@@ -253,6 +253,14 @@ fn normalize_asset_path(path: &str) -> String {
     parts.join("/")
 }
 
+/// Write the launch config's `log_level` into `RUST_LOG` before the logger reads it.
+fn apply_launch_log_level() {
+    let launch = prism_engine::launch_config::LaunchConfig::from_env();
+    if let Some(level) = &launch.log_level {
+        std::env::set_var("RUST_LOG", level);
+    }
+}
+
 impl App {
     /// 无参构造 = 默认配置的完整引擎（无演示内容）。
     pub fn new() -> Self {
@@ -290,6 +298,15 @@ impl App {
     }
 
     fn build(config: AppConfig, load_scene: bool) -> Self {
+        // Install logging before anything touches assets or scenes: the package mount
+        // and the startup scene load warn about broken or missing packages, and those
+        // records used to be emitted before `env_logger::try_init` and vanish (#1013).
+        // `try_init` is idempotent, so hosts that already set up a logger keep it; on
+        // Android `run_on_android` initializes `android_logger` before this builder runs.
+        apply_launch_log_level();
+        #[cfg(not(target_os = "android"))]
+        let _ = env_logger::try_init();
+
         let mut engine = Engine::empty();
 
         // Phase 1 – Subsystem registration
@@ -767,13 +784,11 @@ impl App {
     /// 解析启动配置，把日志级别写入 `RUST_LOG`。
     ///
     /// **必须在 logger 初始化之前调用**：`env_logger` / `android_logger`
-    /// 只在初始化时读取一次过滤器。桌面入口在 [`Self::run`] 里先调用本函数，
+    /// 只在初始化时读取一次过滤器。[`Self::build`] 已经调用过一次，这里保留
+    /// 给 `run` / `run_on` 的入口兜底（重复设置同一份值没有副作用）；
     /// Android 入口在 `run_on_android` 里先读取同一份配置。
     fn apply_launch_config(&self) {
-        let launch = prism_engine::launch_config::LaunchConfig::from_env();
-        if let Some(level) = &launch.log_level {
-            std::env::set_var("RUST_LOG", level);
-        }
+        apply_launch_log_level();
     }
 
     /// 构造这次启动要用的窗口参数（两个后端共用）。
