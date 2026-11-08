@@ -316,3 +316,69 @@ fn reel_position_does_not_depend_on_the_frame_rate() {
         "reel position depends on the frame rate: 30 FPS {slow:?} vs 60 FPS {fast:?}"
     );
 }
+
+/// Reflections are mirror images across the water line, not sprites parked on it (#1052).
+///
+/// The mirror's top edge has to follow `2 * water_line - source bottom`, and the
+/// band above the line (the texture edge the art buries under the water) is cut by
+/// `clip_rect` instead of being hidden by clamping the position.
+#[test]
+fn reflections_mirror_across_the_water_line_and_clip_above_it() {
+    let mut world = scene_world();
+    let mut api = GameWorld::host(&mut world);
+    let mut state = None;
+    fishing::game::world::tick(&mut state, &mut api, 0.016);
+    let water_line = state.as_ref().expect("lake world").water_line();
+
+    let sprites: Vec<EntityHandle> = api.query::<SpriteRenderer>();
+    let mut mirrors = 0;
+    for mirror in sprites.iter().copied() {
+        let sprite = api.get::<SpriteRenderer>(mirror).expect("sprite");
+        if !sprite.flip_y || !sprite.sprite_path.starts_with("sprites/bg/") {
+            continue;
+        }
+        mirrors += 1;
+
+        assert!(
+            sprite.clip_enabled,
+            "reflection {} must be clipped at the water line",
+            sprite.sprite_path
+        );
+        assert_eq!(
+            sprite.clip_rect[3], water_line,
+            "the clip rect has to end at the water line"
+        );
+        assert!(
+            sprite.clip_rect[1] < water_line,
+            "the clip rect has to keep the area below the water line"
+        );
+
+        let source = sprites
+            .iter()
+            .copied()
+            .find(|entity| {
+                *entity != mirror
+                    && api
+                        .get::<SpriteRenderer>(*entity)
+                        .map(|other| !other.flip_y && other.sprite_path == sprite.sprite_path)
+                        .unwrap_or(false)
+            })
+            .expect("every mirror needs its source layer");
+        let source_y = api
+            .get::<LocalTransform>(source)
+            .expect("source transform")
+            .position
+            .y;
+        let mirror_y = api
+            .get::<LocalTransform>(mirror)
+            .expect("mirror transform")
+            .position
+            .y;
+        assert!(
+            (mirror_y - (2.0 * water_line - source_y)).abs() < 1e-3,
+            "mirror top edge {mirror_y} should be 2 * water_line - source bottom ({}), not clamped to the line",
+            2.0 * water_line - source_y
+        );
+    }
+    assert!(mirrors > 0, "the reflected layers need mirror sprites");
+}

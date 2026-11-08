@@ -24,6 +24,11 @@ use serde::Deserialize;
 const PIXELS_PER_UNIT: f32 = 1.0;
 /// 背景层所在的 z（在船与水面之后）。
 const BG_Z: f32 = -20.0;
+/// Half-width of the reflection clip rect.
+///
+/// The rect only exists to cut the mirror at the water line, so its x range
+/// has to cover every camera position; the lake is a few hundred units wide.
+const REFLECTION_CLIP_HALF_WIDTH: f32 = 10_000.0;
 
 #[derive(Deserialize)]
 struct LayersFile {
@@ -85,6 +90,11 @@ impl LakeWorld {
         self.layers.len()
     }
 
+    /// 水面世界 y（反射的镜像轴）。
+    pub fn water_line(&self) -> f32 {
+        self.water_line
+    }
+
     fn build(world: &mut GameWorld<'_>) -> Self {
         let camera = world.query::<Camera>().first().copied();
 
@@ -136,7 +146,11 @@ impl LakeWorld {
                 world.set(
                     mirror,
                     LocalTransform {
-                        position: glam::Vec3::new(def.x, 2.0 * water_line - def.y, base.z + 0.005),
+                        position: glam::Vec3::new(
+                            def.x,
+                            reflection_y(def.y, water_line),
+                            base.z + 0.005,
+                        ),
                         ..LocalTransform::default()
                     },
                 );
@@ -148,6 +162,17 @@ impl LakeWorld {
                         // 镜像层同样以顶边对齐水面镜像线，向下展开。
                         pivot: [0.5, 1.0],
                         flip_y: true,
+                        // The art buries each layer's bottom edge under the water so
+                        // the texture cut is hidden. Flipping that edge makes it
+                        // surface above the water line, so the mirror is clipped at
+                        // the line instead of being moved to sit on it (#1052).
+                        clip_enabled: true,
+                        clip_rect: [
+                            -REFLECTION_CLIP_HALF_WIDTH,
+                            -REFLECTION_CLIP_HALF_WIDTH,
+                            REFLECTION_CLIP_HALF_WIDTH,
+                            water_line,
+                        ],
                         // 镜像要压在水面之上才有反射感：水面在 20，船在 50。
                         sorting_layer: def.sorting.unwrap_or(order as i32) + 30,
                         color: [0.45, 0.6, 0.85, 0.5],
@@ -204,6 +229,16 @@ impl LakeWorld {
 
 fn unit_scale() -> f32 {
     1.0
+}
+
+/// Y of a reflection whose source bottom edge is at `source_y`.
+///
+/// The mirror uses its top edge as the pivot, so the source's bottom edge maps
+/// onto the mirror's top edge. Everything above the water line is cut by
+/// `clip_rect`; do not clamp this value to the line, or the mirror would be
+/// parked on the water instead of following the layer's parallax (#1052).
+fn reflection_y(source_y: f32, water_line: f32) -> f32 {
+    2.0 * water_line - source_y
 }
 
 /// 图层贴图路径；该时段缺图时回落到 `day`（再缺就用该时段的名字，
@@ -329,10 +364,7 @@ pub fn tick(state: &mut Option<LakeWorld>, world: &mut GameWorld<'_>, dt: f32) {
         if let Some(mirror) = layer.reflection {
             if let Some(mut transform) = world.get::<LocalTransform>(mirror) {
                 transform.position.x = x;
-                // 镜像顶边 = 源层底边（轴心在顶部中心）。山体底边本来就埋在水面
-                // 之下用来藏贴图的裁切边，所以按水面翻转会让镜像越过水线露在外面；
-                // 取 `min` 让底边高于水面的层仍然贴着水面翻转。
-                transform.position.y = y.min(current.water_line);
+                transform.position.y = reflection_y(y, current.water_line);
                 world.set(mirror, transform);
             }
         }
