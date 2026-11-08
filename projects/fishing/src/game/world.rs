@@ -6,8 +6,8 @@
 //!
 //! - 每帧按相机位置平移各层（`pos = base + (cam - origin) * parallax`），
 //!   远层几乎钉在屏幕上，近层跟随世界；
-//! - 按 `cycle_seconds` 轮换 dawn → day → dusk → night：只换贴图路径并让
-//!   资产系统重新解析（`SpriteRef.generation = 0`），不重复生成实体。
+//! - 按引擎 `TimeOfDay` 的阶段换 dawn → day → dusk → night：只改贴图路径，
+//!   由资产系统按路径重新解析，不重复生成实体。
 //!
 //! 图层列表与顺序见 `assets/lake_layers.json`；美术由
 //! `scripts/gen_placeholder_sprites.py` 生成，文件名与场景引用一致。
@@ -16,16 +16,12 @@
 //! 关卡逻辑既能编译进静态 Player，也能原样作为编辑器加载的动态模块运行。
 
 use prism_game_api::GameWorld;
-use prism_scene::components::{
-    Active, Camera, LocalTransform, SpriteRenderer, TimeOfDay, TimeOfDayPhase,
-};
+use prism_scene::components::{Camera, LocalTransform, SpriteRenderer, TimeOfDay, TimeOfDayPhase};
 use serde::Deserialize;
 
 /// 每世界单位的像素数：1 像素 = 1 世界单位，相机正交半高 180 → 视口 360
 /// 美术像素（640×360 虚拟分辨率）。
 const PIXELS_PER_UNIT: f32 = 1.0;
-/// 一个完整昼夜的时长（秒）。
-const CYCLE_SECONDS: f32 = 48.0;
 /// 背景层所在的 z（在船与水面之后）。
 const BG_Z: f32 = -20.0;
 
@@ -73,7 +69,6 @@ pub struct LakeWorld {
     layers: Vec<LayerInstance>,
     tods: Vec<String>,
     current_tod: usize,
-    elapsed: f32,
     /// 距离上次写「当前时刻」到存档的秒数（#984：重开游戏昼夜不会跳回早上）。
     clock_save_timer: f32,
     /// 本次运行是否已经从存档恢复过时刻。
@@ -134,7 +129,6 @@ impl LakeWorld {
                     ..SpriteRenderer::default()
                 },
             );
-            world.set(entity, Active(true));
 
             // 水面反射：同一张贴图上下翻转、轴心改为顶部中心，
             // 位置由 tick 按 `y = 2 * water_line - source.y` 镜像。
@@ -162,7 +156,6 @@ impl LakeWorld {
                         ..SpriteRenderer::default()
                     },
                 );
-                world.set(mirror, Active(true));
                 mirror
             });
 
@@ -186,7 +179,6 @@ impl LakeWorld {
             layers,
             tods,
             current_tod,
-            elapsed: 0.0,
             clock_save_timer: 0.0,
             clock_restored: false,
             camera_origin,
@@ -283,8 +275,6 @@ pub fn tick(state: &mut Option<LakeWorld>, world: &mut GameWorld<'_>, dt: f32) {
             }
         }
     }
-
-    current.elapsed += dt;
 
     // --- 昼夜轮换 -------------------------------------------------------
     //
