@@ -84,6 +84,7 @@ mod audio_decode_runner;
 mod debug_hud;
 mod hook;
 mod io_runner;
+pub mod logging;
 #[cfg(feature = "physics")]
 mod physics_runner;
 /// Main-thread physics driver. Exposed so headless scenario tests can step the
