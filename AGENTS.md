@@ -74,6 +74,9 @@ deviating from those conventions is a bug. (`README.md` is the human-facing over
 - `crates/prism-app` — platform layer (winit event loop, window, `FrameHook` extension point,
   `run_on_android` helper). **UI-framework-free**; the Android JNI entry lives in the user project.
 - `crates/prism-platform` — platform abstraction (window system, Vulkan surface, input routing).
+  `thread` 模块只做调度提示：`favour_current()`（渲染线程）与 `put_behind_current()`
+  （物理 / 音频解码等辅助线程），核数 ≤ 4 或平台不支持时返回 `false` 并保持默认优先级；
+  不要用 `SCHED_FIFO` / `THREAD_PRIORITY_TIME_CRITICAL`（需要权限，移动端会被压制）。
 - `crates/prism-editor-api` — 编辑器 / MCP 的**数据层**：把 `prism-scene` 组件注册表投影成
   属性面板 schema + `.scene.json` 定位/读写/校验。UI-framework-free、Vulkan-free，被
   `crates/prism-editor-mcp` 使用。

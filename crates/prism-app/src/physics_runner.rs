@@ -505,7 +505,12 @@ impl PhysicsRuntime {
         let (result_tx, result_rx) = flume::unbounded();
         let thread = std::thread::Builder::new()
             .name("prism-physics".to_string())
-            .spawn(move || physics_thread_main(step_rx, result_tx))
+            .spawn(move || {
+                if !prism_platform::thread::put_behind_current() {
+                    log::debug!("physics thread keeps the default scheduling priority");
+                }
+                physics_thread_main(step_rx, result_tx)
+            })
             .map_err(|error| {
                 log::error!("physics: failed to spawn thread: {error}");
                 error
