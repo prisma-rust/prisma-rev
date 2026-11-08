@@ -919,6 +919,10 @@ pub struct LineRenderer {
     /// 线性 RGBA 颜色。
     pub color: [f32; 4],
     /// 线宽（世界单位）。
+    ///
+    /// **小于 1 个渲染像素时按 1 像素绘制**（#978）：亚像素宽的几何会让像素
+    /// 中心落在三角形之外，屏幕上断成一串点。渲染时按主相机把 1 像素换算成
+    /// 世界长度，宽度取两者较大值。
     pub width: f32,
     /// 排序层，与 [`SpriteRenderer::sorting_layer`] 同一套数值。
     pub sorting_layer: i32,

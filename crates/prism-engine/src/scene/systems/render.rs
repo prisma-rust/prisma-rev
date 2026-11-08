@@ -284,6 +284,46 @@ pub(crate) type SortKey = (i32, i32, f32, u32);
 /// 纯色绘制标记：`SpriteDrawItem.texture` 取此值时着色器不采样贴图。
 pub const SOLID_TEXTURE: u32 = u32::MAX;
 
+/// 主线相机的世界 → 渲染像素比例，用来把亚像素折线加宽到 1 个像素（#978）。
+///
+/// 折线在 CPU 侧三角化成世界空间四边形；宽度不足 1 个像素时，像素中心会
+/// 落在三角形之外，屏幕上就断成一串点。这里按主相机换算「1 像素 = 多少
+/// 世界单位」，让 `LineRenderer::width` 有一个屏幕空间下限。
+#[derive(Clone, Copy, Debug)]
+pub struct LineScreenScale {
+    /// 主相机 `view_proj`（`surface_rotation * projection * view`）。
+    pub view_proj: glam::Mat4,
+    /// 场景实际渲染的像素高度（`internal_resolution` 生效时是内部高度）。
+    pub render_height: f32,
+}
+
+impl LineScreenScale {
+    /// 只有像素高度确实为正时才返回比例；否则调用方保持旧行为（不加宽）。
+    pub fn new(view_proj: glam::Mat4, render_height: f32) -> Option<Self> {
+        (render_height.is_finite() && render_height > 0.0 && view_proj.is_finite()).then_some(
+            Self {
+                view_proj,
+                render_height,
+            },
+        )
+    }
+
+    /// `point` 附近 1 个渲染像素对应的世界长度（沿世界 +Y 量）。
+    ///
+    /// 正交相机下与位置无关；透视相机按该点的深度换算。点落在相机平面
+    /// （`w == 0`）或换算退化时返回 `None`。
+    pub fn world_per_pixel(&self, point: glam::Vec3) -> Option<f32> {
+        let clip_a = self.view_proj * point.extend(1.0);
+        let clip_b = self.view_proj * (point + glam::Vec3::Y).extend(1.0);
+        if clip_a.w.abs() < 1e-6 || clip_b.w.abs() < 1e-6 {
+            return None;
+        }
+        let ndc_delta = (clip_b.y / clip_b.w) - (clip_a.y / clip_a.w);
+        let pixels = ndc_delta.abs() * 0.5 * self.render_height;
+        (pixels.is_finite() && pixels > 1e-6).then(|| pixels.recip())
+    }
+}
+
 /// Collect all 2D sprite draw items from the ECS world, sorted back-to-front.
 ///
 /// An entity produces a [`SpriteDrawItem`](prism_render::SpriteDrawItem) when it
@@ -300,7 +340,7 @@ pub fn scene_sprite_system(world: &World) -> Vec<prism_render::SpriteDrawItem> {
 /// Collect all 2D line draw items (`LineRenderer`) as non-overlapping
 /// triangles (miter/bevel joins, butt/square/round caps — #604).
 pub fn scene_line_system(world: &World) -> Vec<prism_render::SpriteDrawItem> {
-    sort_draw_items(line_entries(world))
+    sort_draw_items(line_entries(world, None))
 }
 
 /// Every 2D draw item (sprites **and** lines) in one back-to-front list.
@@ -328,8 +368,21 @@ pub fn scene_2d_system_into_with_frustum(
     frustum: Option<&prism_render::culling::Frustum>,
     out: &mut Vec<prism_render::SpriteDrawItem>,
 ) {
+    scene_2d_system_into_with_frustum_and_line_scale(world, frustum, None, out);
+}
+
+/// [`scene_2d_system_into_with_frustum`] 加主线相机的像素比例（#978）。
+///
+/// `line_scale` 为 `Some` 时，宽度不足 1 个渲染像素的折线会被加宽到 1 像素，
+/// 否则细线在屏幕上断成一串点。`None` 保持旧行为（纯世界空间几何）。
+pub fn scene_2d_system_into_with_frustum_and_line_scale(
+    world: &World,
+    frustum: Option<&prism_render::culling::Frustum>,
+    line_scale: Option<LineScreenScale>,
+    out: &mut Vec<prism_render::SpriteDrawItem>,
+) {
     let mut entries = sprite_entries(world);
-    entries.extend(line_entries(world));
+    entries.extend(line_entries(world, line_scale));
     // 2D 粒子是纯色四边形，和精灵共用同一条通道与排序（#594）。
     entries.extend(super::particles2d::particle_entries_2d(world));
     // 瓦片地图：一个实体一整张网格（#529）。
@@ -471,7 +524,10 @@ fn sprite_entries(world: &World) -> Vec<(SortKey, prism_render::SpriteDrawItem)>
         .collect()
 }
 
-fn line_entries(world: &World) -> Vec<(SortKey, prism_render::SpriteDrawItem)> {
+fn line_entries(
+    world: &World,
+    line_scale: Option<LineScreenScale>,
+) -> Vec<(SortKey, prism_render::SpriteDrawItem)> {
     let mut out = Vec::new();
     for (entity, line) in world.query::<LineRenderer>() {
         let active = crate::scene::systems::hierarchy::is_active_in_hierarchy(world, entity);
@@ -482,6 +538,15 @@ fn line_entries(world: &World) -> Vec<(SortKey, prism_render::SpriteDrawItem)> {
             line.width
         } else {
             0.1
+        };
+        // 亚像素线加宽到 1 个渲染像素（#978）：像素中心落在三角形外时，
+        // 屏幕上看到的是等距的点而不是线。比例按折线首个点在主相机下的
+        // 深度换算（正交相机与位置无关）。
+        let width = match line_scale
+            .and_then(|scale| scale.world_per_pixel(glam::Vec3::from_array(line.points[0])))
+        {
+            Some(world_per_pixel) => width.max(world_per_pixel),
+            None => width,
         };
         let z = world
             .get::<LocalToWorld>(entity)

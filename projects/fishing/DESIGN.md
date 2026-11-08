@@ -162,6 +162,8 @@ pub struct LineRenderer {
 `LineRenderer` 在 CPU 侧三角化为**互不重叠**的笔触（2D 场景下即 XY 平面上的加宽折线，
 支持 miter/bevel 拐点与 butt/square/round 端点；#604），
 并入 `SpritePass` 的实例缓冲（同一 pipeline，白色 1×1 纹理）。避免新增 pass。
+宽度不足 1 个渲染像素时按 1 像素绘制（#978）——亚像素宽的三角形会让像素中心漏采样，
+屏幕上断成一串点；引擎按主相机与场景渲染高度换算这个下限。
 
 ### 3.4 音频
 

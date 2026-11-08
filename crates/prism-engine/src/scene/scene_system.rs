@@ -138,7 +138,20 @@ impl<'a> SceneReadView<'a> {
         frustum: Option<&prism_render::culling::Frustum>,
         out: &mut Vec<prism_render::SpriteDrawItem>,
     ) {
-        super::systems::render::scene_2d_system_into_with_frustum(self.world, frustum, out)
+        self.sprite_items_with_frustum_and_line_scale_into(frustum, None, out)
+    }
+
+    /// [`Self::sprite_items_with_frustum_into`] 加主线相机像素比例（#978）：
+    /// 亚像素宽的折线按 1 个渲染像素绘制，避免断成一串点。
+    pub fn sprite_items_with_frustum_and_line_scale_into(
+        &self,
+        frustum: Option<&prism_render::culling::Frustum>,
+        line_scale: Option<super::systems::render::LineScreenScale>,
+        out: &mut Vec<prism_render::SpriteDrawItem>,
+    ) {
+        super::systems::render::scene_2d_system_into_with_frustum_and_line_scale(
+            self.world, frustum, line_scale, out,
+        )
     }
 
     /// 提取 `Light2D`（#611），已按贡献修剪到 `SPRITE_LIGHT_MAX`。

@@ -46,7 +46,7 @@ use prism_engine::asset_resolver::GpuAssetResolver;
 use prism_engine::config::AppConfig;
 use prism_engine::input::InputManager;
 use prism_engine::render_settings::RenderSettings;
-use prism_engine::render_system::extract_frame_packet_into_with_shadow_cascades;
+use prism_engine::render_system::extract_frame_packet_into_with_shadow_cascades_and_render_height;
 use prism_engine::Engine;
 use prism_platform::{
     required_vulkan_extensions, Key, Modifiers, PlatformContext, PlatformEvent, PlatformWindow,
@@ -1349,12 +1349,15 @@ impl App {
             // #613：内部分辨率生效时相机按**内部**宽高比投影，后处理再整数
             // 放大到窗口；否则 2D 像素会被拉成不等宽的矩形。
             let aspect = self.render_settings.render_aspect(self.display_aspect);
-            extract_frame_packet_into_with_shadow_cascades(
+            // #978：亚像素折线按场景实际渲染高度换算「1 像素」的世界长度。
+            let render_height = self.render_settings.render_height(surface_w, surface_h);
+            extract_frame_packet_into_with_shadow_cascades_and_render_height(
                 engine.world_mut(),
                 aspect,
                 &self.surface_rotation,
                 self.render_settings.shadow_distance,
                 self.render_settings.shadow_cascade_count,
+                render_height,
                 &mut packet,
             );
             // 渲染设置随帧数据包送到渲染线程（快捷键 / 项目配置的修改在此生效）。

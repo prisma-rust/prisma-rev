@@ -267,6 +267,25 @@ impl RenderSettings {
             16.0 / 9.0
         }
     }
+
+    /// 场景实际渲染的像素高度（#978）。
+    ///
+    /// `internal_resolution` 生效时是内部高度；只给了一个维度时按窗口比例
+    /// 推导（与 `prism_render::render_graph::internal_extent` 一致）。都没给
+    /// 时就是窗口高度。
+    pub fn render_height(&self, window_width: u32, window_height: u32) -> f32 {
+        let window_height = window_height.max(1);
+        let [width, height] = self.internal_resolution;
+        if width == 0 && height == 0 {
+            return window_height as f32;
+        }
+        if height > 0 {
+            return height as f32;
+        }
+        let window_width = window_width.max(1);
+        let derived = (width as f32 * window_height as f32 / window_width as f32).round();
+        derived.max(1.0)
+    }
 }
 
 #[cfg(test)]
@@ -284,6 +303,27 @@ mod tests {
         assert_eq!(pbr_flag_label((1 << 0) | (1 << 15)), "(custom flags)");
         assert_eq!(pbr_flag_label(0), "(normal render)");
         assert_eq!(pbr_flag_label(1 << 16), "(custom flags)");
+    }
+
+    #[test]
+    fn render_height_follows_the_internal_resolution() {
+        let mut settings = RenderSettings::default();
+        assert_eq!(settings.render_height(1920, 1080), 1080.0, "内部分辨率关闭");
+
+        settings.internal_resolution = [640, 360];
+        assert_eq!(settings.render_height(1920, 1080), 360.0);
+
+        // 只给宽度：按窗口比例推导高度（与 internal_extent 一致）。
+        settings.internal_resolution = [640, 0];
+        assert_eq!(settings.render_height(1920, 1080), 360.0);
+
+        // 只给高度：直接用。
+        settings.internal_resolution = [0, 240];
+        assert_eq!(settings.render_height(1920, 1080), 240.0);
+
+        // 退化输入不产生 0 / NaN。
+        settings.internal_resolution = [0, 0];
+        assert_eq!(settings.render_height(0, 0), 1.0);
     }
 
     #[test]

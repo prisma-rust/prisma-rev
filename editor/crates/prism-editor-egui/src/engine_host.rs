@@ -23,7 +23,9 @@ use prism_engine::asset_resolver::GpuAssetResolver;
 use prism_engine::ecs::{Entity, World};
 use prism_engine::input::InputManager;
 use prism_engine::render_settings::RenderSettings;
-use prism_engine::render_system::{extract_frame_packet_into_with_shadow_cascades, FramePacket};
+use prism_engine::render_system::{
+    extract_frame_packet_into_with_shadow_cascades_and_render_height, FramePacket,
+};
 use prism_engine::scene::components::{
     Camera, Hidden, LocalToWorld, LocalTransform, Parent, SceneEntityId,
 };
@@ -869,12 +871,14 @@ impl EngineHost {
         let aspect = self
             .settings
             .render_aspect(self.width as f32 / self.height.max(1) as f32);
-        extract_frame_packet_into_with_shadow_cascades(
+        extract_frame_packet_into_with_shadow_cascades_and_render_height(
             self.engine.world_mut(),
             aspect,
             &Mat4::IDENTITY,
             self.settings.shadow_distance,
             self.settings.shadow_cascade_count,
+            // #978：亚像素折线按实际渲染高度加宽到 1 像素。
+            self.settings.render_height(self.width, self.height),
             &mut self.packet,
         );
         self.packet.settings = self.settings.clone();

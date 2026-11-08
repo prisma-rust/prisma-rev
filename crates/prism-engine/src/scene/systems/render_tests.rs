@@ -852,6 +852,117 @@ fn degenerate_segment_is_skipped() {
     assert!(scene_line_system(&world).is_empty());
 }
 
+// ---------------------------------------------------------------------------
+// 亚像素线宽（#978）
+// ---------------------------------------------------------------------------
+
+/// 正交相机（半高 180）+ 360 像素渲染高度 => 1 世界单位 = 1 渲染像素。
+fn ortho_line_scale() -> LineScreenScale {
+    let camera = prism_scene::components::Camera {
+        orthographic: true,
+        orthographic_size: 180.0,
+        ..prism_scene::components::Camera::default()
+    };
+    LineScreenScale::new(camera.projection_matrix(1.0), 360.0).expect("valid scale")
+}
+
+fn point_in_triangle(point: glam::Vec2, [a, b, c]: [glam::Vec2; 3]) -> bool {
+    let edge = |p: glam::Vec2, q: glam::Vec2| (point - q).perp_dot(p - q);
+    let (d1, d2, d3) = (edge(a, b), edge(b, c), edge(c, a));
+    let has_negative = d1 < -1e-5 || d2 < -1e-5 || d3 < -1e-5;
+    let has_positive = d1 > 1e-5 || d2 > 1e-5 || d3 > 1e-5;
+    !(has_negative && has_positive)
+}
+
+/// 以 1 世界单位 = 1 像素栅格化，返回每个像素列是否至少被一个三角形覆盖。
+/// 列 `gx` 的中心在 `x = gx - 0.5`（网格从 -1 开始）。
+fn covered_columns(items: &[prism_render::SpriteDrawItem]) -> Vec<bool> {
+    const SIZE: usize = 14;
+    const MIN: f32 = -1.0;
+    let triangles: Vec<[glam::Vec2; 3]> = items
+        .iter()
+        .map(|item| {
+            let corners = item.corners.expect("line triangle");
+            [
+                glam::Vec2::new(corners[0][0], corners[0][1]),
+                glam::Vec2::new(corners[1][0], corners[1][1]),
+                glam::Vec2::new(corners[2][0], corners[2][1]),
+            ]
+        })
+        .collect();
+    let mut covered = vec![false; SIZE];
+    for (gx, column) in covered.iter_mut().enumerate() {
+        for gy in 0..SIZE {
+            let point = glam::Vec2::new(MIN + gx as f32 + 0.5, MIN + gy as f32 + 0.5);
+            if triangles.iter().any(|tri| point_in_triangle(point, *tri)) {
+                *column = true;
+                break;
+            }
+        }
+    }
+    covered
+}
+
+fn sub_pixel_line_items(
+    world: &mut World,
+    line_scale: Option<LineScreenScale>,
+) -> Vec<prism_render::SpriteDrawItem> {
+    let e = spawn_line(world, vec![[0.0, 0.0, 0.0], [10.0, 5.0, 0.0]], 0);
+    world.get_mut::<LineRenderer>(e).unwrap().width = 0.2;
+    let mut out = Vec::new();
+    scene_2d_system_into_with_frustum_and_line_scale(world, None, line_scale, &mut out);
+    out
+}
+
+#[test]
+fn line_pixel_scale_is_one_world_unit_for_a_360px_ortho_camera() {
+    let scale = ortho_line_scale();
+    for point in [
+        glam::Vec3::ZERO,
+        glam::Vec3::new(37.0, -12.0, 0.0),
+        glam::Vec3::new(-5.0, 80.0, 3.0),
+    ] {
+        let per_pixel = scale.world_per_pixel(point).expect("finite depth");
+        assert!((per_pixel - 1.0).abs() < 1e-4, "{per_pixel} at {point}");
+    }
+}
+
+#[test]
+fn sub_pixel_line_width_is_widened_to_one_render_pixel() {
+    let mut world = World::new();
+    let items = sub_pixel_line_items(&mut world, Some(ortho_line_scale()));
+    let area: f32 = items
+        .iter()
+        .map(|item| triangle_area(&item.corners.expect("line triangle")))
+        .sum();
+    // 加宽到 1 像素后：面积 = 1 x 中心线长度（(10,5) 的模）。
+    let expected = 125f32.sqrt();
+    assert!(
+        (area - expected).abs() < 0.05,
+        "加宽后面积 {area}，期望 width x length = {expected}"
+    );
+}
+
+#[test]
+fn sub_pixel_line_covers_every_pixel_column() {
+    let mut narrow = World::new();
+    let unclamped = covered_columns(&sub_pixel_line_items(&mut narrow, None));
+    assert!(
+        unclamped[1..=10].iter().any(|covered| !covered),
+        "宽度 0.2 世界单位（远小于 1 像素）时应当出现漏采样的列: {unclamped:?}"
+    );
+
+    let mut clamped = World::new();
+    let clamped_columns = covered_columns(&sub_pixel_line_items(
+        &mut clamped,
+        Some(ortho_line_scale()),
+    ));
+    assert!(
+        clamped_columns[1..=10].iter().all(|covered| *covered),
+        "加宽到 1 像素后每一列都应被像素中心采样到: {clamped_columns:?}"
+    );
+}
+
 #[test]
 fn sprites_and_lines_sort_together() {
     let mut world = World::new();
