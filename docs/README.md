@@ -17,6 +17,7 @@
 | 查踩过的坑和根因 | [`lessons-learned.md`](lessons-learned.md) |
 | 改反射、RTTIBin、RSCN | [`REFLECT.md`](REFLECT.md) |
 | 改动画图 / `.rag` 格式 | [`anim-graph.md`](anim-graph.md) |
+| 改两骨 IK / 动画 IK 接线 | [`anim-ik.md`](anim-ik.md) |
 | 用或改 egui 编辑器 | [`editor-egui.md`](editor-egui.md) |
 | 通过 MCP 改场景 / 跑游戏 / 抓图 | [`editor-mcp.md`](editor-mcp.md) |
 | 打 Android APK | [`android-apk.md`](android-apk.md) |

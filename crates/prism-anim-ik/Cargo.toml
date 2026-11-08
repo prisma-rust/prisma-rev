@@ -1,0 +1,10 @@
+[package]
+name = "prism-anim-ik"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Analytic two-bone IK and foot placement for PrismaRev (#560 P4)"
+
+[dependencies]
+prism-anim = { path = "../prism-anim" }
+glam.workspace = true
