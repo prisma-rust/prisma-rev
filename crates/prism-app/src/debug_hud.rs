@@ -63,6 +63,19 @@ impl DebugHud {
         }
         lines.push(line);
 
+        // Percentiles need a few dozen frames before they mean anything.
+        if let Some(cpu) = stats
+            .frame_stats
+            .cpu
+            .as_ref()
+            .filter(|cpu| cpu.samples >= 60)
+        {
+            lines.push(format!(
+                "p50 {:.1} ms  |  p99 {:.1} ms  |  1% low {:.0} FPS",
+                cpu.p50_ms, cpu.p99_ms, cpu.low_1pct_fps
+            ));
+        }
+
         let mode = match settings.render_mode {
             RenderMode::Raster => "Raster",
             RenderMode::PathTrace => "PathTrace",

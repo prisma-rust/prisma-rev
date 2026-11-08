@@ -17,6 +17,7 @@ use prism_engine::render_settings::RenderSettings;
 use prism_engine::render_system::FramePacket;
 use prism_platform::SendWindowHandles;
 use prism_render::asset_bridge::{AssetResolveRequest, AssetResolveResult};
+use prism_render::frame_stats::{FrameStats, FrameStatsSummary};
 use prism_render::SwapchainOverlay;
 use prism_render::{FrameInput, FrameUBOData, GraphRenderer};
 // 直接用 `raw-window-handle` crate（winit 的 `winit::raw_window_handle` 就是它的
@@ -204,6 +205,10 @@ pub fn render_thread_main(
     // 帧计时
     let mut smoothed_fps = 0.0f32;
     let mut frame_count: u64 = 0;
+    // ~2 minutes at 60 fps; the summary is sorted, so it is refreshed a few
+    // times per second instead of every frame (#1002).
+    let mut frame_stats = FrameStats::new(8192);
+    let mut frame_stats_summary = FrameStatsSummary::default();
     let mut first_frame_presented = false;
     let mut first_packet_received = false;
     let mut consecutive_errors: u32 = 0;
@@ -342,6 +347,14 @@ pub fn render_thread_main(
         let pt_count = renderer.pt_frame_count();
         let gpu_timings = renderer.gpu_timings().clone();
 
+        frame_stats.push_frame(
+            frame_time_ms,
+            gpu_timings.supported.then_some(gpu_timings.total_ms),
+        );
+        if frame_count % 30 == 0 {
+            frame_stats_summary = frame_stats.summary();
+        }
+
         // 渲染图报告（Web 编辑器可视化）：首帧 + 低频刷新。
         if graph_report.is_enabled() {
             graph_report.maybe_write_with_timings(
@@ -365,6 +378,7 @@ pub fn render_thread_main(
             pt_frame_count: pt_count,
             // 不支持时间戳的设备保持 None，HUD 会明确显示「n/a」而不是拿 CPU 墙钟冒充。
             gpu_timings: gpu_timings.supported.then_some(gpu_timings),
+            frame_stats: frame_stats_summary.clone(),
         });
 
         // ---- 宿主（编辑器）帧读回：只读回 PostPass 已 tonemap 的离屏图像 ----

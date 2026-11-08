@@ -28,6 +28,7 @@ use prism_engine::ecs::Entity;
 use prism_engine::render_system::FramePacket;
 use prism_render::asset_bridge::{AssetResolveRequest, AssetResolveResult};
 use prism_render::external_overlay::OverlayMessage;
+use prism_render::frame_stats::FrameStatsSummary;
 use prism_render::gpu_timer::GpuTimings;
 use prism_render::GraphRenderer;
 
@@ -73,6 +74,9 @@ pub struct RenderStats {
     pub pt_frame_count: Option<u32>,
     /// 上一帧的 per-pass GPU 计时（None = 设备不支持时间戳）
     pub gpu_timings: Option<GpuTimings>,
+    /// Rolling CPU / GPU frame-time distribution (#1002). Refreshed a few times
+    /// per second, not every frame.
+    pub frame_stats: FrameStatsSummary,
 }
 
 // ---------------------------------------------------------------------------
