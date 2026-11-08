@@ -64,10 +64,10 @@
 - 世界单位 ↔ 像素由 **PPU（pixels per unit）** 决定：
   `world_size = texture_size / pixels_per_unit`；
 - 像素完美：`orthographic_size = 渲染目标高度 / (2 * ppu)`，采样器用 `NEAREST`。
-- **内部渲染分辨率**（M0.2 必做）：像素画要按 480×270 / 640×360 渲染再整数倍放大，
-  否则 32px 精灵在 1080p 上只占屏高 3%。方案：`RenderSettings.internal_resolution: Option<[u32; 2]>`
-  —— ForwardPass 的 HDR 目标按内部分辨率分配，PostPass 用 nearest 放大到 swapchain。
-  在实现前，先用较大的占位精灵验证管线（不影响排序/采样正确性）。
+- **内部渲染分辨率**（M0.2 必做，已落地）：像素画按 640×360 渲染再整数倍放大，
+  否则 32px 精灵在 1080p 上只占屏高 3%。现在用 `assets/settings.ini` 的
+  `[render] internal_resolution` + `internal_scale_mode = integer` 配置（#613）：
+  ForwardPass 的 HDR 目标按内部分辨率分配，PostPass 用 nearest 放大到 swapchain。
 
 #### 新组件 `SpriteRenderer`（`prism-scene`）
 
