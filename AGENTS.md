@@ -366,6 +366,16 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   - `PRISMREV_SCREENSHOT_SIZE=1920x1080`：输出分辨率（`x` / `X` / `,` 分隔都行）。
   - `PRISMREV_SCREENSHOT_SCALE=2`：按窗口分辨率倍数放大（`SIZE` 优先）。
 
+## 帧时间基准报告（`PRISMREV_BENCH_REPORT`）
+- `PRISMREV_BENCH_REPORT=<path>` 让渲染线程在采样满 N 帧后写一份 `prism-bench-report` v1
+  JSON（分位数、1% / 0.1% low、固定分桶直方图 + 适配器 / 分辨率 / 预热帧数）；
+  实现是 `crates/prism-render/src/frame_stats.rs`（分布）与
+  `crates/prism-app/src/bench_report.rs`（预热、采样、写文件）。
+  - `PRISMREV_BENCH_WARMUP=<n>`：只计数不采样的预热帧，默认 120（着色器编译、资产上传）。
+  - `PRISMREV_BENCH_FRAMES=<n>`：采样帧数，默认 600。
+  - 写文件用「同目录临时文件 + rename」，父目录不存在会自动创建；写完进程继续跑，
+    不会自己退出。同一设备 / 分辨率 / 预热长度下的报告才可直接比较。
+
 ## 开发期资产热重载（`PRISMREV_HOT_RELOAD`）
 - `PRISMREV_HOT_RELOAD=1`（也接受 `true` / `yes` / `on`）让**播放器**轮询 `assets/` 下
   所有 `.pak`：重建包后自动 `on_pak_changed` → 重载路径清单 → `invalidate_assets`，

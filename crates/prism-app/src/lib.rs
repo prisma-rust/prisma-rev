@@ -81,6 +81,7 @@ mod android_assets;
 mod app;
 #[cfg(feature = "audio")]
 mod audio_decode_runner;
+mod bench_report;
 mod debug_hud;
 mod hook;
 mod io_runner;
