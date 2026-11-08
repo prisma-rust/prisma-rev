@@ -65,6 +65,8 @@ pub struct FishingState {
     cast_origin: [f32; 2],
     /// 本次等待的咬钩时间（伪随机）。
     bite_at: f32,
+    /// Bobber position when the hook was set; the reel interpolates from here.
+    reel_origin: [f32; 2],
     /// 已钓到的鱼数（M0 只做计数）。
     caught: u32,
     /// HUD 顶栏的文本实体（`title`），每帧写入鱼数与时间。
@@ -198,6 +200,7 @@ pub fn tick(state: &mut Option<FishingState>, world: &mut GameWorld<'_>, dt: f32
             ];
             if action {
                 current.phase = Phase::Reeling;
+                current.reel_origin = current.bobber_pos;
                 current.elapsed = 0.0;
                 log::info!("fishing: hook set");
             } else if current.elapsed >= BITE_WINDOW {
@@ -210,9 +213,12 @@ pub fn tick(state: &mut Option<FishingState>, world: &mut GameWorld<'_>, dt: f32
         Phase::Reeling => {
             let t = (current.elapsed / REEL_SECONDS).clamp(0.0, 1.0);
             let target = [boat_pos[0] + ROD_OFFSET[0], boat_pos[1] + ROD_OFFSET[1]];
+            // Pure function of `t` (smoothstep), so a given elapsed time yields the
+            // same point whatever the frame rate is (see #1059).
+            let ease = t * t * (3.0 - 2.0 * t);
             current.bobber_pos = [
-                current.bobber_pos[0] + (target[0] - current.bobber_pos[0]) * t * 0.35,
-                current.bobber_pos[1] + (target[1] - current.bobber_pos[1]) * t * 0.35,
+                current.reel_origin[0] + (target[0] - current.reel_origin[0]) * ease,
+                current.reel_origin[1] + (target[1] - current.reel_origin[1]) * ease,
             ];
             if t >= 1.0 {
                 current.caught += 1;

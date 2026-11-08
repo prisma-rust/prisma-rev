@@ -255,3 +255,64 @@ fn rod_line_follows_the_bobber() {
         "cast should have landed"
     );
 }
+
+/// The reel reaches the same point at the same elapsed time whatever the frame rate is.
+///
+/// Drives the state machine up to `Reeling` with a shared step sequence, then
+/// advances half of `REEL_SECONDS` at 30 FPS and at 60 FPS and compares the
+/// bobber the engine ends up rendering.
+#[test]
+fn reel_position_does_not_depend_on_the_frame_rate() {
+    use fishing::game::fishing::Phase;
+
+    fn bobber_after_reeling(dt: f32, steps: usize) -> [f32; 2] {
+        let mut world = scene_world();
+        let mut api = GameWorld::host(&mut world);
+        let mut state = None;
+
+        // Identical lead-in for both frame rates: same ticks, same inputs.
+        api.set_input(InputSnapshot::default());
+        fishing::game::fishing::tick(&mut state, &mut api, 0.016);
+        api.set_input(click());
+        fishing::game::fishing::tick(&mut state, &mut api, 0.016);
+        api.set_input(InputSnapshot::default());
+        fishing::game::fishing::tick(&mut state, &mut api, 0.6);
+        for _ in 0..300 {
+            fishing::game::fishing::tick(&mut state, &mut api, 0.016);
+            if state.as_ref().unwrap().phase() == Phase::Biting {
+                break;
+            }
+        }
+        assert_eq!(state.as_ref().unwrap().phase(), Phase::Biting);
+
+        // Hook set, then reel for `steps` frames.
+        api.set_input(click());
+        fishing::game::fishing::tick(&mut state, &mut api, 0.016);
+        assert_eq!(state.as_ref().unwrap().phase(), Phase::Reeling);
+        api.set_input(InputSnapshot::default());
+        for _ in 0..steps {
+            fishing::game::fishing::tick(&mut state, &mut api, dt);
+        }
+
+        let bobber = api
+            .query::<Name>()
+            .into_iter()
+            .find(|entity| {
+                api.get::<Name>(*entity)
+                    .map(|name| name.0 == "bobber")
+                    .unwrap_or(false)
+            })
+            .expect("scene fixture has a bobber");
+        let position = api.get::<LocalTransform>(bobber).unwrap().position;
+        [position.x, position.y]
+    }
+
+    // 0.5 s of reeling: 15 frames at 30 FPS, 30 frames at 60 FPS.
+    let slow = bobber_after_reeling(1.0 / 30.0, 15);
+    let fast = bobber_after_reeling(1.0 / 60.0, 30);
+
+    assert!(
+        (slow[0] - fast[0]).abs() < 0.5 && (slow[1] - fast[1]).abs() < 0.5,
+        "reel position depends on the frame rate: 30 FPS {slow:?} vs 60 FPS {fast:?}"
+    );
+}
