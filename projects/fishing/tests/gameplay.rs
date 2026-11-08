@@ -9,7 +9,7 @@
 //! `world::tick` 会读 `assets/lake_layers.json`，靠 `prism_engine::asset_paths`
 //! 从 cwd 往上找 `assets/`，所以必须在 `projects/fishing` 下跑。
 
-use prism_game_api::{EntityHandle, GameWorld, InputSnapshot};
+use prism_game_api::{keys, EntityHandle, GameWorld, InputSnapshot};
 use prism_scene::components::{Camera, LineRenderer, LocalTransform, Name, SpriteRenderer};
 
 /// 建一个最小世界：船 + 浮标 + 相机（与 `lake.scene.json` 的实体同名）。
@@ -133,6 +133,89 @@ fn fishing_state_machine_runs_cast_to_catch() {
     let state_ref = state.as_ref().unwrap();
     assert_eq!(state_ref.phase(), Phase::Caught);
     assert_eq!(state_ref.caught(), 1);
+}
+
+/// Holding Space counts as one input: cast and hook-set are press edges, not held state.
+#[test]
+fn holding_space_does_not_repeat_the_cast_or_set_the_hook() {
+    use fishing::game::fishing::Phase;
+
+    /// Space held down, without a fresh press edge this frame.
+    fn space_held() -> InputSnapshot {
+        let mut snapshot = InputSnapshot::default();
+        snapshot.set_key(keys::SPACE, true);
+        snapshot
+    }
+
+    /// Space held down **and** pressed this frame.
+    fn space_pressed() -> InputSnapshot {
+        let mut snapshot = space_held();
+        snapshot.set_key_edge(keys::SPACE, true);
+        snapshot
+    }
+
+    let mut world = scene_world();
+    let mut api = GameWorld::host(&mut world);
+    let mut state = None;
+    fishing::game::fishing::tick(&mut state, &mut api, 0.016);
+
+    // Held without a new press edge: no cast.
+    api.set_input(space_held());
+    for _ in 0..10 {
+        fishing::game::fishing::tick(&mut state, &mut api, 0.016);
+    }
+    assert_eq!(
+        state.as_ref().unwrap().phase(),
+        Phase::Idle,
+        "a held Space must not start a cast"
+    );
+
+    // A real press edge this frame: cast once.
+    api.set_input(space_pressed());
+    fishing::game::fishing::tick(&mut state, &mut api, 0.016);
+    assert_eq!(state.as_ref().unwrap().phase(), Phase::Casting);
+
+    // Keep holding (no new edge): the bobber lands and waits for a bite.
+    api.set_input(space_held());
+    fishing::game::fishing::tick(&mut state, &mut api, 0.6);
+    assert_eq!(state.as_ref().unwrap().phase(), Phase::Waiting);
+
+    let mut phase = Phase::Waiting;
+    for _ in 0..300 {
+        fishing::game::fishing::tick(&mut state, &mut api, 0.016);
+        phase = state.as_ref().unwrap().phase();
+        if phase == Phase::Biting {
+            break;
+        }
+    }
+    assert_eq!(phase, Phase::Biting, "bite should arrive within ~5s");
+
+    // Still only held during the bite window: the bite is missed instead of auto-hooked.
+    for _ in 0..200 {
+        fishing::game::fishing::tick(&mut state, &mut api, 0.016);
+        phase = state.as_ref().unwrap().phase();
+        assert_ne!(phase, Phase::Reeling, "a held Space must not set the hook");
+        if phase == Phase::Waiting {
+            break;
+        }
+    }
+    assert_eq!(
+        phase,
+        Phase::Waiting,
+        "missed bite should return to Waiting"
+    );
+
+    // Wait for the next bite and hook it with a real press edge.
+    for _ in 0..300 {
+        fishing::game::fishing::tick(&mut state, &mut api, 0.016);
+        if state.as_ref().unwrap().phase() == Phase::Biting {
+            break;
+        }
+    }
+    assert_eq!(state.as_ref().unwrap().phase(), Phase::Biting);
+    api.set_input(space_pressed());
+    fishing::game::fishing::tick(&mut state, &mut api, 0.016);
+    assert_eq!(state.as_ref().unwrap().phase(), Phase::Reeling);
 }
 
 /// 鱼线在非 Idle/Caught 阶段可见，且终点跟着浮标走。
