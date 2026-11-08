@@ -10,7 +10,7 @@
 //! ```text
 //! 主线程 (窗口事件)               渲染线程
 //!   ──────────────────────────         ──────────────
-//! about_to_wait: 循环
+//!   about_to_wait:                       loop:
 //!     engine.fixed_update × N             take_packet()
 //!     engine.update                       begin_frame()
 //!     engine.late_update                  execute(packet)
@@ -1461,7 +1461,7 @@ impl App {
     }
 
     // -----------------------------------------------------------------------
-    // PBR 调试 helpers
+    // PBR debug helpers
     // -----------------------------------------------------------------------
 
     /// 把一个中立平台事件路由到 [`InputManager`] 与窗口状态。

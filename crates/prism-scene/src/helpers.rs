@@ -7,14 +7,14 @@ use prism_ecs::{Entity, World};
 
 use crate::components::{Child, Parent};
 
-/// Safe API for managing the 实体 hierarchy.
+/// Safe API for managing the entity hierarchy.
 pub struct HierarchyHelper;
 
 impl HierarchyHelper {
-    /// 集合 `entity`'s parent to `new_parent`.
+    /// Set `entity`'s parent to `new_parent`.
     ///
-    /// - `Some(parent)` attaches the 实体 under `parent`.
-    /// - `None` detaches the 实体 (it becomes a root node).
+    /// - `Some(parent)` attaches the entity under `parent`.
+    /// - `None` detaches the entity (it becomes a root node).
     /// - Updates both old and new parent's [`Child`] 列表
     /// - Self-parent and cycles (reparenting under a descendant) are rejected.
     /// - Dead entities are rejected (logged and ignored).
@@ -65,7 +65,7 @@ impl HierarchyHelper {
         }
     }
 
-    /// Return `true` if 实体 has at least one child.
+    /// Return `true` if `entity` has at least one child.
     pub fn has_children(world: &World, entity: Entity) -> bool {
         world
             .get::<Child>(entity)

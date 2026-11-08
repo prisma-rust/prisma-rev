@@ -17,16 +17,16 @@ pub struct OrbitCamera {
     pub fov_y: f32,
     pub znear: f32,
     pub zfar: f32,
-    /// 当前 宽高比 比率 宽度 / 高度 集合 at construction and updated
-    /// on 调整大小 / orientation change so [`OrbitCamera::view_proj`] needs no
-    /// per-call 宽高比 argument.
+    /// Current aspect ratio (width / height). Set at construction and updated
+    /// on resize / orientation change so [`OrbitCamera::view_proj`] needs no
+    /// per-call aspect argument.
     pub aspect: f32,
-    /// Exposure multiplier applied to the final 高动态范围 颜色 before tonemapping.
-    /// 默认 1.0 = no scaling; range [0, 5] via 检查器 滑动条
-    /// Controls overall 图像 brightness independently of 光源 intensity.
+    /// Exposure multiplier applied to the final HDR color before tonemapping.
+    /// Default 1.0 = no scaling; range [0, 5] via inspector slider.
+    /// Controls overall image brightness independently of light intensity.
     pub exposure: f32,
-    /// When `false` the 相机 is skipped during scene 集合 (the
-    /// 渲染器 falls 后 to the 下一个 available 相机
+    /// When `false` the camera is skipped during scene collection (the
+    /// renderer falls back to the next available camera).
     pub enabled: bool,
 }
 
@@ -46,8 +46,8 @@ impl OrbitCamera {
         }
     }
 
-    /// 更新 the 宽高比 比率 (e.g. on 窗口 调整大小 or orientation change)
-    /// without disturbing the 当前 orbit 状态
+    /// Update the aspect ratio (e.g. on window resize or orientation change)
+    /// without disturbing the current orbit state.
     pub fn set_aspect(&mut self, aspect: f32) {
         self.aspect = aspect;
     }
@@ -63,12 +63,12 @@ impl OrbitCamera {
         ]
     }
 
-    /// Column-major view-projection 矩阵 using the stored [`OrbitCamera::aspect`].
+    /// Column-major view-projection matrix, using the stored [`OrbitCamera::aspect`].
     pub fn view_proj(&self) -> [[f32; 4]; 4] {
         let eye = self.eye();
         let proj = self.perspective();
         let view = self.look_at(eye);
-        // view_proj = proj * 视图 (column-major)
+        // view_proj = proj * view (column-major)
         let mut vp = [[0.0f32; 4]; 4];
         for i in 0..4 {
             for j in 0..4 {
@@ -80,15 +80,15 @@ impl OrbitCamera {
         vp
     }
 
-    /// Column-major 投影 矩阵 Vulkan y-flip, 深度 range [0,1]).
-    /// Exposed so callers that need 投影 separately (e.g. the GTAO pass
-    /// reconstructs view-space positions from 深度 using `inv_proj`) can fetch
+    /// Column-major projection matrix (Vulkan y-flip, depth range [0,1]).
+    /// Exposed so callers that need projection separately (e.g. the GTAO pass
+    /// reconstructs view-space positions from depth using `inv_proj`) can fetch
     /// it without recomputing it from `view_proj * inverse(view)`.
     pub fn projection(&self) -> [[f32; 4]; 4] {
         self.perspective()
     }
 
-    /// Column-major 世界 -> 视图 矩阵 (used for view-space 调试 normals).
+    /// Column-major world -> view matrix (used for view-space debug normals).
     pub fn view(&self) -> [[f32; 4]; 4] {
         self.look_at(self.eye())
     }
@@ -100,10 +100,10 @@ impl OrbitCamera {
         p[1][1] = -inv_tan;
         p[2][2] = self.zfar / (self.znear - self.zfar);
         // Column-major: p[col][row]
-        // p[2][3] = 列 2, 行 3 = contribution of z_view to gl_Position.w
-        // Must be -1 so that w_clip = -z_view 透视 divide).
+        // p[2][3] = column 2, row 3 = contribution of z_view to gl_Position.w
+        // Must be -1 so that w_clip = -z_view (perspective divide).
         p[2][3] = -1.0;
-        // p[3][2] = 列 3, 行 2 = contribution of w_view(=1) to gl_Position.z
+        // p[3][2] = column 3, row 2 = contribution of w_view(=1) to gl_Position.z
         p[3][2] = self.znear * self.zfar / (self.znear - self.zfar);
         p
     }
@@ -117,8 +117,8 @@ impl OrbitCamera {
         let fwd_len = (fwd[0] * fwd[0] + fwd[1] * fwd[1] + fwd[2] * fwd[2]).sqrt();
         let fwd = [fwd[0] / fwd_len, fwd[1] / fwd_len, fwd[2] / fwd_len];
         let up = [0.0, 1.0, 0.0];
-        // Right-handed basis: 右 = 向前 × 上 (NOT 上 × 向前 which
-        // would negate the 右 向量 and make the 视图 矩阵 a reflection,
+        // Right-handed basis: right = forward × up (NOT up × forward, which
+        // would negate the right vector and make the view matrix a reflection,
         // mirroring the scene horizontally).
         let right = [
             fwd[1] * up[2] - fwd[2] * up[1],
@@ -127,13 +127,13 @@ impl OrbitCamera {
         ];
         let rl = (right[0] * right[0] + right[1] * right[1] + right[2] * right[2]).sqrt();
         let right = [right[0] / rl, right[1] / rl, right[2] / rl];
-        // Re-orthogonalize 上 against the (now correct) 右 上 = 右 × 向前
+        // Re-orthogonalize up against the (now correct) right: up = right × forward.
         let up = [
             right[1] * fwd[2] - right[2] * fwd[1],
             right[2] * fwd[0] - right[0] * fwd[2],
             right[0] * fwd[1] - right[1] * fwd[0],
         ];
-        // Column-major 视图 矩阵
+        // Column-major view matrix
         [
             [right[0], up[0], -fwd[0], 0.0],
             [right[1], up[1], -fwd[1], 0.0],

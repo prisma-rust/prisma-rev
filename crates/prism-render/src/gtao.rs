@@ -18,14 +18,14 @@
 //! 1. 屏障：深度 `DEPTH_STENCIL_ATTACHMENT_OPTIMAL → DEPTH_STENCIL_READ_ONLY_OPTIMAL`
 //! 2. 屏障：法线 `COLOR_ATTACHMENT_OPTIMAL → SHADER_READ_ONLY_OPTIMAL`
 //! 3. 开始渲染通道（写入 `ao[frame]`）
-//! 4. 结束 渲染 pass
-//! 5. 屏障 `ao[frame]` `COLOR_ATTACHMENT_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL`
+//! 4. end render pass
+//! 5. barrier `ao[frame]` `COLOR_ATTACHMENT_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL`
 //!
-//! The 深度 + 法线 images return to their 附件 layouts at the start of
+//! The depth + normal images return to their attachment layouts at the start of
 //! the 下一个 frame's ForwardPass (its 渲染 pass `initial_layout = UNDEFINED`
-//! tolerates any incoming 布局 via `load_op = 清空 The 环境光遮蔽 图像 stays in
+//! tolerates any incoming layout via `load_op = CLEAR`). The AO image stays in
 //! SHADER_READ_ONLY_OPTIMAL until the GTAO pass writes it again two frames
-//! later (its 渲染 pass also uses `initial_layout = UNDEFINED`).
+//! later (its render pass also uses `initial_layout = UNDEFINED`).
 
 use anyhow::Context as _;
 use ash::vk;
@@ -44,33 +44,33 @@ use crate::shader_bindings::gtao as bindings;
 const _: () =
     assert!(std::mem::size_of::<bindings::GtaoPush>() as u32 == bindings::PUSH_CONSTANT_SIZE);
 
-/// Per-frame-in-flight inputs the GTAO pass needs to 样本 内置 by
+/// Per-frame-in-flight inputs the GTAO pass needs to sample. Built by
 /// `GraphRenderer::render` from `ForwardPass` accessors and passed to
-/// `GtaoPass::execute` alongside the 命令 缓冲区
+/// `GtaoPass::execute` alongside the command buffer.
 pub struct GtaoFrameInputs {
-    /// 深度 图像 handle (for 布局 barriers).
+    /// Depth image handle (for layout barriers).
     pub depth_image: vk::Image,
-    /// 深度 视图 (for the 集合 0 SAMPLED_IMAGE 描述符
+    /// Depth view (for the set 0 SAMPLED_IMAGE descriptor).
     pub depth_view: vk::ImageView,
-    /// View-space 法线 图像 handle (for 布局 barriers).
+    /// View-space normal image handle (for layout barriers).
     pub normal_image: vk::Image,
-    /// 法线 视图 (for the 集合 1 SAMPLED_IMAGE 描述符
+    /// Normal view (for the set 1 SAMPLED_IMAGE descriptor).
     pub normal_view: vk::ImageView,
     /// Motion-vector view (#883 Phase 3 temporal history reprojection).
     pub velocity_view: vk::ImageView,
 }
 
-/// Half-resolution GTAO screen-space ambient 遮挡 pass
+/// Half-resolution GTAO screen-space ambient occlusion pass.
 pub struct GtaoPass {
     /// Half-resolution extent (floor(full / 2)).
     extent: vk::Extent2D,
-    /// Double-buffered 环境光遮蔽 images (one per frame-in-flight). The scene reads
-    /// `ao[(frame+1)%2]` 最后一个 frame's); GTAO writes `ao[frame]`.
+    /// Double-buffered AO images (one per frame-in-flight). The scene reads
+    /// `ao[(frame+1)%2]` (last frame's); GTAO writes `ao[frame]`.
     ao_images: [vk::Image; 2],
     ao_memory: [vk::DeviceMemory; 2],
     ao_views: [vk::ImageView; 2],
-    /// 4 描述符 sets, indexed `[frame][set]` where 集合 0 = 深度 集合 1 =
-    /// 法线 Each binds one SAMPLED_IMAGE + the shared 采样器
+    /// 4 descriptor sets, indexed `[frame][set]` where set 0 = depth, set 1 =
+    /// normal. Each binds one SAMPLED_IMAGE + the shared SAMPLER.
     descriptor_sets: [[vk::DescriptorSet; 2]; 2],
     ds_layout: vk::DescriptorSetLayout,
     /// Set 2 for temporal history (previous AO + velocity + sampler).
@@ -79,11 +79,11 @@ pub struct GtaoPass {
     ds_pool: vk::DescriptorPool,
     sampler: vk::Sampler,
     render_pass: Option<vk::RenderPass>,
-    /// One 帧缓冲 per 环境光遮蔽 图像 (each wraps its own `ao_views[i]`).
+    /// One framebuffer per AO image (each wraps its own `ao_views[i]`).
     framebuffers: [vk::Framebuffer; 2],
     pipeline: Option<GraphicsPipeline>,
-    /// The 深度 + 法线 views currently bound to `descriptor_sets[frame]`.
-    /// Tracked so we skip 冗余 描述符 rewrites when the same 交换链
+    /// The depth + normal views currently bound to `descriptor_sets[frame]`.
+    /// Tracked so we skip redundant descriptor rewrites when the same swapchain
     /// image_index repeats across frames-in-flight.
     bound_depth: [vk::ImageView; 2],
     bound_normal: [vk::ImageView; 2],
@@ -93,17 +93,17 @@ pub struct GtaoPass {
     /// frame. Reset on creation/resize; first frame after that is raw.
     history_valid: [bool; 2],
     device: Option<ash::Device>,
-    /// 最后一个 时间 the AO_PROBE 调试 line was logged; the probe is throttled to
-    /// once per 秒 so it doesn't flood the 对数 at 帧 rate.
+    /// Last time the AO_PROBE debug line was logged; the probe is throttled to
+    /// once per second so it doesn't flood the log at frame rate.
     last_probe_log: Instant,
 }
 
 impl GtaoPass {
-    /// 创建 the pass + its persistent GPU resources 环境光遮蔽 images, 采样器
-    /// 描述符 sets, 渲染 pass 管线 `full_extent` is the 交换链
-    /// extent; the pass operates at half 分辨率 `command_pool` is used for
-    /// a one-shot 布局 过渡 on the freshly-created 环境光遮蔽 images so the
-    /// scene shader's 环境光遮蔽 描述符 (written before GTAO 第一个 runs) finds
+    /// Create the pass + its persistent GPU resources (AO images, sampler,
+    /// descriptor sets, render pass, pipeline). `full_extent` is the swapchain
+    /// extent; the pass operates at half resolution. `command_pool` is used for
+    /// a one-shot layout transition on the freshly-created AO images so the
+    /// scene shader's AO descriptor (written before GTAO first runs) finds
     /// them in SHADER_READ_ONLY_OPTIMAL instead of UNDEFINED.
     pub fn new(
         context: &VulkanContext,
@@ -111,13 +111,13 @@ impl GtaoPass {
         full_extent: vk::Extent2D,
     ) -> anyhow::Result<Self> {
         let device = &context.device;
-        // Half 分辨率 at least 1x1 to avoid zero-sized images.
+        // Half resolution, at least 1x1 to avoid zero-sized images.
         let extent = vk::Extent2D {
             width: (full_extent.width / 2).max(1),
             height: (full_extent.height / 2).max(1),
         };
 
-        // ---- Double-buffered R8_UNORM 环境光遮蔽 images ----
+        // ---- Double-buffered R8_UNORM AO images ----
         let mut ao_images = [vk::Image::null(); 2];
         let mut ao_memory = [vk::DeviceMemory::null(); 2];
         let mut ao_views = [vk::ImageView::null(); 2];
@@ -128,7 +128,7 @@ impl GtaoPass {
             ao_views[i] = view;
         }
 
-        // ---- 采样器 线性 clamp-to-edge; 环境光遮蔽 is low-frequency) ----
+        // ---- Sampler (linear, clamp-to-edge; AO is low-frequency) ----
         let sampler = unsafe {
             device.create_sampler(
                 &vk::SamplerCreateInfo::default()
@@ -145,9 +145,9 @@ impl GtaoPass {
         }
         .context("GtaoPass: create sampler")?;
 
-        // ---- 描述符 集合 布局 one SAMPLED_IMAGE 绑定 0) + one
-        // 采样器 绑定 1). The 着色器 declares 集合 0 深度 + 集合 1
-        // 法线 both with this shape, so we reuse the 布局 4x.
+        // ---- Descriptor set layout: one SAMPLED_IMAGE (binding 0) + one
+        // SAMPLER (binding 1). The shader declares set 0 (depth) + set 1
+        // (normal), both with this shape, so we reuse the layout 4x.
         let per_set_bindings = [
             vk::DescriptorSetLayoutBinding::default()
                 .binding(bindings::DEPTH_TEX_BINDING)
@@ -235,8 +235,8 @@ impl GtaoPass {
         let descriptor_sets = [[allocated[0], allocated[1]], [allocated[2], allocated[3]]];
         let temporal_sets = [allocated[4], allocated[5]];
 
-        // Bind the shared 采样器 to 绑定 1 of every 集合 (the SAMPLED_IMAGE
-        // at 绑定 0 is updated per-frame in `set_inputs`).
+        // Bind the shared sampler to binding 1 of every set (the SAMPLED_IMAGE
+        // at binding 0 is updated per-frame in `set_inputs`).
         for ds in allocated.iter().take(4) {
             let sampler_info = vk::DescriptorImageInfo::default().sampler(sampler);
             let write = vk::WriteDescriptorSet::default()
@@ -256,10 +256,10 @@ impl GtaoPass {
             unsafe { device.update_descriptor_sets(&[write], &[]) };
         }
 
-        // ---- 渲染 pass (1 R8 颜色 附件 no 深度 ----
+        // ---- Render pass (1 R8 color attachment, no depth) ----
         let render_pass = create_render_pass(device)?;
 
-        // ---- Framebuffers (one per 环境光遮蔽 图像 ----
+        // ---- Framebuffers (one per AO image) ----
         let mut framebuffers = [vk::Framebuffer::null(); 2];
         for i in 0..2 {
             let attachments = [ao_views[i]];
@@ -277,14 +277,14 @@ impl GtaoPass {
             .context("GtaoPass: create framebuffer")?;
         }
 
-        // ---- 过渡 环境光遮蔽 images to SHADER_READ_ONLY_OPTIMAL ----
-        // The 环境光遮蔽 images are created with no defined initial 布局 Before the
-        // GTAO pass 第一个 runs 帧 1), the scene shader's 环境光遮蔽 描述符 may
+        // ---- Transition AO images to SHADER_READ_ONLY_OPTIMAL ----
+        // The AO images are created with no defined initial layout. Before the
+        // GTAO pass first runs (frame 1), the scene shader's AO descriptor may
         // already be written pointing at one of these views, expecting
-        // SHADER_READ_ONLY_OPTIMAL. 过渡 them up-front so the 描述符
-        // 布局 matches even on 帧 0. The GTAO 渲染 pass uses
-        // `initial_layout = UNDEFINED`, which tolerates any incoming 布局
-        // when it transitions 后 to COLOR_ATTACHMENT_OPTIMAL to 写入
+        // SHADER_READ_ONLY_OPTIMAL. Transition them up-front so the descriptor
+        // layout matches even on frame 0. The GTAO render pass uses
+        // `initial_layout = UNDEFINED`, which tolerates any incoming layout
+        // when it transitions back to COLOR_ATTACHMENT_OPTIMAL to write.
         transition_ao_images_to_shader_read(context, command_pool, [ao_images[0], ao_images[1]])?;
 
         Ok(Self {
@@ -311,26 +311,26 @@ impl GtaoPass {
         })
     }
 
-    /// The half-resolution 环境光遮蔽 extent.
+    /// The half-resolution AO extent.
     pub fn extent(&self) -> vk::Extent2D {
         self.extent
     }
 
-    /// 环境光遮蔽 图像 格式 (`R8_UNORM`). Exposed for the render-graph visualizer.
+    /// AO image format (`R8_UNORM`). Exposed for the render-graph visualizer.
     pub fn ao_format() -> vk::Format {
         vk::Format::R8_UNORM
     }
 
-    /// 借用 the 环境光遮蔽 视图 for `frame_index` (frame-in-flight, 0..2). The scene
-    /// reads `ao_view((frame + 1) % 2)` to get 最后一个 frame's 输出
+    /// Borrow the AO view for `frame_index` (frame-in-flight, 0..2). The scene
+    /// reads `ao_view((frame + 1) % 2)` to get last frame's output.
     pub fn ao_view(&self, frame_index: u32) -> vk::ImageView {
         self.ao_views[(frame_index as usize) % 2]
     }
 
-    /// 更新 the 深度 + 法线 views bound to `descriptor_sets[frame_index]`.
-    /// Skips the 描述符 写入 when both views 匹配 the currently-bound
-    /// ones (common case: same 交换链 图像 repeats across frames-in-flight).
-    /// Called every 帧 from `GraphRenderer::render` before 执行
+    /// Update the depth + normal views bound to `descriptor_sets[frame_index]`.
+    /// Skips the descriptor write when both views match the currently-bound
+    /// ones (common case: same swapchain image repeats across frames-in-flight).
+    /// Called every frame from `GraphRenderer::render` before `execute`.
     pub fn set_inputs(
         &mut self,
         device: &ash::Device,
@@ -392,8 +392,8 @@ impl GtaoPass {
     }
 
     /// Rebuild the pass's swapchain-derived resources when the extent changes.
-    /// The persistent resources 采样器 ds 布局 渲染 pass 管线 are
-    /// kept; only the 环境光遮蔽 images + framebuffers are recreated.
+    /// The persistent resources (sampler, ds layout, render pass, pipeline) are
+    /// kept; only the AO images + framebuffers are recreated.
     pub fn recreate_target(
         &mut self,
         context: &VulkanContext,
@@ -408,7 +408,7 @@ impl GtaoPass {
             return Ok(());
         }
 
-        // 销毁 old framebuffers + 环境光遮蔽 images.
+        // Destroy old framebuffers + AO images.
         for fb in &self.framebuffers {
             unsafe { device.destroy_framebuffer(*fb, None) };
         }
@@ -426,7 +426,7 @@ impl GtaoPass {
         }
         self.history_valid = [false; 2];
 
-        // 创建 new 环境光遮蔽 images + framebuffers.
+        // Create new AO images + framebuffers.
         for i in 0..2 {
             let (img, mem, view) = create_ao_image(context, new_extent)?;
             self.ao_images[i] = img;
@@ -448,9 +448,9 @@ impl GtaoPass {
         }
         self.extent = new_extent;
 
-        // 过渡 the new 环境光遮蔽 images to SHADER_READ_ONLY_OPTIMAL (same
-        // rationale as in `new`: the scene's 环境光遮蔽 描述符 expects this 布局
-        // before GTAO 第一个 writes the new images).
+        // Transition the new AO images to SHADER_READ_ONLY_OPTIMAL (same
+        // rationale as in `new`: the scene's AO descriptor expects this layout
+        // before GTAO first writes the new images).
         transition_ao_images_to_shader_read(
             context,
             command_pool,
@@ -460,7 +460,7 @@ impl GtaoPass {
     }
 
     /// Record the GTAO pass into `cmd`. Must run AFTER `ForwardPass::execute`
-    /// (which leaves 深度 in DEPTH_STENCIL_ATTACHMENT_OPTIMAL and 法线 in
+    /// (which leaves depth in DEPTH_STENCIL_ATTACHMENT_OPTIMAL and normal in
     /// COLOR_ATTACHMENT_OPTIMAL).
     pub fn execute(
         &mut self,
@@ -479,16 +479,16 @@ impl GtaoPass {
         // The depth/normal -> READ_ONLY barriers used to live here. They are now
         // inserted automatically by `RenderGraph::execute` from the `read_usage`
         // edges declared in `setup` (DEPTH_STENCIL_ATTACHMENT_OPTIMAL ->
-        // DEPTH_STENCIL_READ_ONLY_OPTIMAL for 深度 COLOR_ATTACHMENT_OPTIMAL ->
-        // SHADER_READ_ONLY_OPTIMAL for 法线 `inputs.depth_image` /
+        // DEPTH_STENCIL_READ_ONLY_OPTIMAL for depth, COLOR_ATTACHMENT_OPTIMAL ->
+        // SHADER_READ_ONLY_OPTIMAL for normal). `inputs.depth_image` /
         // `inputs.normal_image` are now unused for barriers (kept for
-        // 描述符 wiring in `set_inputs`, which runs in the trait 执行
+        // descriptor wiring in `set_inputs`, which runs in the trait `execute`).
         let _ = (inputs.depth_image, inputs.normal_image);
 
-        // ---- 开始 渲染 pass (writes ao[i]) ----
-        // 清空 to white (1.0 = unoccluded) so any 像素 the 着色器 doesn't
-        // 写入 (there shouldn't be any - the fullscreen triangle covers the
-        // whole 环境光遮蔽 目标 reads as fully lit.
+        // ---- Begin render pass (writes ao[i]) ----
+        // Clear to white (1.0 = unoccluded) so any pixel the shader doesn't
+        // write (there shouldn't be any - the fullscreen triangle covers the
+        // whole AO target) reads as fully lit.
         let clear_values = [vk::ClearValue {
             color: vk::ClearColorValue {
                 float32: [1.0, 1.0, 1.0, 1.0],
@@ -506,7 +506,7 @@ impl GtaoPass {
 
         unsafe {
             device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline.pipeline);
-            // 集合 0: 深度 + 采样器
+            // set 0: depth + sampler
             device.cmd_bind_descriptor_sets(
                 cmd,
                 vk::PipelineBindPoint::GRAPHICS,
@@ -515,7 +515,7 @@ impl GtaoPass {
                 std::slice::from_ref(&self.descriptor_sets[i][0]),
                 &[],
             );
-            // 集合 1: 法线 + 采样器
+            // set 1: normal + sampler
             device.cmd_bind_descriptor_sets(
                 cmd,
                 vk::PipelineBindPoint::GRAPHICS,
@@ -567,20 +567,20 @@ impl GtaoPass {
                 ),
             );
 
-            // Fullscreen triangle (3 verts, no 顶点 缓冲区 - SV_VertexID).
+            // Fullscreen triangle (3 verts, no vertex buffer - SV_VertexID).
             device.cmd_draw(cmd, 3, 1, 0, 0);
         }
 
         unsafe { device.cmd_end_render_pass(cmd) };
 
-        // ---- 屏障 ao[i] -> SHADER_READ_ONLY_OPTIMAL ----
+        // ---- Barrier ao[i] -> SHADER_READ_ONLY_OPTIMAL ----
         // GRAPH-EDGE 异常 this is a cross-frame delayed edge. `ForwardPass`
-        // reads this 环境光遮蔽 图像 *next frame* (1-frame 延迟 wired via
+        // reads this AO image *next frame* (1-frame latency, wired via
         // `GraphFrame.ao_view` -> `ForwardPass::set_ao`, NOT via a 图
-        // `read_usage` edge), so the 渲染 图 cannot express or 调度
-        // this 屏障 It stays manual. SHADER_READ_ONLY_OPTIMAL stays 有效
-        // until the GTAO pass writes this 槽 again (2 frames later), whose
-        // 渲染 pass `initial_layout = UNDEFINED` tolerates the incoming 布局
+        // `read_usage` edge), so the render graph cannot express or schedule
+        // this barrier. It stays manual. SHADER_READ_ONLY_OPTIMAL stays valid
+        // until the GTAO pass writes this slot again (2 frames later), whose
+        // render pass `initial_layout = UNDEFINED` tolerates the incoming layout.
         let ao_barrier = vk::ImageMemoryBarrier::default()
             .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
             .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
@@ -646,7 +646,7 @@ impl GtaoPass {
         );
         let shader_stages = [vert_stage, frag_stage];
 
-        // No 顶点 缓冲区 (fullscreen triangle from SV_VertexID).
+        // No vertex buffer (fullscreen triangle from SV_VertexID).
         let binding_descs: [vk::VertexInputBindingDescription; 0] = [];
         let attr_descs: [vk::VertexInputAttributeDescription; 0] = [];
 
@@ -694,8 +694,8 @@ impl GtaoPass {
         Ok(())
     }
 
-    /// 销毁 all GPU resources. Called from `GraphRenderer::destroy` on
-    /// shutdown. `device_wait_idle` must already have been called by the 调用者
+    /// Destroy all GPU resources. Called from `GraphRenderer::destroy` on
+    /// shutdown. `device_wait_idle` must already have been called by the caller.
     pub fn destroy(&mut self, device: &ash::Device) {
         for fb in &self.framebuffers {
             unsafe { device.destroy_framebuffer(*fb, None) };
@@ -731,7 +731,7 @@ impl Drop for GtaoPass {
     }
 }
 
-/// 创建 one R8_UNORM 环境光遮蔽 图像 + 视图 at the given (half-res) extent.
+/// Create one R8_UNORM AO image + view at the given (half-res) extent.
 fn create_ao_image(
     context: &VulkanContext,
     extent: vk::Extent2D,
@@ -786,10 +786,10 @@ fn create_ao_image(
     Ok((image, memory, view))
 }
 
-/// 创建 the GTAO 渲染 pass 1 R8 颜色 附件 清空 -> 存储
-/// no 深度 Final 布局 COLOR_ATTACHMENT_OPTIMAL; 执行 barriers to
-/// SHADER_READ_ONLY_OPTIMAL after the pass ends so the 访问 masks are
-/// correct 附件 finalLayout doesn't carry srcAccessMask).
+/// Create the GTAO render pass: 1 R8 color attachment (CLEAR -> STORE),
+/// no depth. Final layout COLOR_ATTACHMENT_OPTIMAL; `execute` barriers to
+/// SHADER_READ_ONLY_OPTIMAL after the pass ends so the access masks are
+/// correct (attachment finalLayout doesn't carry srcAccessMask).
 fn create_render_pass(device: &ash::Device) -> anyhow::Result<vk::RenderPass> {
     let color_attachment = vk::AttachmentDescription::default()
         .format(vk::Format::R8_UNORM)
@@ -827,16 +827,16 @@ fn create_render_pass(device: &ash::Device) -> anyhow::Result<vk::RenderPass> {
     Ok(rp)
 }
 
-/// 过渡 the two 环境光遮蔽 images from UNDEFINED -> SHADER_READ_ONLY_OPTIMAL via
-/// a one-shot 命令 缓冲区 Called once at creation (and on recreate) so the
-/// scene shader's 环境光遮蔽 描述符 finds the images in the 布局 it declares
-/// (`SHADER_READ_ONLY_OPTIMAL`) before the GTAO pass 第一个 writes them.
+/// Transition the two AO images from UNDEFINED -> SHADER_READ_ONLY_OPTIMAL via
+/// a one-shot command buffer. Called once at creation (and on recreate) so the
+/// scene shader's AO descriptor finds the images in the layout it declares
+/// (`SHADER_READ_ONLY_OPTIMAL`) before the GTAO pass first writes them.
 ///
-/// GRAPH-EDGE 异常 this is a one-shot resource-creation 过渡 not
-/// a per-frame 图 edge. The 渲染 图 only tracks layouts for graph-flow
-/// handles (shadow / scene 深度 / 法线 / 高动态范围 颜色 the 环境光遮蔽 images are
+/// GRAPH-EDGE EXCEPTION: this is a one-shot resource-creation transition, not
+/// a per-frame graph edge. The render graph only tracks layouts for graph-flow
+/// handles (shadow / scene depth / normal / HDR color); the AO images are
 /// `GtaoPass`-private and fed 后 to `ForwardPass` via a side-channel
-/// (`GraphFrame.ao_view`), so the 图 never sees them.
+/// (`GraphFrame.ao_view`), so the graph never sees them.
 fn transition_ao_images_to_shader_read(
     context: &VulkanContext,
     command_pool: vk::CommandPool,
@@ -914,9 +914,9 @@ impl RenderPassNode for GtaoPass {
     fn setup(&mut self, graph: &mut RenderGraphBuilder, _settings: &RenderSettings) {
         // Inputs (depth/normal views) are published by ForwardPass under the
         // well-known FORWARD_DEPTH_H / FORWARD_NORMAL_H handles; GTAO reads them
-        // from `resources` in 执行 No graph-managed resources of its own.
+        // from `resources` in `execute`. No graph-managed resources of its own.
         //
-        // Declare the 读取 edges so the 渲染 图 inserts the
+        // Declare the read edges so the render graph inserts the
         // COLOR/DEPTH_ATTACHMENT_OPTIMAL -> *_READ_ONLY / SHADER_READ_ONLY
         // barriers automatically before this pass (replacing the hand-rolled
         // `cmd_pipeline_barrier` that used to live in `draw_ao`).
@@ -966,9 +966,9 @@ impl RenderPassNode for GtaoPass {
                 return Ok(());
             }
         };
-        // TEMP PROBE: confirm GTAO 执行 runs and inputs are 有效 Throttled
-        // to once per 秒 so the 对数 isn't flooded at 帧 rate; emitted at
-        // 跟踪 level so it stays quiet under the 默认 信息 滤波器
+        // TEMP PROBE: confirm GTAO execute runs and inputs are valid. Throttled
+        // to once per second so the log isn't flooded at frame rate; emitted at
+        // `trace!` level so it stays quiet under the default `info` filter.
         if self.last_probe_log.elapsed().as_secs_f32() >= 1.0 {
             self.last_probe_log = Instant::now();
             log::trace!(
@@ -982,12 +982,12 @@ impl RenderPassNode for GtaoPass {
                 ctx.frame.debug_flags
             );
         }
-        // The images themselves are needed only for the 布局 barriers; reuse
+        // The images themselves are needed only for the layout barriers; reuse
         // the view's 图像 handle via the ForwardPass-published 视图 (vkImageView
-        // carries the 图像 We pass the same handle for 图像 + 视图 the
-        // 屏障 only needs a 有效 图像 and `vk::Image` from a 视图 is not
+        // carries the image). We pass the same handle for image + view; the
+        // barrier only needs a valid image, and `vk::Image` from a view is not
         // directly available here, so we use the ForwardPass-published 图像 via
-        // the 资源 table's 图像 (if present) else fall 后 to the 视图
+        // the resource table's image (if present) else fall back to the view.
         let depth_image = resources
             .published_image(FORWARD_DEPTH_H)
             .unwrap_or(vk::Image::null());
@@ -995,10 +995,10 @@ impl RenderPassNode for GtaoPass {
             .published_image(FORWARD_NORMAL_H)
             .unwrap_or(vk::Image::null());
 
-        // 更新 the 深度 + 法线 描述符 sets for this frame-in-flight.
+        // Update the depth + normal descriptor sets for this frame-in-flight.
         // This used to be called from `GraphRenderer::render` before PR-1; it
-        // MUST happen before 执行 (which binds the 描述符 sets and
-        // draws), otherwise 验证 reports `depthTex` / `normalTex` as
+        // MUST happen before `execute` (which binds the descriptor sets and
+        // draws), otherwise validation reports `depthTex` / `normalTex` as
         // never updated via vkUpdateDescriptorSets.
         self.set_inputs(
             ctx.device,
@@ -1044,7 +1044,7 @@ impl RenderPassNode for GtaoPass {
             // 深度 + 法线 come from ForwardPass via the well-known handles.
             inputs: vec![FORWARD_DEPTH_H, FORWARD_NORMAL_H, FORWARD_VELOCITY_H],
             // 环境光遮蔽 is consumed by ForwardPass via `set_ao` (1-frame 延迟 not a
-            // 图 edge - surfaced as a 音符 by the viz instead.
+            // graph edge - surfaced as a note by the viz instead.
             outputs: Vec::new(),
         }
     }

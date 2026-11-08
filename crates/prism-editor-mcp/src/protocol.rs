@@ -1,13 +1,15 @@
-//! 最小 MCP（Model Context Protocol）stdio 传输：JSON-RPC 2.0，一行一条消息。
+//! Minimal MCP (Model Context Protocol) stdio transport: JSON-RPC 2.0, one
+//! message per line.
 //!
-//! 只实现 agent 实际用得到的子集：`initialize`、`tools/list`、`tools/call`、
-//! `ping`。没有 resource / prompt / sampling 能力，也没有进度通知 —— 工具都是
-//! 同步的，调用完直接返回结果。
+//! Implements only the subset agents actually use: `initialize`, `tools/list`,
+//! `tools/call` and `ping`. There are no resource, prompt or sampling
+//! capabilities and no progress notifications; tools are synchronous and
+//! return their result directly.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-/// 一条进来的 JSON-RPC 请求（通知没有 `id`）。
+/// An incoming JSON-RPC request (notifications have no `id`).
 #[derive(Debug, Deserialize)]
 pub struct Request {
     #[serde(default)]
@@ -23,7 +25,7 @@ impl Request {
     }
 }
 
-/// 工具的静态描述，直接序列化成 MCP 的 `tools/list` 条目。
+/// Static tool description; serializes directly into an MCP `tools/list` entry.
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolDef {
     pub name: &'static str,
@@ -44,7 +46,7 @@ pub fn failure(id: Value, code: i64, message: impl Into<String>) -> Value {
     })
 }
 
-/// 工具执行结果 → MCP 的 `content` 数组。
+/// Wraps a tool result into MCP's `content` array.
 pub fn text_content(text: impl Into<String>, is_error: bool) -> Value {
     json!({
         "content": [{ "type": "text", "text": text.into() }],

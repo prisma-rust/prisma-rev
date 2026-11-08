@@ -1,11 +1,11 @@
-//! Windows 崩溃 对话框 `MessageBoxW` with Yes/No buttons + Win32 clipboard.
+//! Windows crash dialog: `MessageBoxW` with Yes/No buttons + Win32 clipboard.
 //!
-//! - "Yes" -> `CopyAndExit` (clipboard filled with the 错误 text)
+//! - "Yes" -> `CopyAndExit` (clipboard filled with the error text)
 //! - "No"  -> `Exit`
 //!
-//! `MessageBoxW` is modal and blocks the calling 线程 which is exactly the
-//! "suspend main 线程 behavior we want. `MB_TOPMOST | MB_SETFOREGROUND`
-//! keep the 对话框 可见 even when the (now-crashed) 渲染 窗口 is
+//! `MessageBoxW` is modal and blocks the calling thread, which is exactly the
+//! "suspend main thread" behavior we want. `MB_TOPMOST | MB_SETFOREGROUND`
+//! keep the dialog visible even when the (now-crashed) render window is
 //! unresponsive.
 
 use std::ffi::OsStr;
@@ -23,7 +23,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 use super::CrashChoice;
 
-/// 编码 a &str as a NUL-terminated UTF-16 向量 suitable for Win32 APIs.
+/// Encode a &str as a NUL-terminated UTF-16 vector suitable for Win32 APIs.
 fn to_wide(s: &str) -> Vec<u16> {
     OsStr::new(s).encode_wide().chain(iter::once(0)).collect()
 }
@@ -31,7 +31,7 @@ fn to_wide(s: &str) -> Vec<u16> {
 pub fn show(title: &str, message: &str) -> CrashChoice {
     let title_w = to_wide(title);
 
-    // 构建 a combined body: the 消息 + a hint about the buttons.
+    // Build a combined body: the message + a hint about the buttons.
     let body = format!(
         "{message}\n\n\
          \u{2014}\u{2014}\u{2014}\n\
@@ -59,10 +59,10 @@ pub fn show(title: &str, message: &str) -> CrashChoice {
 }
 
 pub fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
-    // Win32 clipboard wants a NUL-terminated UTF-16 缓冲区 in a 全局 alloc.
+    // Win32 clipboard wants a NUL-terminated UTF-16 buffer in a global alloc.
     // We go through the Rust allocator + raw HGLOBAL via `GlobalAlloc` is the
     // textbook approach, but `SetClipboardData` can also receive a HANDLE we
-    // allocate ourselves. Use the 标准 `GlobalAlloc` 流程
+    // allocate ourselves. Use the standard `GlobalAlloc` flow.
     use windows_sys::Win32::System::Memory::{
         GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
     };

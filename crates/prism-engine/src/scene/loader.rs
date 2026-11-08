@@ -53,7 +53,7 @@ use super::helpers::HierarchyHelper;
 use super::runtime_components::SceneEntityId;
 
 // ---------------------------------------------------------------------------
-// 分量 flags (must 匹配 the cooker's constants)
+// Component flags (must match the cooker's constants)
 // ---------------------------------------------------------------------------
 
 const FLAG_HAS_MESH: u8 = 0b00001;
@@ -63,7 +63,7 @@ const FLAG_HAS_CAMERA: u8 = 0b01000;
 const FLAG_HAS_SKYBOX: u8 = 0b10000;
 
 // ---------------------------------------------------------------------------
-// 光源 类型 字节 in the RSCN 光源 record
+// Light type bytes in the RSCN light record
 // ---------------------------------------------------------------------------
 
 const LIGHT_DIRECTIONAL: u8 = 0;
@@ -73,40 +73,40 @@ const LIGHT_POINT: u8 = 1;
 const LIGHT_SPOT: u8 = 2;
 
 // ---------------------------------------------------------------------------
-// SceneSource — what to 加载
+// SceneSource — what to load
 // ---------------------------------------------------------------------------
 
-/// Describes where to 查找 scene data.
+/// Describes where to find scene data.
 pub enum SceneSource {
-    /// In-memory RSCN 二进制 (e.g. from a `.pak` 资源 via `ResourceManager`).
+    /// In-memory RSCN binary (e.g. from a `.pak` asset via `ResourceManager`).
     RawCooked(Vec<u8>),
-    /// Loose RSCN 二进制 file on disk (dev convenience).
+    /// Loose RSCN binary file on disk (dev convenience).
     CookedFile(PathBuf),
     /// Loose `.scene.json` file on disk (dev convenience).
     JsonFile(PathBuf),
 }
 
 // ---------------------------------------------------------------------------
-// SceneInstance — 结果 of a 加载
+// SceneInstance — result of a load
 // ---------------------------------------------------------------------------
 
-/// The 结果 of loading and spawning a scene.
+/// The result of loading and spawning a scene.
 pub struct SceneInstance {
     /// Generated or provided scene ID.
     pub scene_id: SceneAssetId,
     /// Entities that have no parent (roots of the scene hierarchy).
     pub root_entities: Vec<Entity>,
-    /// Every 实体 that was spawned, in 生成 order.
+    /// Every entity that was spawned, in spawn order.
     pub all_entities: Vec<Entity>,
 }
 
 // ---------------------------------------------------------------------------
-// ParsedRscnEntity — intermediate deserialised from the 二进制 stream
+// ParsedRscnEntity — intermediate deserialised from the binary stream
 // ---------------------------------------------------------------------------
 
 /// One entity decoded from a legacy RSCN v1/v2 byte stream, before ECS insertion.
 ///
-/// The fields correspond one-to-one with the RSCN on-disk 格式 (see 模块
+/// The fields correspond one-to-one with the RSCN on-disk format (see module
 /// docs).  `name` is currently stored for debug/inspector use only.
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -170,15 +170,15 @@ impl ParsedEntity {
 // RSCN parser
 // ---------------------------------------------------------------------------
 
-/// 结果 of parsing an RSCN 二进制 blob.
+/// Result of parsing an RSCN binary blob.
 #[derive(Debug)]
 pub struct ParsedRscn {
     pub entities: Vec<ParsedEntity>,
 }
 
-/// Parse an RSCN 二进制 blob into entities + header 信息
+/// Parse an RSCN binary blob into entities + header info.
 ///
-/// Returns `Err` with a human-readable 消息 on 格式 errors.
+/// Returns `Err` with a human-readable message on format errors.
 pub fn parse_rscn(data: &[u8]) -> Result<ParsedRscn, String> {
     if rscn::is_v4(data) {
         return Err(
@@ -199,8 +199,8 @@ pub fn parse_rscn(data: &[u8]) -> Result<ParsedRscn, String> {
     let count = u32::from_le_bytes(data[5..9].try_into().unwrap()) as usize;
     let mut offset = 9usize;
 
-    // v2: skip skybox 高动态范围 path in header (used by read_env_path_from_rscn
-    // for the app 层 the per-entity skybox data is parsed below).
+    // v2: skip skybox HDR path in header (used by read_env_path_from_rscn
+    // for the app layer; the per-entity skybox data is parsed below).
     if version >= 2 {
         if offset + 2 > data.len() {
             return Err("unexpected end of RSCN data (env_len)".into());
@@ -242,7 +242,7 @@ pub fn parse_rscn(data: &[u8]) -> Result<ParsedRscn, String> {
         };
         offset += 4;
 
-        // 变换 tx(12) + rot(16) + scale(12) = 40 字节
+        // Transform: tx(12) + rot(16) + scale(12) = 40 bytes.
         if offset + 40 > data.len() {
             return Err("unexpected end (transform)".into());
         }
@@ -372,24 +372,24 @@ pub fn parse_rscn(data: &[u8]) -> Result<ParsedRscn, String> {
 }
 
 // ---------------------------------------------------------------------------
-// 四元数 -> yaw/pitch conversion (for scene-loaded cameras)
+// Quaternion -> yaw/pitch conversion (for scene-loaded cameras)
 // ---------------------------------------------------------------------------
 
-/// 转换 a scene entity's 旋转 四元数 `(x, y, z, w)` into the
-/// `(yaw, 音高 pair used by [`FlyCameraController`].
+/// Convert a scene entity's rotation quaternion `(x, y, z, w)` into the
+/// `(yaw, pitch)` pair used by [`FlyCameraController`].
 ///
-/// The free-fly 向前 (see 向前 in `scene::systems::camera`) is
+/// The free-fly forward (see `forward` in `scene::systems::camera`) is
 /// `[-sin(yaw)·cos(pitch), sin(pitch), -cos(yaw)·cos(pitch)]`. The camera's
-/// world-space 向前 is the entity's 四元数 applied to the −Z basis,
-/// `R·(0,0,-1)`. Inverting the 向前 formula gives:
-/// - 音高 = asin(forward.y)`
+/// world-space forward is the entity's quaternion applied to the −Z basis,
+/// `R·(0,0,-1)`. Inverting the forward formula gives:
+///   - `pitch = asin(forward.y)`
 ///   - `yaw   = atan2(-forward.x, -forward.z)`
 ///
 /// 音符 this means an identity 四元数 (向前 = (0,0,−1)) maps to
 /// `yaw = 0, 音高 = 0` — the same orientation the entity's transform already
 /// expresses. Roll is discarded (the free-fly 相机 has no roll). Matches the
-/// right-handed conventions in `README.md` (+X 右 +Y 上 +Z toward
-/// viewer, 相机 looks 下 −Z).
+/// right-handed conventions in `README.md` (+X right, +Y up, +Z toward
+/// viewer, camera looks down −Z).
 /// Inserts an unresolved [`SpriteRef`] for entities that carry a
 /// [`SpriteRenderer`] with a texture path.
 ///
@@ -439,16 +439,16 @@ fn ensure_sprite_ref(world: &mut World, entity: Entity) {
 
 fn quat_to_yaw_pitch(quat: [f32; 4]) -> (f32, f32) {
     let [qx, qy, qz, qw] = quat;
-    // 归一化 to avoid degenerate 输入 skewing the 结果
+    // Normalize to avoid degenerate input skewing the result.
     let n = (qx * qx + qy * qy + qz * qz + qw * qw).sqrt();
     if n < 1e-6 {
         log::warn!("scene camera quaternion is degenerate (|q|≈0); using identity");
         return (0.0, 0.0);
     }
     let (qx, qy, qz, qw) = (qx / n, qy / n, qz / n, qw / n);
-    // 向前 = R · (0,0,-1), where R is the quaternion's 旋转 矩阵
-    // 列 2 of R is `R·(0,0,1)` = `[2(xz+wy), 2(yz-wx), 1-2(x²+y²)]`;
-    // negating it gives `R·(0,0,-1)`. (Same 矩阵 as `LocalTransform::to_model_matrix`.)
+    // forward = R · (0,0,-1), where R is the quaternion's rotation matrix.
+    // Column 2 of R is `R·(0,0,1)` = `[2(xz+wy), 2(yz-wx), 1-2(x²+y²)]`;
+    // negating it gives `R·(0,0,-1)`. (Same matrix as `LocalTransform::to_model_matrix`.)
     let forward = [
         -2.0 * (qx * qz + qw * qy),
         -2.0 * (qy * qz - qw * qx),
@@ -460,13 +460,13 @@ fn quat_to_yaw_pitch(quat: [f32; 4]) -> (f32, f32) {
 }
 
 // ---------------------------------------------------------------------------
-// 公开 helpers for env path extraction
+// Public helpers for env path extraction
 // ---------------------------------------------------------------------------
 
 /// Read the skybox HDR path from cooked RSCN bytes (v4 component or v2 header).
 ///
 /// Returns `None` if the data is not valid RSCN v2+ or has no skybox configured.
-/// Used by the app 层 to pre-load the environment 映射表 from either the
+/// Used by the app layer to pre-load the environment map from either the
 /// ResourceManager or a loose file.
 pub fn read_env_path_from_rscn_bytes(data: &[u8]) -> Option<String> {
     if rscn::is_v4(data) {
@@ -500,8 +500,8 @@ pub fn read_env_path_from_rscn_bytes(data: &[u8]) -> Option<String> {
 
 /// Read the skybox HDR path from a cooked RSCN **file**.
 ///
-/// Convenience 包装器 around [`read_env_path_from_rscn_bytes`] that reads the
-/// file from disk 第一个
+/// Convenience wrapper around [`read_env_path_from_rscn_bytes`] that reads the
+/// file from disk first.
 #[cfg(feature = "legacy-disk-scenes")]
 pub fn read_env_path_from_rscn(path: &std::path::Path) -> Option<String> {
     let data = std::fs::read(path).ok()?;
@@ -512,12 +512,12 @@ pub fn read_env_path_from_rscn(path: &std::path::Path) -> Option<String> {
 // SceneLoader
 // ---------------------------------------------------------------------------
 
-/// Loads cooked scenes into the ECS 世界
+/// Loads cooked scenes into the ECS [`World`].
 ///
-/// 用法
+/// Usage:
 /// ```ignore
 /// let mut loader = SceneLoader::new();
-/// let 实例 = loader.load_and_spawn(&mut 世界 源
+/// let instance = loader.load_and_spawn(&mut world, source)?;
 /// ```
 pub struct SceneLoader;
 
@@ -526,7 +526,7 @@ impl SceneLoader {
         Self
     }
 
-    /// High-level entry: accept any [`SceneSource`] and 生成 into the 世界
+    /// High-level entry: accept any [`SceneSource`] and spawn into the world.
     ///
     /// `registry` 用于反序列化 `.scene.json` 中的组件。
     pub fn load_and_spawn(
@@ -834,7 +834,7 @@ impl SceneLoader {
         })
     }
 
-    /// Core 生成 转换 parsed RSCN entities into ECS components.
+    /// Core spawn: convert parsed RSCN entities into ECS components.
     ///
     /// This is the single path that creates entities — all `SceneSource`
     /// variants converge here.
@@ -845,7 +845,7 @@ impl SceneLoader {
         scene_id: SceneAssetId,
     ) -> Result<SceneInstance, String> {
         let parsed_entities = &parsed.entities;
-        // Phase 1: 生成 all entities, 插入 scene & 变换 components.
+        // Phase 1: spawn all entities, insert scene & transform components.
         let mut entities: Vec<Entity> = Vec::with_capacity(parsed_entities.len());
         for pe in parsed_entities {
             let entity = world.spawn();
@@ -854,13 +854,13 @@ impl SceneLoader {
             // Always-added components.
             world.insert(entity, SceneMember(scene_id));
             world.insert(entity, Active(true));
-            // Optional human-readable name 空 字符串 -> no Name 分量
-            // the 检查器 falls 后 to the raw 实体 id).
+            // Optional human-readable name (empty string -> no Name component,
+            // the inspector falls back to the raw entity id).
             if !pe.name.is_empty() {
                 world.insert(entity, Name(pe.name.clone()));
             }
 
-            // 局部 变换
+            // Local transform.
             let local = LocalTransform {
                 position: pe.position.into(),
                 rotation: glam::Quat::from_xyzw(
@@ -873,11 +873,11 @@ impl SceneLoader {
             };
             world.insert(entity, local.clone());
 
-            // Initial 世界 变换 = 局部 (will be recomputed by hierarchy 系统
+            // Initial world transform = local (will be recomputed by hierarchy system).
             world.insert(entity, LocalToWorld(local.to_model_matrix()));
 
-            // 网格 引用 (generation 0 = unresolved; resolved by
-            // resolve_assets_system once the .pak 运行时 is wired).
+            // Mesh reference (generation 0 = unresolved; resolved by
+            // resolve_assets_system once the .pak runtime is wired).
             if pe.has_mesh {
                 world.insert(
                     entity,
@@ -889,7 +889,7 @@ impl SceneLoader {
                 );
             }
 
-            // 材质 引用 (unresolved).
+            // Material reference (unresolved).
             if pe.has_material {
                 world.insert(
                     entity,
@@ -901,8 +901,8 @@ impl SceneLoader {
                 );
             }
 
-            // MeshRenderer bundle — inserted when both 网格 and 材质 are
-            // present. Carries the path strings for later 分辨率
+            // MeshRenderer bundle — inserted when both mesh and material are
+            // present. Carries the path strings for later resolution.
             if pe.has_mesh && pe.has_material {
                 world.insert(
                     entity,
@@ -916,7 +916,7 @@ impl SceneLoader {
 
             ensure_sprite_ref(world, entity);
 
-            // 光源 分量
+            // Light component.
             if pe.has_light {
                 match pe.light_type {
                     LIGHT_DIRECTIONAL => {
@@ -956,11 +956,11 @@ impl SceneLoader {
                 }
             }
 
-            // 相机 分量
+            // Camera component.
             if pe.has_camera {
-                // Data 分量 投影 + exposure + 运行时 宽高比 cache.
-                // 宽高比 is a placeholder; `app.rs` writes the real value on
-                // the 第一个 调整大小 / orientation change.
+                // Data component: projection + exposure + runtime aspect cache.
+                // `aspect` is a placeholder; `app.rs` writes the real value on
+                // the first resize / orientation change.
                 world.insert(
                     entity,
                     Camera {
@@ -970,10 +970,10 @@ impl SceneLoader {
                         ..Camera::default()
                     },
                 );
-                // Free-fly 输入 controller. yaw/pitch are derived from the
-                // entity's 四元数 so the scene file fully determines the
-                // initial viewpoint; the 相机 position lives on the sibling
-                // LocalTransform 平移 `move_speed`/`look_sensitivity`
+                // Free-fly input controller. yaw/pitch are derived from the
+                // entity's quaternion so the scene file fully determines the
+                // initial viewpoint; the camera position lives on the sibling
+                // LocalTransform (translation). `move_speed`/`look_sensitivity`
                 // keep their defaults.
                 let (yaw, pitch) = quat_to_yaw_pitch(pe.rotation);
                 world.insert(
@@ -986,8 +986,8 @@ impl SceneLoader {
                 );
             }
 
-            // Skybox 分量 (the skybox 实体 is a regular 实体 in the
-            // entities 数组 its Skybox 分量 is inserted here).
+            // Skybox component (the skybox entity is a regular entity in the
+            // entities array; its Skybox component is inserted here).
             if pe.has_skybox {
                 world.insert(
                     entity,
@@ -1005,8 +1005,8 @@ impl SceneLoader {
             }
         }
 
-        // Phase 2: 构建 hierarchy via HierarchyHelper (must happen after all
-        // entities exist so that parent indices 解析
+        // Phase 2: build hierarchy via HierarchyHelper (must happen after all
+        // entities exist so that parent indices resolve).
         for (i, pe) in parsed_entities.iter().enumerate() {
             if let Some(parent_idx) = pe.parent {
                 let parent_idx = parent_idx as usize;
@@ -1042,18 +1042,18 @@ impl Default for SceneLoader {
 mod tests;
 
 // ---------------------------------------------------------------------------
-// ECS-driven scene geometry 集合 for offline baking
+// ECS-driven scene geometry collection for offline baking
 // ---------------------------------------------------------------------------
 
-/// Collect geometry + 材质 data from the ECS 世界 for offline baking.
+/// Collect geometry + material data from the ECS world for offline baking.
 ///
 /// Queries all entities with [`MeshRenderer`] + [`LocalToWorld`] components,
-/// loads their CPU 顶点 data via [`ResourceManager`], and returns:
+/// loads their CPU vertex data via [`ResourceManager`], and returns:
 ///
-/// - `instances` — one [`PtGeometryInstance`] per 实体 that carries
+/// - `instances` — one [`PtGeometryInstance`] per entity that carries
 /// a 网格 + 材质 (world-space 顶点 from `LocalToWorld`).
-/// - `materials_bytes` — a flat `GpuMaterial[96]` 数组 (one entry per
-/// 唯一 材质 path, indexed by `PtGeometryInstance::material_slot`).
+/// - `materials_bytes` — a flat `GpuMaterial[96]` array (one entry per
+///   unique material path, indexed by `PtGeometryInstance::material_slot`).
 pub fn collect_bake_instances(
     world: &World,
     rm: &mut ResourceManager,
@@ -1067,7 +1067,7 @@ pub fn collect_bake_instances(
     let mut gpu_materials: Vec<GpuMaterial> = Vec::new();
 
     for (_entity, mr, wt) in world.query2::<MeshRenderer, LocalToWorld>() {
-        // 解析 材质 槽
+        // Resolve material slot.
         let material_slot = if !mr.material_path.is_empty() {
             *mat_cache
                 .entry(mr.material_path.clone())
@@ -1089,7 +1089,7 @@ pub fn collect_bake_instances(
             })
         };
 
-        // Get the CPU 顶点 data for this 网格
+        // Get the CPU vertex data for this mesh.
         let Some(mesh_info) = load_mesh_for_bake(rm, &mr.mesh_path) else {
             log::warn!(
                 "collect_bake_instances: skipping entity with missing mesh '{}'",
@@ -1186,12 +1186,12 @@ pub fn collect_bake_instances(
 }
 
 // -------------------------------------------------------------------
-// 内部 helpers for collect_bake_instances
+// Internal helpers for collect_bake_instances
 // -------------------------------------------------------------------
 
 // (transform_point / transform_normal replaced by glam Mat4 methods)
 
-/// 加载 a `MeshAsset` from the 资源 管理器 given its path.
+/// Load a `MeshAsset` from the resource manager given its path.
 fn load_mesh_for_bake(
     rm: &mut ResourceManager,
     path: &str,
@@ -1202,7 +1202,7 @@ fn load_mesh_for_bake(
     Some(asset.info)
 }
 
-/// 加载 a `MaterialAsset` from the 资源 管理器 given its path.
+/// Load a `MaterialAsset` from the resource manager given its path.
 fn load_material_for_bake(
     rm: &mut ResourceManager,
     path: &str,
@@ -1214,7 +1214,7 @@ fn load_material_for_bake(
     Some(asset.info)
 }
 
-/// 转换 `RmatInfo` scalars into a `GpuMaterial` 纹理 slots = u32::MAX).
+/// Convert `RmatInfo` scalars into a `GpuMaterial` (texture slots = u32::MAX).
 fn rmat_to_gpu(info: &prism_asset::runtime::RmatInfo) -> GpuMaterial {
     let s = &info.scalars;
     GpuMaterial {
@@ -1233,7 +1233,7 @@ fn rmat_to_gpu(info: &prism_asset::runtime::RmatInfo) -> GpuMaterial {
     }
 }
 
-/// 默认 材质 (pink 错误 颜色 so 缺少 materials are obvious).
+/// Default material (pink error colour so missing materials are obvious).
 fn default_gpu_material() -> GpuMaterial {
     GpuMaterial {
         base_color: [1.0, 0.0, 1.0, 1.0],

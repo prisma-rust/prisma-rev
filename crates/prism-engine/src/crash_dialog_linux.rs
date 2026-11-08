@@ -1,10 +1,10 @@
-//! Linux 崩溃 对话框 `zenity --question` + `xclip`/`xsel`.
+//! Linux crash dialog: `zenity --question` + `xclip`/`xsel`.
 //!
-//! `zenity --question` shows a modal Yes/No 对话框 exit 代码 0 = Yes, 1 = No.
-//! If `zenity` isn't installed we fall 后 to printing the 错误 to stderr
-//! (the user still sees it in the terminal). Clipboard 复制 tries `xclip`
-//! 第一个 then `xsel`; if neither is available it's a no-op (the text is
-//! already on stderr / the 对话框
+//! `zenity --question` shows a modal Yes/No dialog; exit code 0 = Yes, 1 = No.
+//! If `zenity` isn't installed we fall back to printing the error to stderr
+//! (the user still sees it in the terminal). Clipboard copy tries `xclip`
+//! first, then `xsel`; if neither is available it's a no-op (the text is
+//! already on stderr / the dialog).
 
 use std::io::Write;
 use std::process::Command;
@@ -12,7 +12,7 @@ use std::process::Command;
 use super::CrashChoice;
 
 pub fn show(title: &str, message: &str) -> CrashChoice {
-    // zenity --question: exit 0 = Yes 复制 & Exit), 1 = No (Exit).
+    // zenity --question: exit 0 = Yes (Copy & Exit), 1 = No (Exit).
     let body = format!(
         "{message}\n\n\
          Yes = copy this text to the clipboard, then exit\n\
@@ -44,7 +44,7 @@ pub fn show(title: &str, message: &str) -> CrashChoice {
 }
 
 pub fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
-    // Try xclip 第一个 fall 后 to xsel.
+    // Try xclip first; fall back to xsel.
     if try_clip("xclip", &["-selection", "clipboard"], text).is_ok() {
         return Ok(());
     }

@@ -1,4 +1,4 @@
-//! 平台窗口配置，不依赖引擎业务层。
+//! Platform window configuration; independent of the engine layer.
 
 #[derive(Debug, Clone)]
 pub struct WindowConfig {

@@ -19,12 +19,12 @@ use crate::formats_skinned::{
 use crate::runtime::{Asset, RuntimeError};
 
 // ---------------------------------------------------------------------------
-// 纹理
+// Texture
 // ---------------------------------------------------------------------------
 
-/// Cooked 纹理 资源 (RTEX 格式
+/// Cooked texture asset (RTEX format).
 ///
-/// Holds the decoded [`RtexInfo`] 宽度 高度 mip 链 格式 byte).
+/// Holds the decoded [`RtexInfo`] (width, height, mip chain, format byte).
 /// The renderer's `RenderTextureManager` consumes mip-0 for the RGBA8 path;
 /// BC-compressed formats are 已支持 by the 运行时 upload path.
 #[derive(Debug, Clone)]
@@ -59,15 +59,15 @@ impl Asset for TextureAsset {
 }
 
 // ---------------------------------------------------------------------------
-// 网格
+// Mesh
 // ---------------------------------------------------------------------------
 
-/// Cooked 网格 资源 (RMES 格式
+/// Cooked mesh asset (RMES format).
 ///
 /// Holds the decoded [`RmesInfo`] (vertex/index counts + raw interleaved
-/// 顶点 字节 + raw u32 索引 字节 The renderer's `RenderMeshManager`
+/// vertex bytes + raw u32 index bytes). The renderer's `RenderMeshManager`
 /// de-interleaves this into split arrays (`positions`, `normals`, `uvs`,
-/// `tangents`, `indices`) at upload 时间
+/// `tangents`, `indices`) at upload time.
 #[derive(Debug, Clone)]
 pub struct MeshAsset {
     pub info: RmesInfo,
@@ -99,13 +99,13 @@ impl Asset for MeshAsset {
 }
 
 // ---------------------------------------------------------------------------
-// 材质
+// Material
 // ---------------------------------------------------------------------------
 
-/// Cooked 材质 资源 (RMAT 格式
+/// Cooked material asset (RMAT format).
 ///
-/// Holds the decoded [`RmatInfo`] (18 标量 floats + 5 纹理 `AssetId`
-/// slots). The 渲染器 resolves the 纹理 `AssetId`s to bindless SRV slots
+/// Holds the decoded [`RmatInfo`] (18 scalar floats + 5 texture `AssetId`
+/// slots). The renderer resolves the texture `AssetId`s to bindless SRV slots
 /// by loading each `TextureAsset` dependency.
 #[derive(Debug, Clone)]
 pub struct MaterialAsset {
@@ -117,7 +117,7 @@ pub struct MaterialAsset {
 }
 
 impl MaterialAsset {
-    /// Convenience accessor for the 18 标量 floats.
+    /// Convenience accessor for the 18 scalar floats.
     pub fn scalars(&self) -> &[f32; MATERIAL_SCALAR_COUNT] {
         &self.info.scalars
     }
@@ -150,20 +150,20 @@ impl Asset for MaterialAsset {
 }
 
 // ---------------------------------------------------------------------------
-// 着色器
+// Shader
 // ---------------------------------------------------------------------------
 
-/// Cooked 着色器 资源 (raw SPIR-V bytecode).
+/// Cooked shader asset (raw SPIR-V bytecode).
 ///
-/// The cooked data is the SPIR-V itself (no 包装器 the 运行时 validates
-/// the SPIR-V magic and hands the 字节 to `vkCreateShaderModule`.
+/// The cooked data is the SPIR-V itself (no wrapper); the runtime validates
+/// the SPIR-V magic and hands the bytes to `vkCreateShaderModule`.
 #[derive(Debug, Clone)]
 pub struct ShaderAsset {
-    /// Raw SPIR-V bytecode, little-endian 机 native on x86/ARM).
+    /// Raw SPIR-V bytecode, little-endian (machine native on x86/ARM).
     pub spirv: Vec<u8>,
 }
 
-/// SPIR-V magic number (little-endian 第一个 word).
+/// SPIR-V magic number (little-endian first word).
 const SPIRV_MAGIC_LE: u32 = 0x0723_0203;
 
 impl Asset for ShaderAsset {
@@ -202,15 +202,15 @@ impl Asset for ShaderAsset {
 // Scene
 // ---------------------------------------------------------------------------
 
-/// Cooked scene 资源 (RSCN 格式 raw 字节
+/// Cooked scene asset (RSCN format, raw bytes).
 ///
-/// The 运行时 holds the RSCN 字节 verbatim; the engine's `SceneLoader`
+/// The runtime holds the RSCN bytes verbatim; the engine's `SceneLoader`
 /// parses them into `ParsedEntity` records and spawns ECS entities. Keeping
-/// the parse out of the 运行时 preserves the "no engine types in the
-/// 运行时 boundary.
+/// the parse out of the runtime preserves the "no engine types in the
+/// runtime" boundary.
 #[derive(Debug, Clone)]
 pub struct SceneAsset {
-    /// Raw RSCN 字节 (cooked `SceneCooker` 输出
+    /// Raw RSCN bytes (cooked `SceneCooker` output).
     pub bytes: Vec<u8>,
 }
 
@@ -220,7 +220,7 @@ impl Asset for SceneAsset {
     }
 
     fn from_bytes(data: &[u8]) -> Result<Self, RuntimeError> {
-        // 光源 验证 RSCN magic check.
+        // Light validation: RSCN magic check.
         if data.len() < 5 || &data[..4] != b"RSCN" {
             return Err(RuntimeError::DeserializeFailed {
                 asset_type: AssetType::Scene,

@@ -102,7 +102,7 @@ impl Child {
 }
 
 // ---------------------------------------------------------------------------
-// 变换
+// Transform
 // ---------------------------------------------------------------------------
 
 /// 相对父实体的局部变换（根节点则为世界空间）。
@@ -114,7 +114,7 @@ impl Child {
 #[serde(default)]
 pub struct LocalTransform {
     pub position: glam::Vec3,
-    /// 四元数 Identity = `glam::Quat::IDENTITY`.
+    /// Quaternion.  Identity = `glam::Quat::IDENTITY`.
     pub rotation: glam::Quat,
     pub scale: glam::Vec3,
 }
@@ -130,7 +130,7 @@ impl Default for LocalTransform {
 }
 
 impl LocalTransform {
-    /// 构建 a 模型 矩阵 `T × R × S`.
+    /// Build a model matrix: `T × R × S`.
     pub fn to_model_matrix(&self) -> glam::Mat4 {
         glam::Mat4::from_scale_rotation_translation(self.scale, self.rotation, self.position)
     }
@@ -154,13 +154,13 @@ impl LocalToWorld {
 pub struct TransformDirty(pub bool);
 
 // ---------------------------------------------------------------------------
-// 渲染 references
+// Render references
 // ---------------------------------------------------------------------------
 
-/// 激活 状态 — whether the 实体 participates in 渲染
+/// Active state — whether the entity participates in rendering.
 ///
-/// Defaults to `true`. 集合 to `false` to hide an 实体 without despawning it
-/// (the 实体 and its components remain in the 世界
+/// Defaults to `true`.  Set to `false` to hide an entity without despawning it
+/// (the entity and its components remain in the world).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Reflect)]
 #[reflect(name = "prism_engine::scene::Active")]
 pub struct Active(pub bool);
@@ -199,14 +199,14 @@ impl Default for ActiveInHierarchy {
 // Authoring-time helpers
 // ---------------------------------------------------------------------------
 
-/// Authoring-time bundle marker for a renderable 实体
+/// Authoring-time bundle marker for a renderable entity.
 ///
 /// Inserted by [`SceneLoader`](crate::scene::loader::SceneLoader) during
 /// scene 生成 when an 实体 carries a 网格 path; the 材质 path is optional
 /// (a mesh-only renderer still draws, using the 渲染器 default 材质).
-/// This 分量 does **not** participate in 渲染 queries — the actual
-/// 渲染 data lives on [`MeshRef`] and [`MaterialRef`] — but provides a
-/// convenient handle for 检查器 editing and future hot-reload.
+/// This component does **not** participate in render queries — the actual
+/// rendering data lives on [`MeshRef`] and [`MaterialRef`] — but provides a
+/// convenient handle for inspector editing and future hot-reload.
 #[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
 #[reflect(name = "prism_engine::scene::MeshRenderer")]
 #[serde(default)]
@@ -1637,19 +1637,19 @@ fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// Directional 无限 光源
+/// Directional (infinite) light.
 ///
-/// Orientation is stored as XYZ Euler angles 角度 so it round-trips
+/// Orientation is stored as XYZ Euler angles (degrees) so it round-trips
 /// cleanly through `scene_state.json`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Reflect)]
 #[reflect(name = "prism_engine::scene::DirectionalLight")]
 #[serde(default)]
 pub struct DirectionalLight {
-    /// XYZ Euler angles 角度 音高 (X), yaw (Y), roll (Z).
+    /// XYZ Euler angles (degrees): pitch (X), yaw (Y), roll (Z).
     pub euler_xyz: glam::Vec3,
-    /// 线性 RGB 颜色 typically `[0, 1]`.
+    /// Linear RGB colour, typically `[0, 1]`.
     pub color: glam::Vec3,
-    /// Illuminance in **lux** 物理 unit).
+    /// Illuminance in **lux** (physical unit).
     pub intensity: f32,
     /// IBL ambient factor.
     pub ambient: f32,
@@ -1666,16 +1666,16 @@ impl Default for DirectionalLight {
     }
 }
 
-/// Point 光源
+/// Point light.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Reflect)]
 #[reflect(name = "prism_engine::scene::PointLight")]
 #[serde(default)]
 pub struct PointLight {
-    /// 线性 RGB 颜色
+    /// Linear RGB colour.
     pub color: glam::Vec3,
     /// Luminous intensity in **candela**.
     pub intensity: f32,
-    /// Attenuation 半径 世界 units).
+    /// Attenuation radius (world units).
     pub range: f32,
 }
 
@@ -1689,7 +1689,7 @@ impl Default for PointLight {
     }
 }
 
-/// Spot 光源
+/// Spot light.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Reflect)]
 #[reflect(name = "prism_engine::scene::SpotLight")]
 #[serde(default)]
@@ -1697,9 +1697,9 @@ pub struct SpotLight {
     pub color: glam::Vec3,
     pub intensity: f32,
     pub range: f32,
-    /// Inner cone half-angle 弧度
+    /// Inner cone half-angle (radians).
     pub inner_cone_angle: f32,
-    /// Outer cone half-angle 弧度
+    /// Outer cone half-angle (radians).
     pub outer_cone_angle: f32,
 }
 
@@ -1837,19 +1837,19 @@ pub struct GiConfig {
 }
 
 // ---------------------------------------------------------------------------
-// 相机
+// Camera
 // ---------------------------------------------------------------------------
 
-/// 透视 相机 parameters (data 分量
+/// Perspective camera parameters (data component).
 ///
-/// Holds the editor-editable 投影 + exposure fields. The 运行时 视图
-/// 矩阵 is computed each 帧 by [`super::systems::camera`] from this
-/// 分量 plus a sibling [`FlyCameraController`] (or future controller)
+/// Holds the editor-editable projection + exposure fields. The runtime view
+/// matrix is computed each frame by [`super::systems::camera`] from this
+/// component plus a sibling [`FlyCameraController`] (or future controller)
 /// and the entity's [`LocalToWorld`].
 ///
-/// 宽高比 is a 运行时 cache written by the app on 调整大小 it is exposed in
+/// `aspect` is a runtime cache written by the app on resize; it is exposed in
 /// 检查器视为只读。启用标志控制渲染器是否拾取
-/// this 相机
+/// this camera.
 #[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
 #[reflect(name = "prism_engine::scene::Camera")]
 #[serde(default)]
@@ -1857,15 +1857,15 @@ pub struct Camera {
     pub fov_y_degrees: f32,
     pub near: f32,
     pub far: f32,
-    /// Exposure multiplier applied to the final 高动态范围 颜色 before tonemapping.
-    /// 默认 1.0 = no scaling; range [0, 5] via 检查器 滑动条
+    /// Exposure multiplier applied to the final HDR color before tonemapping.
+    /// Default 1.0 = no scaling; range [0, 5] via inspector slider.
     pub exposure: f32,
-    /// 当前 宽高比 比率 宽度 / 高度 Written by the app on 调整大小 /
-    /// orientation change; the 投影 矩阵 is derived from it each 帧
+    /// Current aspect ratio (width / height). Written by the app on resize /
+    /// orientation change; the projection matrix is derived from it each frame.
     #[reflect(read_only)]
     pub aspect: f32,
-    /// When `false` the 相机 is skipped during scene 集合 (the
-    /// 渲染器 falls 后 to the 下一个 available 相机
+    /// When `false` the camera is skipped during scene collection (the
+    /// renderer falls back to the next available camera).
     pub enabled: bool,
     /// 清屏方式 = `Camera.clearFlags`（[`CameraClearFlags`]）。
     pub clear_flags: CameraClearFlags,
@@ -2026,24 +2026,24 @@ impl Default for PostProcessVolume {
     }
 }
 
-/// Free-fly 相机 输入 controller (data 分量
+/// Free-fly camera input controller (data component).
 ///
-/// Splits the runtime/input-owned fields off the old `FlyCamera` 枚举 variant:
-/// `yaw`/`pitch` are written each 帧 by [`super::systems::camera`] from
-/// 输入 while `move_speed`/`look_sensitivity` are editor-editable. The
-/// 相机 position lives on the sibling [`LocalTransform`] (and its derived
+/// Splits the runtime/input-owned fields off the old `FlyCamera` enum variant:
+/// `yaw`/`pitch` are written each frame by [`super::systems::camera`] from
+/// input, while `move_speed`/`look_sensitivity` are editor-editable. The
+/// camera position lives on the sibling [`LocalTransform`] (and its derived
 /// [`LocalToWorld`]), so this 分量 carries no position of its own.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Reflect)]
 #[reflect(name = "prism_engine::scene::FlyCameraController")]
 #[serde(default)]
 pub struct FlyCameraController {
-    /// Yaw around +Y (rad). 0 = looking 下 -Z (matches `FlyCamera`).
+    /// Yaw around +Y (rad). 0 = looking down -Z (matches `FlyCamera`).
     pub yaw: f32,
-    /// 音高 above/below the horizon (rad). 0 = 水平
+    /// Pitch above/below the horizon (rad). 0 = horizontal.
     pub pitch: f32,
-    /// Base 平移 speed 世界 units / 秒 at boost = 1.
+    /// Base translation speed (world units / second) at boost = 1.
     pub move_speed: f32,
-    /// 鼠标 look sensitivity (rad per 像素
+    /// Mouse look sensitivity (rad per pixel).
     pub look_sensitivity: f32,
 }
 
@@ -2079,11 +2079,11 @@ pub struct PrefabInstance {
 // Identification
 // ---------------------------------------------------------------------------
 
-/// Human-readable 实体 name (data 分量
+/// Human-readable entity name (data component).
 ///
-/// Optional: entities without a `Name` are displayed in the 检查器 by their
+/// Optional: entities without a `Name` are displayed in the inspector by their
 /// raw id. Populated by the scene loader from the cooked `.rscn` name field;
-/// editable from the 检查器 at 运行时 (not persisted to the scene file).
+/// editable from the inspector at runtime (not persisted to the scene file).
 #[derive(Debug, Clone, Default, Reflect)]
 #[reflect(name = "prism_engine::scene::Name")]
 pub struct Name(pub String);
@@ -2092,7 +2092,7 @@ pub struct Name(pub String);
 // Skybox
 // ---------------------------------------------------------------------------
 
-/// Skybox / environment 映射表 分量
+/// Skybox / environment map component.
 ///
 /// The entity with this component owns the environment map for the scene:
 /// its HDR drives both image-based lighting (IBL) and the background sky.
@@ -2875,7 +2875,7 @@ impl Default for AudioListener {
 // Scene management
 // ---------------------------------------------------------------------------
 
-/// Marks an 实体 as belonging to a specific scene.
+/// Marks an entity as belonging to a specific scene.
 ///
 /// Used for batch unload and multi-scene bookkeeping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

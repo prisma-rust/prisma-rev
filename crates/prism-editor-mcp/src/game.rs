@@ -1,8 +1,11 @@
-//! 运行游戏进程 + 抓图：给 MCP 一个「改完就能看」的闭环。
+//! Runs the game process and captures screenshots, closing the "edit then
+//! look" loop for MCP.
 //!
-//! 进程是**子进程**（`cargo run --release` 或直接跑 exe），stdout/stderr 被
-//! 读线程收进环形缓冲区，`game_logs` 取最后 N 行。截图复用引擎的
-//! `PRISMREV_SCREENSHOT*` 环境变量：起进程 → 等 PNG 落地 → 结束进程。
+//! The game is a **child process** (`cargo run --release` or a direct exe).
+//! Reader threads collect stdout/stderr into a ring buffer, and `game_logs`
+//! returns the last N lines. Screenshots reuse the engine's
+//! `PRISMREV_SCREENSHOT*` environment variables: spawn the process, wait for
+//! the PNG to land, then stop it.
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
@@ -15,7 +18,7 @@ use serde_json::{json, Value};
 
 use prism_editor_mcp::protocol::ToolDef;
 
-/// 日志缓冲上限：够定位问题，又不会把内存吃满。
+/// Log buffer capacity: enough to diagnose problems without exhausting memory.
 const LOG_CAPACITY: usize = 2000;
 
 pub fn definitions() -> Vec<ToolDef> {
@@ -64,7 +67,7 @@ pub fn definitions() -> Vec<ToolDef> {
     ]
 }
 
-/// 由 `game_run` 启动的进程 + 日志缓冲。
+/// The process started by `game_run` plus its log buffer.
 #[derive(Default)]
 pub struct GameHost {
     child: Mutex<Option<Child>>,
@@ -191,7 +194,8 @@ impl GameHost {
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(|err| format!("建目录失败: {err}"))?;
         }
-        // 旧文件会让「等文件出现」立刻返回，先删掉。
+        // A stale file would make the wait-for-file loop return immediately;
+        // delete it first.
         let _ = std::fs::remove_file(&target);
 
         let frame = args.get("frame").and_then(Value::as_u64).unwrap_or(120);
@@ -219,7 +223,8 @@ impl GameHost {
         let mut written = false;
         while started.elapsed() < timeout {
             if target.exists() {
-                // 文件可能是刚创建还没写完；等大小稳定一帧。
+                // The file may have just been created and not fully written;
+                // wait for its size to settle.
                 let first = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
                 std::thread::sleep(Duration::from_millis(200));
                 let second = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);

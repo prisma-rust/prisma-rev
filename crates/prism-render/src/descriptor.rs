@@ -27,7 +27,7 @@ fn align_up(value: u64, alignment: u64) -> u64 {
 
 pub struct DescriptorLayout {
     pub layout: vk::DescriptorSetLayout,
-    /// Cloned 设备 handle kept so 放置 can free the 布局 (RAII).
+    /// Cloned device handle kept so [`Drop`] can free the layout (RAII).
     device: ash::Device,
 }
 
@@ -50,17 +50,17 @@ impl DescriptorLayout {
         })
     }
 
-    /// 创建 a 管线 布局 数组 with just this 布局 (for convenience).
+    /// Create a pipeline layout array with just this layout (for convenience).
     pub fn as_slice(&self) -> &[vk::DescriptorSetLayout] {
         std::slice::from_ref(&self.layout)
     }
 
-    /// Combined set-0 布局 for the bindless PBR path:
-    /// - 绑定 0: `FrameUBO` (UNIFORM_BUFFER, 顶点 | 片元
-    /// - 绑定 1: materials `GpuMaterial` SSBO (STORAGE_BUFFER, 片元
+    /// Combined set-0 layout for the bindless PBR path:
+    /// - binding 0: `FrameUBO` (UNIFORM_BUFFER, VERTEX | FRAGMENT)
+    /// - binding 1: materials `GpuMaterial` SSBO (STORAGE_BUFFER, FRAGMENT)
     ///
-    /// The legacy 管线 only reads 绑定 0; the extra 存储 绑定 is
-    /// harmless there and required by the bindless 管线
+    /// The legacy pipeline only reads binding 0; the extra storage binding is
+    /// harmless there and required by the bindless pipeline.
     pub fn new_combined(device: &ash::Device) -> anyhow::Result<Self> {
         let bindings = [
             vk::DescriptorSetLayoutBinding::default()
@@ -90,10 +90,10 @@ impl Drop for DescriptorLayout {
     }
 }
 
-/// 描述符 池 sized for `max_frames` 描述符 sets (each with 1 UBO).
+/// Descriptor pool sized for `max_frames` descriptor sets (each with 1 UBO).
 pub struct DescriptorPool {
     pub pool: vk::DescriptorPool,
-    /// Cloned 设备 handle kept so 放置 can free the 池 (RAII).
+    /// Cloned device handle kept so [`Drop`] can free the pool (RAII).
     device: ash::Device,
 }
 
@@ -115,7 +115,7 @@ impl DescriptorPool {
         })
     }
 
-    /// Allocate one 描述符 集合 from the 池 for each 帧
+    /// Allocate one descriptor set from the pool for each frame.
     pub fn allocate_sets(
         &self,
         device: &ash::Device,
@@ -131,7 +131,7 @@ impl DescriptorPool {
         Ok(sets)
     }
 
-    /// 池 sized for `max_frames` combined (UBO + storage-buffer) sets, one
+    /// Pool sized for `max_frames` combined (UBO + storage-buffer) sets, one
     /// per frame-in-flight, for the bindless PBR path.
     pub fn new_combined(device: &ash::Device, max_frames: u32) -> anyhow::Result<Self> {
         let pool_sizes = [
@@ -172,8 +172,8 @@ pub const GPU_LIGHT_KIND_SPOT: f32 = 1.0;
 
 /// GPU data 布局 for a single local 光源（点光或聚光，64 字节 / 16-byte aligned）。
 ///
-/// Mirrors the Slang `GpuLight` 结构体 in `scene_frag.slang`.
-/// Stored in a `StructuredBuffer<GpuLight>` at 集合 0 绑定 2.
+/// Mirrors the Slang `GpuLight` struct in `scene_frag.slang`.
+/// Stored in a `StructuredBuffer<GpuLight>` at set 0 binding 2.
 ///
 /// 以前只有 `position` / `color` 两个 `float4`（32 字节，仅点光）；P3b 加了
 /// `direction` / `params` 以支持聚光锥角 —— `.color.w` 是类型位（见
@@ -194,7 +194,7 @@ pub struct GpuLight {
 /// [`GpuLight`] 的字节大小（SSBO 步长，与着色器结构体必须一致）。
 pub const GPU_LIGHT_SIZE: usize = std::mem::size_of::<GpuLight>();
 
-/// 最大 number of analytic lights in the PT 光源 SSBO.
+/// Maximum number of analytic lights in the PT light SSBO.
 pub const PT_LIGHT_MAX: u32 = 64;
 
 /// Kind discriminator for [`PtAnalyticLight`].
@@ -207,19 +207,19 @@ pub enum PtLightKind {
     Area = 3,
 }
 
-/// GPU data 布局 for a single path-tracer analytic 光源 (48 字节
+/// GPU data layout for a single path-tracer analytic light (48 bytes).
 ///
-/// Mirrors the Slang `PtAnalyticLight` 结构体 in `pt_render.slang`.
+/// Mirrors the Slang `PtAnalyticLight` struct in `pt_render.slang`.
 /// The `kind` field selects interpretation of the union-typed payload fields.
-/// Stored in a `StructuredBuffer<PtAnalyticLight>` at PT 集合 0 绑定 8.
+/// Stored in a `StructuredBuffer<PtAnalyticLight>` at PT set 0 binding 8.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct PtAnalyticLight {
-    /// .xyz = 世界 position; .w = kind (PtLightKind as u32)
+    /// .xyz = world position; .w = kind (PtLightKind as u32)
     pub position_kind: [f32; 4],
-    /// .xyz = direction (for spot/directional); .w = inner_angle 余弦 (spot) or unused
+    /// .xyz = direction (for spot/directional); .w = inner_angle cos (spot) or unused
     pub direction_params: [f32; 4],
-    /// .xyz = linear-space radiance/color; .w = outer_angle 余弦 (spot) or range (point) or 面积
+    /// .xyz = linear-space radiance/color; .w = outer_angle cos (spot) or range (point) or area
     pub color_params: [f32; 4],
 }
 
@@ -240,15 +240,15 @@ impl PtAnalyticLight {
     }
 }
 
-/// 最大 number of emissive triangles in the PT emissive SSBO 绑定 9).
+/// Maximum number of emissive triangles in the PT emissive SSBO (binding 9).
 pub const PT_EMISSIVE_MAX: u32 = 1024;
 
 /// Per-pixel ReSTIR DI reservoir for temporal+spatial resampling of direct lights.
 ///
-/// Stored in a ping-pong 缓冲区 (two `StructuredBuffer<ReSTIRReservoir>`) at
-/// 集合 0 bindings 10 当前 写入 and 11 上一个 读取 Updated every
-/// 帧 the path tracer reads 绑定 11 for temporal reuse, and writes
-/// 绑定 10 for 下一个 frame's temporal reuse.
+/// Stored in a ping-pong buffer (two `StructuredBuffer<ReSTIRReservoir>`) at
+/// set 0 bindings 10 (current, write) and 11 (previous, read).  Updated every
+/// frame: the path tracer reads binding 11 for temporal reuse, and writes
+/// binding 10 for next frame's temporal reuse.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 #[allow(non_snake_case)]
@@ -259,11 +259,11 @@ pub struct ReSTIRReservoir {
     pub target_pdf: f32, // π(selected_light) for ReSTIR pdf = W/(M*π(y))
 }
 
-/// GPU data for a single emissive triangle 面积 光源 from emissive materials).
+/// GPU data for a single emissive triangle (area light from emissive materials).
 ///
-/// Each triangle is stored as 3 world-space 顶点 a shading 法线 the
-/// pre-scaled emissive radiance, and the precomputed double-sided 面积
-/// Stored in a `StructuredBuffer<PtEmissiveTri>` at PT 集合 0 绑定 9,
+/// Each triangle is stored as 3 world-space vertices, a shading normal, the
+/// pre-scaled emissive radiance, and the precomputed double-sided area.
+/// Stored in a `StructuredBuffer<PtEmissiveTri>` at PT set 0 binding 9,
 /// used for explicit emissive NEE in the path tracer.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -276,12 +276,12 @@ pub struct PtEmissiveTri {
     pub area: f32,          // precomputed triangle area (for PDF)
 }
 
-/// GPU data 布局 for the per-frame uniform 缓冲区
+/// GPU data layout for the per-frame uniform buffer.
 ///
 /// Mirrors the Slang `FrameUBO` in `shaders/slang/common.slang` byte-for-byte
 /// (std140). The RenderGraph ForwardPass reads `light_view_proj` here for the
-/// shadow-map 投影 (keeping it out of 推送 constants so the 推送
-/// 常量 块 stays under Vulkan's 128-byte 限制 the legacy shaders
+/// shadow-map projection (keeping it out of push constants so the push
+/// constant block stays under Vulkan's 128-byte limit); the legacy shaders
 /// simply ignore the trailing field.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -292,16 +292,16 @@ pub struct FrameUBOData {
     pub light_color: [f32; 4],     // 16 bytes, offset  96 (w = ambient factor)
     pub view: [[f32; 4]; 4],       // 64 bytes, offset 112 (world -> view)
     pub light_view_proj: [[f32; 4]; 4], // 64 bytes, offset 176 (light-space VP for shadow map)
-    /// 色调映射 operator selector, applied to the final 高动态范围 颜色 before the
-    /// sRGB 交换链 编码 0 = Reinhard (`x/(x+1)`), 1 = ACES (Narkowicz).
-    /// Switchable at 运行时 from the 检查器 / `T` 调 偏移 240.
+    /// Tonemap operator selector, applied to the final HDR color before the
+    /// SRGB swapchain encode. 0 = Reinhard (`x/(x+1)`), 1 = ACES (Narkowicz).
+    /// Switchable at runtime from the inspector / `T` key. offset 240.
     pub tonemap_mode: u32, // offset 240
-    /// Scene 颜色 视口 大小 in pixels (xy). Used by the 片元 着色器
-    /// to derive screen-space UVs for sampling the screen-space 环境光遮蔽 纹理
+    /// Scene colour viewport size in pixels (xy). Used by the fragment shader
+    /// to derive screen-space UVs for sampling the screen-space AO texture.
     pub viewport_size: [f32; 2], // offset 244..251
-    /// Exposure multiplier applied as a uniform 音阶 to the final composed 高动态范围
-    /// 颜色 before tonemapping. 默认 1.0 = no scaling; 检查器 滑动条
-    /// lets the user brighten/darken the entire 图像 uniformly. 偏移 252.
+    /// Exposure multiplier applied as a uniform scale to the final composed HDR
+    /// color before tonemapping. Default 1.0 = no scaling; inspector slider
+    /// lets the user brighten/darken the entire image uniformly. offset 252.
     pub exposure: f32, // offset 252
     /// 阴影强度 = `Light.shadowStrength`（0 = 无阴影，1 = 全强度）。
     ///
@@ -323,7 +323,7 @@ pub struct FrameUBOData {
     pub prev_view_proj: [[f32; 4]; 4], // offset 352..415
 }
 
-/// Per-frame UBO 缓冲区 and its 描述符 集合
+/// Per-frame UBO buffer and its descriptor set.
 ///
 /// The buffer holds [`MAX_CAMERAS`] aligned slots (one per composited camera).
 /// `descriptor_set` covers one slot; the forward pass supplies the slot offset
@@ -337,12 +337,12 @@ pub struct FrameUBO {
     /// `minUniformBufferOffsetAlignment`).
     pub stride: vk::DeviceSize,
     pub descriptor_set: vk::DescriptorSet,
-    /// Cloned 设备 handle kept so 放置 can free the 缓冲区 + 内存 (RAII).
+    /// Cloned device handle kept so [`Drop`] can free the buffer + memory (RAII).
     device: ash::Device,
 }
 
 impl FrameUBO {
-    /// 创建 a UBO 缓冲区 and 更新 the 描述符 集合 to point to it.
+    /// Create a UBO buffer and update the descriptor set to point to it.
     pub fn new(context: &VulkanContext, descriptor_set: vk::DescriptorSet) -> anyhow::Result<Self> {
         let size = std::mem::size_of::<FrameUBOData>() as vk::DeviceSize; // 416
         let alignment = context
@@ -361,7 +361,7 @@ impl FrameUBO {
         )
         .context("create frame UBO buffer")?;
 
-        // 更新 描述符 集合
+        // Update descriptor set.
         let buffer_info = vk::DescriptorBufferInfo::default()
             .buffer(buffer)
             .offset(0)

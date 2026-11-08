@@ -5,16 +5,18 @@
 //! profile, and feature set. The function tables are `#[repr(C)]` so the
 //! boundary is explicit while the API is still being narrowed.
 //!
-//! ## 边界规则
+//! ## Boundary rules
 //!
-//! 只传 POD（[`EntityHandle`] / [`InputSnapshot`]）与字节流。组件数据用
-//! RTTIBin 编码，宿主用自己的 `ComponentRegistry` 解码 —— 这样新增组件类型
-//! 不需要改 ABI，也不需要在这里为每个组件写一遍绑定。
+//! Only POD values ([`EntityHandle`] / [`InputSnapshot`]) and byte streams cross
+//! the boundary. Component data is RTTIBin-encoded and decoded by the host with
+//! its own `ComponentRegistry`, so adding a component type needs no ABI change
+//! and no per-component binding here.
 
-/// ABI 键位编号（`InputSnapshot::keys` 的位序）。
+/// ABI key indices (bit order of `InputSnapshot::keys`).
 ///
-/// 这是宿主与项目之间的契约：**只能追加，不能重排**。引擎的
-/// `KeyCode::bit_index` 必须与这里逐项一致（`prism-engine` 有对应测试）。
+/// This is the contract between host and project: **append only, never
+/// reorder**. The engine's `KeyCode::bit_index` must match this list entry by
+/// entry (`prism-engine` has a test for it).
 pub mod keys {
     pub const KEY_W: usize = 0;
     pub const KEY_A: usize = 1;
@@ -37,7 +39,7 @@ pub mod keys {
     pub const ARROW_LEFT: usize = 18;
     pub const ARROW_RIGHT: usize = 19;
     pub const DIGIT_0: usize = 20;
-    /// 平台原始键码从这里往上排（`30 + code % 226`）。
+    /// Platform raw key codes start here (`30 + code % 226`).
     pub const OTHER_BASE: usize = 30;
 }
 
@@ -47,25 +49,27 @@ pub const SUCCESS: i32 = 0;
 pub const INVALID_ARGUMENT: i32 = 1;
 pub const REGISTRATION_FAILED: i32 = 2;
 pub const TICK_FAILED: i32 = 3;
-/// 宿主不认识这个类型名（未注册进 `ComponentRegistry`）。
+/// The host does not know this type name (not registered in `ComponentRegistry`).
 pub const UNKNOWN_TYPE: i32 = 4;
-/// 输出缓冲区太小；`out_count` 已写入所需长度。
+/// The output buffer is too small; `out_count` has been set to the required length.
 pub const BUFFER_TOO_SMALL: i32 = 5;
-/// 宿主没有提供这项能力（`HostApi` 里对应回调为 `None`）。
+/// The host does not offer this capability (the matching `HostApi` callback is `None`).
 pub const UNSUPPORTED: i32 = 6;
 
-/// 在 ABI 边界上兜住 Rust 的 panic。
+/// Catches Rust panics at the ABI boundary.
 ///
-/// 模块导出的是 `extern "C"` 函数，而 Rust 的 unwinding panic 跨 `extern "C"`
-/// 边界是**未定义行为**（近版本 std 会直接 abort 整个进程）。宿主是编辑器时，
-/// 这意味着工程代码里的一个 `unwrap()` 会把编辑器一起带走 —— 所以模块的每个
-/// 导出入口都要走这里：panic 被就地捕获、返回 [`TICK_FAILED`]，宿主继续运行
-/// 并显示错误。
+/// The module exports `extern "C"` functions, and unwinding a panic across an
+/// `extern "C"` boundary is **undefined behavior** (recent std aborts the whole
+/// process). When the host is the editor, a single `unwrap()` in project code
+/// would take the editor down with it, so every exported entry point goes
+/// through here: the panic is caught in place, [`TICK_FAILED`] is returned, and
+/// the host keeps running and shows the error.
 ///
-/// 这里**不**接管 `panic::set_hook`：hook 是进程级的，模块和宿主是同一个进程，
-/// 模块改 hook 会顶掉宿主的日志/崩溃收集。call stack 由宿主的 hook 负责
-/// （`std::backtrace::Backtrace::force_capture()`，PDB 与模块放在一起就能解出
-/// 模块帧）。
+/// This deliberately does **not** take over `panic::set_hook`: hooks are
+/// process-wide and module and host share one process, so a module hook would
+/// displace the host's logging and crash collection. The call stack is the
+/// host hook's job (`std::backtrace::Backtrace::force_capture()`; keeping the
+/// PDB next to the module resolves module frames).
 pub fn guard<F: FnOnce() -> i32>(f: F) -> i32 {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(status) => status,
@@ -75,16 +79,18 @@ pub fn guard<F: FnOnce() -> i32>(f: F) -> i32 {
 
 pub const HOST_CAP_LOGGING: u64 = 1 << 0;
 pub const HOST_CAP_WORLD_COMMANDS: u64 = 1 << 1;
-/// 松散资产访问（`asset_exists` / `read_asset_file`）。
+/// Loose asset access (`asset_exists` / `read_asset_file`).
 pub const HOST_CAP_ASSET: u64 = 1 << 4;
 pub const HOST_CAP_COMPONENTS: u64 = 1 << 2;
 pub const HOST_CAP_DRAW: u64 = 1 << 3;
-/// 引擎自带的场景存档（`save_scene_state` / `load_scene_state`，#484）。
+/// Engine-owned scene state (`save_scene_state` / `load_scene_state`, #484).
 pub const HOST_CAP_STATE: u64 = 1 << 5;
-/// 场景切换（`load_scene` / `unload_scene`，#482）。请求是**延迟执行**的：
-/// 宿主在本 tick 结束后才真正换场，因为回调执行时世界正被借用。
+/// Scene switching (`load_scene` / `unload_scene`, #482). Requests are
+/// **deferred**: the host performs the switch after this tick, because the
+/// world is borrowed while the callback runs.
 pub const HOST_CAP_SCENE: u64 = 1 << 6;
-/// 物理查询（`raycast`，#522）。宿主注入查询实现后才会声明该能力位。
+/// Physics queries (`raycast`, #522). The host advertises this bit only after it
+/// injects a query implementation.
 pub const HOST_CAP_PHYSICS: u64 = 1 << 7;
 /// 玩家存档（`save_value` / `load_value`，#984）。与引擎自带的场景存档
 /// （[`HOST_CAP_STATE`]）分开：这是工程自己决定 schema 的键值存储。
@@ -94,14 +100,12 @@ pub const HOST_CAP_SAVE: u64 = 1 << 8;
 /// 声明该能力位；没有它时编辑器 Play 是一次性音效的哑巴。
 pub const HOST_CAP_AUDIO: u64 = 1 << 9;
 
-// ---------------------------------------------------------------------------
-// POD payloads
-// ---------------------------------------------------------------------------
-
-/// 跨 ABI 的实体句柄。
+/// An entity handle crossing the ABI.
 ///
-/// 与 ECS 内部的实体句柄同构，但**不共享类型身份**：插件里的句柄只是宿主
-/// 槽位编号 + 代数，宿主每次使用前都会重新校验它是否仍然存活。
+/// It is layout-isomorphic to the ECS-internal entity handle but **does not
+/// share type identity**: inside a plugin the handle is only a host slot index
+/// plus a generation, and the host revalidates that it is still alive before
+/// every use.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct EntityHandle {
@@ -110,7 +114,7 @@ pub struct EntityHandle {
 }
 
 impl EntityHandle {
-    /// 空句柄；宿主必须拒绝它。
+    /// The null handle; the host must reject it.
     pub const PLACEHOLDER: Self = Self {
         id: u32::MAX,
         generation: u32::MAX,
@@ -121,27 +125,28 @@ impl EntityHandle {
     }
 }
 
-/// 触点阶段（`InputSnapshot::touches` 里 `phase` 的取值）。
+/// Touch phases (values of `phase` in `InputSnapshot::touches`).
 pub const TOUCH_PHASE_STARTED: u32 = 0;
 pub const TOUCH_PHASE_MOVED: u32 = 1;
 pub const TOUCH_PHASE_ENDED: u32 = 2;
 pub const TOUCH_PHASE_CANCELLED: u32 = 3;
 
-/// 单个触点（Android / iOS 的 `Touch`）。
+/// A single touch point (Android / iOS `Touch`).
 ///
-/// 与 [`InputSnapshot`] 一样是 POD：`InputSnapshot` 整块跨 ABI 传，放不下
-/// `Vec`，所以固定上限 [`InputSnapshot::MAX_TOUCHES`]。超出上限的触点被丢弃
-/// （宿主的 `InputManager` 侧仍保留完整列表）。
+/// Like [`InputSnapshot`] it is POD: the whole `InputSnapshot` crosses the ABI
+/// as a block and cannot hold a `Vec`, so the touch count is capped at
+/// [`InputSnapshot::MAX_TOUCHES`]. Touches beyond the cap are dropped (the
+/// host's `InputManager` still keeps the full list).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct TouchSnapshot {
-    /// 平台触点 id（同一根手指的整个生命周期内不变）。
+    /// Platform touch id (stable for the whole lifetime of one finger).
     pub id: u64,
-    /// 绘图区像素坐标（与 [`InputSnapshot::cursor`] 同一坐标系）。
+    /// Draw-area pixel coordinates (same coordinate system as [`InputSnapshot::cursor`]).
     pub position: [f32; 2],
-    /// 见 `TOUCH_PHASE_*`；未知值按「移动中」处理。
+    /// See `TOUCH_PHASE_*`; unknown values are treated as "moved".
     pub phase: u32,
-    /// 保留字段，必须是 0。
+    /// Reserved; must be 0.
     pub _reserved: u32,
 }
 
@@ -154,61 +159,66 @@ impl TouchSnapshot {
     };
 }
 
-/// 每帧下发给 gameplay 代码的输入快照。
+/// Per-frame input snapshot handed to gameplay code.
 ///
-/// 固定大小、`#[repr(C)]`，可以整块跨 ABI 传。按键用位图而不是 `Vec`，
-/// 避免在边界上处理堆分配与释放责任。
+/// Fixed-size and `#[repr(C)]`, so it crosses the ABI as a block. Keys use a
+/// bitmap rather than a `Vec` to avoid heap allocation and ownership questions
+/// at the boundary.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct InputSnapshot {
-    /// 光标位置（**绘图区像素**，左上原点）。
+    /// Cursor position (**draw-area pixels**, top-left origin).
     ///
-    /// 与 [`Self::screen`] 是同一个坐标系：宿主已经把逻辑坐标折算到渲染目标上，
-    /// 保证 `0 <= cursor <= screen`。插件不要自己再乘 DPI 倍率。
+    /// Same coordinate system as [`Self::screen`]: the host already folds
+    /// logical coordinates into the render target so `0 <= cursor <= screen`.
+    /// Plugins must not apply a DPI scale on top.
     pub cursor: [f32; 2],
-    /// 当前绘图区域尺寸（像素，与 [`Self::cursor`] 同一坐标系）。
+    /// Current draw-area size in pixels (same coordinate system as [`Self::cursor`]).
     pub screen: [f32; 2],
     pub left_clicked: bool,
     pub left_held: bool,
-    /// 按键位图：`keys[i / 64] & (1 << (i % 64))`。
-    /// 键位编号由宿主定义，插件只做查表。
+    /// Key bitmap: `keys[i / 64] & (1 << (i % 64))`.
+    /// Key indices are defined by the host; plugins only look them up.
     pub keys: [u64; 4],
 
-    // ---- 以下字段是 #485 追加的：`left_clicked` / `left_held` / `keys` 之前
-    // 只覆盖了「左键 + 按住」这一种组合，右键、滚轮、鼠标位移、触摸、按键边沿
-    // 全都没有出口。追加在末尾是为了让 ABI 差异只体现在 `ABI_VERSION` 上。
-    /// 右键「本帧刚按下」。
+    // These fields were appended in #485: the earlier `left_clicked` /
+    // `left_held` / `keys` covered only "left button held", with no outlet for
+    // the right button, wheel, mouse delta, touch, or key edges. They sit at the
+    // end so ABI differences show up only in `ABI_VERSION`.
+    /// Right button pressed this frame.
     pub right_clicked: bool,
-    /// 右键「按住」。
+    /// Right button held.
     pub right_held: bool,
-    /// 中键「本帧刚按下」。
+    /// Middle button pressed this frame.
     pub middle_clicked: bool,
-    /// 中键「按住」。
+    /// Middle button held.
     pub middle_held: bool,
-    /// 本帧鼠标位移（像素，未缩放）。FPS 视角用它，不要用 `cursor` 差分：
-    /// 指针锁定时 `cursor` 不再移动。
+    /// Mouse delta this frame (pixels, unscaled). Use this for FPS look, not a
+    /// `cursor` difference: `cursor` stops moving while the pointer is locked.
     pub mouse_delta: [f32; 2],
-    /// 本帧滚轮量，单位是「滚轮行」（一格传统滚轮 = 1.0）。
+    /// Wheel amount this frame in "wheel lines" (one notch of a classic wheel = 1.0).
     pub scroll: f32,
-    /// 指针是否被锁定（`CursorGrabMode::Locked`）。锁定期间鼠标不再受屏幕边缘限制。
+    /// Whether the pointer is locked (`CursorGrabMode::Locked`). While locked,
+    /// the mouse is no longer bounded by the screen edge.
     pub pointer_locked: bool,
-    /// 按键边沿位图：前 [`InputSnapshot::KEY_WORDS`] 个 word 是「本帧刚按下」，
-    /// 后 `KEY_WORDS` 个是「本帧刚释放」。
+    /// Key-edge bitmap: the first [`InputSnapshot::KEY_WORDS`] words are
+    /// "pressed this frame", the next `KEY_WORDS` are "released this frame".
     ///
-    /// `keys` 是**按住**语义，所以要判断「这一帧刚按下 Space」必须用这里——
-    /// 自己差分 `keys` 会漏掉在同一帧里按下又松开的快速连按。
+    /// `keys` has **held** semantics, so testing "Space pressed this frame" must
+    /// use this: differencing `keys` yourself misses a quick tap that pressed
+    /// and released within one frame.
     pub key_edges: [u64; 8],
-    /// `touches` 里有效触点数（`0..=MAX_TOUCHES`）。
+    /// Number of valid touches in `touches` (`0..=MAX_TOUCHES`).
     pub touch_count: u32,
-    /// 触点表；只有前 `touch_count` 项有效。
+    /// Touch table; only the first `touch_count` entries are valid.
     pub touches: [TouchSnapshot; 10],
 }
 
 impl InputSnapshot {
-    /// 支持的键位数量。
+    /// Number of supported key indices.
     pub const KEY_COUNT: usize = 256;
     pub const KEY_WORDS: usize = Self::KEY_COUNT / 64;
-    /// 全零快照（`const` 上下文用：`HostApi::logging_only`）。
+    /// All-zero snapshot (for `const` contexts: `HostApi::logging_only`).
     pub const EMPTY: Self = Self {
         cursor: [0.0; 2],
         screen: [0.0; 2],
@@ -244,26 +254,26 @@ impl InputSnapshot {
         index < Self::KEY_COUNT && (self.keys[index / 64] & (1u64 << (index % 64))) != 0
     }
 
-    /// 本帧是否有任意键按下（intro 的「任意键跳过」用它）。
+    /// Whether any key is held this frame (used by the intro's "press any key to skip").
     pub fn any_key(&self) -> bool {
         self.keys.iter().any(|word| *word != 0)
     }
 
-    /// 触点数上限（固定数组长度，见 [`Self::touches`]）。
+    /// Touch cap (fixed array length, see [`Self::touches`]).
     pub const MAX_TOUCHES: usize = 10;
 
-    /// 本帧是否**刚按下**这个键（边沿，不受按住语义影响）。
+    /// Whether this key was **pressed** this frame (edge; independent of the held bitmap).
     pub fn key_pressed(&self, index: usize) -> bool {
         index < Self::KEY_COUNT && (self.key_edges[index / 64] & (1u64 << (index % 64))) != 0
     }
 
-    /// 本帧是否**刚释放**这个键。
+    /// Whether this key was **released** this frame.
     pub fn key_released(&self, index: usize) -> bool {
         index < Self::KEY_COUNT
             && (self.key_edges[Self::KEY_WORDS + index / 64] & (1u64 << (index % 64))) != 0
     }
 
-    /// 设置一个按键边沿位（宿主填表用）。
+    /// Sets a key-edge bit (used by the host to fill the table).
     pub fn set_key_edge(&mut self, index: usize, pressed: bool) {
         if index >= Self::KEY_COUNT {
             return;
@@ -277,13 +287,13 @@ impl InputSnapshot {
         *word |= mask;
     }
 
-    /// 有效触点。
+    /// The valid touches.
     pub fn touch_slice(&self) -> &[TouchSnapshot] {
         let count = (self.touch_count as usize).min(Self::MAX_TOUCHES);
         &self.touches[..count]
     }
 
-    /// 有没有触点按下（Android 上「按屏幕」的判断）。
+    /// Whether any touch is down (the "screen pressed" test on Android).
     pub fn any_touch(&self) -> bool {
         self.touch_slice()
             .iter()
@@ -297,18 +307,14 @@ impl Default for InputSnapshot {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Host callbacks
-// ---------------------------------------------------------------------------
-
-/// 松散资产是否存在：返回 1/0，负数为错误。
+/// Whether a loose asset exists: returns 1/0, negative on error.
 pub type AssetExists = unsafe extern "C" fn(
     user_data: *mut core::ffi::c_void,
     path: *const u8,
     path_len: usize,
 ) -> i32;
 
-/// 读取松散资产；返回的指针只在下次宿主调用前有效。
+/// Reads a loose asset; the returned pointer is valid only until the next host call.
 pub type ReadAssetFile = unsafe extern "C" fn(
     user_data: *mut core::ffi::c_void,
     path: *const u8,
@@ -317,17 +323,18 @@ pub type ReadAssetFile = unsafe extern "C" fn(
     out_len: *mut usize,
 ) -> i32;
 
-/// 保存引擎场景存档；返回 [`SUCCESS`] 或错误码。
+/// Saves the engine scene state; returns [`SUCCESS`] or an error code.
 pub type SaveSceneState = unsafe extern "C" fn(user_data: *mut core::ffi::c_void) -> i32;
 
-/// 读取场景存档：返回 1 = 已恢复，0 = 没有存档，负数为错误。
+/// Loads the scene state: returns 1 = restored, 0 = no state, negative on error.
 pub type LoadSceneState = unsafe extern "C" fn(user_data: *mut core::ffi::c_void) -> i32;
 
-/// 请求切换场景（#482）：`path` 是 UTF-8 的 `.scene.json` 路径，`additive = 0`
-/// 表示 `Single`（卸载旧场景）。
+/// Requests a scene switch (#482): `path` is a UTF-8 `.scene.json` path, and
+/// `additive = 0` means `Single` (unload the old scene).
 ///
-/// 返回 [`SUCCESS`] 只表示请求已记录；真正的换场发生在本 tick 结束后
-/// （`HostApi::scene_generation` 会在下一帧递增）。失败返回负数。
+/// [`SUCCESS`] only means the request was recorded; the actual switch happens
+/// after this tick (`HostApi::scene_generation` increments on the next frame).
+/// Failures return a negative value.
 pub type LoadScene = unsafe extern "C" fn(
     user_data: *mut core::ffi::c_void,
     path: *const u8,
@@ -335,13 +342,14 @@ pub type LoadScene = unsafe extern "C" fn(
     additive: u8,
 ) -> i32;
 
-/// 请求卸载当前场景（`Persistent` 子树保留）：同样是延迟执行。
+/// Requests unloading the current scene (`Persistent` subtrees are kept); also deferred.
 pub type UnloadScene = unsafe extern "C" fn(user_data: *mut core::ffi::c_void) -> i32;
 
-/// 一条射线命中的 POD 结果（#522）。
+/// POD result of a single ray hit (#522).
 ///
-/// 与引擎的 `physics::RayHit` 同构，但实体用跨边界句柄表示。查询方向由宿主
-/// 归一化；`distance` 从起点算起，`point` / `normal` 是世界空间。
+/// Isomorphic to the engine's `physics::RayHit`, but entities use the
+/// cross-boundary handle. The host normalizes the direction; `distance` is
+/// measured from the origin, and `point` / `normal` are in world space.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct RaycastHit {
@@ -349,17 +357,18 @@ pub struct RaycastHit {
     pub distance: f32,
     pub point: [f32; 3],
     pub normal: [f32; 3],
-    /// 命中的碰撞体是不是触发器（`1` / `0`）。
+    /// Whether the hit collider is a trigger (`1` / `0`).
     pub is_trigger: u8,
-    /// 保留字段，必须是 0。
+    /// Reserved; must be 0.
     pub _reserved: [u8; 3],
 }
 
-/// 射线查询（#522）：返回 `1` = 命中并写入 `out_hit`，`0` = 未命中，
-/// 负数为错误码（指针为空 / 宿主没有查询能力）。
+/// Physics ray query (#522): returns `1` = hit and `out_hit` written, `0` = miss,
+/// negative = error code (null pointer / host has no query capability).
 ///
-/// 数组按指针传（`*const [f32; 3]` 指向 3 个 `f32`），所以调用方必须保证指针
-/// 在调用期间有效；`out_hit` 同理。
+/// Arrays are passed by pointer (`*const [f32; 3]` points to three `f32`s), so
+/// the caller must keep the pointer valid for the duration of the call; the
+/// same applies to `out_hit`.
 pub type Raycast = unsafe extern "C" fn(
     user_data: *mut core::ffi::c_void,
     origin: *const [f32; 3],
@@ -426,9 +435,10 @@ pub type SetEntityName = unsafe extern "C" fn(
     name_len: usize,
 ) -> i32;
 
-/// 列出拥有某组件的实体。
+/// Lists the entities that have a given component.
 ///
-/// `out` 为空时只写 `out_count`（探长度），否则按 `capacity` 填充。
+/// With an empty `out` only `out_count` is written (probe the length), otherwise
+/// it fills up to `capacity` entries.
 pub type QueryEntities = unsafe extern "C" fn(
     user_data: *mut core::ffi::c_void,
     type_name: *const u8,
@@ -438,10 +448,10 @@ pub type QueryEntities = unsafe extern "C" fn(
     out_count: *mut usize,
 ) -> i32;
 
-/// 读取一个组件的 RTTIBin 编码。
+/// Reads a component's RTTIBin encoding.
 ///
-/// 返回的指针由宿主拥有，**只在下一次宿主调用之前有效**；调用方必须在此
-/// 之前拷走数据。
+/// The returned pointer is owned by the host and is **valid only until the next
+/// host call**; the caller must copy the data before then.
 pub type GetComponent = unsafe extern "C" fn(
     user_data: *mut core::ffi::c_void,
     entity: EntityHandle,
@@ -451,7 +461,7 @@ pub type GetComponent = unsafe extern "C" fn(
     out_len: *mut usize,
 ) -> i32;
 
-/// 写入（无则新增）一个组件。类型由 RTTIBin 载荷自带。
+/// Writes (or adds) a component. The type is carried by the RTTIBin payload.
 pub type SetComponent = unsafe extern "C" fn(
     user_data: *mut core::ffi::c_void,
     entity: EntityHandle,
@@ -466,39 +476,44 @@ pub type RemoveComponent = unsafe extern "C" fn(
     type_name_len: usize,
 ) -> i32;
 
-/// 销毁实体（组件一并回收）。槽位会被复用，但代数递增，旧句柄仍然失效。
+/// Destroys an entity (its components are recycled too). The slot may be
+/// reused, but the generation increments, so old handles stay invalid.
 pub type DespawnEntity =
     unsafe extern "C" fn(user_data: *mut core::ffi::c_void, entity: EntityHandle) -> i32;
 
-/// 句柄是否仍指向存活实体：`1` 存活、`0` 已失效、负数是参数错误。
+/// Whether the handle still points to a live entity: `1` alive, `0` dead,
+/// negative = bad arguments.
 ///
-/// 与其余命令不同，它把「存活与否」直接放在返回值里，避免再传一个 out 参数。
+/// Unlike the other commands it returns liveness directly instead of an extra
+/// out-parameter.
 pub type IsAlive =
     unsafe extern "C" fn(user_data: *mut core::ffi::c_void, entity: EntityHandle) -> i32;
 
-/// 一条 2D UI 四边形。
+/// A 2D UI quad.
 ///
-/// 字段与引擎侧 UI 四边形一致：宿主可以无转换地并入自己的绘制列表，项目模块
-/// 也不必链接渲染 crate。
+/// The fields match the engine-side UI quad so the host can merge it into its own
+/// draw list without conversion and the project module does not have to link the
+/// render crate.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UiQuad {
-    /// `[x, y, width, height]`，屏幕像素、左上原点。
+    /// `[x, y, width, height]` in screen pixels, top-left origin.
     pub rect: [f32; 4],
-    /// RGBA，线性空间。
+    /// RGBA, linear space.
     pub color: [f32; 4],
-    /// 圆角半径（px）。
+    /// Corner radius (px).
     pub border_radius: f32,
-    /// 绘制层级（z-index）。
+    /// Draw order (z-index).
     pub layer: i32,
 }
 
-/// 提交一条 UI 四边形；宿主在本帧 UI 渲染前并入绘制列表。
+/// Submits a UI quad; the host merges it into its draw list before this frame's UI render.
 pub type DrawQuad = unsafe extern "C" fn(user_data: *mut core::ffi::c_void, quad: UiQuad) -> i32;
 
-/// 宿主能力表。
+/// Host capability table.
 ///
-/// 由宿主每 tick 构造一次；其中的指针与 `user_data` **只在本 tick 内有效**。
+/// Built once per tick by the host; the function pointers and `user_data` are
+/// **valid only for this tick**.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct HostApi {
@@ -521,13 +536,13 @@ pub struct HostApi {
     pub draw_quad: Option<DrawQuad>,
     pub asset_exists: Option<AssetExists>,
     pub read_asset_file: Option<ReadAssetFile>,
-    /// 引擎自带存档（#484）。缺失时项目模块拿不到持久化能力。
+    /// Engine-owned save state (#484). When absent, the project module has no persistence.
     pub save_scene_state: Option<SaveSceneState>,
     pub load_scene_state: Option<LoadSceneState>,
-    /// 场景切换（#482）；能力位 [`HOST_CAP_SCENE`]。
+    /// Scene switching (#482); capability bit [`HOST_CAP_SCENE`].
     pub load_scene: Option<LoadScene>,
     pub unload_scene: Option<UnloadScene>,
-    /// 物理射线查询（#522）；能力位 [`HOST_CAP_PHYSICS`]。
+    /// Physics ray query (#522); capability bit [`HOST_CAP_PHYSICS`].
     pub raycast: Option<Raycast>,
     /// 玩家存档（#984）；能力位 [`HOST_CAP_SAVE`]。
     pub save_value: Option<SaveValue>,
@@ -539,7 +554,7 @@ pub struct HostApi {
 }
 
 impl HostApi {
-    /// 只有日志能力的最小表（用于 `create` 阶段）。
+    /// Minimal table with only the logging capability (used during `create`).
     pub const fn logging_only() -> Self {
         Self {
             abi_version: ABI_VERSION,
@@ -573,10 +588,6 @@ impl HostApi {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Project lifecycle
-// ---------------------------------------------------------------------------
 
 pub type CreateProject =
     unsafe extern "C" fn(host: *const HostApi, out_state: *mut *mut core::ffi::c_void) -> i32;
@@ -665,7 +676,7 @@ mod input_snapshot_tests {
         assert!(!snapshot.key_released(6));
         assert!(!snapshot.key_pressed(7));
 
-        // 越界不能越写。
+        // Out-of-range indices must not write past the end.
         snapshot.set_key(InputSnapshot::KEY_COUNT, true);
         snapshot.set_key_edge(InputSnapshot::KEY_COUNT, true);
         assert!(!snapshot.key_pressed(InputSnapshot::KEY_COUNT));
@@ -687,15 +698,16 @@ mod input_snapshot_tests {
         assert_eq!(snapshot.touch_slice().len(), 1);
         assert!(snapshot.any_touch());
 
-        // 超过固定数组长度时截断，不 panic。
+        // Truncates beyond the fixed array length instead of panicking.
         snapshot.touch_count = u32::MAX;
         assert_eq!(snapshot.touch_slice().len(), InputSnapshot::MAX_TOUCHES);
     }
 
     #[test]
     fn the_snapshot_stays_pod_sized() {
-        // `InputSnapshot` 要能整块跨 ABI：字段只能是 POD，且不能悄悄膨胀到
-        // 让 `#[repr(C)]` 布局随编译器变化。
+        // `InputSnapshot` must be able to cross the ABI as a block: its fields
+        // can only be POD, and it must not silently grow until the `#[repr(C)]`
+        // layout depends on the compiler.
         let size = core::mem::size_of::<InputSnapshot>();
         assert!(size <= 512, "InputSnapshot grew to {size} bytes");
         assert!(size >= 4 * 8 + 10 * core::mem::size_of::<TouchSnapshot>());

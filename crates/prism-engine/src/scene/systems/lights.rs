@@ -262,7 +262,7 @@ pub fn primary_directional_light(world: &World) -> Option<LightSample> {
         .find(|sample| sample.kind == LightKind::Directional)
 }
 
-/// Return the 第一个 [`DirectionalLight`] in the 世界 if any.
+/// Return the first [`DirectionalLight`] in the world, if any.
 ///
 /// 旧 API，保留给仍按旧组件取光源的调用方；新代码用
 /// [`primary_directional_light`]（两者都认）。

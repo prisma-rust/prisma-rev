@@ -37,7 +37,7 @@ mod hot_reload;
 pub use hot_reload::{HotReloadError, HotReloadEvent, HotReloadWatcher};
 
 // ---------------------------------------------------------------------------
-// Typed 资源 wrappers (RTEX/RMES/RMAT/SPIR-V/RSCN decoders)
+// Typed asset wrappers (RTEX/RMES/RMAT/SPIR-V/RSCN decoders)
 // ---------------------------------------------------------------------------
 
 pub mod typed;
@@ -93,10 +93,10 @@ pub enum RuntimeError {
 }
 
 // ---------------------------------------------------------------------------
-// 槽 内部 存储
+// Slot (internal storage)
 // ---------------------------------------------------------------------------
 
-/// One 槽 in the 运行时 槽 数组
+/// One slot in the runtime slot array.
 #[derive(Clone)]
 struct Slot {
     generation: u32,
@@ -104,13 +104,13 @@ struct Slot {
     asset_type: AssetType,
     /// The raw cooked data, as stored in the .pak (uncompressed).
     data: Option<Vec<u8>>,
-    /// Handle of the 槽 for type-safe 访问
+    /// Handle of the slot for type-safe access.
     #[allow(dead_code)]
     handle: AnyHandle,
     /// 最后一个 访问 时间戳 (for LRU eviction). `Cell` lets read-only
     /// accessors (`get_raw`, `read_stream`) refresh recency without `&mut`.
     last_access: Cell<Instant>,
-    /// 大小 of the 资源 data in 字节 (for 内存 tracking)
+    /// Size of the asset data in bytes (for memory tracking)
     size_bytes: u64,
     /// Load sequence stamp (for FIFO eviction), assigned when data is cached.
     load_epoch: u64,
@@ -135,33 +135,33 @@ impl Slot {
 }
 
 // ---------------------------------------------------------------------------
-// Eviction 策略
+// Eviction Policy
 // ---------------------------------------------------------------------------
 
-/// The eviction 策略 when 内存 budget is exceeded.
+/// The eviction policy when memory budget is exceeded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EvictionPolicy {
-    /// No automatic eviction 调用者 must manage manually).
+    /// No automatic eviction (caller must manage manually).
     None,
-    /// Evict least-recently-accessed assets 第一个
+    /// Evict least-recently-accessed assets first.
     #[default]
     Lru,
-    /// Evict oldest-loaded assets 第一个
+    /// Evict oldest-loaded assets first.
     Fifo,
 }
 
 // ---------------------------------------------------------------------------
-// 内存 Tracker
+// Memory Tracker
 // ---------------------------------------------------------------------------
 
-/// Tracks 内存 用法 and enforces budget via eviction.
+/// Tracks memory usage and enforces budget via eviction.
 #[derive(Debug, Clone)]
 struct MemoryTracker {
-    /// 最大 内存 budget in 字节 (0 = unlimited).
+    /// Maximum memory budget in bytes (0 = unlimited).
     budget: u64,
-    /// 当前 内存 用法 in 字节
+    /// Current memory usage in bytes.
     current: u64,
-    /// Eviction 策略
+    /// Eviction policy.
     policy: EvictionPolicy,
 }
 
@@ -204,7 +204,7 @@ impl MemoryTracker {
 }
 
 // ---------------------------------------------------------------------------
-// 资源 管理器
+// Resource Manager
 // ---------------------------------------------------------------------------
 
 /// 已注册的 `.pak`：连来源路径一起保存。
@@ -219,44 +219,44 @@ struct LoadedPackage {
     reader: PackageReader,
 }
 
-/// The central 运行时 资源 管理器
+/// The central runtime resource manager.
 ///
-/// Manages a 槽 数组 of loaded assets, indexed by [`Handle<T>`].
-/// Packages are loaded and their assets registered. The 管理器 owns the
-/// loaded data and provides generation-counted handles for safe 访问
+/// Manages a slot array of loaded assets, indexed by [`Handle<T>`].
+/// Packages are loaded and their assets registered. The manager owns the
+/// loaded data and provides generation-counted handles for safe access.
 ///
 /// ## Phase 3 features
 ///
-/// - **Memory budget**: 调用 [`set_memory_budget()`](ResourceManager::set_memory_budget)
+/// - **Memory budget**: call [`set_memory_budget()`](ResourceManager::set_memory_budget)
 ///   to cap 总计 loaded 字节 LRU or FIFO eviction.
 /// - **Hot reload**: use [`HotReloadWatcher`] to watch `.pak` files, then hand each
 ///   event to [`ResourceManager::on_pak_changed`].
-/// - **Streaming**: 调用 [`read_stream()`](ResourceManager::read_stream) to
+/// - **Streaming**: call [`read_stream()`](ResourceManager::read_stream) to
 ///   iterate over an asset's data in fixed-size chunks (zero-copy within a
 ///   loaded 包).
 ///
 pub struct ResourceManager {
-    /// 槽 数组 indexed by handle 索引
+    /// Slot array indexed by handle index.
     slots: Vec<Slot>,
-    /// 映射表 from AssetId -> 槽 索引
+    /// Map from AssetId -> slot index.
     id_map: HashMap<AssetId, u32>,
-    /// 映射表 from source-relative path -> AssetId, populated by
-    /// [`Self::load_path_manifest`]. Lets the engine 解析 scene
-    /// `mesh_path`/`material_path` strings to 运行时 `AssetId`s. 空 when
+    /// Map from source-relative path -> AssetId, populated by
+    /// [`Self::load_path_manifest`]. Lets the engine resolve scene
+    /// `mesh_path`/`material_path` strings to runtime `AssetId`s. Empty when
     /// no manifest has been loaded (path-based lookup is unavailable).
     path_map: HashMap<String, AssetId>,
-    /// Loaded 包 readers.
+    /// Loaded package readers.
     packages: Vec<LoadedPackage>,
-    /// 下一个 free 槽 索引
+    /// Next free slot index.
     next_slot: u32,
-    /// 内存 tracking.
+    /// Memory tracking.
     memory: MemoryTracker,
-    /// Monotonic 加载 计数器 (for FIFO eviction).
+    /// Monotonic load counter (for FIFO eviction).
     load_epoch: u64,
 }
 
 impl ResourceManager {
-    /// 创建 a new 空 资源 管理器
+    /// Create a new empty resource manager.
     pub fn new() -> Self {
         Self {
             slots: Vec::new(),
@@ -270,45 +270,45 @@ impl ResourceManager {
     }
 
     // ------------------------------------------------------------------
-    // 内存 budget 控制
+    // Memory budget control
     // ------------------------------------------------------------------
 
-    /// 集合 the 内存 budget in 字节 (0 = unlimited).
+    /// Set the memory budget in bytes (0 = unlimited).
     ///
-    /// When the budget would be exceeded during 加载 assets will be
-    /// evicted according to the eviction 策略
+    /// When the budget would be exceeded during `load`, assets will be
+    /// evicted according to the eviction policy.
     pub fn set_memory_budget(&mut self, bytes: u64) {
         self.memory.set_budget(bytes);
     }
 
-    /// 当前 内存 budget (0 = unlimited).
+    /// Current memory budget (0 = unlimited).
     pub fn memory_budget(&self) -> u64 {
         self.memory.budget
     }
 
-    /// 当前 内存 用法 (sum of loaded 资源 data sizes).
+    /// Current memory usage (sum of loaded asset data sizes).
     pub fn memory_usage(&self) -> u64 {
         self.memory.current
     }
 
-    /// 比率 of used to budgeted 内存 (0.0 – 1.0). Returns 0.0 if
+    /// Ratio of used to budgeted memory (0.0 – 1.0). Returns 0.0 if
     /// the budget is unlimited.
     pub fn memory_usage_ratio(&self) -> f32 {
         self.memory.usage_ratio()
     }
 
-    /// 集合 the eviction 策略
+    /// Set the eviction policy.
     pub fn set_eviction_policy(&mut self, policy: EvictionPolicy) {
         self.memory.set_policy(policy);
     }
 
-    /// 当前 eviction 策略
+    /// Current eviction policy.
     pub fn eviction_policy(&self) -> EvictionPolicy {
         self.memory.policy
     }
 
     /// Try to free at least `target_bytes` by evicting assets.
-    /// Returns 字节 actually freed.
+    /// Returns bytes actually freed.
     pub fn evict(&mut self, target_bytes: u64) -> u64 {
         if target_bytes == 0 || self.memory.policy == EvictionPolicy::None {
             return 0;
@@ -337,7 +337,7 @@ impl ResourceManager {
 
         match self.memory.policy {
             EvictionPolicy::Lru => {
-                // 排序 by 访问 时间 (oldest 第一个
+                // Sort by access time (oldest first)
                 candidates.sort_by_key(|&(_, time, _, _)| time);
             }
             EvictionPolicy::Fifo => {
@@ -366,10 +366,10 @@ impl ResourceManager {
     }
 
     // ------------------------------------------------------------------
-    // 包 management
+    // Package management
     // ------------------------------------------------------------------
 
-    /// 加载 and register all assets from a `.pak` file.
+    /// Load and register all assets from a `.pak` file.
     pub fn load_package(&mut self, path: impl AsRef<Path>) -> Result<(), RuntimeError> {
         let path = path.as_ref().to_path_buf();
         let reader = PackageReader::open(&path)?;
@@ -387,7 +387,7 @@ impl ResourceManager {
         Ok(())
     }
 
-    /// 加载 and register all assets from a `.pak` file 异步
+    /// Load and register all assets from a `.pak` file (async).
     #[cfg(feature = "async-io")]
     pub async fn load_package_async(
         &mut self,
@@ -403,16 +403,16 @@ impl ResourceManager {
     }
 
     /// 加载 a path manifest (`.pak.meta.json` written by `prism-cook build`
-    /// so the engine can 解析 source-relative 资源 paths to 运行时
+    /// so the engine can resolve source-relative asset paths to runtime
     /// `AssetId`s.
     ///
-    /// The manifest is the **only** 运行时 源 of path->id 映射 the
-    /// `.pak` 二进制 itself stores only `AssetId`s (paths are an editor-side
-    /// concept). Without this 调用 [`Self::id_by_path`] always returns
+    /// The manifest is the **only** runtime source of path->id mapping: the
+    /// `.pak` binary itself stores only `AssetId`s (paths are an editor-side
+    /// concept). Without this call, [`Self::id_by_path`] always returns
     /// `None`.
     ///
-    /// The manifest 格式 (produced by `cmd_build`) is a JSON 对象 with an
-    /// `assets` 数组 each entry having `id` (hex 字符串 and `path` 字符串
+    /// The manifest format (produced by `cmd_build`) is a JSON object with an
+    /// `assets` array, each entry having `id` (hex string) and `path` (string).
     pub fn load_path_manifest(&mut self, path: impl AsRef<Path>) -> Result<(), RuntimeError> {
         let text = std::fs::read_to_string(path.as_ref()).map_err(|e| {
             RuntimeError::DeserializeFailed {
@@ -423,7 +423,7 @@ impl ResourceManager {
         self.load_path_manifest_from_str(&text)
     }
 
-    /// Same as [`Self::load_path_manifest`] but parses an in-memory JSON 字符串
+    /// Same as [`Self::load_path_manifest`] but parses an in-memory JSON string.
     pub fn load_path_manifest_from_str(&mut self, text: &str) -> Result<(), RuntimeError> {
         let json: serde_json::Value =
             serde_json::from_str(text).map_err(|e| RuntimeError::DeserializeFailed {
@@ -446,7 +446,7 @@ impl ResourceManager {
             let (Some(id_str), Some(path)) = (id_str, path) else {
                 continue;
             };
-            // `id` is a hex 字符串 like "0x0000000100000001".
+            // `id` is a hex string like "0x0000000100000001".
             let raw = if let Some(stripped) = id_str.strip_prefix("0x") {
                 u64::from_str_radix(stripped, 16)
             } else {
@@ -465,7 +465,7 @@ impl ResourceManager {
         Ok(())
     }
 
-    /// 解析 a source-relative 资源 path to its 运行时 `AssetId`.
+    /// Resolve a source-relative asset path to its runtime `AssetId`.
     ///
     /// Returns `None` when no manifest has been loaded or the path isn't
     /// registered. The lookup is case-sensitive and expects forward-slash
@@ -474,7 +474,7 @@ impl ResourceManager {
         self.path_map.get(path).copied()
     }
 
-    /// Register an already-open 包 reader.
+    /// Register an already-open package reader.
     fn register_package(&mut self, package: LoadedPackage) {
         let asset_count = package.reader.asset_count();
         for record in package.reader.records() {
@@ -488,7 +488,7 @@ impl ResourceManager {
             self.next_slot += 1;
 
             if index as usize >= self.slots.len() {
-                // Extend the vec to include this 索引
+                // Extend the vec to include this index.
                 self.slots.resize(index as usize + 1, Slot::new(0));
             }
             self.slots[index as usize] = Slot {
@@ -514,10 +514,10 @@ impl ResourceManager {
     }
 
     // ------------------------------------------------------------------
-    // 资源 lookup
+    // Asset lookup
     // ------------------------------------------------------------------
 
-    /// Check if an 资源 is registered (without loading its data).
+    /// Check if an asset is registered (without loading its data).
     pub fn is_registered(&self, id: AssetId) -> bool {
         self.id_map.contains_key(&id)
     }
@@ -532,7 +532,7 @@ impl ResourceManager {
         self.packages.len()
     }
 
-    /// Get the [`AssetType`] of a registered 资源
+    /// Get the [`AssetType`] of a registered asset.
     pub fn asset_type(&self, id: AssetId) -> Option<AssetType> {
         self.id_map
             .get(&id)
@@ -547,43 +547,43 @@ impl ResourceManager {
     }
 
     // ------------------------------------------------------------------
-    // Dependency 分辨率 (topological)
+    // Dependency resolution (topological)
     // ------------------------------------------------------------------
 
-    /// 加载 an 资源 and all its dependencies recursively.
+    /// Load an asset and all its dependencies recursively.
     ///
-    /// Assets are loaded in topological order (dependencies 第一个
-    /// Returns the handle to the requested root 资源
+    /// Assets are loaded in topological order (dependencies first).
+    /// Returns the handle to the requested root asset.
     pub fn load_with_deps<T: Asset + 'static>(
         &mut self,
         id: AssetId,
     ) -> Result<Handle<T>, RuntimeError> {
         self.load_deps_recursive(id)?;
 
-        // Now 加载 the requested 资源 itself.
+        // Now load the requested asset itself.
         self.load(id)
     }
 
-    /// 加载 an 资源 and all its dependencies recursively, then
-    /// return raw 字节 Useful for assets that aren't `Asset`-typed.
+    /// Load an asset and all its dependencies recursively, then
+    /// return raw bytes. Useful for assets that aren't `Asset`-typed.
     pub fn load_with_deps_raw(&mut self, id: AssetId) -> Result<Vec<u8>, RuntimeError> {
         self.load_deps_recursive(id)?;
         self.load_raw_bytes(id)
     }
 
-    /// Recursively 解析 and 加载 all dependencies of an 资源
+    /// Recursively resolve and load all dependencies of an asset.
     ///
-    /// Uses a DFS that tracks the 当前 path for cycle detection.
-    /// Returns 成功 when all deps are loaded.
+    /// Uses a DFS that tracks the current path for cycle detection.
+    /// Returns success when all deps are loaded.
     fn load_deps_recursive(&mut self, id: AssetId) -> Result<(), RuntimeError> {
         let mut visited: HashMap<AssetId, bool> = HashMap::new(); // false = temp (in-progress)
         let mut load_order: Vec<AssetId> = Vec::new();
 
         self.dfs_deps(id, &mut visited, &mut load_order)?;
 
-        // 加载 in order (dependencies 第一个
+        // Load in order (dependencies first).
         for &dep_id in &load_order {
-            // Only 加载 if not already loaded.
+            // Only load if not already loaded.
             if self.get_raw_bytes(dep_id).is_err() {
                 self.load_raw_bytes(dep_id)?;
             }
@@ -600,7 +600,7 @@ impl ResourceManager {
         match visited.get(&id) {
             Some(&true) => return Ok(()), // already processed
             Some(&false) => {
-                // Cycle detected — just warn and skip this 分支
+                // Cycle detected — just warn and skip this branch
                 tracing::warn!("Dependency cycle detected involving {id}");
                 return Ok(());
             }
@@ -609,7 +609,7 @@ impl ResourceManager {
 
         visited.insert(id, false); // mark as in-progress
 
-        // 查找 the 包 that 包含 this 资源 and get its deps.
+        // Find the package that contains this asset and get its deps.
         for package in &self.packages {
             let reader = &package.reader;
             if let Some(record) = reader.find_record(id) {
@@ -627,20 +627,20 @@ impl ResourceManager {
         Ok(())
     }
 
-    /// 查找 a 槽 索引 for an 资源 ID.
+    /// Find a slot index for an asset ID.
     fn slot_index(&self, id: AssetId) -> Option<u32> {
         self.id_map.get(&id).copied()
     }
 
     // ------------------------------------------------------------------
-    // 同步 loading
+    // Synchronous loading
     // ------------------------------------------------------------------
 
-    /// 加载 raw 字节 for an 资源 without going through 资源 trait
+    /// Load raw bytes for an asset without going through `Asset` trait.
     fn load_raw_bytes(&mut self, id: AssetId) -> Result<Vec<u8>, RuntimeError> {
         let slot_index = self.slot_index(id).ok_or(RuntimeError::NotFound(id))?;
 
-        // If already loaded, return a 复制
+        // If already loaded, return a copy.
         {
             let slot = &self.slots[slot_index as usize];
             if let Some(ref data) = slot.data {
@@ -649,10 +649,10 @@ impl ResourceManager {
             }
         }
 
-        // 查找 and 读取 from a 包
+        // Find and read from a package.
         let data = self.read_from_packages(id)?;
 
-        // Check 内存 budget before storing.
+        // Check memory budget before storing.
         let size = data.len() as u64;
         if !self.memory.can_fit(size) {
             if self.memory.policy != EvictionPolicy::None {
@@ -675,7 +675,7 @@ impl ResourceManager {
             }
         }
 
-        // 存储
+        // Store.
         let epoch = self.load_epoch;
         {
             let slot = &mut self.slots[slot_index as usize];
@@ -691,7 +691,7 @@ impl ResourceManager {
         Ok(data)
     }
 
-    /// 加载 an 资源 by ID and return raw 字节
+    /// Load an asset by ID and return raw bytes.
     fn get_raw_bytes(&self, id: AssetId) -> Result<Vec<u8>, RuntimeError> {
         let slot_index = self.slot_index(id).ok_or(RuntimeError::NotFound(id))?;
         let slot = &self.slots[slot_index as usize];
@@ -700,14 +700,14 @@ impl ResourceManager {
         Ok(data.clone())
     }
 
-    /// 加载 an 资源 by ID and return a typed handle.
+    /// Load an asset by ID and return a typed handle.
     ///
-    /// 第一个 访问 reads the data from the .pak and caches it. Subsequent
+    /// First access reads the data from the .pak and caches it. Subsequent
     /// calls return immediately.
     pub fn load<T: Asset + 'static>(&mut self, id: AssetId) -> Result<Handle<T>, RuntimeError> {
         let slot_index = self.slot_index(id).ok_or(RuntimeError::NotFound(id))?;
 
-        // If data is already loaded, 更新 访问 时间 and return handle.
+        // If data is already loaded, update access time and return handle.
         // Validate `T` even on the cached path: callers such as
         // `load_with_deps` may have populated the slot as raw bytes first.
         {
@@ -722,16 +722,16 @@ impl ResourceManager {
             }
         }
 
-        // 读取 raw data.
+        // Read raw data.
         let data = self.read_from_packages(id)?;
 
-        // 反序列化 through the 资源 trait
+        // Deserialize through the Asset trait.
         let _asset = T::from_bytes(&data).map_err(|_e| RuntimeError::TypeMismatch {
             expected: std::any::type_name::<T>(),
             got: self.slots[slot_index as usize].asset_type,
         })?;
 
-        // Check 内存 budget.
+        // Check memory budget.
         let size = data.len() as u64;
         if !self.memory.can_fit(size) {
             if self.memory.policy != EvictionPolicy::None {
@@ -752,7 +752,7 @@ impl ResourceManager {
             }
         }
 
-        // 存储 data and 更新 metadata.
+        // Store data and update metadata.
         let epoch = self.load_epoch;
         {
             let slot = &mut self.slots[slot_index as usize];
@@ -769,7 +769,7 @@ impl ResourceManager {
         Ok(Handle::new(slot_index, gen))
     }
 
-    /// 读取 raw 字节 from loaded packages for a given 资源 ID.
+    /// Read raw bytes from loaded packages for a given asset ID.
     fn read_from_packages(&self, id: AssetId) -> Result<Vec<u8>, RuntimeError> {
         for package in &self.packages {
             if let Some(data) = package.reader.read_asset_data(id)? {
@@ -783,17 +783,17 @@ impl ResourceManager {
     // Streaming reads
     // ------------------------------------------------------------------
 
-    /// 读取 an asset's data in chunks (streaming).
+    /// Read an asset's data in chunks (streaming).
     ///
-    /// Returns an 迭代器 yielding `Vec<u8>` chunks of at most
-    /// `chunk_size` 字节 This avoids loading the entire 资源 into
-    /// 内存 at once. The 资源 is not cached in the 槽 — it is
-    /// streamed directly from the 包
+    /// Returns an iterator yielding `Vec<u8>` chunks of at most
+    /// `chunk_size` bytes. This avoids loading the entire asset into
+    /// memory at once. The asset is not cached in the slot — it is
+    /// streamed directly from the package.
     ///
-    /// Requires 特性 `streaming` 启用 by 默认
+    /// Requires feature `streaming` (enabled by default).
     ///
-    /// Returns `None` if the 资源 is not registered or its data cannot
-    /// be 读取
+    /// Returns `None` if the asset is not registered or its data cannot
+    /// be read.
     #[cfg(feature = "streaming")]
     pub fn read_stream(
         &self,
@@ -864,7 +864,7 @@ impl ResourceManager {
     // Get typed references
     // ------------------------------------------------------------------
 
-    /// Get a typed 引用 to already-loaded 资源 data.
+    /// Get a typed reference to already-loaded asset data.
     pub fn get<T: Asset + 'static>(&mut self, handle: Handle<T>) -> Result<T, RuntimeError> {
         let index = handle.index() as usize;
         if index >= self.slots.len() {
@@ -891,7 +891,7 @@ impl ResourceManager {
         })
     }
 
-    /// Get raw 字节 for an already-loaded 资源
+    /// Get raw bytes for an already-loaded asset.
     pub fn get_raw(&self, id: AssetId) -> Result<Vec<u8>, RuntimeError> {
         self.get_raw_bytes(id)
     }
@@ -900,7 +900,7 @@ impl ResourceManager {
     // Unloading
     // ------------------------------------------------------------------
 
-    /// Unload a specific 资源 by handle, freeing its data.
+    /// Unload a specific asset by handle, freeing its data.
     pub fn unload<T: ?Sized>(&mut self, handle: Handle<T>) {
         let index = handle.index() as usize;
         if index < self.slots.len() {
@@ -1167,10 +1167,10 @@ impl ResourceManager {
     }
 
     // ------------------------------------------------------------------
-    // 迭代
+    // Iteration
     // ------------------------------------------------------------------
 
-    /// Iterate all registered 资源 IDs and their types.
+    /// Iterate all registered asset IDs and their types.
     pub fn assets(&self) -> impl Iterator<Item = (AssetId, AssetType)> + '_ {
         self.id_map.iter().map(|(id, &idx)| {
             let slot = &self.slots[idx as usize];
@@ -1178,7 +1178,7 @@ impl ResourceManager {
         })
     }
 
-    /// Iterate all currently loaded (in-memory) 资源 IDs.
+    /// Iterate all currently loaded (in-memory) asset IDs.
     pub fn loaded_assets(&self) -> impl Iterator<Item = AssetId> + '_ {
         self.slots.iter().filter_map(|slot| {
             if slot.data.is_some() && slot.asset_id != AssetId::from_raw(0) {
@@ -1210,7 +1210,7 @@ impl std::fmt::Debug for ResourceManager {
 }
 
 // ---------------------------------------------------------------------------
-// Streaming 迭代器
+// Streaming iterator
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "streaming")]
@@ -1310,23 +1310,23 @@ impl<'a> Iterator for StreamIter<'a> {
 }
 
 // ---------------------------------------------------------------------------
-// 资源 trait (for deserialization)
+// Asset trait (for deserialization)
 // ---------------------------------------------------------------------------
 
-/// trait that 资源 types must implement to be loadable through the
+/// Trait that asset types must implement to be loadable through the
 /// [`ResourceManager`].
 pub trait Asset: Sized + Send + 'static {
-    /// The expected [`AssetType`] for this 类型
+    /// The expected [`AssetType`] for this type.
     fn asset_type() -> AssetType;
 
-    /// 反序列化 from raw 字节
+    /// Deserialize from raw bytes.
     fn from_bytes(data: &[u8]) -> Result<Self, RuntimeError>;
 
-    /// 序列化 后 to 字节
+    /// Serialize back to bytes.
     fn into_bytes(self) -> Vec<u8>;
 }
 
-/// Simple blob 资源 — wraps raw 字节
+/// Simple blob asset — wraps raw bytes.
 impl Asset for Vec<u8> {
     fn asset_type() -> AssetType {
         AssetType::Binary

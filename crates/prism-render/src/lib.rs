@@ -84,7 +84,7 @@ pub mod rt_scheduler;
 pub mod scene_scope;
 pub mod screenshot;
 pub mod shader;
-/// Slang-reflection-generated 绑定 constants (set/binding indices, entry
+/// Slang-reflection-generated binding constants (set/binding indices, entry
 /// point names, push-constant sizes). Regenerate with `xtask/shader-bindgen`
 /// after recompiling shaders on a host with slangc - see shaders/compile.sh.
 pub mod shader_bindings;
@@ -110,7 +110,7 @@ pub mod tangents;
 pub mod ui_overlay;
 pub(crate) mod vulkan_compat;
 
-// SceneDrawItem is the engine<->renderer 交换 类型 for resolved draws.
+// SceneDrawItem is the engine<->renderer exchange type for resolved draws.
 pub use graph_renderer::SceneDrawItem;
 
 pub use buffer::create_buffer;

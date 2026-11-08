@@ -13,17 +13,17 @@ pub enum AssetType {
     Binary = 0,
     /// GPU 纹理/图像
     Texture = 1,
-    /// Geometric 网格 顶点 + 索引 data).
+    /// Geometric mesh (vertex + index data).
     Mesh = 2,
-    /// GPU 材质 参数 块 + 着色器 bindings.
+    /// GPU material parameter block + shader bindings.
     Material = 3,
-    /// 着色器 源 or compiled bytecode.
+    /// Shader source or compiled bytecode.
     Shader = 4,
-    /// Prefab — a reusable 实体 模板
+    /// Prefab — a reusable entity template.
     Prefab = 5,
-    /// 完整 scene 图
+    /// Complete scene graph.
     Scene = 6,
-    /// 音频 片段 (PCM, Ogg, etc.).
+    /// Audio clip (PCM, Ogg, etc.).
     Audio = 7,
     /// 字体文件（ttf / otf / ttc），原样进包，运行时交给 UI 文本光栅器（#583）。
     Font = 8,
@@ -37,17 +37,17 @@ pub enum AssetType {
     StateMachine = 12,
     /// 动画图（`.rag`，#560 P1）。
     AnimGraph = 13,
-    /// 回退 for unrecognised formats.
+    /// Fallback for unrecognised formats.
     Unknown = 0xFF,
 }
 
 impl AssetType {
-    /// Return `true` if this 类型 is known (not `Unknown`).
+    /// Return `true` if this type is known (not `Unknown`).
     pub fn is_known(self) -> bool {
         self != AssetType::Unknown
     }
 
-    /// Human-readable 标签
+    /// Human-readable label.
     pub fn label(self) -> &'static str {
         match self {
             AssetType::Binary => "binary",
@@ -68,7 +68,7 @@ impl AssetType {
         }
     }
 
-    /// 构建 an `AssetType` from its raw `u32` discriminant.
+    /// Build an `AssetType` from its raw `u32` discriminant.
     pub fn from_u32(v: u32) -> Self {
         match v {
             0 => AssetType::Binary,
@@ -94,10 +94,10 @@ impl AssetType {
         self as u32
     }
 
-    /// Infer 资源 类型 from a file 扩展 (lowercase, without leading 点积
+    /// Infer asset type from a file extension (lowercase, without leading dot).
     pub fn from_extension(ext: &str) -> Self {
         match ext.to_lowercase().as_str() {
-            // 二进制
+            // Binary
             "bin" | "bytes" => AssetType::Binary,
             // 已 cook 的运行时格式
             "rscn" => AssetType::Scene,
@@ -113,17 +113,17 @@ impl AssetType {
             "png" | "jpg" | "jpeg" | "tga" | "bmp" | "hdr" | "exr" | "ktx" | "ktx2" | "dds" => {
                 AssetType::Texture
             }
-            // 网格 / geometry
+            // Mesh / geometry
             "gltf" | "glb" | "fbx" | "obj" | "stl" | "ply" => AssetType::Mesh,
-            // 材质
+            // Material
             "mat" | "material" => AssetType::Material,
-            // 着色器
+            // Shader
             "slang" | "hlsl" | "glsl" | "spv" | "wgsl" => AssetType::Shader,
             // Prefab
             "prefab" => AssetType::Prefab,
             // Scene
             "scene" => AssetType::Scene,
-            // 音频
+            // Audio
             "wav" | "mp3" | "ogg" | "flac" | "aac" | "m4a" => AssetType::Audio,
             // 字体（UI 文本用；原样进包，不需要 cook）
             "ttf" | "otf" | "ttc" => AssetType::Font,
@@ -133,14 +133,14 @@ impl AssetType {
 }
 
 // ---------------------------------------------------------------------------
-// AssetRef – editor-side 引用 to another 资源
+// AssetRef – editor-side reference to another asset
 // ---------------------------------------------------------------------------
 
-/// A lightweight editor-side 引用 to another 资源
+/// A lightweight editor-side reference to another asset.
 ///
-/// Unlike `Handle<T>`, this is serializable and 包含 only the 稳定
-/// identity, never a 运行时 槽 索引 Use this in JSON metadata, importer
-/// dependency lists, and prefab 资源 references.
+/// Unlike `Handle<T>`, this is serializable and contains only the stable
+/// identity, never a runtime slot index. Use this in JSON metadata, importer
+/// dependency lists, and prefab asset references.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssetRef {
     pub id: crate::core::AssetId,
@@ -148,7 +148,7 @@ pub struct AssetRef {
 }
 
 impl AssetRef {
-    /// 创建 a new 引用
+    /// Create a new reference.
     pub fn new(id: crate::core::AssetId, asset_type: AssetType) -> Self {
         Self { id, asset_type }
     }

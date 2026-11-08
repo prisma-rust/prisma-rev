@@ -1,4 +1,4 @@
-//! Subsystem trait ScheduleLabel, 系统 AppBuilder
+//! Subsystem trait, ScheduleLabel, System, AppBuilder
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
@@ -19,7 +19,7 @@ pub enum ScheduleLabel {
 }
 
 // ---------------------------------------------------------------------------
-// 系统
+// System
 // ---------------------------------------------------------------------------
 
 pub trait System: Send {

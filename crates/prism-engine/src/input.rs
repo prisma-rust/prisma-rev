@@ -82,14 +82,14 @@ impl KeyCode {
     }
 }
 
-/// 调 or 按钮 状态
+/// Key or button state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ElementState {
     Pressed,
     Released,
 }
 
-/// 鼠标 按钮 抽象
+/// Mouse button abstraction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MouseButton {
     Left,
@@ -100,7 +100,7 @@ pub enum MouseButton {
     Other(u16),
 }
 
-/// 触摸 phase (platform-independent).
+/// Touch phase (platform-independent).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TouchPhase {
     Started,
@@ -109,7 +109,7 @@ pub enum TouchPhase {
     Cancelled,
 }
 
-/// A single 触摸 事件
+/// A single touch event.
 #[derive(Clone, Copy, Debug)]
 pub struct TouchEvent {
     pub id: u64,
@@ -117,21 +117,21 @@ pub struct TouchEvent {
     pub position: [f64; 2],
 }
 
-/// Per-frame 输入 状态
+/// Per-frame input state.
 ///
-/// Owns the raw 输入 状态 (held keys, 鼠标 position, transient just-pressed
-/// events) and the pointer-lock 状态 机 键盘 shortcuts that 触发器
-/// app- or editor-level actions are handled by the 调用者 — this 结构体 only
+/// Owns the raw input state (held keys, mouse position, transient just-pressed
+/// events) and the pointer-lock state machine.  Keyboard shortcuts that trigger
+/// app- or editor-level actions are handled by the caller — this struct only
 /// tracks which keys are pressed.
 ///
-/// ## 用法
-/// 1. 调用 individual handlers (`handle_keyboard`, `handle_mouse_button`,
+/// ## Usage
+/// 1. Call individual handlers (`handle_keyboard`, `handle_mouse_button`,
 ///    `handle_mouse_move`, `handle_scroll`, `handle_touch`) from the app's
-/// 事件 处理器 to route window-system events into the 状态 机
-/// 2. 调用 [`begin_frame`](Self::begin_frame) at the 结束 of each 帧 to
-/// 清空 transient 状态
-/// 3. 查询 helpers (`key_held`, `mouse_delta`, etc.) during the frame's
-/// 更新 逻辑
+///    event handler to route window-system events into the state machine.
+/// 2. Call [`begin_frame`](Self::begin_frame) at the end of each frame to
+///    clear transient state.
+/// 3. Query helpers (`key_held`, `mouse_delta`, etc.) during the frame's
+///    update logic.
 #[derive(Default, Clone)]
 pub struct InputManager {
     // Persistent (accumulated across frames)
@@ -139,7 +139,7 @@ pub struct InputManager {
     mouse_buttons_held: rustc_hash::FxHashSet<MouseButton>,
     mouse_position: [f64; 2],
 
-    // Transient (cleared each 帧 by begin_frame)
+    // Transient (cleared each frame by begin_frame)
     keys_just_pressed: Vec<KeyCode>,
     keys_just_released: Vec<KeyCode>,
     mouse_just_pressed: Vec<MouseButton>,
@@ -148,15 +148,15 @@ pub struct InputManager {
     scroll_delta: f64,
     touches: Vec<TouchEvent>,
 
-    // Pointer-lock 状态
-    /// Whether the cursor is 隐藏 + grabbed for FPS-style look.
+    // Pointer-lock state
+    /// Whether the cursor is hidden + grabbed for FPS-style look.
     pub pointer_locked: bool,
-    /// Whether ALT is held and has temporarily released a locked 指针
+    /// Whether ALT is held and has temporarily released a locked pointer.
     pub alt_temp_release: bool,
-    /// 集合 when the 窗口 regains focus; the 下一个 left-click focuses the
-    /// 窗口 instead of entering 指针 lock.
+    /// Set when the window regains focus; the next left-click focuses the
+    /// window instead of entering pointer lock.
     pub focus_return_click: bool,
-    /// Whether the 指针 was locked before the inspector/visualizer was
+    /// Whether the pointer was locked before the inspector/visualizer was
     /// opened, so it can be re-locked when the UI closes.
     pub lock_before_inspector: bool,
 }
@@ -166,7 +166,7 @@ impl InputManager {
         Self::default()
     }
 
-    /// 调用 at the START of each 帧 to reset transient 状态
+    /// Call at the START of each frame to reset transient state.
     pub fn begin_frame(&mut self) {
         self.keys_just_pressed.clear();
         self.keys_just_released.clear();
@@ -177,7 +177,7 @@ impl InputManager {
         self.touches.clear();
     }
 
-    // --- 查询 helpers ---
+    // --- Query helpers ---
 
     pub fn key_held(&self, key: KeyCode) -> bool {
         self.keys_held.contains(&key)
@@ -251,7 +251,7 @@ impl InputManager {
         &self.touches
     }
 
-    // --- Low-level 事件 handlers 插入 raw data) ---
+    // --- Low-level event handlers (insert raw data) ---
 
     pub fn handle_keyboard(&mut self, key: KeyCode, state: ElementState) {
         match state {
@@ -274,7 +274,7 @@ impl InputManager {
         self.mouse_position = position;
     }
 
-    /// 集合 the 指针 position without accumulating delta.
+    /// Set the pointer position without accumulating delta.
     pub fn set_mouse_position(&mut self, position: [f64; 2]) {
         self.mouse_position = position;
     }
@@ -294,7 +294,7 @@ impl InputManager {
         }
     }
 
-    /// Handle a 滚动 事件 `delta_y` is 正 for 滚动 上 (zoom in),
+    /// Handle a scroll event. `delta_y` is positive for scroll up (zoom in),
     /// 负 for 滚动 下。单位是滚轮行（一格 = 1.0）。
     pub fn handle_scroll(&mut self, delta_y: f64) {
         self.scroll_delta += delta_y;
@@ -308,12 +308,12 @@ impl InputManager {
         });
     }
 
-    /// 更新 the pointer-lock 状态 without performing any window-system
-    /// operations (cursor grab / 可见性 The 调用者 is responsible for
-    /// adjusting the actual cursor 状态 via the 窗口 系统
+    /// Update the pointer-lock state without performing any window-system
+    /// operations (cursor grab / visibility).  The caller is responsible for
+    /// adjusting the actual cursor state via the window system.
     ///
-    /// Resets accumulated 鼠标 delta so the 视图 doesn't jump after the
-    /// 过渡
+    /// Resets accumulated mouse delta so the view doesn't jump after the
+    /// transition.
     pub fn set_locked(&mut self, locked: bool) {
         self.pointer_locked = locked;
         self.begin_frame();

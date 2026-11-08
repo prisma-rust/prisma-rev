@@ -327,7 +327,7 @@ pub fn render_thread_main(
             screenshot_done = true;
         }
 
-        // 计算 渲染 stats.
+        // Compute render stats.
         let elapsed = frame_start.elapsed();
         let frame_time_ms = elapsed.as_secs_f32() * 1000.0;
 
@@ -399,7 +399,7 @@ pub fn render_thread_main(
     drop(renderer);
 }
 
-/// 渲染 one 帧 构建 [`FrameInput`] from a [`FramePacket`] then drive
+/// Render one frame: build [`FrameInput`] from a [`FramePacket`] then drive
 /// the five-phase API (begin → prepare → execute → present → end).
 fn render_one_frame(
     renderer: &mut GraphRenderer,

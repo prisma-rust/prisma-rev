@@ -1,8 +1,8 @@
-//! 缓冲区 分配 and staging upload utilities.
+//! Buffer allocation and staging upload utilities.
 //!
 //! Provides low-level helpers for creating Vulkan buffers and uploading data
-//! through a staging 缓冲区 Higher-level types like [`Mesh`](crate::mesh::Mesh)
-//! 构建 on 顶部 of these.
+//! through a staging buffer. Higher-level types like [`Mesh`](crate::mesh::Mesh)
+//! build on top of these.
 
 use anyhow::Context as _;
 use ash::vk;
@@ -10,17 +10,17 @@ use ash::vk;
 use crate::context::VulkanContext;
 use crate::vulkan_compat::{LegacyCopy2, LegacySync2};
 
-/// Supported 缓冲区 用法 flags for [`create_buffer`].
+/// Supported buffer usage flags for [`create_buffer`].
 /// This is a bitmask; callers specify exactly which usages they need.
 pub type BufferUsage = vk::BufferUsageFlags;
 
-/// Supported 内存 属性 flags for [`create_buffer`].
+/// Supported memory property flags for [`create_buffer`].
 pub type MemoryProperties = vk::MemoryPropertyFlags;
 
-/// 创建 a `VkBuffer` + `VkDeviceMemory` pair.
+/// Create a `VkBuffer` + `VkDeviceMemory` pair.
 ///
-/// Returns 缓冲区 内存 allocated with the given 大小 用法 and 内存
-/// 属性 flags. The 内存 is already bound to the 缓冲区
+/// Returns `(buffer, memory)` allocated with the given size, usage, and memory
+/// property flags. The memory is already bound to the buffer.
 pub fn create_buffer(
     context: &VulkanContext,
     size: vk::DeviceSize,
@@ -42,12 +42,12 @@ pub fn create_buffer(
         .allocation_size(mem_reqs.size)
         .memory_type_index(mem_type);
 
-    // Buffers created with SHADER_DEVICE_ADDRESS require the backing 内存 to
+    // Buffers created with SHADER_DEVICE_ADDRESS require the backing memory to
     // be allocated with VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT (chained via
-    // VkMemoryAllocateFlagsInfo). The 验证 层 rejects the bind
-    // otherwise (VUID-vkBindBufferMemory-bufferDeviceAddress-03339). We 链
-    // the flags 结构体 only when the 用法 requests 设备 addressing, since
-    // the flag also forces 分配 from a device-address-capable 堆
+    // VkMemoryAllocateFlagsInfo). The validation layer rejects the bind
+    // otherwise (VUID-vkBindBufferMemory-bufferDeviceAddress-03339). We chain
+    // the flags struct only when the usage requests device addressing, since
+    // the flag also forces allocation from a device-address-capable heap.
     let mut flags_info = vk::MemoryAllocateFlagsInfo::default();
     if usage.contains(vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS) {
         flags_info = flags_info.flags(vk::MemoryAllocateFlags::DEVICE_ADDRESS);
@@ -63,7 +63,7 @@ pub fn create_buffer(
     Ok((buffer, memory))
 }
 
-/// 查找 a 内存 类型 that satisfies `type_filter` and `properties`.
+/// Find a memory type that satisfies `type_filter` and `properties`.
 pub fn find_memory_type(
     context: &VulkanContext,
     type_filter: u32,
@@ -83,17 +83,17 @@ pub fn find_memory_type(
     None
 }
 
-/// Upload data to a device-local 缓冲区 via a temporary staging 缓冲区
+/// Upload data to a device-local buffer via a temporary staging buffer.
 ///
-/// Reads `data` (as raw 字节 and copies it into `destination_buffer`
-/// through a host-visible staging 缓冲区 The staging 缓冲区 is destroyed
-/// after the 复制 is submitted.
+/// Reads `data` (as raw bytes) and copies it into `destination_buffer`
+/// through a host-visible staging buffer. The staging buffer is destroyed
+/// after the copy is submitted.
 ///
-/// # 安全性
+/// # Safety
 ///
-/// `command_pool` must have been created from the 队列 family of
-/// `graphics_queue`. The 调用者 must ensure the 传输 completes before
-/// reading from `destination_buffer` (submit with a 围栏 or wait idle).
+/// `command_pool` must have been created from the queue family of
+/// `graphics_queue`. The caller must ensure the transfer completes before
+/// reading from `destination_buffer` (submit with a fence or wait idle).
 pub unsafe fn upload_to_buffer(
     context: &VulkanContext,
     command_pool: vk::CommandPool,
@@ -102,7 +102,7 @@ pub unsafe fn upload_to_buffer(
     size: vk::DeviceSize,
     data: &[u8],
 ) -> anyhow::Result<()> {
-    // 创建 staging 缓冲区 (host-visible, host-coherent).
+    // Create staging buffer (host-visible, host-coherent).
     let (staging_buffer, staging_memory) = create_buffer(
         context,
         size,
@@ -111,7 +111,7 @@ pub unsafe fn upload_to_buffer(
     )
     .context("create staging buffer")?;
 
-    // 映射表 and 复制 data.
+    // Map and copy data.
     let ptr = unsafe {
         context
             .device
@@ -121,7 +121,7 @@ pub unsafe fn upload_to_buffer(
     unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), ptr as *mut u8, data.len()) };
     unsafe { context.device.unmap_memory(staging_memory) };
 
-    // One-shot 命令 缓冲区 to 复制 staging -> destination.
+    // One-shot command buffer to copy staging -> destination.
     let alloc_info = vk::CommandBufferAllocateInfo::default()
         .command_pool(command_pool)
         .level(vk::CommandBufferLevel::PRIMARY)
@@ -146,8 +146,8 @@ pub unsafe fn upload_to_buffer(
     let cmd_bufs = [cmd_buf];
     let submit_info = vk::SubmitInfo::default().command_buffers(&cmd_bufs);
 
-    // Submit with a dedicated 围栏 so we only 块 on THIS 传输 not the
-    // entire graphics 队列 (queue_wait_idle would stall unrelated 功
+    // Submit with a dedicated fence so we only block on THIS transfer, not the
+    // entire graphics queue (queue_wait_idle would stall unrelated work).
     let fence = unsafe {
         context
             .device
@@ -161,7 +161,7 @@ pub unsafe fn upload_to_buffer(
     }
     .context("submit staging copy")?;
 
-    // Wait only for this submission to finish before cleaning 上
+    // Wait only for this submission to finish before cleaning up.
     unsafe { context.device.wait_for_fences(&[fence], true, u64::MAX) }
         .context("wait for upload fence")?;
     unsafe { context.device.destroy_fence(fence, None) };
@@ -171,36 +171,36 @@ pub unsafe fn upload_to_buffer(
             .free_command_buffers(command_pool, &[cmd_buf])
     };
 
-    // Clean 上 staging resources.
+    // Clean up staging resources.
     unsafe { context.device.destroy_buffer(staging_buffer, None) };
     unsafe { context.device.free_memory(staging_memory, None) };
 
     Ok(())
 }
 
-/// 创建 a 2D `R8G8B8A8_UNORM` 纹理 upload `pixels` (tightly packed,
-/// `width*height*4` 字节 via a staging 缓冲区 过渡 it to
-/// `SHADER_READ_ONLY_OPTIMAL`, and return 图像 内存 视图
+/// Create a 2D `R8G8B8A8_UNORM` texture, upload `pixels` (tightly packed,
+/// `width*height*4` bytes) via a staging buffer, transition it to
+/// `SHADER_READ_ONLY_OPTIMAL`, and return `(image, memory, view)`.
 ///
-/// Single mip level (the bindless samplers are 线性 with no mips — 精细
-/// for the P0 scene path). The 调用者 owns the returned objects and must
-/// 销毁 them (the bindless 表 keeps the `VkImageView` alive only as an
-/// 不透明 handle; the image/memory behind it must outlive the 描述符
+/// Single mip level (the bindless samplers are `LINEAR` with no mips — fine
+/// for the P0 scene path). The caller owns the returned objects and must
+/// destroy them (the bindless table keeps the `VkImageView` alive only as an
+/// opaque handle; the image/memory behind it must outlive the descriptor).
 ///
-/// `command_pool`/`graphics_queue` must belong to the same 队列 family.
+/// `command_pool`/`graphics_queue` must belong to the same queue family.
 ///
-/// # 安全性
+/// # Safety
 ///
-/// The 调用者 must ensure that:
-/// - `context` stays alive and its `device`/`instance`/`physical_device` remain 有效
-/// for the 持续时间 of the 调用
-/// - `command_pool` and `graphics_queue` belong to the same 队列 family, and the
-/// 队列 is not being used concurrently for other submissions during the upload.
-/// - `pixels` 包含 at least 宽度 * 高度 * 4` 字节 (RGBA8) when `mip_levels == 1`,
+/// The caller must ensure that:
+/// - `context` stays alive and its `device`/`instance`/`physical_device` remain valid
+///   for the duration of the call.
+/// - `command_pool` and `graphics_queue` belong to the same queue family, and the
+///   queue is not being used concurrently for other submissions during the upload.
+/// - `pixels` contains at least `width * height * 4` bytes (RGBA8) when `mip_levels == 1`,
 ///   and enough data for all generated mip levels otherwise.
-/// - The returned `vk::Image`/`vk::DeviceMemory`/`vk::ImageView` are freed by the 调用者
-/// (the bindless 表 keeps the `VkImageView` alive only as an 不透明 handle; the
-/// image/memory behind it must outlive the 描述符
+/// - The returned `vk::Image`/`vk::DeviceMemory`/`vk::ImageView` are freed by the caller
+///   (the bindless table keeps the `VkImageView` alive only as an opaque handle; the
+///   image/memory behind it must outlive the descriptor).
 pub unsafe fn create_and_upload_image(
     context: &VulkanContext,
     command_pool: vk::CommandPool,
@@ -213,12 +213,12 @@ pub unsafe fn create_and_upload_image(
 ) -> anyhow::Result<(vk::Image, vk::DeviceMemory, vk::ImageView)> {
     let device = &context.device;
     // `cmd_pipeline_barrier2` lives in VK_KHR_synchronization2. On a Vulkan 1.2
-    // 设备 the core `vkCmdPipelineBarrier2` symbol is not exposed, only the
-    // `...KHR` variant. `ash`'s 设备 包装器 only loads the core symbol, so
-    // we use the KHR 扩展 包装器 which resolves the KHR entry point.
+    // device the core `vkCmdPipelineBarrier2` symbol is not exposed, only the
+    // `...KHR` variant. `ash`'s `Device` wrapper only loads the core symbol, so
+    // we use the KHR extension wrapper, which resolves the KHR entry point.
     let sync2 = LegacySync2 { device };
     // `cmd_blit_image2` (mip generation) comes from VK_KHR_copy_commands2 on a
-    // 1.2 设备 same reason as `sync2` above, use the KHR 包装器
+    // 1.2 device; same reason as `sync2` above, use the KHR wrapper.
     let copy2 = LegacyCopy2 { device };
     let extent = vk::Extent3D {
         width,
@@ -234,7 +234,7 @@ pub unsafe fn create_and_upload_image(
         .array_layers(1)
         .samples(vk::SampleCountFlags::TYPE_1)
         .tiling(vk::ImageTiling::OPTIMAL)
-        // TRANSFER_SRC is needed to 块传 each mip level from the 上一个 one.
+        // TRANSFER_SRC is needed to blit each mip level from the previous one.
         .usage(
             vk::ImageUsageFlags::TRANSFER_DST
                 | vk::ImageUsageFlags::TRANSFER_SRC
@@ -262,7 +262,7 @@ pub unsafe fn create_and_upload_image(
         .bind_image_memory(image, memory, 0)
         .context("bind texture memory")?;
 
-    // 阶段 the pixels and 复制 them into the 图像
+    // Stage the pixels and copy them into the image.
     // `pixels` may hold a whole pre-baked mip chain (KTX2), so the staging
     // buffer is sized by what the caller provided, not by the base level.
     let size = pixels.len() as vk::DeviceSize;
@@ -404,7 +404,7 @@ pub unsafe fn create_and_upload_image(
              provide the full mip chain (KTX2) or upload level 0 only"
         );
         // Level 0 is now TRANSFER_DST; promote it to TRANSFER_SRC so we can
-        // 块传 from it into level 1.
+        // blit from it into level 1.
         let promote_mip0 = vk::ImageMemoryBarrier2::default()
             .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
             .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
@@ -472,7 +472,7 @@ pub unsafe fn create_and_upload_image(
                     .filter(vk::Filter::LINEAR),
             );
 
-            // 源 level is done being 读取 移动 it to shader-readable.
+            // Source level is done being read; move it to shader-readable.
             let src_done = vk::ImageMemoryBarrier2::default()
                 .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
                 .src_access_mask(vk::AccessFlags2::TRANSFER_READ)
@@ -493,8 +493,8 @@ pub unsafe fn create_and_upload_image(
                 &vk::DependencyInfo::default()
                     .image_memory_barriers(std::slice::from_ref(&src_done)),
             );
-            // Prepare this destination level as the 下一个 源 (unless it is
-            // the 最后一个 level, which stays TRANSFER_DST for the final 屏障
+            // Prepare this destination level as the next source (unless it is
+            // the last level, which stays TRANSFER_DST for the final barrier).
             if mip + 1 < mip_levels {
                 let promote = vk::ImageMemoryBarrier2::default()
                     .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
@@ -518,7 +518,7 @@ pub unsafe fn create_and_upload_image(
                 );
             }
         }
-        // Final level (mip_levels - 1) is still TRANSFER_DST_OPTIMAL; 移动 it
+        // Final level (mip_levels - 1) is still TRANSFER_DST_OPTIMAL; move it
         // to shader-readable.
         let dst_to_read = vk::ImageMemoryBarrier2::default()
             .src_stage_mask(vk::PipelineStageFlags2::TRANSFER)
@@ -541,7 +541,7 @@ pub unsafe fn create_and_upload_image(
                 .image_memory_barriers(std::slice::from_ref(&dst_to_read)),
         );
     } else if mip_levels == 1 {
-        // mip_levels == 1: no blits, just 过渡 the single level to
+        // mip_levels == 1: no blits, just transition the single level to
         // shader-readable. (The `has_all_mips` path above already moved the
         // whole chain, so it must not fall through to here.)
         let dst_to_read = vk::ImageMemoryBarrier2::default()

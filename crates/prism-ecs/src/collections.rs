@@ -1,48 +1,53 @@
-//! 数据导向容器形状的容器门面。
+//! `.Collections`-shaped container facades.
 //!
-//! 引擎的 `Native*` 容器是手动管理的非托管内存，用 `Allocator` 指定生命周期，
-//! 并需要显式 `Dispose()`。Rust 端没有这段手动内存管理：这里的容器用
-//! `Box<[T]>` / `Vec<T>` 做**安全的所有权存储**，`Allocator` 只作为元数据保留
-//! （便于读代码时对照 ，也便于未来接自定义分配器），释放交给 `Drop`。
+//! The engine's `Native*` containers are manually managed unmanaged memory,
+//! tagged with an `Allocator` lifetime and released with an explicit
+//! `Dispose()`. Rust has no such manual memory management: these containers use
+//! `Box<[T]>` / `Vec<T>` for **safe owned storage**, keep `Allocator` only as
+//! metadata (to stay readable next to engine code and to leave room for a
+//! custom allocator later), and release through `Drop`.
 //!
-//! 因此这是**形状对齐**，不是逐行移植：`Dispose` / `NativeArrayOptions` /
-//! `AtomicSafetyHandle` 等 特有的手动管理 API 不存在。
+//! This is therefore **shape alignment**, not a line-by-line port: the
+//! manual-management APIs (`Dispose`, `NativeArrayOptions`,
+//! `AtomicSafetyHandle`, ...) do not exist here.
 //!
-//! 命名对应（Rust 用 snake_case，括号内为 原名）：
-//! [`NativeArray::len`]（`Length`）、[`NativeArray::copy_from`]（`CopyFrom`）、
-//! [`NativeList::add`]（`Add`）、[`NativeReference::value`]（`Value`）、
-//! [`NativeSlice`]（`NativeSlice`）。
+//! Naming (Rust uses snake_case; the original name is in parentheses):
+//! [`NativeArray::len`] (`Length`), [`NativeArray::copy_from`] (`CopyFrom`),
+//! [`NativeList::add`] (`Add`), [`NativeReference::value`] (`Value`),
+//! [`NativeSlice`] (`NativeSlice`).
 
-/// `Allocator`：容器内存的生命周期分类。
+/// `Allocator`: lifetime category for container memory.
 ///
-/// 在 PrismaRev 里它不驱动真实分配，只记录“这个容器在 中会用什么分配器”，
-/// 用于对照和未来的自定义分配器接入。
+/// In PrismaRev it does not drive real allocation; it records which allocator
+/// the container would use in the engine, for comparison and for a future
+/// custom allocator hookup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Allocator {
-    /// 未指定（引擎的 `Allocator.Invalid`）。
+    /// Unspecified (the engine's `Allocator.Invalid`).
     #[default]
     Invalid,
-    /// 不需要释放的分配（`Allocator.None`）。
+    /// Allocation that needs no release (`Allocator.None`).
     None,
-    /// 一帧内有效的临时分配（`Allocator.Temp`）。
+    /// Temporary allocation valid for one frame (`Allocator.Temp`).
     Temp,
-    /// 一个 job 内有效的临时分配（`Allocator.TempJob`）。
+    /// Temporary allocation valid for one job (`Allocator.TempJob`).
     TempJob,
-    /// 长期存活的分配（`Allocator.Persistent`）。
+    /// Long-lived allocation (`Allocator.Persistent`).
     Persistent,
 }
 
 impl Allocator {
-    /// 是否是认可的分配器（`Allocator.Invalid` 之外都算）。
+    /// Whether this is a recognized allocator (anything but `Allocator.Invalid`).
     pub fn is_valid(self) -> bool {
         self != Allocator::Invalid
     }
 }
 
-/// `NativeArray<T>` 形状的定长数组。
+/// `NativeArray<T>`-shaped fixed-length array.
 ///
-/// 创建时用 [`Default`] 填充（对应引擎默认的 `NativeArrayOptions.ClearMemory`），
-/// 下标访问与切片访问都走安全 Rust。
+/// Created filled with [`Default`] (mirrors the engine's default
+/// `NativeArrayOptions.ClearMemory`); indexing and slicing go through safe
+/// Rust.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeArray<T> {
     data: Box<[T]>,
@@ -50,7 +55,7 @@ pub struct NativeArray<T> {
 }
 
 impl<T: Default> NativeArray<T> {
-    /// 创建 `len` 个元素的数组（`new NativeArray<T>(len, allocator)`）。
+    /// Creates an array of `len` elements (`new NativeArray<T>(len, allocator)`).
     pub fn new(len: usize, allocator: Allocator) -> Self {
         let data = std::iter::repeat_with(T::default)
             .take(len)
@@ -61,7 +66,8 @@ impl<T: Default> NativeArray<T> {
 }
 
 impl<T> NativeArray<T> {
-    /// 从已有 `Vec` 接管存储（没有直接对应物，等价于 `CopyFrom` 后释放源）。
+    /// Takes over the storage of an existing `Vec` (no direct engine
+    /// equivalent; equivalent to `CopyFrom` followed by releasing the source).
     pub fn from_vec(values: Vec<T>, allocator: Allocator) -> Self {
         Self {
             data: values.into_boxed_slice(),
@@ -69,56 +75,57 @@ impl<T> NativeArray<T> {
         }
     }
 
-    /// 元素个数（`Length`）。
+    /// Number of elements (`Length`).
     pub fn len(&self) -> usize {
         self.data.len()
     }
 
-    /// 是否为空（`Length == 0`）。
+    /// Whether the array is empty (`Length == 0`).
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
 
-    /// 创建时记录的分配器。
+    /// The allocator recorded at creation time.
     pub fn allocator(&self) -> Allocator {
         self.allocator
     }
 
-    /// 只读切片视图。
+    /// Read-only slice view.
     pub fn as_slice(&self) -> &[T] {
         &self.data
     }
 
-    /// 可变切片视图。
+    /// Mutable slice view.
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         &mut self.data
     }
 
-    /// 按下标读取，越界返回 `None`。
+    /// Reads by index; returns `None` when out of bounds.
     pub fn get(&self, index: usize) -> Option<&T> {
         self.data.get(index)
     }
 
-    /// 按下标可变读取，越界返回 `None`。
+    /// Mutably reads by index; returns `None` when out of bounds.
     pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
         self.data.get_mut(index)
     }
 
-    /// 只读迭代。
+    /// Read-only iteration.
     pub fn iter(&self) -> std::slice::Iter<'_, T> {
         self.data.iter()
     }
 
-    /// 可变迭代。
+    /// Mutable iteration.
     pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, T> {
         self.data.iter_mut()
     }
 
-    /// 把 `source` 复制到开头，元素个数不变（`CopyFrom`）。
+    /// Copies `source` to the front, keeping the element count unchanged
+    /// (`CopyFrom`).
     ///
     /// # Panics
     ///
-    /// `source` 比本数组长时 panic。
+    /// Panics when `source` is longer than this array.
     pub fn copy_from(&mut self, source: &[T])
     where
         T: Copy,
@@ -132,7 +139,7 @@ impl<T> NativeArray<T> {
         self.data[..source.len()].copy_from_slice(source);
     }
 
-    /// 复制成 `Vec`（`ToArray`）。
+    /// Copies into a `Vec` (`ToArray`).
     pub fn to_vec(&self) -> Vec<T>
     where
         T: Clone,
@@ -142,7 +149,8 @@ impl<T> NativeArray<T> {
 }
 
 impl<T: Clone> NativeArray<T> {
-    /// 用同一个值填满整个数组（没有对应物，常用 `for` 循环代替）。
+    /// Fills the whole array with one value (no direct equivalent; usually a
+    /// `for` loop in the engine).
     pub fn fill(&mut self, value: T) {
         self.data.fill(value);
     }
@@ -186,48 +194,50 @@ impl<'a, T> IntoIterator for &'a mut NativeArray<T> {
     }
 }
 
-/// `NativeSlice<T>` 形状的只读视图。
+/// `NativeSlice<T>`-shaped read-only view.
 ///
-/// 引擎的 `NativeSlice` 也可以写；Rust 端只提供只读视图，可变切片直接用
-/// `&mut [T]` / [`NativeArray::as_mut_slice`]。
+/// The engine's `NativeSlice` is writable; this Rust mirror only provides a
+/// read-only view. Use `&mut [T]` / [`NativeArray::as_mut_slice`] for mutable
+/// slices.
 #[derive(Debug)]
 pub struct NativeSlice<'a, T> {
     data: &'a [T],
 }
 
 impl<'a, T> NativeSlice<'a, T> {
-    /// 从切片创建视图。
+    /// Creates a view from a slice.
     pub fn new(data: &'a [T]) -> Self {
         Self { data }
     }
 
-    /// 元素个数（`Length`）。
+    /// Number of elements (`Length`).
     pub fn len(&self) -> usize {
         self.data.len()
     }
 
-    /// 是否为空。
+    /// Whether the slice is empty.
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
 
-    /// 底层切片。
+    /// The underlying slice.
     pub fn as_slice(&self) -> &'a [T] {
         self.data
     }
 
-    /// 按下标读取，越界返回 `None`。
+    /// Reads by index; returns `None` when out of bounds.
     pub fn get(&self, index: usize) -> Option<&'a T> {
         self.data.get(index)
     }
 
-    /// 取子区间（`Slice(start, length)`），越界返回 `None`。
+    /// Takes a sub-range (`Slice(start, length)`); returns `None` when out of
+    /// bounds.
     pub fn slice(&self, start: usize, length: usize) -> Option<NativeSlice<'a, T>> {
         let end = start.checked_add(length)?;
         self.data.get(start..end).map(NativeSlice::new)
     }
 
-    /// 只读迭代。
+    /// Read-only iteration.
     pub fn iter(&self) -> std::slice::Iter<'a, T> {
         self.data.iter()
     }
@@ -256,9 +266,10 @@ impl<'a, T> IntoIterator for NativeSlice<'a, T> {
     }
 }
 
-/// `NativeList<T>` 形状的可增长列表。
+/// `NativeList<T>`-shaped growable list.
 ///
-/// 底层是 `Vec<T>`，`Capacity` 语义与常见容器一致（不保证每次 `add` 都重新分配）。
+/// Backed by `Vec<T>`; `Capacity` semantics match common containers (each
+/// `add` is not guaranteed to reallocate).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeList<T> {
     values: Vec<T>,
@@ -266,7 +277,7 @@ pub struct NativeList<T> {
 }
 
 impl<T> NativeList<T> {
-    /// 创建空列表（`new NativeList<T>(allocator)`）。
+    /// Creates an empty list (`new NativeList<T>(allocator)`).
     pub fn new(allocator: Allocator) -> Self {
         Self {
             values: Vec::new(),
@@ -274,7 +285,7 @@ impl<T> NativeList<T> {
         }
     }
 
-    /// 创建带初始容量的空列表。
+    /// Creates an empty list with an initial capacity.
     pub fn with_capacity(capacity: usize, allocator: Allocator) -> Self {
         Self {
             values: Vec::with_capacity(capacity),
@@ -282,67 +293,68 @@ impl<T> NativeList<T> {
         }
     }
 
-    /// 从已有 `Vec` 接管存储。
+    /// Takes over the storage of an existing `Vec`.
     pub fn from_vec(values: Vec<T>, allocator: Allocator) -> Self {
         Self { values, allocator }
     }
 
-    /// 追加元素（`Add`）。
+    /// Appends an element (`Add`).
     pub fn add(&mut self, value: T) {
         self.values.push(value);
     }
 
-    /// 元素个数（`Length`）。
+    /// Number of elements (`Length`).
     pub fn len(&self) -> usize {
         self.values.len()
     }
 
-    /// 是否为空。
+    /// Whether the list is empty.
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
 
-    /// 当前容量（`Capacity`）。
+    /// Current capacity (`Capacity`).
     pub fn capacity(&self) -> usize {
         self.values.capacity()
     }
 
-    /// 创建时记录的分配器。
+    /// The allocator recorded at creation time.
     pub fn allocator(&self) -> Allocator {
         self.allocator
     }
 
-    /// 只读切片。
+    /// Read-only slice.
     pub fn as_slice(&self) -> &[T] {
         &self.values
     }
 
-    /// 可变切片。
+    /// Mutable slice.
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         &mut self.values
     }
 
-    /// 按下标读取，越界返回 `None`。
+    /// Reads by index; returns `None` when out of bounds.
     pub fn get(&self, index: usize) -> Option<&T> {
         self.values.get(index)
     }
 
-    /// 按下标可变读取，越界返回 `None`。
+    /// Mutably reads by index; returns `None` when out of bounds.
     pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
         self.values.get_mut(index)
     }
 
-    /// 清空元素、保留容量（`Clear`）。
+    /// Clears the elements while keeping the capacity (`Clear`).
     pub fn clear(&mut self) {
         self.values.clear();
     }
 
-    /// 删除并返回末尾元素（`RemoveAt(len - 1)`）。
+    /// Removes and returns the last element (`RemoveAt(len - 1)`).
     pub fn pop(&mut self) -> Option<T> {
         self.values.pop()
     }
 
-    /// 在下标处插入，`index > len` 时返回 `false`（`Insert`，越界会抛异常）。
+    /// Inserts at `index`; returns `false` when `index > len` (`Insert`, which
+    /// throws when out of bounds).
     pub fn insert(&mut self, index: usize, value: T) -> bool {
         if index > self.values.len() {
             return false;
@@ -351,7 +363,8 @@ impl<T> NativeList<T> {
         true
     }
 
-    /// 删除下标处元素并保持顺序，越界返回 `None`（`RemoveAt`）。
+    /// Removes the element at `index`, preserving order; returns `None` when
+    /// out of bounds (`RemoveAt`).
     pub fn remove_at(&mut self, index: usize) -> Option<T> {
         if index >= self.values.len() {
             return None;
@@ -359,19 +372,19 @@ impl<T> NativeList<T> {
         Some(self.values.remove(index))
     }
 
-    /// 只读迭代。
+    /// Read-only iteration.
     pub fn iter(&self) -> std::slice::Iter<'_, T> {
         self.values.iter()
     }
 
-    /// 可变迭代。
+    /// Mutable iteration.
     pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, T> {
         self.values.iter_mut()
     }
 }
 
 impl<T: Ord> NativeList<T> {
-    /// 升序排序（`Sort`）。
+    /// Sorts in ascending order (`Sort`).
     pub fn sort(&mut self) {
         self.values.sort();
     }
@@ -409,10 +422,11 @@ impl<'a, T> IntoIterator for &'a mut NativeList<T> {
     }
 }
 
-/// `NativeReference<T>` 形状的单值容器。
+/// `NativeReference<T>`-shaped single-value container.
 ///
-/// 常用于 job 之间传递一个值（里配 `NativeDisableParallelForRestriction`
-/// 之类的属性使用）；Rust 端就是一个带分配器元数据的 `Box<T>`。
+/// Commonly used to pass one value between jobs (the engine pairs it with
+/// attributes such as `NativeDisableParallelForRestriction`); on the Rust side
+/// it is just a value with allocator metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeReference<T> {
     value: T,
@@ -420,27 +434,27 @@ pub struct NativeReference<T> {
 }
 
 impl<T> NativeReference<T> {
-    /// 创建引用（`new NativeReference<T>(value, allocator)`）。
+    /// Creates the reference (`new NativeReference<T>(value, allocator)`).
     pub fn new(value: T, allocator: Allocator) -> Self {
         Self { value, allocator }
     }
 
-    /// 读取值（`Value`）。
+    /// Reads the value (`Value`).
     pub fn value(&self) -> &T {
         &self.value
     }
 
-    /// 覆盖值（`Value = ...`）。
+    /// Overwrites the value (`Value = ...`).
     pub fn set_value(&mut self, value: T) {
         self.value = value;
     }
 
-    /// 取走内部值。
+    /// Takes out the inner value.
     pub fn into_inner(self) -> T {
         self.value
     }
 
-    /// 创建时记录的分配器。
+    /// The allocator recorded at creation time.
     pub fn allocator(&self) -> Allocator {
         self.allocator
     }

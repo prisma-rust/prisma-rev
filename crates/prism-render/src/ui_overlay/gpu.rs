@@ -376,7 +376,7 @@ impl Drop for GlyphAtlas {
 // UiOverlay
 // ---------------------------------------------------------------------------
 
-/// GPU-side UI 叠加
+/// GPU-side UI overlay.
 pub struct UiOverlay {
     pipeline: Option<vk::Pipeline>,
     layout: Option<vk::PipelineLayout>,
@@ -728,7 +728,7 @@ impl UiOverlay {
         let dynamic_state_info =
             vk::PipelineDynamicStateCreateInfo::default().dynamic_states(&dynamic_states);
 
-        // 管线 状态 no 深度 Alpha 混合
+        // Pipeline state: no depth, alpha blend.
         let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
             .cull_mode(vk::CullModeFlags::NONE)
             .front_face(vk::FrontFace::CLOCKWISE)
@@ -818,7 +818,7 @@ impl UiOverlay {
         input.quads.len() as u32 * VERTICES_PER_QUAD + (chars as u32) * VERTICES_PER_QUAD
     }
 
-    /// Record UI 叠加 绘制 commands into `cmd`.
+    /// Record UI overlay draw commands into `cmd`.
     pub fn record(
         &mut self,
         context: &VulkanContext,
@@ -910,7 +910,7 @@ impl UiOverlay {
         }
         self.grow_buffer(context, vert_count)?;
 
-        // Upload 顶点 data.
+        // Upload vertex data.
         let vert_bytes = vertices.len() * size_of::<UiVertex>();
         unsafe {
             let ptr = context
@@ -989,7 +989,7 @@ impl UiOverlay {
             }
         };
 
-        // Record 绘制
+        // Record draw.
         let rp_begin = vk::RenderPassBeginInfo::default()
             .render_pass(self.render_pass)
             .framebuffer(fb)

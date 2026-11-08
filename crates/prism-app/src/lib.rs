@@ -60,7 +60,7 @@
 //! ```text
 //! 主线程                       渲染线程
 //!   ────────────                        ────────────
-//! about_to_wait: 循环
+//!   about_to_wait:                       loop:
 //!     engine.fixed_update × N              wait_for_packet()
 //!     engine.update                        begin_frame()
 //!     engine.late_update                   execute()

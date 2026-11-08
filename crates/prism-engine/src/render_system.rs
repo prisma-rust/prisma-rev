@@ -44,31 +44,31 @@ const LUX_TO_RADIANCE_SCALE: f32 = 1.0 / (10_000.0 * std::f32::consts::PI);
 // SceneChanges
 // ---------------------------------------------------------------------------
 
-/// 快照 of all per-frame scene data 相机 lights, derived matrices).
+/// Snapshot of all per-frame scene data (camera, lights, derived matrices).
 ///
 /// Produced by [`collect_scene_changes`] and consumed by [`render_system`] to
-/// 构建 the [`FrameUBOData`] and [`FrameInput`].
+/// build the [`FrameUBOData`] and [`FrameInput`].
 #[derive(Clone, Default)]
 pub struct SceneChanges {
     pub view_proj: Mat4,
     pub eye: Vec3,
     pub view: Mat4,
-    /// Unrotated 投影 (GTAO pass needs the raw 矩阵 for
-    /// 片段 → view-space reconstruction; the surface-rotation is applied
+    /// Unrotated projection (GTAO pass needs the raw matrix for
+    /// clip → view-space reconstruction; the surface-rotation is applied
     /// only to `view_proj`).
     pub projection: Mat4,
     pub inv_projection: Mat4,
     pub proj22: f32,
     pub proj32: f32,
-    /// Direction TO the 光源 packed as `[x, y, z, intensity]`.
+    /// Direction TO the light, packed as `[x, y, z, intensity]`.
     pub light_direction: Vec4,
-    /// 光源 颜色 + ambient, packed as `[r, g, b, ambient]`.
+    /// Light colour + ambient, packed as `[r, g, b, ambient]`.
     pub light_color: Vec4,
     /// Enabled cameras composited this frame, ordered by `Camera.depth`
     /// ascending (#461). Always non-empty: a synthetic fallback entry keeps the
     /// "no camera" gray frame working.
     pub cameras: Vec<prism_render::render_graph::CameraView>,
-    /// Light-space 正交 view-projection (shadow 映射表
+    /// Light-space orthographic view-projection (shadow map).
     pub light_view_proj: Mat4,
     /// Far-cascade light-space VP (#526 CSM); only used when
     /// `shadow_cascade_count > 1`.
@@ -77,7 +77,7 @@ pub struct SceneChanges {
     pub shadow_split: f32,
     /// 1 = single shadow map, 2 = two-cascade atlas.
     pub shadow_cascade_count: u32,
-    /// Point lights collected from the ECS 世界 上 to `LIGHT_MAX`).
+    /// Point lights collected from the ECS world (up to `LIGHT_MAX`).
     ///
     /// 超预算时按重要性挑（见 [`lights::local_light_importance`]），不再是文档顺序。
     pub lights: Vec<GpuLight>,
@@ -90,9 +90,9 @@ pub struct SceneChanges {
     pub dropped_light_ids: Vec<u32>,
     /// Analytic lights for path tracing (directional + point + spot).
     pub pt_lights: Vec<PtAnalyticLight>,
-    /// Exposure multiplier from the 相机 实体
+    /// Exposure multiplier from the camera entity.
     pub exposure: f32,
-    /// Whether a usable 相机 实体 was 找到 in the ECS 世界
+    /// Whether a usable Camera entity was found in the ECS world.
     pub has_camera: bool,
     /// 活动相机是否用正交投影（`Camera::orthographic`）。PT 主光线需要它来
     /// 决定走平行光还是透视锥（issue #10）。
@@ -112,14 +112,14 @@ pub struct SceneChanges {
 }
 
 // ---------------------------------------------------------------------------
-// Extract 帧 packet (sim phase)
+// Extract frame packet (sim phase)
 // ---------------------------------------------------------------------------
 
 /// Run the extract phase: scene changes + draw-item 列表
 /// producing a [`FramePacket`] for later consumption by [`render_system`].
 ///
-/// **This is the API the sim (game‑logic) 线程 calls.** [`render_system`]
-/// consumes the packet without accessing the ECS 世界
+/// **This is the API the sim (game‑logic) thread calls.**  [`render_system`]
+/// consumes the packet without accessing the ECS world.
 ///
 /// Transforms are **not** propagated here: [`crate::engine::Engine::update`]
 /// does it at the end of the simulation step, so the extract phase is read-only
@@ -207,7 +207,7 @@ pub fn extract_frame_packet_into_with_shadow_cascades(
     shadow_cascade_count: u32,
     packet: &mut FramePacket,
 ) {
-    // 1. Collect per-frame scene 状态 (needs orientation).
+    // 1. Collect per-frame scene state (needs orientation).
     collect_scene_changes_into(
         world,
         display_aspect,
@@ -280,7 +280,7 @@ pub fn extract_frame_packet_into_with_shadow_cascades(
     // 3D 粒子：世界空间 billboard，按到眼睛的距离远到近排序（透明混合）。
     scene_view.particle_items_into(packet.scene.eye, &mut packet.particle_items);
 
-    // 3. 构建 the UI 叠加 from the ECS 世界 (includes UiQuad/TextCmd).
+    // 3. Build the UI overlay from the ECS world (includes UiQuad/TextCmd).
     crate::ui::convert_ui_draw_list_to_overlay_into(world, &mut packet.ui_overlay);
 
     // 渲染设置由应用层（`App`）在发送前覆盖；引擎默认值保证独立使用
@@ -292,7 +292,7 @@ pub fn extract_frame_packet_into_with_shadow_cascades(
 // FramePacket
 // ---------------------------------------------------------------------------
 
-/// Per-tick extract 结果 camera/light 快照 + 绘制 items + UI 叠加
+/// Per-tick extract result: camera/light snapshot + draw items + UI overlay.
 /// Produced by [`extract_frame_packet`], consumed by [`render_system`].
 ///
 /// `Default` exists so a caller can hold one packet and refill it with
@@ -331,11 +331,11 @@ pub struct FramePacket {
 }
 
 // ---------------------------------------------------------------------------
-// Scene 集合
+// Scene collection
 // ---------------------------------------------------------------------------
 
-/// 读取 the ECS 世界 and the orientation parameters, then produce
-/// a [`SceneChanges`] 快照 for the 当前 帧
+/// Read the ECS [`World`] and the orientation parameters, then produce
+/// a [`SceneChanges`] snapshot for the current frame.
 /// 采集一帧的 scene 快照（不带复用的便捷包装，测试用）。
 #[cfg(test)]
 #[allow(dead_code)] // 仅测试用：生产路径直接走 `extract_frame_packet_*`。
@@ -670,7 +670,7 @@ fn collect_scene_changes_into(
 }
 
 // ---------------------------------------------------------------------------
-// 渲染 系统
+// Render system
 // ---------------------------------------------------------------------------
 
 // 清屏色不再由渲染系统写死：它随 `SceneChanges::clear_color` 从活动相机
@@ -679,8 +679,8 @@ fn collect_scene_changes_into(
 
 /// Consume a pre-extracted [`FramePacket`] and drive the GPU.
 ///
-/// **Each 调用 is stateless with respect to the ECS world.** The simulation
-/// 线程 owns [`World`](prism_ecs::World) and produces the packet; this
+/// **Each call is stateless with respect to the ECS world.**  The simulation
+/// thread owns [`World`](prism_ecs::World) and produces the packet; this
 /// 函数仅读取数据包和渲染器
 ///
 /// Returns `Err` only when [`GraphRenderer::render`] fails.
@@ -705,7 +705,7 @@ pub fn render_system(
         grade,
     } = *packet;
 
-    // 1. Diff against the 上一个 帧 via DirtyRouter.
+    // 1. Diff against the previous frame via DirtyRouter.
     let dirty_flags = dirty_router.update(scene);
     if dirty_flags.any() {
         log::trace!(
@@ -742,8 +742,8 @@ pub fn render_system(
     } = scene;
     let light_count = lights.len() as f32;
 
-    // 2. 构建 the per-frame UBO.
-    // FrameUBOData is #[repr(C)] GPU data — 转换 glam → raw arrays at this boundary.
+    // 2. Build the per-frame UBO.
+    // FrameUBOData is #[repr(C)] GPU data — convert glam → raw arrays at this boundary.
     let frame_data = FrameUBOData {
         view_proj: view_proj.to_cols_array_2d(),
         camera_position: [eye.x, eye.y, eye.z, light_count],
@@ -853,8 +853,8 @@ pub fn render_system(
 // Euler angle ↔ direction helpers
 // ---------------------------------------------------------------------------
 
-/// 转换 XYZ Euler angles 角度 to a unit direction 向量 (direction
-/// TO the 光源 in 世界 空间
+/// Convert XYZ Euler angles (degrees) to a unit direction vector (direction
+/// TO the light), in world space.
 pub fn euler_xyz_deg_to_dir(e: Vec3) -> Vec3 {
     let p = e.x.to_radians();
     let y = e.y.to_radians();
@@ -865,15 +865,15 @@ pub fn euler_xyz_deg_to_dir(e: Vec3) -> Vec3 {
     Vec3::new(cp * sy, sp, cp * cy).normalize_or_zero()
 }
 
-/// Inverse of [`euler_xyz_deg_to_dir`]: derive XYZ Euler angles 角度 from
-/// a direction 向量
+/// Inverse of [`euler_xyz_deg_to_dir`]: derive XYZ Euler angles (degrees) from
+/// a direction vector.
 pub fn dir_to_euler_xyz_deg(d: Vec3) -> Vec3 {
     let n = d.normalize_or_zero();
     Vec3::new(n.y.asin().to_degrees(), n.x.atan2(n.z).to_degrees(), 0.0)
 }
 
 // ---------------------------------------------------------------------------
-// 矩阵 helpers
+// Matrix helpers
 // ---------------------------------------------------------------------------
 
 /// 方向光从「光传播方向」（`transform.forward`）转换为
@@ -886,7 +886,7 @@ fn directional_light_ubo_direction(direction: Vec3, radiance: f32) -> Vec4 {
     Vec4::new(-direction.x, -direction.y, -direction.z, radiance)
 }
 
-/// 构建 an 正交 light-space view-projection 矩阵
+/// Build an orthographic light-space view-projection matrix.
 /// 光空间正交盒子，并把盒心**吸附到阴影贴图的 texel 网格**上（#526）。
 ///
 /// `texels` 是阴影贴图的边长（`0`/`1` 表示不吸附）：盒心在光空间里 round 到

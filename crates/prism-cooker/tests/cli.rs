@@ -1,8 +1,8 @@
 //! Integration tests for the `prism-cook` 二进制 (std::process::Command).
 //!
-//! These tests 构建 a minimal .pak, 调用 the CLI 二进制 and 验证 its
-//! stdout / stderr 输出 — ensuring the validate-shortcut and metadata
-//! features 功 as expected.
+//! These tests build a minimal .pak, invoke the CLI binary, and verify its
+//! stdout / stderr output — ensuring the validate-shortcut and metadata
+//! features work as expected.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -16,12 +16,12 @@ use prism_asset::package::PackageBuilder;
 
 /// 定位 the compiled prism-cook 二进制
 ///
-/// `cargo test` places the test 可执行文件 in `target/debug/deps/`, while the
+/// `cargo test` places the test executable in `target/debug/deps/`, while the
 /// CLI 二进制 lives in `target/debug/` (or `target/debug/prism-cook.exe` on
-/// Windows We walk 上 from the test exe to 查找 it.
+/// Windows).  We walk up from the test exe to find it.
 fn cli_binary() -> PathBuf {
     let mut path = std::env::current_exe().expect("current exe");
-    // 弹出 the 二进制 name, then the "deps" directory if present.
+    // Pop the binary name, then the "deps" directory if present.
     path.pop(); // binary name
     if path.ends_with("deps") {
         path.pop(); // deps
@@ -32,7 +32,7 @@ fn cli_binary() -> PathBuf {
         "prism-cook"
     });
     if !path.exists() {
-        // 回退 maybe we're in a 工作区 目标 dir.
+        // Fallback: maybe we're in a workspace target dir.
         path.pop();
         path.push("debug");
         path.push(if cfg!(windows) {
@@ -45,7 +45,7 @@ fn cli_binary() -> PathBuf {
     path
 }
 
-/// 构建 a minimal 有效 .pak with a single 资源
+/// Build a minimal valid .pak with a single asset.
 fn build_minimal_pak(dir: &Path, name: &str) -> PathBuf {
     let id = AssetId::from_raw(0x1000_0001);
     let mut builder = PackageBuilder::new();
@@ -56,7 +56,7 @@ fn build_minimal_pak(dir: &Path, name: &str) -> PathBuf {
     pak_path
 }
 
-/// Run the CLI 二进制 with the given arguments, returning (stdout, stderr).
+/// Run the CLI binary with the given arguments, returning (stdout, stderr).
 fn run_cli(args: &[&str]) -> (String, String) {
     let output = Command::new(cli_binary())
         .args(args)
@@ -75,7 +75,7 @@ fn run_cli(args: &[&str]) -> (String, String) {
 #[test]
 fn cli_no_args_shows_help() {
     let (stdout, stderr) = run_cli(&[]);
-    // Should show 用法 text on stdout.
+    // Should show usage text on stdout.
     assert!(
         stdout.contains("Usage:"),
         "help text should contain Usage:\n{stdout}"
@@ -90,12 +90,12 @@ fn cli_no_args_shows_help() {
 #[test]
 fn cli_nonexistent_pak_reports_error() {
     let (_stdout, stderr) = run_cli(&["C:/this/does/not/exist.pak"]);
-    // The validate 命令 returns an 错误 → should appear on stderr.
+    // The validate command returns an error → should appear on stderr.
     assert!(
         stderr.contains("error") || stderr.contains("Error"),
         "stderr should mention error:\n{stderr}"
     );
-    // The 二进制 should exit non-zero, but we only check 输出 text.
+    // The binary should exit non-zero, but we only check output text.
 }
 
 #[test]
@@ -103,7 +103,7 @@ fn cli_validate_with_meta_json_shows_asset_names() {
     let dir = tempfile::tempdir().expect("temp dir");
     let pak_path = build_minimal_pak(dir.path(), "game.pak");
 
-    // 写入 a .pak.meta.json alongside the .pak.
+    // Write a .pak.meta.json alongside the .pak.
     let meta = serde_json::json!({
         "pak": "game.pak",
         "format": "RPAK",

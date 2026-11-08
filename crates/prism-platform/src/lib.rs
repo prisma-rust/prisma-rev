@@ -1,19 +1,20 @@
-//! PrismaRev 平台抽象层
+//! Platform abstraction for PrismaRev.
 //!
-//! 提供窗口系统接口、Vulkan 表面创建和输入事件路由。
-//! 不包含任何应用特定逻辑——游戏循环位于 `prism-app` 中。
+//! Provides the window-system interface, Vulkan surface creation and input event
+//! routing. Contains no application-specific logic — the game loop lives in
+//! `prism-app`.
 //!
-//! ## 窗口后端（feature）
+//! ## Window backends (features)
 //!
-//! - `winit-backend`（默认）：桌面 / Android 的 winit 窗口 + 事件循环。
-//! - `win32-native`（默认关，仅 Windows）：直接用 Win32 API
-//!   （`RegisterClassExW` / `CreateWindowExW` / 消息循环）开窗口，
-//!   **不链接 winit**，用来给 Windows 发布包省下 winit 的体积。
-//!   体积敏感的分发二选一即可：
-//!   `prism-app = { default-features = false, features = ["win32-native", ...] }`。
+//! - `winit-backend` (default): winit window + event loop for desktop / Android.
+//! - `win32-native` (off by default, Windows only): opens a window directly with the
+//!   Win32 API (`RegisterClassExW` / `CreateWindowExW` / message loop) and does
+//!   **not** link winit, saving its binary size in Windows release builds.
+//!   Size-sensitive distributions pick one:
+//!   `prism-app = { default-features = false, features = ["win32-native", ...] }`.
 //!
-//! [`PlatformWindow`] 是两个后端之上的中立句柄：`prism-app` 只看到它和
-//! [`PlatformEvent`]，不接触任何窗口库类型。
+//! [`PlatformWindow`] is the neutral handle over both backends: `prism-app` only
+//! sees it and [`PlatformEvent`], never a window library type.
 
 #![deny(warnings)]
 
@@ -45,10 +46,11 @@ pub use window::{
 #[cfg(feature = "winit-backend")]
 pub use winit_backend::to_platform_event;
 
-/// 在 Android 上创建平台事件循环。
+/// Creates the platform event loop on Android.
 ///
-/// Android 的 `AndroidApp` 由用户项目的 JNI 入口提供；事件循环构建属于
-/// 平台层，应用层只负责将自己的 App 交给 winit 运行。
+/// Android's `AndroidApp` is provided by the user project's JNI entry; building the
+/// event loop belongs to the platform layer, so the app layer only hands its own
+/// `App` to winit.
 #[cfg(all(target_os = "android", feature = "winit-backend"))]
 pub fn build_android_event_loop(
     android_app: winit::platform::android::activity::AndroidApp,

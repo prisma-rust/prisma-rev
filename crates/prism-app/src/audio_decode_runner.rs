@@ -1,9 +1,9 @@
-//! Background 音频 解码 线程
+//! Background audio decode thread.
 //!
-//! Reads 音频 files and decodes them with symphonium on a dedicated 线程
-//! so the main 线程 never blocks on 解码 I/O.
+//! Reads audio files and decodes them with symphonium on a dedicated thread
+//! so the main thread never blocks on decode I/O.
 //!
-//! The decoded [`AudioData`] is sent 后 to the main 线程 where it can be
+//! The decoded [`AudioData`] is sent back to the main thread where it can be
 //! passed to [`AudioEngine::play`].
 //!
 //! # 状态：骨架（半接线）
@@ -50,10 +50,10 @@ impl std::fmt::Debug for DecodeResult {
     }
 }
 
-// ── 线程 entry point ────────────────────────────────────────────────
+// ── Thread entry point ────────────────────────────────────────────────
 
-/// Run the 音频 解码 事件 循环 Blocks on `rx` until
-/// [`DecodeRequest::Shutdown`] or 通道 关闭
+/// Run the audio decode event loop. Blocks on `rx` until
+/// [`DecodeRequest::Shutdown`] or channel close.
 pub fn audio_decode_thread_main(rx: Receiver<DecodeRequest>, tx: Sender<DecodeResult>) {
     log::info!("Audio decode thread started");
 

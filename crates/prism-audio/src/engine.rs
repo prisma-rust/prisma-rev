@@ -1,4 +1,4 @@
-//! 音频引擎 — 拥有 Firewheel 上下文并管理声音播放。
+//! Audio engine — owns the Firewheel context and manages sound playback.
 
 use std::num::NonZeroU32;
 use std::time::Duration;
@@ -14,46 +14,45 @@ use firewheel::*;
 
 use crate::error::AudioError;
 
-/// 解码后的音频数据，可供播放。
+/// Decoded audio data ready for playback.
 #[derive(Clone)]
 pub struct AudioData {
-    /// 交错排列的 f32 采样（例如立体声为 L,R,L,R）
+    /// Interleaved f32 samples (`L,R,L,R` for stereo, for example).
     pub samples: Vec<f32>,
-    /// 采样率，单位 Hz（例如 44100）。
+    /// Sample rate in Hz (for example 44100).
     pub sample_rate: u32,
-    /// 声道数（1 = 单声道，2 = 立体声）
+    /// Channel count (1 = mono, 2 = stereo).
     pub channels: u16,
-    /// 总持续时间
+    /// Total duration.
     pub duration: Duration,
 }
 
-/// 控制正在播放的声音的句柄
+/// Handle to a playing sound.
 ///
-/// 使用 [`AudioEngine`] 的方法来控制播放：
-/// `engine.stop(&handle)`, `engine.set_volume(&handle, 0.5)` 等。
+/// Control playback through [`AudioEngine`] methods such as
+/// `engine.stop(&handle)` and `engine.set_volume(&handle, 0.5)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PlaybackHandle(u64);
 
 impl PlaybackHandle {
-    /// 当此句柄由失败的 `play()` 调用产生时返回 `false`
-    ///（例如音频为空或图形错误，且永远不会指向真实的声音）
+    /// Returns `false` when this handle came from a failed `play()` call
+    /// (for example empty audio or a graph error); such a handle never refers
+    /// to a real sound.
     pub fn is_valid(&self) -> bool {
         self.0 != 0
     }
 }
 
-// ---------------------------------------------------------------------------
-
-/// 音频引擎的配置。
+/// Configuration for the audio engine.
 #[derive(Clone)]
 pub struct AudioConfig {
-    /// 首选音频设备名称。`None` = 系统默认。
+    /// Preferred audio device name. `None` selects the system default.
     pub device_name: Option<String>,
-    /// 输出采样率。默认 44100。
+    /// Output sample rate. Defaults to 44100.
     pub sample_rate: u32,
-    /// 输出声道数。默认 2 = 立体声。
+    /// Output channel count. Defaults to 2 (stereo).
     pub channels: u16,
-    /// 主音量 0.0–1.0。默认 1.0。
+    /// Master volume in the range 0.0–1.0. Defaults to 1.0.
     pub master_volume: f32,
 }
 
@@ -68,57 +67,62 @@ impl Default for AudioConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-
 struct ActiveSound {
     handle: PlaybackHandle,
     node_id: NodeID,
-    /// 立体声输出上的音量 / 声像节点；单声道设备为 `None`。
+    /// Volume/pan node on a stereo output; `None` on mono devices.
     ///
-    /// 声像必须在播放中实时更新（#508），所以它不能像旧实现那样在 `play()`
-    /// 时烘焙进采样数据 —— 这里用 Firewheel 的 `VolumePanNode` 做实时 pan。
+    /// Pan must update during playback (#508), so it cannot be baked into the
+    /// sample data at `play()` time as it was previously — Firewheel's
+    /// `VolumePanNode` provides the real-time pan instead.
     pan_node: Option<NodeID>,
-    /// 最近一次下发给 `pan_node` 的声像，避免每帧重复排队事件。
+    /// Last pan value pushed to `pan_node`, so events are not requeued every frame.
     pan: f32,
-    /// 本地副本，用于调用 `sync_*_event()`。
+    /// Local copy used to call `sync_*_event()`.
     sampler: SamplerNode,
-    /// 采样器节点的共享状态，用于观察音频线程真实的播放进度。
+    /// Shared state of the sampler node, used to observe the true playback
+    /// progress on the audio thread.
     ///
-    /// 音频线程只写入 `SamplerState` 内部的共享通道，节点本身不暴露完成事件，
-    /// 所以这是唯一能区分「已播完」与「还没开始播」的途径。
+    /// The audio thread only writes to the shared channels inside
+    /// `SamplerState`; the node itself exposes no completion event, so this is
+    /// the only way to tell "finished" apart from "not started yet".
     state: SamplerState,
-    /// 是否已经观察到该采样器真正播放过。
+    /// Whether this sampler has actually been observed playing.
     ///
-    /// 采样器刚创建时报告 `Stopped`，直到音频线程处理完第一个音频块才变为
-    /// `Playing`；因此首次看到 `Stopped` 不代表播放结束。
+    /// A freshly created sampler reports `Stopped` until the audio thread has
+    /// processed its first block and it becomes `Playing`; seeing `Stopped`
+    /// for the first time therefore does not mean playback ended.
     seen_playing: bool,
 }
 
-/// 主音频引擎。
+/// Main audio engine.
 ///
 /// ```ignore
 /// let mut engine = AudioEngine::new(AudioConfig::default())?;
-/// engine.update(); // 每帧调用
+/// engine.update(); // call once per frame
 ///
 /// let snd = engine.play(&my_audio);
 /// engine.set_volume(&snd, 0.5);
 /// ```
 pub struct AudioEngine {
     ctx: FirewheelContext,
-    /// 保持存活以确保音频流持续；放置顺序很重要。
+    /// Kept alive to keep the audio stream running; drop order matters.
     _stream: Option<CpalStream>,
     active: Vec<ActiveSound>,
     next_id: u64,
     master_volume: f32,
     channels: u16,
-    /// 打开/重建音频流所用的配置（挂起时保留，恢复时复用）。
+    /// Configuration used to open/rebuild the audio stream (kept across
+    /// suspend and reused on resume).
     config: AudioConfig,
 }
 
 impl AudioEngine {
-    /// 创建新的音频引擎并启动音频流。
+    /// Creates a new audio engine and starts the audio stream.
     ///
-    /// 如果音频设备无法打开，会记录警告，但引擎仍会运行（静默模式——游戏不应因音频而崩溃）。
+    /// If the audio device cannot be opened, a warning is logged but the
+    /// engine still runs in silent mode; the game must not crash because of
+    /// audio.
     pub fn new(config: AudioConfig) -> Result<Self, AudioError> {
         let channels = config.channels;
 
@@ -137,12 +141,12 @@ impl AudioEngine {
             config,
         };
 
-        // 尝试激活 cpal 音频流（失败仅告警，静默运行——游戏不应因音频而崩溃）。
         engine.arm_stream();
         Ok(engine)
     }
 
-    /// 尝试打开音频设备并注册 cpal 回调。失败仅告警并保持静默。
+    /// Tries to open the audio device and register the cpal callback.
+    /// Failures only log a warning and leave the engine silent.
     fn arm_stream(&mut self) {
         match Self::try_start_stream(&mut self.ctx, &self.config) {
             Ok(stream) => {
@@ -160,13 +164,16 @@ impl AudioEngine {
         }
     }
 
-    /// 挂起音频输出：交还音频设备（丢弃 cpal 流），但保留 Firewheel 图与所有
-    /// 活动播放节点，以便恢复后「续播」而非「重播」。
+    /// Suspends audio output: releases the audio device (drops the cpal
+    /// stream) but keeps the Firewheel graph and all active playback nodes, so
+    /// resuming continues playback instead of restarting it.
     ///
-    /// 平台背景切换（Android `onPause` / iOS 退后台）时由宿主（`prism-app`）
-    /// 调用。Firewheel 0.12 的 [`CpalStream`] 不暴露 pause/play 控制，挂起的
-    /// 唯一机制是 drop 流、恢复时重新注册回调——正是「平台强制线程只注册、
-    /// 不持有」的语义。流不存在时为空操作。
+    /// Called by the host (`prism-app`) on platform background transitions
+    /// (Android `onPause` / iOS backgrounding). Firewheel 0.12's
+    /// [`CpalStream`] exposes no pause/play control, so dropping the stream and
+    /// re-registering the callback on resume is the only way to suspend it —
+    /// matching the platform semantics where the thread is only registered,
+    /// never owned. No-op when there is no stream.
     pub fn suspend_stream(&mut self) {
         if self._stream.is_none() {
             return;
@@ -175,9 +182,10 @@ impl AudioEngine {
         drop(self._stream.take());
     }
 
-    /// 恢复音频输出：若流已被 [`Self::suspend_stream`] 释放，则以挂起前配置
-    /// 重新打开设备并注册回调；活动节点/音量/播放位置原样保留。流仍活跃时为
-    /// 空操作。
+    /// Resumes audio output: if [`Self::suspend_stream`] released the stream,
+    /// reopen the device with the pre-suspend configuration and re-register
+    /// the callback; active nodes, volumes and playback positions are
+    /// preserved. No-op while the stream is still active.
     pub fn resume_stream(&mut self) {
         if self._stream.is_some() {
             return;
@@ -220,11 +228,13 @@ impl AudioEngine {
         CpalStream::new(ctx, cpal_config).map_err(|e| AudioError::Init(e.to_string()))
     }
 
-    /// 必须每帧调用一次（最好在帧结束时）。
+    /// Must be called once per frame, preferably at the end of the frame.
     ///
-    /// 移除已播放完成的声音并推进 Firewheel 上下文。存活判定见
-    /// [`should_keep_sound`]：新创建的采样器在音频线程处理第一个块之前一直报告
-    /// `Stopped`，所以必须用「是否观察到过 `Playing`」来区分「未开始」和「已结束」。
+    /// Removes finished sounds and advances the Firewheel context. See
+    /// [`should_keep_sound`] for the liveness rule: a freshly created sampler
+    /// reports `Stopped` until the audio thread processes its first block, so
+    /// "has been observed `Playing`" is what separates "not started" from
+    /// "finished".
     pub fn update(&mut self) {
         let has_output = self._stream.is_some();
         let ctx = &mut self.ctx;
@@ -243,10 +253,11 @@ impl AudioEngine {
         let _ = self.ctx.update();
     }
 
-    /// 播放解码后的声音。返回播放控制句柄。
+    /// Plays decoded audio and returns a playback control handle.
     ///
-    /// `audio.samples` 按声道交错排列（立体声为 L,R,L,R）。长度不是声道数
-    /// 整数倍时，尾部不足一整帧的样本会被丢弃——见 [`deinterleave`]。
+    /// `audio.samples` is interleaved by channel (`L,R,L,R` for stereo). When
+    /// the length is not a multiple of the channel count, trailing samples
+    /// that do not fill a whole frame are dropped — see [`deinterleave`].
     pub fn play(&mut self, audio: &AudioData) -> PlaybackHandle {
         let channels = audio.channels.max(1) as usize;
         let num_frames = audio.samples.len() / channels;
@@ -262,7 +273,7 @@ impl AudioEngine {
             );
         }
 
-        // 将交错格式转换为平面格式，用于 DecodedAudioF32。
+        // Convert interleaved samples to planar layout for DecodedAudioF32.
         let planar = deinterleave(&audio.samples, channels);
 
         let sample_rate = match NonZeroU32::new(audio.sample_rate) {
@@ -273,12 +284,12 @@ impl AudioEngine {
             }
         };
 
-        // 将样本资源构建为 ArcGc<dyn SampleResource>。
+        // Build the sample resource as an ArcGc<dyn SampleResource>.
         let decoded_f32 = symphonium::DecodedAudioF32::new(planar, sample_rate, sample_rate);
         let decoded: symphonium::DecodedAudio = decoded_f32.into();
         let resource = firewheel::dyn_symphonium_resource(decoded);
 
-        // 创建带有初始状态的采样器节点。
+        // Create the sampler node with its initial state.
         let sampler = SamplerNode {
             volume: Volume::from_percent(self.master_volume * 100.0),
             play: Notify::new(true),
@@ -302,8 +313,9 @@ impl AudioEngine {
             }
         };
 
-        // 采样器节点把自己的 `SamplerState` 注册为 node state —— 这是观察
-        // 播放完成的唯一通道（Firewheel 不提供播放结束事件）。
+        // The sampler node registers its `SamplerState` as node state — the
+        // only channel for observing playback completion, since Firewheel
+        // emits no playback-finished event.
         let Some(state) = self.ctx.node_state::<SamplerState>(node_id).cloned() else {
             ::log::error!(
                 "Sampler node {node_id:?} exposes no SamplerState; cannot track playback"
@@ -312,11 +324,11 @@ impl AudioEngine {
             return PlaybackHandle(0);
         };
 
-        // 将样本资源加入队列。
         self.ctx
             .queue_event_for(node_id, SamplerNode::set_dyn_sample_event(resource));
 
-        // 立体声输出上插一个实时音量 / 声像节点（#508）；单声道设备保持旧链路。
+        // Insert a real-time volume/pan node on stereo outputs (#508); mono
+        // devices keep the direct chain.
         let pan_node = if self.channels >= 2 {
             let pan = VolumePanNode::from_pan(0.0);
             match self.ctx.add_node(pan, None) {
@@ -331,11 +343,13 @@ impl AudioEngine {
             None
         };
 
-        // 连接到图形输出。单声道连接 (0, 0)，立体声连接立体声对。
+        // Connect to the graph output. Mono connects (0, 0); stereo connects
+        // the stereo pair.
         let out = self.ctx.graph_out_node_id();
         let res = match pan_node {
             Some(pan_id) => {
-                // 采样器在立体声设备上始终配置为 STEREO（mono_to_stereo = true）。
+                // The sampler is always configured as STEREO on stereo devices
+                // (`mono_to_stereo = true`).
                 self.ctx
                     .connect(node_id, pan_id, &[(0, 0), (1, 1)], false)
                     .and_then(|_| self.ctx.connect_stereo(pan_id, out, false))
@@ -368,7 +382,7 @@ impl AudioEngine {
         id
     }
 
-    /// 立即停止声音。
+    /// Stops a sound immediately.
     pub fn stop(&mut self, handle: &PlaybackHandle) {
         if let Some(idx) = self.active.iter().position(|s| s.handle == *handle) {
             let sound = self.active.swap_remove(idx);
@@ -379,7 +393,7 @@ impl AudioEngine {
         }
     }
 
-    /// 设置正在播放的声音的音量（0.0 = 静音，1.0 = 原始音量）
+    /// Sets the volume of a playing sound (0.0 = silent, 1.0 = original).
     pub fn set_volume(&mut self, handle: &PlaybackHandle, volume: f32) {
         let Some(s) = self.active.iter_mut().find(|s| s.handle == *handle) else {
             return;
@@ -390,10 +404,12 @@ impl AudioEngine {
             .queue_event_for(s.node_id, s.sampler.sync_volume_event());
     }
 
-    /// 实时设置声像：`-1` 全左、`0` 居中、`+1` 全右。
+    /// Sets the pan in real time: `-1` full left, `0` center, `+1` full right.
     ///
-    /// 立体声设备上通过播放链里的 `VolumePanNode` 平滑生效，不需要重播片段；
-    /// 单声道设备没有左右声道，调用是空操作。非有限值忽略。
+    /// On stereo devices this takes effect smoothly through the
+    /// `VolumePanNode` in the playback chain, without replaying the clip; mono
+    /// devices have no left/right channels, so the call is a no-op.
+    /// Non-finite values are ignored.
     pub fn set_pan(&mut self, handle: &PlaybackHandle, pan: f32) {
         if !pan.is_finite() {
             return;
@@ -410,13 +426,13 @@ impl AudioEngine {
             pan_id,
             NodeEventType::Param {
                 data: ParamData::F32(pan),
-                // VolumePanNode 字段顺序：volume(0), pan(1), ...
+                // VolumePanNode field order: volume(0), pan(1), ...
                 path: ParamPath::Single(1),
             },
         );
     }
 
-    /// 暂停声音（冻结播放位置）。
+    /// Pauses a sound (freezes its playback position).
     pub fn pause(&mut self, handle: &PlaybackHandle) {
         let Some(s) = self.active.iter_mut().find(|s| s.handle == *handle) else {
             return;
@@ -426,7 +442,7 @@ impl AudioEngine {
             .queue_event_for(s.node_id, s.sampler.sync_play_event());
     }
 
-    /// 恢复暂停的声音
+    /// Resumes a paused sound.
     pub fn resume(&mut self, handle: &PlaybackHandle) {
         let Some(s) = self.active.iter_mut().find(|s| s.handle == *handle) else {
             return;
@@ -436,10 +452,11 @@ impl AudioEngine {
             .queue_event_for(s.node_id, s.sampler.sync_play_event());
     }
 
-    /// 检查声音当前是否正在播放。
+    /// Checks whether a sound is currently playing.
     ///
-    /// 采样器由音频线程驱动：刚 `play()` 后、音频线程处理第一个音频块之前，
-    /// 这里会返回 `false`。暂停中的声音返回 `false`。
+    /// The sampler is driven by the audio thread: right after `play()`, and
+    /// until the audio thread processes its first block, this returns `false`.
+    /// Paused sounds also return `false`.
     pub fn is_playing(&self, handle: &PlaybackHandle) -> bool {
         let Some(s) = self.active.iter().find(|s| s.handle == *handle) else {
             return false;
@@ -447,29 +464,30 @@ impl AudioEngine {
         s.state.playback_state() == PlaybackState::Playing
     }
 
-    /// 立即停止所有正在播放的声音。
+    /// Stops all playing sounds immediately.
     pub fn stop_all(&mut self) {
         for s in self.active.drain(..) {
             let _ = self.ctx.remove_node(s.node_id);
         }
     }
 
-    /// 设置主音量（0.0–1.0）。影响下一步扩展播放的声音。
+    /// Sets the master volume (0.0–1.0). Affects sounds started by subsequent
+    /// `play()` calls.
     pub fn set_master_volume(&mut self, volume: f32) {
         self.master_volume = volume.clamp(0.0, 1.0);
     }
 
-    /// 当前主音量
+    /// Current master volume.
     pub fn master_volume(&self) -> f32 {
         self.master_volume
     }
 
-    /// 音频流是否正在运行。
+    /// Whether the audio stream is running.
     pub fn is_active(&self) -> bool {
         self._stream.is_some()
     }
 
-    /// 当前活跃的声音数量。
+    /// Number of currently active sounds.
     pub fn active_count(&self) -> usize {
         self.active.len()
     }
@@ -484,16 +502,20 @@ impl Drop for AudioEngine {
     }
 }
 
-/// 判断一个活动声音在 `update()` 时是否应继续保留。
+/// Decides whether an active sound should be kept by `update()`.
 ///
-/// `playback_state` 来自音频线程，`seen_playing` 记录本声音是否已经真正开始播放，
-/// `has_output` 表示当前是否真的有音频流在消费图（设备打不开时为 `false`）。
+/// `playback_state` comes from the audio thread, `seen_playing` records
+/// whether this sound has actually started playing, and `has_output` reports
+/// whether an audio stream is currently consuming the graph (`false` when the
+/// device could not be opened).
 ///
-/// 规则：
-/// - `Playing`：记住「已开始」并保留；
-/// - `Paused`：保留，`resume()` 才能续播；
-/// - `Stopped`：只在「从未开始」且「确实有输出」时保留（音频线程可能还没处理到
-///   第一个块）；已经播过或根本没有输出时视为结束/不可能播放，移除节点。
+/// Rules:
+/// - `Playing`: remember "started" and keep it;
+/// - `Paused`: keep it so `resume()` can continue it;
+/// - `Stopped`: keep it only when it never started and output really exists
+///   (the audio thread may not have processed the first block yet); if it has
+///   played before or there is no output at all, treat it as finished /
+///   impossible to play and remove the node.
 fn should_keep_sound(
     playback_state: PlaybackState,
     seen_playing: &mut bool,
@@ -509,12 +531,12 @@ fn should_keep_sound(
     }
 }
 
-/// 把交错排列的样本拆成每个声道一条平面缓冲。
+/// Splits interleaved samples into one planar buffer per channel.
 ///
-/// `channels` 为 0 时按单声道处理。返回的每条缓冲长度都是
-/// `samples.len() / channels`；尾部不足一整帧的样本被丢弃，所以
-/// `planar[ch][frame]` 的下标永远在范围内（`samples.len() % channels != 0`
-/// 时不再越界 panic）。
+/// `channels` of 0 is treated as mono. Every returned buffer has length
+/// `samples.len() / channels`; trailing samples that do not fill a whole frame
+/// are dropped, so `planar[ch][frame]` is always in bounds (no out-of-bounds
+/// panic when `samples.len() % channels != 0`).
 fn deinterleave(samples: &[f32], channels: usize) -> Vec<Vec<f32>> {
     let channels = channels.max(1);
     let num_frames = samples.len() / channels;
@@ -691,8 +713,10 @@ mod tests {
 
     #[test]
     fn update_does_not_panic_and_follows_stream_availability() {
-        // 没有音频设备时，play() 仍要建立可跟踪的活动声音；随后 update() 才能清掉
-        // 永远不会播放的节点。设备可用时则必须继续保留（音频线程可能还没跑第一块）。
+        // Without an audio device, play() must still create a trackable active
+        // sound; update() can then drop the node that would never play. With a
+        // device available the sound must be kept (the audio thread may not
+        // have processed the first block yet).
         let mut engine = AudioEngine::new(AudioConfig::default()).expect("engine new");
         let handle = engine.play(&dummy_audio(2));
         assert!(handle.is_valid());

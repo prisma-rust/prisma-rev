@@ -58,7 +58,7 @@ impl DirtyFlags {
 
 /// Per-frame change detector for [`SceneChanges`].
 ///
-/// On the 第一个 调用 to [`update`](Self::update) (no 上一个 快照 every
+/// On the first call to [`update`](Self::update) (no previous snapshot) every
 /// field is reported dirty.  Subsequent calls return only the fields whose
 /// values actually changed.
 pub struct DirtyRouter {
@@ -92,13 +92,13 @@ impl DirtyRouter {
         dirty
     }
 
-    /// 比较 `new` against the 上一个 快照 and return [`DirtyFlags`].
+    /// Compare `new` against the previous snapshot and return [`DirtyFlags`].
     ///
-    /// The 上一个 快照 is **replaced** with a clone of `new` after the
-    /// 比较 so the 下一个 帧 can diff against the 当前 状态
+    /// The previous snapshot is **replaced** with a clone of `new` after the
+    /// comparison, so the next frame can diff against the current state.
     pub fn update(&mut self, new: &SceneChanges) -> DirtyFlags {
         let Some(ref prev) = self.prev else {
-            // 第一个 帧 everything is dirty.
+            // First frame: everything is dirty.
             self.prev = Some(Box::new(new.clone()));
             return DirtyFlags::all();
         };

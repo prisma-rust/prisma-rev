@@ -1,18 +1,18 @@
-//! Radiance RGBE 高动态范围 loader for the IBL environment 映射表
+//! Radiance RGBE (`.hdr`) loader for the IBL environment map.
 //!
-//! Decodes the 标准 32-bit RLE RGBE 格式 into a 线性 `Vec<f32>` RGBA
-//! 缓冲区 (values can exceed 1.0 — that's the point of 高动态范围 The engine uploads
-//! this 直通 into a floating-point equirectangular 纹理 the PBR 着色器
+//! Decodes the standard 32-bit RLE RGBE format into a linear `Vec<f32>` RGBA
+//! buffer (values can exceed 1.0 — that's the point of HDR). The engine uploads
+//! this straight into a floating-point equirectangular texture; the PBR shader
 //! samples it (with mips) for image-based lighting.
 
 use anyhow::{bail, Context as _};
 
-/// 解码 a Radiance 高动态范围 (RGBE) byte 缓冲区 into `(rgba_f32, 宽度 高度
-/// `rgba_f32` is row-major, 4 floats per 像素 (R,G,B,1).
+/// Decode a Radiance `.hdr` (RGBE) byte buffer into `(rgba_f32, width, height)`.
+/// `rgba_f32` is row-major, 4 floats per pixel (R,G,B,1).
 pub fn load_rgbe(bytes: &[u8]) -> anyhow::Result<(Vec<f32>, u32, u32)> {
     let mut pos = 0usize;
 
-    // --- Header: lines until the 分辨率 line ("-Y H +X W"). ---
+    // --- Header: lines until the resolution line ("-Y H +X W"). ---
     let mut width = 0u32;
     let mut height = 0u32;
     let mut saw_resolution = false;
@@ -24,7 +24,7 @@ pub fn load_rgbe(bytes: &[u8]) -> anyhow::Result<(Vec<f32>, u32, u32)> {
         let line = &bytes[pos..pos + line_end];
         pos += line_end + 1;
         if line.starts_with(b"-Y") {
-            // 格式 "-Y <H> +X <W>"
+            // Format: "-Y <H> +X <W>"
             let mut it = line
                 .split(|&b| b == b' ' || b == b'\t')
                 .filter(|s| !s.is_empty());
@@ -112,7 +112,7 @@ pub fn load_rgbe(bytes: &[u8]) -> anyhow::Result<(Vec<f32>, u32, u32)> {
                 }
             }
         } else {
-            // Uncompressed: 4 字节 per 像素 row-major.
+            // Uncompressed: 4 bytes per pixel, row-major.
             let row_len = (width as usize)
                 .checked_mul(4)
                 .context("HDR row size overflow")?;
@@ -132,7 +132,7 @@ pub fn load_rgbe(bytes: &[u8]) -> anyhow::Result<(Vec<f32>, u32, u32)> {
             pos += row_len;
         }
 
-        // 转换 this scanline's RGBE → 浮点数 RGB 集合 A = 1.
+        // Convert this scanline's RGBE → float RGB, set A = 1.
         for x in 0..width as usize {
             let base = out + x * 4;
             let (r, g, b, e) = (rgba[base], rgba[base + 1], rgba[base + 2], rgba[base + 3]);
@@ -148,7 +148,7 @@ pub fn load_rgbe(bytes: &[u8]) -> anyhow::Result<(Vec<f32>, u32, u32)> {
     Ok((rgba, width, height))
 }
 
-/// Radiance RGBE → 线性 浮点数 RGB
+/// Radiance RGBE → linear float RGB.
 #[inline]
 fn rgbe_to_float(r: f32, g: f32, b: f32, e: f32) -> (f32, f32, f32) {
     if e == 0.0 {

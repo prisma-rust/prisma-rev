@@ -1,8 +1,8 @@
 //! # prism-cook
 //!
-//! Command-line 接口 for the PrismaRev 资源 管线
+//! Command-line interface for the PrismaRev Resource Pipeline.
 //!
-//! ## 用法
+//! ## Usage
 //!
 //! ```bash
 //! # Initialize a new project
@@ -11,19 +11,19 @@
 //! # Scan the Assets/ directory
 //! prism-cook scan
 //!
-//! # 导入 all assets (run importers + cache)
+//! # Import all assets (run importers + cache)
 //! prism-cook 导入
 //!
-//! # 构建 a .pak for distribution
+//! # Build a .pak for distribution
 //! prism-cook 构建 --output game.pak --compression 3
 //!
 //! # Validate an existing .pak
 //! prism-cook validate game.pak
 //!
-//! # 列表 registered assets
+//! # List registered assets
 //! prism-cook 列表
 //!
-//! # Inspect a specific 资源
+//! # Inspect a specific asset
 //! prism-cook inspect 10001
 //! ```
 
@@ -42,7 +42,7 @@ use unicode_width::UnicodeWidthStr;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// 格式 a byte count for human-readable display.
+/// Format a byte count for human-readable display.
 fn format_bytes(bytes: u64) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = KB * 1024.0;
@@ -63,9 +63,9 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-/// Pad a 字符串 to a 目标 terminal display 宽度 accounting for CJK
-/// characters (which occupy 2 columns). If `s` is wider than 宽度 no
-/// 填充 is added.
+/// Pad a string to a target terminal display width, accounting for CJK
+/// characters (which occupy 2 columns).  If `s` is wider than `width`, no
+/// padding is added.
 fn pad_display(s: &str, width: usize) -> String {
     let sw = UnicodeWidthStr::width(s);
     if sw >= width {
@@ -77,8 +77,8 @@ fn pad_display(s: &str, width: usize) -> String {
 }
 
 /// Print a bilingual key-value pair with the `/` aligned.
-/// `key_en_width` is the display 宽度 to pad the EN text to, so that
-/// ` / ` starts at the same 列 across all rows.
+/// `key_en_width` is the display width to pad the EN text to, so that
+/// ` / ` starts at the same column across all rows.
 fn kv(key_en: &str, key_cn: &str, value: &str, key_en_width: usize) {
     let label = format!("{} / {}", pad_display(key_en, key_en_width), key_cn);
     println!("  {}  {}", label, value);
@@ -117,7 +117,7 @@ enum Commands {
         dir: Option<PathBuf>,
     },
 
-    /// Scan the Assets/ directory and 更新 the database.
+    /// Scan the Assets/ directory and update the database.
     /// 扫描 Assets/ 目录并更新数据库
     Scan,
 
@@ -325,7 +325,7 @@ fn cmd_import(root: &Path, force: bool, _cli: &Cli) -> anyhow::Result<()> {
     let registry = Arc::new(default_importer_registry());
     let pipeline = ImportPipeline::new(registry);
 
-    // 第一个 register all 源 files in the DB so we have records.
+    // First, register all source files in the DB so we have records.
     walk_directory(&assets, &mut |path| {
         let relative = path
             .strip_prefix(&assets)
@@ -341,7 +341,7 @@ fn cmd_import(root: &Path, force: bool, _cli: &Cli) -> anyhow::Result<()> {
         }
     });
 
-    // Now 导入 each file.
+    // Now import each file.
     let count = db.len();
     let mut imported = 0u32;
     let mut cached = 0u32;
@@ -511,12 +511,12 @@ fn cmd_build(
     let pak = builder.build()?;
     std::fs::write(output, &pak)?;
 
-    // ── 写入 a human-readable .meta.json alongside the .pak ──────────
+    // ── Write a human-readable .meta.json alongside the .pak ──────────
     //
     // This file is purely for inspection (validate / pak-info).  It
     // pairs the AssetDatabase records (which have paths, types,
     // importer names) with the per-asset sizes from the actual .pak.
-    // The 运行时 never reads this file.
+    // The runtime never reads this file.
     let meta_path = output.with_extension("pak.meta.json");
     if let Ok(reader) = prism_asset::package::PackageReader::from_bytes(&pak) {
         let mut assets = Vec::new();
@@ -601,7 +601,7 @@ fn cmd_validate(pak_path: &Path) -> anyhow::Result<()> {
     );
     kv("✅  Checksum", "校验", "PASS", 12);
 
-    // Optionally enrich with the .pak.meta.json if it 存在 alongside.
+    // Optionally enrich with the .pak.meta.json if it exists alongside.
     let meta_path = pak_path.with_extension("pak.meta.json");
     let meta_assets: std::collections::HashMap<String, serde_json::Value> = (|| {
         let text = std::fs::read_to_string(&meta_path).ok()?;
@@ -620,7 +620,7 @@ fn cmd_validate(pak_path: &Path) -> anyhow::Result<()> {
     println!();
     println!("   Assets / 资源清单:");
     println!();
-    // 列 widths in display columns.
+    // Column widths in display columns.
     const COL_ID: usize = 12;
     const COL_TYPE: usize = 12;
     const COL_SIZE: usize = 12;
@@ -637,7 +637,7 @@ fn cmd_validate(pak_path: &Path) -> anyhow::Result<()> {
         hdr("Comp", "压缩", COL_CSIZE),
         hdr("Ratio", "比率", COL_RATIO),
     );
-    // Separator — all columns same 宽度
+    // Separator — all columns same width.
     println!(
         "  {}  {}  {}  {}  {}  {}",
         "-".repeat(COL_ID),
@@ -651,7 +651,7 @@ fn cmd_validate(pak_path: &Path) -> anyhow::Result<()> {
         let id_hex = format!("{:#x}", record.id);
         let meta = meta_assets.get(&id_hex);
 
-        // Best-effort 标签 from metadata, or fall 后 to 类型 name + raw ID.
+        // Best-effort label from metadata, or fall back to type name + raw ID.
         let label: String = meta
             .and_then(|m| m.get("path").and_then(|p| p.as_str()))
             .map(|p| {
@@ -672,7 +672,7 @@ fn cmd_validate(pak_path: &Path) -> anyhow::Result<()> {
         let ratio_str = if record.compressed_size > 0 && record.size > 0 {
             let ratio = record.compressed_size as f64 / record.size as f64;
             let pct = (ratio * 100.0).round();
-            // Only show 压缩 比率 when it actually saved 空间 (< 95%).
+            // Only show compression ratio when it actually saved space (< 95%).
             if pct < 95.0 {
                 format!("{pct:.0}%")
             } else {
@@ -689,7 +689,7 @@ fn cmd_validate(pak_path: &Path) -> anyhow::Result<()> {
             "-".to_owned()
         };
 
-        // All columns left-aligned using Unicode-aware 填充
+        // All columns left-aligned using Unicode-aware padding.
         println!(
             "  {}  {}  {}  {}  {}  {}",
             pad_display(&id_hex, COL_ID),
@@ -736,7 +736,7 @@ fn cmd_inspect(root: &Path, id_or_path: &str) -> anyhow::Result<()> {
 
     let db = AssetDatabase::load(db_path(root))?;
 
-    // Try to parse as numeric ID 第一个
+    // Try to parse as numeric ID first.
     let record = if let Ok(num) = id_or_path.parse::<u64>() {
         db.get(prism_asset::core::AssetId::from_raw(num))
     } else {

@@ -1,16 +1,19 @@
-//! `prism-editor-mcp`：把 `prism-editor-api` 的数据层以 MCP 工具形式暴露给
-//! agent（stdio，一行一条 JSON-RPC 消息）。
+//! `prism-editor-mcp` exposes the `prism-editor-api` data layer as MCP tools
+//! for agents (stdio, one JSON-RPC message per line).
 //!
-//! 用法：
+//! Usage:
 //!
 //! ```text
 //! prism-editor-mcp --project projects/fishing
 //! ```
 //!
-//! 项目根也可以用 `PRISMREV_PROJECT` 指定；都没给时按 `assets/` 向上找。
+//! The project root can also come from `PRISMREV_PROJECT`; when neither is
+//! given, it walks up looking for `assets/`.
 //!
-//! 设计边界：这个进程**不链接** engine / render，也不开 Vulkan —— 它只读写
-//! `.scene.json`、跑反射校验，需要画面时用 `screenshot` 起一个子进程。
+//! Design boundary: this process does **not** link engine / render and does
+//! not open Vulkan. It only reads and writes `.scene.json` and runs reflection
+//! validation; when it needs an image it spawns a child process through
+//! `screenshot`.
 
 mod editor_egui;
 mod game;
@@ -51,7 +54,7 @@ fn main() {
                 continue;
             }
         };
-        // 通知没有 id，不回复。
+        // Notifications carry no `id`, so they get no reply.
         if request.is_notification() {
             continue;
         }

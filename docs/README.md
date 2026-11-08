@@ -12,6 +12,7 @@
 | 了解引擎定位、架构原则、渲染/资源管线 | [`DESIGN.md`](DESIGN.md) |
 | 查代码地图、硬约束、坐标约定、工作流红线 | [`../AGENTS.md`](../AGENTS.md) |
 | 提 PR / 跑自检 / 分支与提交规范 | [`ai-workflow.md`](ai-workflow.md) |
+| 写代码注释 / 统一注释风格 | [`code-style.md`](code-style.md) |
 | 给人看的贡献简版 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) |
 | 查踩过的坑和根因 | [`lessons-learned.md`](lessons-learned.md) |
 | 改反射、RTTIBin、RSCN | [`REFLECT.md`](REFLECT.md) |

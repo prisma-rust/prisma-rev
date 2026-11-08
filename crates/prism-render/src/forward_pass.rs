@@ -147,68 +147,68 @@ struct OutlinePush {
     _pad: [f32; 3],
 }
 
-/// 向前 scene pass (bindless PBR + neutral ambient + shadow 映射表 targeting
-/// the 交换链
+/// Forward scene pass (bindless PBR + neutral ambient + shadow map) targeting
+/// the swapchain.
 ///
-/// 描述符 集合 布局 (mirrors `scene_frag.slang`):
-/// 集合 0 - per-frame UBO 绑定 0) + 材质 SSBO 绑定 1)
-/// one 描述符 集合 per frame-in-flight (UBO 缓冲区 differs)
-/// 集合 1 - bindless 纹理 表 (samplers + SRV 数组 owned by
+/// Descriptor set layout (mirrors `scene_frag.slang`):
+///   set 0 - per-frame UBO (binding 0) + material SSBO (binding 1)
+///            one descriptor set per frame-in-flight (UBO buffer differs)
+///   set 1 - bindless texture table (samplers + SRV array, owned by
 ///            `RenderTextureManager::bindless`)
-/// 集合 2 - IBL resources (3 combined 图像 samplers: env, irradiance, prefiltered)
-/// 集合 3 - shadow 映射表 (SAMPLED_IMAGE + 比较 采样器
-/// 集合 4 - previous-frame GTAO R8 可见性 纹理 (combined 图像 采样器
+///   set 2 - IBL resources (3 combined image samplers: env, irradiance, prefiltered)
+///   set 3 - shadow map (SAMPLED_IMAGE + comparison SAMPLER)
+///   set 4 - previous-frame GTAO R8 visibility texture (combined image sampler)
 pub struct ForwardPass {
     /// 高动态范围 intermediate 颜色 格式 (the ForwardPass no longer targets the
-    /// 交换链 directly; PostPass tonemaps 高动态范围 -> 交换链
+    /// swapchain directly; PostPass tonemaps HDR -> swapchain).
     color_format: vk::Format,
-    /// 格式 of the view-space 法线 MRT 附件 (SV_Target1). Written by
-    /// the scene 片元 着色器 and 读取 by the GTAO pass
+    /// Format of the view-space normal MRT attachment (SV_Target1). Written by
+    /// the scene fragment shader and read by the GTAO pass.
     normal_format: vk::Format,
     /// #883 Phase 2: screen-space motion vectors (SV_Target2). RGBA16F keeps
     /// linear sampling universally available; only .xy are used.
     velocity_format: vk::Format,
-    /// Bindless handle for the BRDF LUT (registered in the bindless 纹理 表
+    /// Bindless handle for the BRDF LUT (registered in the bindless texture table).
     brdf_handle: u32,
     /// Byte stride between camera slots in the per-frame UBO (#461).
     camera_stride: u32,
-    /// One 帧缓冲 per 交换链 图像 With N 交换链 images and N
-    /// frames in flight, several 命令 buffers can 引用 their
+    /// One framebuffer per swapchain image. With N swapchain images and N
+    /// frames in flight, several command buffers can reference their
     /// respective framebuffers concurrently - so we can't keep just one
-    /// rotating 帧缓冲 (destroying it while a prior frame's 命令
-    /// 缓冲区 still references it triggers
+    /// rotating framebuffer (destroying it while a prior frame's command
+    /// buffer still references it triggers
     /// VUID-vkDestroyFramebuffer-framebuffer-00892 and cascades into a
     /// device-lost). Indexed by `image_index` from `acquire_next_image`.
     framebuffers: Vec<Option<vk::Framebuffer>>,
     /// One 高动态范围 颜色 图像 per 交换链 图像 (the ForwardPass 渲染 目标
     /// replacing the old direct-to-swapchain path). Reused by PostPass as its
-    /// sampled 输入
+    /// sampled input.
     color_images: Vec<Option<crate::render_pass::NormalImage>>,
-    /// One 深度 图像 per 交换链 图像 (each 帧缓冲 references its
-    /// own 深度 视图 并行 to `framebuffers`.
+    /// One depth image per swapchain image (each framebuffer references its
+    /// own depth view). Parallel to `framebuffers`.
     depth_images: Vec<Option<crate::render_pass::DepthImage>>,
-    /// One view-space 法线 图像 per 交换链 图像 (MRT SV_Target1). Same
-    /// per-slot 生命周期 as `depth_images`: rebuilt only when its 交换链
-    /// 视图 changes.
+    /// One view-space normal image per swapchain image (MRT SV_Target1). Same
+    /// per-slot lifetime as `depth_images`: rebuilt only when its swapchain
+    /// view changes.
     normal_images: Vec<Option<crate::render_pass::NormalImage>>,
     /// One screen-space motion-vector image per swapchain image (#883 Phase 2).
     velocity_images: Vec<Option<crate::render_pass::NormalImage>>,
-    /// Cached image_index validity markers (one per 槽 `set_target` uses
-    /// `framebuffers[idx].is_some()` as the 当前 check; this field is
-    /// kept for parity with the old swapchain-view tracking 模式
+    /// Cached image_index validity markers (one per slot). `set_target` uses
+    /// `framebuffers[idx].is_some()` as the "current" check; this field is
+    /// kept for parity with the old swapchain-view tracking pattern.
     target_views: Vec<vk::ImageView>,
-    /// Number of 交换链 images. 集合 by `set_image_count` (called from
-    /// `GraphRenderer::recreate_swapchain` after the 交换链 is recreated)
-    /// and used by `ensure_target` so the per-image 帧缓冲 vectors are
-    /// sized correctly. Decouples 帧缓冲 (re)creation from
-    /// `GraphRenderer`'s per-frame 调用 sequence.
+    /// Number of swapchain images. Set by `set_image_count` (called from
+    /// `GraphRenderer::recreate_swapchain` after the swapchain is recreated)
+    /// and used by `ensure_target` so the per-image framebuffer vectors are
+    /// sized correctly. Decouples framebuffer (re)creation from
+    /// `GraphRenderer`'s per-frame call sequence.
     image_count: usize,
-    /// 图 资源 handles for this pass's outputs, created in `setup` and
-    /// published 视图 registered) in 执行 so downstream passes
-    /// (`GtaoPass`, `PostPass`) 读取 them by handle instead of `GraphRenderer`
+    /// Graph resource handles for this pass's outputs, created in `setup` and
+    /// published (view registered) in `execute` so downstream passes
+    /// (`GtaoPass`, `PostPass`) read them by handle instead of `GraphRenderer`
     /// poking into `ForwardPass` internals. The 图 does not allocate the
     /// underlying images (ForwardPass still owns its framebuffers in PR-1);
-    /// only the handle->view 映射 lives in `GraphResources`.
+    /// only the handle->view mapping lives in `GraphResources`.
     out_color_h: ResourceHandle,
     out_depth_h: ResourceHandle,
     out_normal_h: ResourceHandle,
@@ -228,24 +228,24 @@ pub struct ForwardPass {
     /// `POLYGON_MODE_LINE` + 负深度 bias 压在填充面上。
     shaded_wireframe_pipeline: Option<GraphicsPipeline>,
     ibl_descriptor_set: vk::DescriptorSet,
-    /// IBL 描述符 集合 布局 (borrowed from `IblResources`). Used by the
-    /// skybox pass to 构建 its 管线 布局
+    /// IBL descriptor set layout (borrowed from `IblResources`). Used by the
+    /// skybox pass to build its pipeline layout.
     ibl_layout: vk::DescriptorSetLayout,
     shadow_ds_layout: Option<vk::DescriptorSetLayout>,
     shadow_descriptor_set: vk::DescriptorSet,
     shadow_ds_pool: Option<vk::DescriptorPool>,
-    /// 集合 0 - per-frame-in-flight 描述符 sets 绑定 the 帧 UBO
-    /// 绑定 0) + the 材质 SSBO 绑定 1). Indexed by
-    /// `frame_index` (frame-in-flight, 0..N), NOT 交换链 image_index.
+    /// set 0 - per-frame-in-flight descriptor sets binding the frame UBO
+    /// (binding 0) + the material SSBO (binding 1). Indexed by
+    /// `frame_index` (frame-in-flight, 0..N), NOT swapchain image_index.
     frame_sets: Vec<vk::DescriptorSet>,
-    /// 集合 0 布局 帧 UBO + materials SSBO). Owned + destroyed on 放置
+    /// set 0 layout (frame UBO + materials SSBO). Owned + destroyed on drop.
     frame_set_layout: Option<vk::DescriptorSetLayout>,
-    /// 池 backing `frame_sets`. Owned + destroyed on 放置
+    /// Pool backing `frame_sets`. Owned + destroyed on drop.
     frame_set_pool: Option<vk::DescriptorPool>,
-    /// 集合 1 - bindless 纹理 表 描述符 集合 (from
+    /// set 1 - bindless texture table descriptor set (from
     /// `RenderTextureManager::bindless()`). Not owned by ForwardPass.
     bindless_set: vk::DescriptorSet,
-    /// 集合 1 布局 (from `BindlessTextureTable::layout`). Borrowed for
+    /// set 1 layout (from `BindlessTextureTable::layout`). Borrowed for
     /// pipeline-layout creation; not destroyed by ForwardPass.
     bindless_layout: vk::DescriptorSetLayout,
     /// 光源 SSBO (集合 0 绑定 2): host-visible 缓冲区 holding up to
@@ -262,28 +262,28 @@ pub struct ForwardPass {
     /// palettes; read by the vertex stage as set 0 binding 4.
     prev_model_buffers: Vec<vk::Buffer>,
     prev_model_memories: Vec<vk::DeviceMemory>,
-    /// 集合 4 - previous-frame GTAO R8 可见性 纹理 (combined 图像
-    /// 采样器 One 描述符 集合 per frame-in-flight so updating the 环境光遮蔽
-    /// 视图 for 帧 N doesn't disturb 帧 N-1's still-in-flight 集合
+    /// set 4 - previous-frame GTAO R8 visibility texture (combined image
+    /// sampler). One descriptor set per frame-in-flight so updating the AO
+    /// view for frame N doesn't disturb frame N-1's still-in-flight set.
     ao_ds_layout: Option<vk::DescriptorSetLayout>,
-    /// One 环境光遮蔽 描述符 集合 per frame-in-flight (parallels `frame_sets`).
+    /// One AO descriptor set per frame-in-flight (parallels `frame_sets`).
     ao_descriptor_sets: Vec<vk::DescriptorSet>,
     ao_ds_pool: Option<vk::DescriptorPool>,
     ao_sampler: vk::Sampler,
-    /// The 环境光遮蔽 视图 currently bound to each frame-in-flight's 环境光遮蔽 描述符
-    /// 集合 Tracked so we skip 冗余 描述符 rewrites.
+    /// The AO view currently bound to each frame-in-flight's AO descriptor
+    /// set. Tracked so we skip redundant descriptor rewrites.
     ao_views: Vec<vk::ImageView>,
-    /// 最后一个 时间 the AO_PROBE 调试 line in `set_ao` was logged; throttled to
-    /// once per 秒 so it doesn't flood the 对数 at 帧 rate.
+    /// Last time the AO_PROBE debug line in `set_ao` was logged; throttled to
+    /// once per second so it doesn't flood the log at frame rate.
     last_probe_log: Instant,
-    /// 集合 5 - probe 音量 全局光照 (borrowed from `SceneScope`, scene-level).
-    /// 绑定 0: 3D 纹理 (SAMPLED_IMAGE), 绑定 1: ProbeVolumeInfo UBO.
+    /// set 5 - probe volume GI (borrowed from `SceneScope`, scene-level).
+    /// binding 0: 3D texture (SAMPLED_IMAGE), binding 1: ProbeVolumeInfo UBO.
     gi_descriptor_set: vk::DescriptorSet,
-    /// 全局光照 描述符 集合 布局 (borrowed from `SceneScope`). Used for
+    /// GI descriptor set layout (borrowed from `SceneScope`). Used for
     /// pipeline-layout creation; NOT destroyed by ForwardPass.
     gi_layout: vk::DescriptorSetLayout,
-    /// Skybox background pass (draws the IBL env cubemap). Owns its 管线 +
-    /// set-2 (IBL env) 布局 borrows the IBL 描述符 集合
+    /// Skybox background pass (draws the IBL env cubemap). Owns its pipeline +
+    /// set-2 (IBL env) layout; borrows the IBL descriptor set.
     skybox: SkyboxPass,
     /// 2D sprite pass (instanced quads, bindless textures). Drawn after the
     /// 3D mesh list and before the debug gizmo; owns its pipeline + a
@@ -293,8 +293,8 @@ pub struct ForwardPass {
     /// Drawn after the opaque mesh list (depth test on, write off) and before
     /// the 2D sprite pass; owns its pipeline + a per-frame instance buffer.
     particles: crate::particle_pass::ParticlePass,
-    /// World-space XYZ orientation gizmo, drawn on 顶部 of the scene 深度
-    /// test 禁用 内置 lazily once the 渲染 pass 存在
+    /// World-space XYZ orientation gizmo, drawn on top of the scene (depth
+    /// test disabled). Built lazily once the render pass exists.
     gizmo: Option<Gizmo>,
     /// 地面参考网格 (Y = 0)，开启深度测试被场景几何体自然遮挡
     ground_grid: Option<GroundGrid>,
@@ -303,14 +303,14 @@ pub struct ForwardPass {
 impl ForwardPass {
     pub fn new(_swapchain_color_format: vk::Format) -> Self {
         Self {
-            // 高动态范围 intermediate 目标 线性 PostPass tonemaps this to the
-            // sRGB 交换链 The old `_swapchain_color_format` argument is
+            // HDR intermediate target (linear). PostPass tonemaps this to the
+            // sRGB swapchain. The old `_swapchain_color_format` argument is
             // kept for API stability; PostPass owns the swapchain-format
-            // 管线 + 渲染 pass
+            // pipeline + render pass.
             color_format: vk::Format::R16G16B16A16_SFLOAT,
-            // R16G16B16A16_SFLOAT: 有符号 浮点数 so view-space normals (which
-            // can be 负 in any axis) 存储 without bias/packing. 4th
-            // 通道 unused 着色器 writes 0).
+            // R16G16B16A16_SFLOAT: signed float so view-space normals (which
+            // can be negative in any axis) store without bias/packing. 4th
+            // channel unused (shader writes 0).
             normal_format: vk::Format::R16G16B16A16_SFLOAT,
             velocity_format: vk::Format::R16G16B16A16_SFLOAT,
             brdf_handle: u32::MAX,
@@ -367,31 +367,31 @@ impl ForwardPass {
         }
     }
 
-    /// Ensure the 帧缓冲 for `image_index` 存在 and is 内置 against the
-    /// 当前 extent. Returns the 帧缓冲 handle via
-    /// `self.framebuffers[image_index]` 读取 by 执行
+    /// Ensure the framebuffer for `image_index` exists and is built against the
+    /// current extent. Returns the framebuffer handle via
+    /// `self.framebuffers[image_index]` (read by `execute`).
     ///
-    /// With N 交换链 images and N frames in flight, several 命令 buffers
-    /// can be in flight at once - each referencing its own 帧缓冲 So we
-    /// keep **one 帧缓冲 per 交换链 image** (plus its own 高动态范围 颜色 +
-    /// 深度 + 法线 图像 and only rebuild an entry when the extent changed.
-    /// This avoids destroying a 帧缓冲 that a prior (still in-flight)
-    /// 命令 缓冲区 references (VUID-vkDestroyFramebuffer-framebuffer-00892).
+    /// With N swapchain images and N frames in flight, several command buffers
+    /// can be in flight at once - each referencing its own framebuffer. So we
+    /// keep **one framebuffer per swapchain image** (plus its own HDR color +
+    /// depth + normal image) and only rebuild an entry when the extent changed.
+    /// This avoids destroying a framebuffer that a prior (still in-flight)
+    /// command buffer references (VUID-vkDestroyFramebuffer-framebuffer-00892).
     ///
     /// `image_index` is the value returned by `acquire_next_image`;
-    /// `image_count` is `swapchain.views.len()` (so we can 大小 the per-slot
-    /// vectors on the 第一个 调用 or after a recreate).
+    /// `image_count` is `swapchain.views.len()` (so we can size the per-slot
+    /// vectors on the first call or after a recreate).
     pub fn set_image_count(&mut self, image_count: usize) {
         self.image_count = image_count;
     }
 
-    /// Idempotent per-frame (re)creation of this 交换链 image's
+    /// Idempotent per-frame (re)creation of this swapchain image's
     /// 帧缓冲 + HDR/depth/normal attachments. Called from `ForwardPass::
-    /// 执行 (driven by the `RenderGraph`) so 帧缓冲 lifecycle no
-    /// longer depends on `GraphRenderer` calling `set_target` every 帧
-    /// Rebuilds only the entry for `image_index` when it is 缺少 or the
-    /// 交换链 changed; safe against in-flight framebuffers (mirrors the
-    /// old `set_target` 契约
+    /// execute` (driven by the `RenderGraph`) so framebuffer lifecycle no
+    /// longer depends on `GraphRenderer` calling `set_target` every frame.
+    /// Rebuilds only the entry for `image_index` when it is missing or the
+    /// swapchain changed; safe against in-flight framebuffers (mirrors the
+    /// old `set_target` contract).
     /// 场景切换时切换 IBL 描述符 集合 句柄与 BRDF LUT 的 bindless 槽。
     /// set2 布局共享（不重建），仅替换 set 句柄并同步 skybox pass 绑定的 set2。
     pub fn set_ibl(&mut self, descriptor_set: vk::DescriptorSet, brdf_handle: u32) {
@@ -427,15 +427,15 @@ impl ForwardPass {
             return Ok(());
         }
 
-        // The 渲染 pass must exist before we 构建 a 帧缓冲 against it.
-        // `ensure_render_pass` is idempotent (early-returns once 集合
+        // The render pass must exist before we build a framebuffer against it.
+        // `ensure_render_pass` is idempotent (early-returns once set).
         self.ensure_render_pass(context)?;
 
-        // If the 交换链 图像 count changed (recreate with a different
-        // 图像 count) or the extent changed, tear everything 下 and 调整大小
-        // the per-image vectors. This is the only place we 销毁 framebuffers
+        // If the swapchain image count changed (recreate with a different
+        // image count) or the extent changed, tear everything down and resize
+        // the per-image vectors. This is the only place we destroy framebuffers
         // wholesale; per-frame we only (re)build the single entry for this
-        // `image_index` - so an in-flight frame's 帧缓冲 is never touched.
+        // `image_index` - so an in-flight frame's framebuffer is never touched.
         let swapchain_changed = self.target_views.len() != image_count || self.extent != extent;
         if swapchain_changed {
             self.drop_target(device);
@@ -448,15 +448,15 @@ impl ForwardPass {
             self.velocity_images = (0..image_count).map(|_| None).collect();
         }
 
-        // 构建 this image's 帧缓冲 + 颜色 + 深度 + 法线 if not
-        // already 当前
+        // Build this image's framebuffer + color + depth + normal if not
+        // already current.
         let already_current = self.framebuffers[idx].is_some();
         if !already_current {
             let rp = self
                 .render_pass
                 .context("ForwardPass: render_pass missing in set_target")?;
 
-            // 替换 the 高动态范围 颜色 图像 for this 槽
+            // Replace the HDR color image for this slot.
             let color_image =
                 crate::render_pass::NormalImage::new(context, extent, self.color_format)
                     .context("ForwardPass: create HDR color image")?;
@@ -465,7 +465,7 @@ impl ForwardPass {
             }
             self.color_images[idx] = Some(color_image);
 
-            // 替换 the 深度 图像 for this 槽 创建 new, 销毁 old).
+            // Replace the depth image for this slot (create new, destroy old).
             let depth_image = crate::render_pass::DepthImage::new(context, extent)
                 .context("ForwardPass: create depth image")?;
             if let Some(mut old) = self.depth_images[idx].take() {
@@ -473,7 +473,7 @@ impl ForwardPass {
             }
             self.depth_images[idx] = Some(depth_image);
 
-            // 替换 the view-space 法线 MRT 图像 for this 槽
+            // Replace the view-space normal MRT image for this slot.
             let normal_image =
                 crate::render_pass::NormalImage::new(context, extent, self.normal_format)
                     .context("ForwardPass: create normal image")?;
@@ -491,9 +491,9 @@ impl ForwardPass {
             }
             self.velocity_images[idx] = Some(velocity_image);
 
-            // 销毁 the old 帧缓冲 for this 槽 BEFORE creating the
-            // new one (order doesn't matter for 验证 here since both
-            // 引用 the same 槽 but destroy-old-first is tidy).
+            // Destroy the old framebuffer for this slot BEFORE creating the
+            // new one (order doesn't matter for validation here since both
+            // reference the same slot, but destroy-old-first is tidy).
             if let Some(old_fb) = self.framebuffers[idx].take() {
                 unsafe { device.destroy_framebuffer(old_fb, None) };
             }
@@ -521,35 +521,35 @@ impl ForwardPass {
         Ok(())
     }
 
-    /// 放置 the swapchain-derived framebuffers + 深度 images.
+    /// Drop the swapchain-derived framebuffers + depth images.
     ///
-    /// Must be called **before** the 交换链 is recreated (and from
-    /// `set_target` when the 交换链 changes): each 帧缓冲 wraps a
-    /// 交换链 图像 视图 + 深度 视图 and `Swapchain::recreate` destroys
+    /// Must be called **before** the swapchain is recreated (and from
+    /// `set_target` when the swapchain changes): each framebuffer wraps a
+    /// swapchain image view + depth view, and `Swapchain::recreate` destroys
     /// the old views. Destroying the views while the framebuffers still
-    /// 引用 them triggers `vkDestroyImageView` 验证 errors which
-    /// cascade into a device-lost on the 下一个 submit.
+    /// reference them triggers `vkDestroyImageView` validation errors which
+    /// cascade into a device-lost on the next submit.
     ///
-    /// Framebuffers are destroyed before their 深度 images (each 帧缓冲
-    /// references its 深度 视图 as an 附件 The 渲染 pass + 管线
-    /// are kept (they don't 引用 交换链 views); `set_target` rebuilds
-    /// the framebuffers + 深度 on the 下一个 帧
+    /// Framebuffers are destroyed before their depth images (each framebuffer
+    /// references its depth view as an attachment). The render pass + pipeline
+    /// are kept (they don't reference swapchain views); `set_target` rebuilds
+    /// the framebuffers + depth on the next frame.
     pub fn drop_target(&mut self, device: &ash::Device) {
-        // Framebuffers 第一个 (they 引用 颜色 + 深度 + 法线 views).
+        // Framebuffers first (they reference color + depth + normal views).
         for fb in self.framebuffers.drain(..).flatten() {
             unsafe { device.destroy_framebuffer(fb, None) };
         }
-        // Then 高动态范围 颜色 images.
+        // Then HDR color images.
         for color in self.color_images.drain(..).flatten() {
             let mut c = color;
             unsafe { c.destroy(device) };
         }
-        // Then 深度 images (destroys each 深度 视图
+        // Then depth images (destroys each depth view).
         for depth in self.depth_images.drain(..).flatten() {
             let mut d = depth;
             unsafe { d.destroy(device) };
         }
-        // Then view-space 法线 MRT images.
+        // Then view-space normal MRT images.
         for normal in self.normal_images.drain(..).flatten() {
             let mut n = normal;
             unsafe { n.destroy(device) };
@@ -567,16 +567,16 @@ impl ForwardPass {
     }
 
     /// Tear 下 ALL ForwardPass GPU resources (framebuffers, 深度 images,
-    /// 渲染 pass 管线 shadow 描述符 集合 布局 + 池
+    /// render pass, pipeline, shadow descriptor set layout + pool).
     ///
     /// Called from `GraphRenderer::destroy` on shutdown. After this the
     /// ForwardPass is 空 `device_wait_idle` must already have been called by
-    /// the 调用者 so no 命令 buffers are in flight.
+    /// the caller so no command buffers are in flight.
     pub fn destroy(&mut self, device: &ash::Device) {
-        // Framebuffers + 深度 images (swapchain-derived).
+        // Framebuffers + depth images (swapchain-derived).
         self.drop_target(device);
 
-        // 渲染 pass
+        // Render pass.
         if let Some(rp) = self.render_pass.take() {
             unsafe { device.destroy_render_pass(rp, None) };
         }
@@ -584,7 +584,7 @@ impl ForwardPass {
         self.pipelines.clear();
         self.shaded_wireframe_pipeline = None;
 
-        // 集合 0: 帧 UBO + materials SSBO 布局 + 池 (sets freed with 池
+        // set 0: frame UBO + materials SSBO layout + pool (sets freed with pool).
         if let Some(layout) = self.frame_set_layout.take() {
             unsafe { device.destroy_descriptor_set_layout(layout, None) };
         }
@@ -593,8 +593,8 @@ impl ForwardPass {
         }
         self.frame_sets.clear();
 
-        // Shadow 描述符 集合 布局 + 池 (the 集合 itself is freed with
-        // the 池
+        // Shadow descriptor set layout + pool (the set itself is freed with
+        // the pool).
         if let Some(layout) = self.shadow_ds_layout.take() {
             unsafe { device.destroy_descriptor_set_layout(layout, None) };
         }
@@ -602,7 +602,7 @@ impl ForwardPass {
             unsafe { device.destroy_descriptor_pool(pool, None) };
         }
         self.shadow_descriptor_set = vk::DescriptorSet::null();
-        // 光源 SSBO.
+        // Light SSBO.
         for buf in self.light_buffers.drain(..) {
             if buf != vk::Buffer::null() {
                 unsafe { device.destroy_buffer(buf, None) };
@@ -633,13 +633,13 @@ impl ForwardPass {
                 unsafe { device.free_memory(mem, None) };
             }
         }
-        // Skybox pass (its own 管线 + set-2 布局
+        // Skybox pass (its own pipeline + set-2 layout).
         self.skybox.destroy(device);
-        // Gizmo (its own 管线 + 顶点 缓冲区 放置 frees them).
+        // Gizmo (its own pipeline + vertex buffer; Drop frees them).
         self.gizmo = None;
         self.ground_grid = None;
 
-        // 集合 4: 环境光遮蔽 描述符 集合 布局 + 池 + 采样器
+        // set 4: AO descriptor set layout + pool + sampler.
         if let Some(layout) = self.ao_ds_layout.take() {
             unsafe { device.destroy_descriptor_set_layout(layout, None) };
         }
@@ -653,24 +653,24 @@ impl ForwardPass {
         self.ao_descriptor_sets.clear();
         self.ao_views.clear();
 
-        // 集合 5 全局光照 probe 音量 is borrowed from SceneScope — not destroyed here.
+        // set 5 (GI probe volume) is borrowed from SceneScope — not destroyed here.
         self.gi_descriptor_set = vk::DescriptorSet::null();
         self.gi_layout = vk::DescriptorSetLayout::null();
 
         self.device = None;
     }
     /// Wire all 外部 resources the ForwardPass needs:
-    /// - IBL cubemap 描述符 集合 集合 2)
-    /// - shadow 映射表 视图 + 比较 采样器 集合 3)
-    /// - bindless 纹理 表 集合 + 布局 集合 1)
-    /// - 材质 SSBO 缓冲区 + per-frame UBO buffers 集合 0, one 集合 per
-    /// frame-in-flight so each frame's UBO 缓冲区 is bound without 运行时
-    /// 描述符 rewrites)
-    /// - 光源 SSBO 缓冲区 集合 0 绑定 2, hard-coded point lights)
-    /// - 全局光照 probe 音量 描述符 集合 + 布局 集合 5, borrowed from SceneScope)
+    /// - IBL cubemap descriptor set (set 2)
+    /// - shadow map view + comparison sampler (set 3)
+    /// - bindless texture table set + layout (set 1)
+    /// - material SSBO buffer + per-frame UBO buffers (set 0, one set per
+    ///   frame-in-flight so each frame's UBO buffer is bound without runtime
+    ///   descriptor rewrites)
+    /// - light SSBO buffer (set 0 binding 2, hard-coded point lights)
+    /// - GI probe volume descriptor set + layout (set 5, borrowed from SceneScope)
     ///
-    /// `frame_ubo_buffers` 长度 determines the frame-in-flight count (== set0
-    /// 集合 count). `materials_buffer` is the `RenderMaterialManager` SSBO.
+    /// `frame_ubo_buffers` length determines the frame-in-flight count (== set0
+    /// set count). `materials_buffer` is the `RenderMaterialManager` SSBO.
     #[allow(clippy::too_many_arguments)]
     pub fn set_resources(
         &mut self,
@@ -697,15 +697,15 @@ impl ForwardPass {
         self.camera_stride = camera_stride;
         self.gi_descriptor_set = gi_descriptor_set;
         self.gi_layout = gi_layout;
-        // Skybox reuses the IBL env cubemap 描述符 集合 + 布局 集合 0).
+        // Skybox reuses the IBL env cubemap descriptor set + layout (set 0).
         self.skybox = SkyboxPass::new(ibl_descriptor_set, ibl_layout);
 
-        // ---- 集合 0: per-frame UBO 绑定 0) + materials SSBO 绑定 1)
-        // + 光源 SSBO 绑定 2) ----
-        // One 描述符 集合 per frame-in-flight; each binds its own UBO
-        // 缓冲区 at 绑定 0 and the (shared) materials SSBO at 绑定 1
-        // and the (shared) 光源 SSBO at 绑定 2.
-        // 内置 once here; never rewritten at 运行时
+        // ---- set 0: per-frame UBO (binding 0) + materials SSBO (binding 1)
+        //           + light SSBO (binding 2) ----
+        // One descriptor set per frame-in-flight; each binds its own UBO
+        // buffer at binding 0 and the (shared) materials SSBO at binding 1
+        // and the (shared) light SSBO at binding 2.
+        // Built once here; never rewritten at runtime.
         let frame_set_bindings = [
             // Binding 0 is DYNAMIC: the pass composites several cameras from
             // one set by passing `camera_index * stride` as a dynamic offset
@@ -750,7 +750,7 @@ impl ForwardPass {
         }
         .context("ForwardPass: create set0 (frame+materials+lights) layout")?;
 
-        // Tear 下 any prior set0 layout/pool/sets (e.g. on re-init).
+        // Tear down any prior set0 layout/pool/sets (e.g. on re-init).
         if let Some(old) = self.frame_set_layout.take() {
             unsafe { device.destroy_descriptor_set_layout(old, None) };
         }
@@ -879,7 +879,7 @@ impl ForwardPass {
             new_prev_model_memories.push(mem);
         }
 
-        // 销毁 old 光源 缓冲区 if any.
+        // Destroy old light buffer if any.
         for buf in self.light_buffers.drain(..) {
             if buf != vk::Buffer::null() {
                 unsafe { device.destroy_buffer(buf, None) };
@@ -917,7 +917,7 @@ impl ForwardPass {
         self.prev_model_buffers = new_prev_model_buffers;
         self.prev_model_memories = new_prev_model_memories;
 
-        // 写入 each 集合 绑定 0 = this frame's UBO, 绑定 1 = materials SSBO,
+        // Write each set: binding 0 = this frame's UBO, binding 1 = materials SSBO,
         // 绑定 2 = this frame's 光源 SSBO.
         let ubo_size = std::mem::size_of::<crate::descriptor::FrameUBOData>() as vk::DeviceSize;
         let mat_ssbo_size = vk::WHOLE_SIZE; // SSBO: whole buffer is fine.
@@ -935,7 +935,7 @@ impl ForwardPass {
                     .range(vk::WHOLE_SIZE)
             })
             .collect();
-        // Collect all per-frame UBO infos 第一个 so the `writes` 切片
+        // Collect all per-frame UBO infos first so the `writes` slice
         // references below don't conflict with mutating `ubo_infos`.
         let ubo_infos: Vec<vk::DescriptorBufferInfo> = frame_ubo_buffers
             .iter()
@@ -1011,7 +1011,7 @@ impl ForwardPass {
         self.frame_set_pool = Some(frame_pool);
         self.frame_sets = sets;
 
-        // ---- 集合 3: shadow 映射表 (SAMPLED_IMAGE + 比较 采样器 ----
+        // ---- set 3: shadow map (SAMPLED_IMAGE + comparison SAMPLER) ----
         let shadow_bindings = [
             vk::DescriptorSetLayoutBinding::default()
                 .binding(scene_frag::SHADOW_MAP_BINDING)
@@ -1093,11 +1093,11 @@ impl ForwardPass {
         self.shadow_ds_pool = Some(pool);
         self.shadow_descriptor_set = ds;
 
-        // ---- 集合 4: previous-frame GTAO R8 可见性 (combined 图像 采样器 ----
-        // The 环境光遮蔽 视图 is updated every 帧 by `set_ao` (GraphRenderer passes
-        // the GTAO pass's double-buffered 视图 for the 帧 the scene reads).
-        // Here we only 创建 the 布局 + 池 + 采样器 + 描述符 集合 the
-        // image_info 写入 happens in `set_ao` once a 视图 is available.
+        // ---- set 4: previous-frame GTAO R8 visibility (combined image sampler) ----
+        // The AO view is updated every frame by `set_ao` (GraphRenderer passes
+        // the GTAO pass's double-buffered view for the frame the scene reads).
+        // Here we only create the layout + pool + sampler + descriptor set; the
+        // image_info write happens in `set_ao` once a view is available.
         let ao_bindings = [vk::DescriptorSetLayoutBinding::default()
             .binding(scene_frag::AO_TEX_BINDING)
             .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
@@ -1111,7 +1111,7 @@ impl ForwardPass {
         }
         .context("ForwardPass: create set4 (AO) ds layout")?;
 
-        // Tear 下 any prior set4 layout/pool/sampler (e.g. on re-init).
+        // Tear down any prior set4 layout/pool/sampler (e.g. on re-init).
         if let Some(old) = self.ao_ds_layout.take() {
             unsafe { device.destroy_descriptor_set_layout(old, None) };
         }
@@ -1140,8 +1140,8 @@ impl ForwardPass {
         }
         .context("ForwardPass: create AO sampler")?;
 
-        // One 环境光遮蔽 描述符 集合 per frame-in-flight so `set_ao` can 更新
-        // 帧 N's 集合 without disturbing 帧 N-1's still-in-flight 集合
+        // One AO descriptor set per frame-in-flight so `set_ao` can update
+        // frame N's set without disturbing frame N-1's still-in-flight set
         // (VUID-vkUpdateDescriptorSets-None-03047). The frame-in-flight count
         // matches `frame_ubo_buffers.len()` (== `frame_sets.len()`).
         let ao_fif = frame_ubo_buffers.len() as u32;
@@ -1174,26 +1174,26 @@ impl ForwardPass {
         self.ao_sampler = ao_sampler;
         self.ao_descriptor_sets = ao_sets;
         self.ao_views = vec![vk::ImageView::null(); ao_fif as usize];
-        // The actual image_info 写入 happens in `set_ao` once the GTAO pass
-        // produces its 第一个 环境光遮蔽 视图 Until then the descriptors point at null;
-        // `PBR_FLAG_AO` is off by 默认 so nothing samples it.
+        // The actual image_info write happens in `set_ao` once the GTAO pass
+        // produces its first AO view. Until then the descriptors point at null;
+        // `PBR_FLAG_AO` is off by default so nothing samples it.
 
-        // 集合 5 全局光照 probe 音量 is borrowed from SceneScope — already wired
+        // set 5 (GI probe volume) is borrowed from SceneScope — already wired
         // via `gi_descriptor_set` / `gi_layout` parameters above.
 
         Ok(())
     }
 
-    /// 更新 the 集合 4 环境光遮蔽 描述符 for `frame_index` to point at 视图
-    /// (the 上一个 frame's GTAO 输出 Called every 帧 from
+    /// Update the set 4 AO descriptor for `frame_index` to point at `view`
+    /// (the previous frame's GTAO output). Called every frame from
     /// `GraphRenderer::render` BEFORE `forward_pass.execute`. Skips the
-    /// 描述符 写入 when 视图 matches the currently-bound 视图 for this
+    /// descriptor write when `view` matches the currently-bound view for this
     /// frame-in-flight.
     pub fn set_ao(&mut self, device: &ash::Device, frame_index: u32, view: vk::ImageView) {
         let i = (frame_index as usize) % self.ao_descriptor_sets.len();
-        // TEMP PROBE: confirm set_ao runs with 有效 inputs. Throttled to once
-        // per 秒 so the 对数 isn't flooded at 帧 rate; emitted at
-        // 跟踪 so it stays quiet under the 默认 信息 滤波器
+        // TEMP PROBE: confirm set_ao runs with valid inputs. Throttled to once
+        // per second so the log isn't flooded at frame rate; emitted at
+        // `trace!` so it stays quiet under the default `info` filter.
         if self.last_probe_log.elapsed().as_secs_f32() >= 1.0 {
             self.last_probe_log = Instant::now();
             log::trace!(
@@ -1211,10 +1211,10 @@ impl ForwardPass {
         }
         self.ao_views[i] = view;
         if view == vk::ImageView::null() {
-            // No 环境光遮蔽 yet 第一个 帧 or GTAO 禁用 - leave the 描述符
+            // No AO yet (first frame or GTAO disabled) - leave the descriptor
             // unbound. The shader's `aoTex.SampleLevel` is only reached when
-            // PBR_FLAG_AO is 集合 which the app leaves off until the user
-            // toggles it (by which 时间 视图 is non-null).
+            // PBR_FLAG_AO is set, which the app leaves off until the user
+            // toggles it (by which time `view` is non-null).
             return;
         }
         let image_info = vk::DescriptorImageInfo::default()
@@ -1229,8 +1229,8 @@ impl ForwardPass {
         unsafe { device.update_descriptor_sets(&[write], &[]) };
     }
 
-    /// 借用 the 高动态范围 颜色 图像 视图 for `image_index`. Consumed by the
-    /// PostPass as its sampled 输入
+    /// Borrow the HDR color image view for `image_index`. Consumed by the
+    /// PostPass as its sampled input.
     pub fn color_view(&self, image_index: u32) -> Option<vk::ImageView> {
         self.color_images
             .get(image_index as usize)
@@ -1238,8 +1238,8 @@ impl ForwardPass {
             .map(|c| c.view)
     }
 
-    /// 借用 the 高动态范围 颜色 图像 handle for `image_index`. The PostPass needs
-    /// the 图像 to record its SHADER_READ_ONLY_OPTIMAL 布局 屏障
+    /// Borrow the HDR color image handle for `image_index`. The PostPass needs
+    /// the image to record its SHADER_READ_ONLY_OPTIMAL layout barrier.
     pub fn color_image(&self, image_index: u32) -> Option<vk::Image> {
         self.color_images
             .get(image_index as usize)
@@ -1256,9 +1256,9 @@ impl ForwardPass {
             .map(|d| d.view)
     }
 
-    /// 借用 the 深度 图像 handle for `image_index`. The GTAO pass needs the
-    /// 图像 (not just the 视图 to record its DEPTH_STENCIL_READ_ONLY_OPTIMAL
-    /// 布局 屏障 before sampling.
+    /// Borrow the depth image handle for `image_index`. The GTAO pass needs the
+    /// image (not just the view) to record its DEPTH_STENCIL_READ_ONLY_OPTIMAL
+    /// layout barrier before sampling.
     pub fn depth_image(&self, image_index: u32) -> Option<vk::Image> {
         self.depth_images
             .get(image_index as usize)
@@ -1266,8 +1266,8 @@ impl ForwardPass {
             .map(|d| d.image)
     }
 
-    /// 借用 the view-space 法线 MRT 视图 for `image_index`. Consumed by
-    /// the GTAO pass when its 众数 == 0` 法线 MRT path).
+    /// Borrow the view-space normal MRT view for `image_index`. Consumed by
+    /// the GTAO pass when its `mode == 0` (normal MRT path).
     pub fn normal_view(&self, image_index: u32) -> Option<vk::ImageView> {
         self.normal_images
             .get(image_index as usize)
@@ -1275,9 +1275,9 @@ impl ForwardPass {
             .map(|n| n.view)
     }
 
-    /// 借用 the view-space 法线 MRT 图像 handle for `image_index`. The
-    /// GTAO pass needs the 图像 to record its SHADER_READ_ONLY_OPTIMAL 布局
-    /// 屏障 before sampling.
+    /// Borrow the view-space normal MRT image handle for `image_index`. The
+    /// GTAO pass needs the image to record its SHADER_READ_ONLY_OPTIMAL layout
+    /// barrier before sampling.
     pub fn normal_image(&self, image_index: u32) -> Option<vk::Image> {
         self.normal_images
             .get(image_index as usize)
@@ -1302,29 +1302,29 @@ impl ForwardPass {
     }
 
     /// The full-resolution extent the scene was rendered at. The GTAO pass
-    /// uses this (halved) to 大小 its own 视口 + 环境光遮蔽 textures.
+    /// uses this (halved) to size its own viewport + AO textures.
     pub fn extent(&self) -> vk::Extent2D {
         self.extent
     }
 
-    /// 高动态范围 intermediate 颜色 格式 (the scene 目标 PostPass tonemaps).
+    /// HDR intermediate color format (the scene target PostPass tonemaps).
     /// Exposed for the render-graph visualizer.
     pub fn color_format(&self) -> vk::Format {
         self.color_format
     }
 
-    /// View-space 法线 MRT 格式 读取 by GTAO). Exposed for the viz.
+    /// View-space normal MRT format (read by GTAO). Exposed for the viz.
     pub fn normal_format(&self) -> vk::Format {
         self.normal_format
     }
 
-    /// Number of 交换链 images (framebuffers / 高动态范围 颜色 / 深度 / 法线
+    /// Number of swapchain images (framebuffers / HDR color / depth / normal
     /// slots are all sized to this). Exposed for the viz.
     pub fn image_count(&self) -> usize {
         self.image_count
     }
 
-    /// The three well-known 输出 handles 颜色 法线 深度 in the
+    /// The three well-known output handles (`[color, normal, depth]`), in the
     /// same order `setup` declares them. Exposed for the viz's edge labels.
     pub fn out_handles(&self) -> [ResourceHandle; 3] {
         [self.out_color_h, self.out_normal_h, self.out_depth_h]
@@ -1497,7 +1497,7 @@ impl ForwardPass {
         let device = &context.device;
         self.device = Some(device.clone());
 
-        // 附件 0: 交换链 颜色 高动态范围 lit 颜色 post-tonemap).
+        // attachment 0: swapchain color (HDR lit color, post-tonemap).
         let color_attachment = vk::AttachmentDescription::default()
             .format(self.color_format)
             .samples(vk::SampleCountFlags::TYPE_1)
@@ -1513,10 +1513,10 @@ impl ForwardPass {
             .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
             .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
             .initial_layout(vk::ImageLayout::UNDEFINED)
-            // Leave the 交换链 图像 in COLOR_ATTACHMENT_OPTIMAL so a
+            // Leave the swapchain image in COLOR_ATTACHMENT_OPTIMAL so a
             // subsequent external overlay pass can 加载 it and 过渡 it to
             // PRESENT_SRC_KHR. When the external overlay is 禁用 the 调用者
-            // (GraphRenderer::render) records a 回退 管线 屏障 to
+            // (GraphRenderer::render) records a fallback pipeline barrier to
             // PRESENT_SRC_KHR after this pass ends.
             .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
 
@@ -1524,9 +1524,9 @@ impl ForwardPass {
             .attachment(0)
             .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
 
-        // 附件 1: scene 深度 (D32_SFLOAT). 存储 because the GTAO pass
+        // attachment 1: scene depth (D32_SFLOAT). STORE because the GTAO pass
         // samples it after ForwardPass (it was DONT_CARE before GTAO existed).
-        // Final 布局 is DEPTH_STENCIL_ATTACHMENT_OPTIMAL; the GTAO pass
+        // Final layout is DEPTH_STENCIL_ATTACHMENT_OPTIMAL; the GTAO pass
         // transitions it to DEPTH_STENCIL_READ_ONLY_OPTIMAL before sampling.
         let depth_attachment = vk::AttachmentDescription::default()
             .format(vk::Format::D32_SFLOAT)
@@ -1544,8 +1544,8 @@ impl ForwardPass {
             .attachment(1)
             .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
-        // 附件 2: view-space 法线 MRT (R16G16B16A16_SFLOAT). 存储 so
-        // the GTAO pass can 样本 it. Final COLOR_ATTACHMENT_OPTIMAL; the GTAO
+        // attachment 2: view-space normal MRT (R16G16B16A16_SFLOAT). STORE so
+        // the GTAO pass can sample it. Final COLOR_ATTACHMENT_OPTIMAL; the GTAO
         // pass transitions it to SHADER_READ_ONLY_OPTIMAL before sampling.
         let normal_attachment = vk::AttachmentDescription::default()
             .format(self.normal_format)
@@ -1617,8 +1617,8 @@ impl ForwardPass {
             .context("ForwardPass: create render pass")?;
         self.render_pass = Some(rp);
 
-        // Lazily 构建 the world-space gizmo 管线 against this 渲染 pass
-        // (the gizmo draws inside the same 渲染 pass on 顶部 of the scene).
+        // Lazily build the world-space gizmo pipeline against this render pass
+        // (the gizmo draws inside the same render pass, on top of the scene).
         if self.gizmo.is_none() {
             self.gizmo = Some(Gizmo::new(context, rp).context("ForwardPass: create gizmo")?);
         }
@@ -1654,11 +1654,11 @@ impl ForwardPass {
             .render_pass
             .context("ForwardPass: render_pass not created before pipeline")?;
 
-        // 顶点阶段复用 mesh_vert.vert.spv（`MeshPush { model }`，64 字节）；管线
-        // 按 `shader_bindings::scene_frag::PbrBindlessPush`（120 字节）推送同一个
-        // push-constant 块，顶点阶段只读最前面的 model，Vulkan 允许推送范围大于
-        // 某个阶段实际读取的字节数。
-        // 片元阶段 scene_frag.frag.spv（bindless PBR + shadow）。
+        // Vertex: reuse mesh_vert.vert.spv (`MeshPush { model }`, 64 bytes). The
+        // pipeline pushes the same `shader_bindings::scene_frag::PbrBindlessPush`
+        // block (120 bytes); the vertex stage only reads the leading `model`, and
+        // Vulkan allows the push range to exceed what a stage actually reads.
+        // Fragment: scene_frag.frag.spv (bindless PBR + shadow).
         const VERT_SPV: &[u8] = include_bytes!("../../../assets/shaders/mesh_vert.vert.spv");
         const FRAG_SPV: &[u8] = include_bytes!("../../../assets/shaders/scene_frag.frag.spv");
         let vert_module =
@@ -1695,28 +1695,28 @@ impl ForwardPass {
         let skin_binding_desc = crate::mesh::SkinVertex::binding_description();
         let skin_attr_descs = crate::mesh::SkinVertex::attribute_descriptions();
 
-        // 集合 0: 帧 UBO 绑定 0) + materials SSBO 绑定 1).
+        // set 0: frame UBO (binding 0) + materials SSBO (binding 1).
         let set0_layout = self
             .frame_set_layout
             .context("ForwardPass: set0 (frame+materials) layout not set (call set_resources)")?;
-        // 集合 1: bindless 纹理 表 (samplers + SRV 数组
+        // set 1: bindless texture table (samplers + SRV array).
         let set1_layout = self.bindless_layout;
-        // 集合 2: IBL resources (3 combined 图像 samplers: env, irradiance, prefiltered).
-        // Use the IBL's own 描述符 集合 布局 集合 via `set_resources`) so the
-        // 阶段 flags 匹配 exactly 片元 | 计算 — the path-tracing pass
-        // samples the same IBL cubemap in a 计算 着色器 Creating a separate
-        // 布局 with mismatched 阶段 flags would 触发器 VUID-vkCmdBindDescriptorSets-
+        // set 2: IBL resources (3 combined image samplers: env, irradiance, prefiltered).
+        // Use the IBL's own descriptor set layout (set via `set_resources`) so the
+        // stage flags match exactly (`FRAGMENT | COMPUTE` — the path-tracing pass
+        // samples the same IBL cubemap in a compute shader). Creating a separate
+        // layout with mismatched stage flags would trigger VUID-vkCmdBindDescriptorSets-
         // pDescriptorSets-00358.
         let set2_layout = self.ibl_layout;
-        // 集合 3: shadow 映射表 (SAMPLED_IMAGE + 采样器
+        // set 3: shadow map (SAMPLED_IMAGE + SAMPLER).
         let set3_layout = self
             .shadow_ds_layout
             .context("ForwardPass: shadow ds layout not set")?;
-        // 集合 4: previous-frame GTAO R8 可见性 (combined 图像 采样器
+        // set 4: previous-frame GTAO R8 visibility (combined image sampler).
         let set4_layout = self
             .ao_ds_layout
             .context("ForwardPass: set4 (AO) layout not set (call set_resources)")?;
-        // 集合 5: probe 音量 全局光照 (SAMPLED_IMAGE + UBO), borrowed from SceneScope.
+        // set 5: probe volume GI (SAMPLED_IMAGE + UBO), borrowed from SceneScope.
         let set5_layout = self.gi_layout;
 
         let set_layouts = [
@@ -1813,9 +1813,9 @@ impl ForwardPass {
         unsafe { device.destroy_shader_module(vert_module, None) };
         unsafe { device.destroy_shader_module(vert_skinned_module, None) };
         unsafe { device.destroy_shader_module(frag_module, None) };
-        // set2_layout (IBL) is borrowed from `IblResources` 集合 via
-        // `set_resources`) — do NOT 销毁 it here. `IblResources` owns the
-        // 布局 生命周期 it outlives all passes.
+        // set2_layout (IBL) is borrowed from `IblResources` (set via
+        // `set_resources`) — do NOT destroy it here. `IblResources` owns the
+        // layout lifetime; it outlives all passes.
         // set0/set1/set3 are owned elsewhere (frame_set_layout /
         // BindlessTextureTable / shadow_ds_layout).
 
@@ -1995,11 +1995,11 @@ impl RenderPassNode for ForwardPass {
     }
 
     fn setup(&mut self, graph: &mut RenderGraphBuilder, _settings: &RenderSettings) {
-        // Declare 输出 handles (well-known, so downstream passes 读取 our
-        // 深度 / 法线 / 高动态范围 views by handle). The 图 does NOT allocate
+        // Declare output handles (well-known, so downstream passes read our
+        // depth / normal / HDR views by handle). The graph does NOT allocate
         // the underlying images in PR-1 (ForwardPass still owns its
-        // framebuffers); only the handle->view 映射 is published in
-        // 执行
+        // framebuffers); only the handle->view mapping is published in
+        // `execute`.
         graph.create_resource_at(
             FORWARD_DEPTH_H,
             ResourceType::DepthAttachment {
@@ -2059,13 +2059,13 @@ impl RenderPassNode for ForwardPass {
             layout: vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL,
         });
 
-        // Declare 写入 edges so the 渲染 graph's 布局 cache records the
-        // 布局 this pass leaves each 附件 in (matching the 渲染 pass
-        // `final_layout`). Downstream `GtaoPass` / `PostPass` 读取 edges then
-        // 触发器 the 附件 -> READ_ONLY / SHADER_READ_ONLY barriers
-        // automatically, with `src` stage/access taken from these 写入 edges.
+        // Declare write edges so the render graph's layout cache records the
+        // layout this pass leaves each attachment in (matching the render pass
+        // `final_layout`). Downstream `GtaoPass` / `PostPass` read edges then
+        // trigger the ATTACHMENT -> READ_ONLY / SHADER_READ_ONLY barriers
+        // automatically, with `src` stage/access taken from these write edges.
         // No 屏障 is emitted for the writes themselves: ForwardPass's 渲染
-        // pass performs the UNDEFINED -> 附件 transitions via
+        // pass performs the UNDEFINED -> ATTACHMENT transitions via
         // `initial_layout` (see `create_render_pass`).
         graph.write_usage(ResourceUsage {
             handle: FORWARD_DEPTH_H,
@@ -2094,12 +2094,12 @@ impl RenderPassNode for ForwardPass {
     }
 
     fn execute(&mut self, ctx: &RenderContext, resources: &mut GraphResources) -> Result<()> {
-        // 帧缓冲 + HDR/depth/normal lifecycle now owned here (driven by
-        // the 图 not by `GraphRenderer::render`. `ensure_target` is
-        // idempotent: (re)builds only the 槽 for `image_index` when 缺少
-        // or the 交换链 changed. `set_ao` rebinds the previous-frame GTAO
-        // 可见性 视图 (1-frame 延迟 `update_lights` rewrites the
-        // point-light SSBO from the ECS-collected lights for this 帧
+        // Framebuffer + HDR/depth/normal lifecycle now owned here (driven by
+        // the graph), not by `GraphRenderer::render`. `ensure_target` is
+        // idempotent: (re)builds only the slot for `image_index` when missing
+        // or the swapchain changed. `set_ao` rebinds the previous-frame GTAO
+        // visibility view (1-frame latency); `update_lights` rewrites the
+        // point-light SSBO from the ECS-collected lights for this frame.
         // #613：内部渲染分辨率开启时目标小于交换链。
         self.ensure_target(ctx.device, ctx.context, ctx.image_index, ctx.render_extent)?;
         self.set_ao(ctx.device, ctx.frame_index, ctx.frame.ao_view);
@@ -2126,10 +2126,10 @@ impl RenderPassNode for ForwardPass {
         }
 
         let rp = self.render_pass.unwrap();
-        // Pick the per-swapchain-image 帧缓冲 Indexed by `image_index`
-        // (NOT `frame_index`): with N 交换链 images and 2 frames in flight,
-        // several 命令 buffers 引用 different framebuffers
-        // concurrently, so each 交换链 图像 has its own.
+        // Pick the per-swapchain-image framebuffer. Indexed by `image_index`
+        // (NOT `frame_index`): with N swapchain images and 2 frames in flight,
+        // several command buffers reference different framebuffers
+        // concurrently, so each swapchain image has its own.
         let idx = ctx.image_index as usize;
         let fb = self
             .framebuffers
@@ -2150,21 +2150,21 @@ impl RenderPassNode for ForwardPass {
             (pipeline.pipeline, pipeline.layout)
         };
 
-        // 解析 the per-frame 描述符 集合 now (used after the skybox 绘制
-        // when we re-bind the scene 管线 + descriptors).
+        // Resolve the per-frame descriptor set now (used after the skybox draw,
+        // when we re-bind the scene pipeline + descriptors).
         let frame_set = self
             .frame_sets
             .get(ctx.frame_index as usize)
             .copied()
             .context("ForwardPass: no set0 descriptor set for frame_index (call set_resources)")?;
 
-        // 清空 values indexed by 附件 number: 0 = 高动态范围 颜色 1 = 深度
-        // 2 = view-space 法线 MRT. Even though 附件 2 is cleared, its
-        // 清空 value is irrelevant (the 片元 着色器 overwrites every
-        // 像素 use 不透明 black. The count must be >= the highest cleared
-        // 附件 索引 + 1 (VUID-VkRenderPassBeginInfo-clearValueCount-00902).
-        // 颜色 附件 0 uses the frame's clear_color (from the app-level
-        // `clear_color` 参数 so the "no 相机 回退 shows gray etc.
+        // Clear values indexed by attachment number: 0 = HDR color, 1 = depth,
+        // 2 = view-space normal MRT. Even though attachment 2 is cleared, its
+        // clear value is irrelevant (the fragment shader overwrites every
+        // pixel); use opaque black. The count must be >= the highest cleared
+        // attachment index + 1 (VUID-VkRenderPassBeginInfo-clearValueCount-00902).
+        // Color attachment 0 uses the frame's clear_color (from the app-level
+        // `clear_color` parameter) so the "no camera" fallback shows gray etc.
         let cc = ctx.frame.clear_color;
         let clear_values = [
             vk::ClearValue {
@@ -2732,8 +2732,8 @@ impl RenderPassNode for ForwardPass {
 
         unsafe { ctx.device.cmd_end_render_pass(ctx.cmd) };
 
-        // 发布 our 输出 views under the handles declared in `setup` so
-        // downstream passes (`GtaoPass`, `PostPass`) 读取 them by handle
+        // Publish our output views under the handles declared in `setup` so
+        // downstream passes (`GtaoPass`, `PostPass`) read them by handle
         // instead of `GraphRenderer` reaching into ForwardPass internals.
         let idx = ctx.image_index;
         if let (Some(v), Some(i)) = (self.color_view(idx), self.color_image(idx)) {
@@ -2795,11 +2795,11 @@ impl RenderPassNode for ForwardPass {
 
 impl Drop for ForwardPass {
     fn drop(&mut self) {
-        // 安全性 net: if 销毁 wasn't called explicitly, tear 下 using
-        // the cached 设备 handle. 销毁 is the preferred path (it runs
+        // Safety net: if `destroy` wasn't called explicitly, tear down using
+        // the cached device handle. `destroy` is the preferred path (it runs
         // after `device_wait_idle`); this only fires on leaks / early drops.
         if let Some(device) = self.device.take() {
-            // `drop_target` drains framebuffers + 深度 images.
+            // `drop_target` drains framebuffers + depth images.
             for fb in self.framebuffers.drain(..).flatten() {
                 unsafe { device.destroy_framebuffer(fb, None) };
             }
@@ -2810,9 +2810,9 @@ impl Drop for ForwardPass {
             if let Some(rp) = self.render_pass.take() {
                 unsafe { device.destroy_render_pass(rp, None) };
             }
-            // GraphicsPipeline::Drop frees the 管线 + 布局
+            // GraphicsPipeline::Drop frees the pipeline + layout.
             self.pipelines.clear();
-            // 集合 0 帧 UBO + materials SSBO) 布局 + 池
+            // set 0 (frame UBO + materials SSBO) layout + pool.
             if let Some(layout) = self.frame_set_layout.take() {
                 unsafe { device.destroy_descriptor_set_layout(layout, None) };
             }
@@ -2825,7 +2825,7 @@ impl Drop for ForwardPass {
             if let Some(pool) = self.shadow_ds_pool.take() {
                 unsafe { device.destroy_descriptor_pool(pool, None) };
             }
-            // 光源 SSBO.
+            // Light SSBO.
             for buf in self.light_buffers.drain(..) {
                 if buf != vk::Buffer::null() {
                     unsafe { device.destroy_buffer(buf, None) };
@@ -2836,12 +2836,12 @@ impl Drop for ForwardPass {
                     unsafe { device.free_memory(mem, None) };
                 }
             }
-            // Skybox pass (its own 管线 + set-2 布局
+            // Skybox pass (its own pipeline + set-2 layout).
             self.skybox.destroy(&device);
-            // Gizmo (its own 管线 + 顶点 缓冲区 放置 frees them).
+            // Gizmo (its own pipeline + vertex buffer; Drop frees them).
             self.gizmo = None;
             self.ground_grid = None;
-            // 集合 5 全局光照 probe 音量 is borrowed from SceneScope — not destroyed here.
+            // set 5 (GI probe volume) is borrowed from SceneScope — not destroyed here.
         }
     }
 }

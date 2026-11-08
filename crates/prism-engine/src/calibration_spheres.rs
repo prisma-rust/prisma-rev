@@ -11,12 +11,12 @@
 //!   gold - 暖黄色金属，有色镜面反射，无漫反射
 //!   aluminum - 明亮中性金属，锐利镜面反射，无漫反射
 //!   plastic - 哑光漫反射 + 弱而紧的镜面反射（电介质 F0 ~0.04）
-//! stone - 粗略 diffuse, no 可见 specular highlight
+//!   stone   - rough diffuse, no visible specular highlight
 //!
 //! The spheres are spawned as ECS entities with new scene components
 //! (MeshRef + MaterialRef + LocalTransform + LocalToWorld), so they live in
-//! the ECS 世界 alongside other geometry. They use the same bindless PBR path;
-//! no 纹理 slots are bound (u32::MAX) so the 标量 `base_color` /
+//! the ECS world alongside other geometry. They use the same bindless PBR path;
+//! no texture slots are bound (u32::MAX) so the scalar `base_color` /
 //! `metallic` / `roughness` drive the BRDF directly.
 
 use prism_ecs::World;
@@ -25,10 +25,10 @@ use prism_render::GraphRenderer;
 
 use crate::scene::components::{LocalToWorld, LocalTransform, MaterialRef, MeshRef, SceneAssetId};
 
-/// Spacing between 球体 centres along the X axis 世界 units).
+/// Spacing between sphere centres along the X axis (world units).
 const SPHERE_SPACING: f32 = 2.2;
 
-/// A single 校准 材质 name + the PBR scalars that define it.
+/// A single calibration material: name + the PBR scalars that define it.
 struct CalibMaterial {
     name: &'static str,
     base_color: [f32; 4],
@@ -36,7 +36,7 @@ struct CalibMaterial {
     roughness: f32,
 }
 
-/// The six 引用 materials. Values follow the 标准 PBR 校准
+/// The six reference materials. Values follow the standard PBR calibration
 /// chart (see the BRDF baseline spec): gold/aluminum use real measured RGB
 /// reflectance at perpendicular incidence; dielectrics use a neutral base.
 const CALIB_MATERIALS: &[CalibMaterial] = &[
@@ -80,14 +80,14 @@ const CALIB_MATERIALS: &[CalibMaterial] = &[
     },
 ];
 
-/// 构建 a UV-sphere 网格 半径 1) as a `MeshUploadInput`.
+/// Build a UV-sphere mesh (radius 1) as a `MeshUploadInput`.
 ///
 /// `segments` = longitude slices (around Y), `rings` = latitude slices (pole
-/// to pole). Normals are the 归一化 positions; tangents point along the
+/// to pole). Normals are the normalized positions; tangents point along the
 /// longitude (dP/dphi) so the TBN basis is well-formed for the (unused here)
-/// normal-map path. UVs 环绕 [0,1] x [0,1].
+/// normal-map path. UVs wrap [0,1] x [0,1].
 fn uv_sphere(segments: u32, rings: u32) -> MeshUploadInput {
-    // rings = latitude divisions; we need rings+1 顶点 pole-to-pole.
+    // rings = latitude divisions; we need rings+1 vertices pole-to-pole.
     let lat_steps = rings + 1;
     let lon_steps = segments;
 
@@ -108,18 +108,18 @@ fn uv_sphere(segments: u32, rings: u32) -> MeshUploadInput {
             let sin_p = phi.sin();
             let cos_p = phi.cos();
 
-            // Position on unit 球体
+            // Position on unit sphere.
             let x = sin_t * cos_p;
             let y = cos_t;
             let z = sin_t * sin_p;
             positions.push([x, y, z]);
-            // 法线 = 归一化 position (unit 球体 -> already unit).
+            // Normal = normalized position (unit sphere -> already unit).
             normals.push([x, y, z]);
             // uv u wraps with longitude, v goes pole-to-pole.
             uvs.push([j as f32 / lon_steps as f32, i as f32 / rings as f32]);
-            // 切线 dP/dphi = (-sin_t*sin_p, 0, sin_t*cos_p), 归一化
-            // Degenerate at the poles (sin_t -> 0); fall 后 to +X there.
-            // w = handedness +1 (UVs are not mirrored on a uv 球体
+            // Tangent: dP/dphi = (-sin_t*sin_p, 0, sin_t*cos_p), normalized.
+            // Degenerate at the poles (sin_t -> 0); fall back to +X there.
+            // w = handedness +1 (UVs are not mirrored on a UV sphere).
             let tx = -sin_p;
             let tz = cos_p;
             let tlen = (tx * tx + tz * tz).sqrt();
@@ -153,18 +153,18 @@ fn uv_sphere(segments: u32, rings: u32) -> MeshUploadInput {
     }
 }
 
-/// 构建 a column-major 4x4 平移 矩阵 (no rotation/scale).
+/// Build a column-major 4x4 translation matrix (no rotation/scale).
 fn translation_matrix(x: f32, y: f32, z: f32) -> glam::Mat4 {
     glam::Mat4::from_translation(glam::Vec3::new(x, y, z))
 }
 
-/// Register a single UV-sphere 网格 + six 校准 materials with the
-/// 渲染器 and 生成 one ECS 实体 per 球体 with a [`RenderInstance`]
-/// 分量
+/// Register a single UV-sphere mesh + six calibration materials with the
+/// renderer, and spawn one ECS entity per sphere with a [`RenderInstance`]
+/// component.
 ///
 /// Spheres are placed along the X axis starting at `origin_x`, spaced
-/// `SPHERE_SPACING` apart, sitting on `y=1.0` 半径 1) so they rest on the
-/// ground 平面 (`y=0`). The 球体 网格 is uploaded via the 同步
+/// `SPHERE_SPACING` apart, sitting on `y=1.0` (radius 1) so they rest on the
+/// ground plane (`y=0`). The sphere mesh is uploaded via the synchronous
 /// `register_mesh` path (not batched) since this runs after the scene's batched
 /// upload has already flushed.
 pub fn spawn_calibration_spheres(
@@ -174,11 +174,11 @@ pub fn spawn_calibration_spheres(
     origin_y: f32,
     origin_z: f32,
 ) -> anyhow::Result<()> {
-    // One shared 球体 网格 (32x16 is smooth enough for BRDF inspection).
+    // One shared sphere mesh (32x16 is smooth enough for BRDF inspection).
     let sphere = uv_sphere(32, 16);
     let mesh: MeshHandle = renderer.register_mesh(&sphere)?;
 
-    // Register each 校准 材质 and 发射 a 绘制 item.
+    // Register each calibration material and emit a draw item.
     for (i, mat) in CALIB_MATERIALS.iter().enumerate() {
         let input = MaterialUploadInput {
             base_color: mat.base_color,
@@ -245,10 +245,10 @@ pub fn spawn_calibration_spheres(
         );
     }
 
-    // 刷新 the new 材质 SSBO entries so the GPU sees them before the 下一个
-    // 绘制 The scene path calls flush_materials() once after its own
+    // Flush the new material SSBO entries so the GPU sees them before the next
+    // draw. The scene path calls flush_materials() once after its own
     // registrations; the spheres are added afterward so they need their own
-    // 刷新
+    // flush.
     renderer.flush_materials()?;
     log::info!(
         "calibration spheres: registered {} spheres at origin ({}, {}, {})",
