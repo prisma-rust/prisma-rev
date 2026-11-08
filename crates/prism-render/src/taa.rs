@@ -31,7 +31,7 @@ use crate::shader;
 use crate::shader_bindings::taa as bindings;
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct TaaParams {
     inv_view_proj: [[f32; 4]; 4],
     prev_view_proj: [[f32; 4]; 4],
@@ -263,7 +263,7 @@ impl TaaPass {
         .context("TaaPass: map params")?;
         unsafe {
             std::ptr::copy_nonoverlapping(
-                params as *const TaaParams as *const u8,
+                bytemuck::bytes_of(params).as_ptr(),
                 ptr as *mut u8,
                 size as usize,
             );

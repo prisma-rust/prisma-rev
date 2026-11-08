@@ -29,7 +29,7 @@ pub const MOTION_BINDING: u32 = 3; // UNIFORM_BUFFER
 /// explicit `_pad_*` fillers, so `size_of` is 88 bytes and every field sits
 /// where the shader expects it.
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, ::bytemuck::Pod, ::bytemuck::Zeroable)]
 pub struct PostPush {
     /// offset 0, size 4
     pub tonemapMode: u32,

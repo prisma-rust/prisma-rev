@@ -27,7 +27,7 @@ const GIZMO_FRAG_SPV: &[u8] = include_bytes!("../../../assets/shaders/gizmo.frag
 
 /// Per-vertex data for the gizmo: object-space position + color.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct GizmoVertex {
     pos: [f32; 3],
     color: [f32; 3],
@@ -92,7 +92,7 @@ impl Gizmo {
                 .map_memory(vertex_memory, 0, buf_size, vk::MemoryMapFlags::empty())
                 .context("map gizmo vertex memory")?;
             std::ptr::copy_nonoverlapping(
-                verts.as_ptr() as *const u8,
+                bytemuck::cast_slice(&verts).as_ptr(),
                 ptr as *mut u8,
                 buf_size as usize,
             );
@@ -251,10 +251,7 @@ impl Gizmo {
                     self.layout,
                     vk::ShaderStageFlags::VERTEX,
                     0,
-                    std::slice::from_raw_parts(
-                        &push as *const _ as *const u8,
-                        size_of::<GizmoPush>(),
-                    ),
+                    bytemuck::bytes_of(&push),
                 );
                 let (first, count) = match instance.mode {
                     1 => (self.rotate_first, self.rotate_count),

@@ -54,7 +54,7 @@ new_key_type! {
 ///   @80  transmission_tex_idx, occlusion_idx     (2 x uint)
 ///   @88  normal_scale, occlusion_strength         (2 x float, padded to 96)
 #[repr(C, align(16))]
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuMaterial {
     /// Linear-space base color (rgba). When an albedo texture is bound it is
     /// created as `R8G8B8A8_SRGB`, so the hardware converts the sampled value
@@ -292,8 +292,7 @@ impl RenderMaterialManager {
         // bother with the dirty range optimization yet because the
         // upload size is so small (48KB) that the savings are noise.
         let total_size = self.gpu_data.len() * std::mem::size_of::<GpuMaterial>();
-        let bytes =
-            unsafe { std::slice::from_raw_parts(self.gpu_data.as_ptr() as *const u8, total_size) };
+        let bytes: &[u8] = bytemuck::cast_slice(&self.gpu_data);
         unsafe {
             buffer::upload_to_buffer(
                 context,

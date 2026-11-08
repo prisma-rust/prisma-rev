@@ -26,7 +26,7 @@ pub const PREV_MODELS_BINDING: u32 = 4; // UNIFORM_BUFFER
 /// explicit `_pad_*` fillers, so `size_of` is 120 bytes and every field sits
 /// where the shader expects it.
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, ::bytemuck::Pod, ::bytemuck::Zeroable)]
 pub struct MeshPush {
     /// offset 0, size 64
     pub model: [[f32; 4]; 4],

@@ -25,7 +25,7 @@ pub const BINDLESS_SRVS_BINDING: u32 = 1; // UNIFORM_BUFFER
 /// explicit `_pad_*` fillers, so `size_of` is 4 bytes and every field sits
 /// where the shader expects it.
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, ::bytemuck::Pod, ::bytemuck::Zeroable)]
 pub struct RtPreviewPush {
     /// offset 0, size 4
     pub textureHandle: u32,

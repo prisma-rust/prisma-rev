@@ -54,7 +54,7 @@ pub const ENV_CUBE_BINDING: u32 = 0; // COMBINED_IMAGE_SAMPLER
 /// explicit `_pad_*` fillers, so `size_of` is 144 bytes and every field sits
 /// where the shader expects it.
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, ::bytemuck::Pod, ::bytemuck::Zeroable)]
 pub struct PtPush {
     /// offset 0, size 64
     pub inv_view_proj: [[f32; 4]; 4],

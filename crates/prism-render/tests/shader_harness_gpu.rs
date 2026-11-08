@@ -13,11 +13,9 @@ mod support;
 
 use support::{BufferSpec, GpuHarness};
 
-fn bytes_of<T>(values: &[T]) -> &[u8] {
-    // The harness treats buffers as opaque bytes; u32 has no padding.
-    unsafe {
-        std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), std::mem::size_of_val(values))
-    }
+/// Reinterpret a POD slice as bytes for a buffer upload.
+fn bytes_of<T: bytemuck::Pod>(values: &[T]) -> &[u8] {
+    bytemuck::cast_slice(values)
 }
 
 fn read_u32(bytes: &[u8], index: usize) -> u32 {

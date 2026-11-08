@@ -1177,10 +1177,7 @@ pub fn collect_bake_instances(
         });
     }
 
-    let mat_bytes: Vec<u8> = unsafe {
-        let ptr = gpu_materials.as_ptr() as *const u8;
-        std::slice::from_raw_parts(ptr, gpu_materials.len() * 96).to_vec()
-    };
+    let mat_bytes: Vec<u8> = bytemuck::cast_slice(&gpu_materials).to_vec();
 
     Ok((instances, mat_bytes))
 }

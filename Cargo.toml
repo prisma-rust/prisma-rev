@@ -48,6 +48,8 @@ winit = { version = "0.30", default-features = false, features = ["rwh_06", "and
 
 # Maths
 glam = { version = "0.33.2", features = ["serde"] }
+# POD reinterpretation for GPU uploads and push constants (#1036).
+bytemuck = { version = "1", features = ["derive"] }
 
 # Physics (Rapier)
 rapier3d = { version = "0.34", default-features = false, features = ["dim3", "f32", "std"] }

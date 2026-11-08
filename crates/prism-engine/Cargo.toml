@@ -42,6 +42,7 @@ prism-anim = { path = "../prism-anim" }
 
 prism-audio = { path = "../prism-audio", optional = true }
 glam.workspace = true
+bytemuck = { workspace = true }
 log = { workspace = true }
 anyhow = { workspace = true }
 rustc-hash = "2"

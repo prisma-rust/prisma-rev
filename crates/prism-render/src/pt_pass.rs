@@ -560,7 +560,7 @@ impl PathTracePass {
         let light_size = std::mem::size_of::<PtAnalyticLight>();
         unsafe {
             ptr::copy_nonoverlapping(
-                lights.as_ptr() as *const u8,
+                bytemuck::cast_slice(&lights[..count]).as_ptr(),
                 self.lights_mapped,
                 count * light_size,
             );
@@ -1178,10 +1178,7 @@ impl RenderPassNode for PathTracePass {
                 pl.layout,
                 vk::ShaderStageFlags::COMPUTE,
                 0,
-                std::slice::from_raw_parts(
-                    &push as *const _ as *const u8,
-                    std::mem::size_of::<shader_bindings::pt_render::PtPush>(),
-                ),
+                bytemuck::bytes_of(&push),
             );
         }
 

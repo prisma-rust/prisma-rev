@@ -23,7 +23,7 @@ pub const BONES_BINDING: u32 = 3; // UNIFORM_BUFFER
 /// explicit `_pad_*` fillers, so `size_of` is 156 bytes and every field sits
 /// where the shader expects it.
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, ::bytemuck::Pod, ::bytemuck::Zeroable)]
 pub struct ShadowPush {
     /// offset 0, size 64
     pub model: [[f32; 4]; 4],

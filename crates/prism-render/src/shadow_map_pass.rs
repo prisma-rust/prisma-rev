@@ -658,7 +658,7 @@ impl ShadowMapPass {
             );
             if count > 0 {
                 std::ptr::copy_nonoverlapping(
-                    matrices.as_ptr() as *const u8,
+                    bytemuck::cast_slice(&matrices[..count]).as_ptr(),
                     dst,
                     count * matrix_size,
                 );
@@ -1025,10 +1025,7 @@ impl RenderPassNode for ShadowMapPass {
                         pipeline.layout,
                         vk::ShaderStageFlags::VERTEX,
                         0,
-                        std::slice::from_raw_parts(
-                            &pc as *const _ as *const u8,
-                            bindings::PUSH_CONSTANT_SIZE as usize,
-                        ),
+                        bytemuck::bytes_of(&pc),
                     );
 
                     let draw_instances = instance_count.max(1);
