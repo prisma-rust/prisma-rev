@@ -236,6 +236,29 @@ pub fn ui_render_system(world: &mut World) {
     world.insert_resource(draw_list);
 }
 
+/// 把调度期间新提交的外部四边形并入已经建好的 [`UiDrawList`]。
+///
+/// [`ui_render_system`] 在调度中段（`ui::render`）重建列表，而项目 system 通常
+/// 注册在它之后；`Engine::update` 在调度结束后再并一次，静态 Player 里
+/// `GameWorld::draw_quad` 的提交才不会晚一帧（#1048）。编辑器在
+/// `engine.update()` 之前写入，走的是 `ui_render_system` 那一次合并。
+pub fn merge_external_quads(world: &mut World) {
+    let Some(external) = world.remove_resource::<ExternalUiQuads>() else {
+        return;
+    };
+    if external.0.is_empty() {
+        return;
+    }
+    let mut draw_list = world.remove_resource::<UiDrawList>().unwrap_or_default();
+    draw_list.extend_quads(external.0);
+    // 列表本来就有序，`sort_by_key` 稳定，所以只把后加的元素插回正确的位置。
+    draw_list.items.sort_by_key(|item| match item {
+        UiDrawItem::Quad(quad) => (quad.layer, quad.order, 0u8),
+        UiDrawItem::Text(text) => (text.layer, text.order, 1u8),
+    });
+    world.insert_resource(draw_list);
+}
+
 /// 将引擎的 `UiDrawList`（像素坐标）转换为渲染器的 `UiOverlayInput`（NDC）。
 ///
 /// 从 world 的 `ScreenSize` resource 读取屏幕尺寸。

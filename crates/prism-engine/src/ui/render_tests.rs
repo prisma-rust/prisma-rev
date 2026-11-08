@@ -625,3 +625,31 @@ fn an_external_layer_still_draws_above_the_whole_ui() {
     );
     assert_eq!(draw_texts(draw_list), vec!["Intro".to_string()]);
 }
+
+#[test]
+fn quads_submitted_after_the_render_system_are_merged() {
+    let mut world = world_with_screen();
+    spawn_node(&mut world, Some([1.0, 0.0, 0.0, 1.0]), Some("Intro"));
+
+    crate::ui::layout::ui_layout_system(&mut world);
+    ui_render_system(&mut world);
+
+    // 项目 system 注册在 `ui::render` 之后（静态 Player，见 #1048）。
+    world.insert_resource(crate::ui::ExternalUiQuads(vec![crate::ui::UiQuad {
+        rect: [0.0, 0.0, 4.0, 4.0],
+        layer: 1,
+        ..crate::ui::UiQuad::default()
+    }]));
+    crate::ui::merge_external_quads(&mut world);
+
+    let draw_list = world.get_resource::<UiDrawList>().expect("draw list");
+    assert_eq!(draw_list.items.len(), 3);
+    assert!(
+        matches!(draw_list.items.last(), Some(UiDrawItem::Quad(q)) if q.layer == 1),
+        "晚于 ui::render 提交的 quad 必须补进同一帧的列表"
+    );
+    assert!(
+        world.get_resource::<crate::ui::ExternalUiQuads>().is_none(),
+        "合并后要清空，否则下一帧会重复绘制"
+    );
+}

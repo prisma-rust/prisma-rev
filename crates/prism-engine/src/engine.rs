@@ -471,6 +471,10 @@ impl Engine {
         // Run the ECS system schedule (user‑registered + built‑in systems).
         self.schedule.run(&mut self.world, dt);
 
+        // 用户 system 在本 tick 里通过 `GameWorld::draw_quad` 提交的四边形排在
+        // `ui::render` 之后，这里补一次合并，否则静态 Player 会晚一帧（#1048）。
+        crate::ui::merge_external_quads(&mut self.world);
+
         // ── 世界矩阵传播（模拟步末尾）────────────────────────────
         // 用户 system 在本 tick 里 spawn 的实体/改过的 `LocalTransform` 必须
         // 在 update 返回前变成 `LocalToWorld`，否则下面这些消费方会看到上一帧
