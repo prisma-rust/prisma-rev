@@ -276,33 +276,32 @@ mod tests {
         }
     }
 
-    /// Two calls must reuse the same worker threads (#1031).
+    /// Repeated calls must reuse one bounded set of worker threads (#1031).
     ///
-    /// `ThreadId` is never reused after a thread exits, so any id the second
-    /// call sees must have existed in the first one. The old implementation
-    /// spawned fresh scoped threads per call and fails this.
+    /// Which pool thread picks a chunk depends on wake-up order, and the calling
+    /// thread helps drain the queue, so comparing two calls id by id is racy.
+    /// The stable property is the bound: however many calls run, the ids stay
+    /// within the pool size plus the caller. The old implementation spawned
+    /// fresh scoped threads per call and blows past that immediately.
     #[test]
     fn parallel_chunks_reuse_worker_threads() {
         if available_parallelism() < 2 {
             return;
         }
-        let first = Mutex::new(Vec::new());
-        let mut items = vec![0usize; 256];
-        scoped_parallel_chunks(&mut items, MAX_POOL_THREADS, record_thread(&first));
-
-        let second = Mutex::new(Vec::new());
-        let mut items = vec![0usize; 256];
-        scoped_parallel_chunks(&mut items, MAX_POOL_THREADS, record_thread(&second));
-
-        let first = first.into_inner().unwrap_or_else(PoisonError::into_inner);
-        let second = second.into_inner().unwrap_or_else(PoisonError::into_inner);
-        assert!(!first.is_empty());
-        for id in second {
-            assert!(
-                first.contains(&id),
-                "second call ran on a thread the first call never used: {id:?}"
-            );
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..3 {
+            let batch = Mutex::new(Vec::new());
+            let mut items = vec![0usize; 512];
+            scoped_parallel_chunks(&mut items, MAX_POOL_THREADS, record_thread(&batch));
+            let ids = batch.into_inner().unwrap_or_else(PoisonError::into_inner);
+            assert!(!ids.is_empty());
+            seen.extend(ids);
         }
+        assert!(
+            seen.len() <= MAX_POOL_THREADS + 1,
+            "three calls used {} threads: {seen:?}",
+            seen.len()
+        );
     }
 
     /// A panicking chunk must not wedge the pool, and the panic has to reach
