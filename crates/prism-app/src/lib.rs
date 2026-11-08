@@ -91,6 +91,14 @@ mod physics_runner;
 /// same runtime the app uses without creating a window.
 #[cfg(feature = "physics")]
 pub use physics_runner::PhysicsRuntime;
+/// Kinematic character moves (#560 P2): write requests into
+/// `CharacterMoveRequests`, read the corrected moves back from
+/// `CharacterMoveResults` after the step.
+#[cfg(feature = "physics")]
+pub use physics_runner::{
+    CharacterMoveRequest, CharacterMoveRequests, CharacterMoveResult, CharacterMoveResults,
+    CharacterMoveSettings,
+};
 #[cfg(feature = "audio")]
 pub mod one_shot;
 mod render_graph_report;
