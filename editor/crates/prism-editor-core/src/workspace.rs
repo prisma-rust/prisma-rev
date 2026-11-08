@@ -920,12 +920,13 @@ impl Workspace {
                 }
             }
         }
-        if !files.is_empty() && opened.is_empty() {
+        let has_project_files = !files.is_empty();
+        if has_project_files && opened.is_empty() {
             self.log(
                 LogSource::Editor,
                 LogLevel::Error,
                 format!(
-                    "工程里的 {} 个文档全部加载失败；当前显示的是编辑器示例文档，不是工程内容",
+                    "工程里的 {} 个文档全部加载失败；已留空工程场景，不显示编辑器示例文档",
                     failed.len()
                 ),
             );
@@ -966,6 +967,15 @@ impl Workspace {
                 .iter()
                 .position(|document| document.kind == DocKind::Scene)
                 .unwrap_or(0);
+            self.clear_selection();
+            self.expanded.clear();
+        } else if has_project_files {
+            // Every project document failed to parse. Keep an empty scene instead
+            // of the sample fixture: otherwise the hierarchy and the Game view
+            // show the editor's demo scene while the status bar says the project,
+            // which reads as "my project looks like this" (#1020).
+            self.docs = vec![Document::new(DocKind::Scene, None, SceneDoc::default())];
+            self.active = 0;
             self.clear_selection();
             self.expanded.clear();
         }
@@ -8164,6 +8174,42 @@ mod tests {
         assert_eq!(
             workspace.project_load_failures(),
             ["assets/scenes/broken.scene.json"]
+        );
+    }
+
+    /// A project whose documents all fail to parse leaves an empty scene, never
+    /// the sample fixture: with a project bound the Game view must not show the
+    /// editor's demo scene (#1020).
+    #[test]
+    fn a_project_where_every_document_fails_leaves_an_empty_scene() {
+        let project = TempProject::new("all-broken");
+        std::fs::write(
+            project.root.join("assets/scenes/broken.scene.json"),
+            r#"{"version":3,"entities":42}"#,
+        )
+        .unwrap();
+
+        let mut workspace = Workspace::load_fixture(&fixture());
+        workspace.load_project(project.root.clone()).unwrap();
+
+        assert_eq!(
+            workspace.project_load_failures(),
+            ["assets/scenes/broken.scene.json"]
+        );
+        assert_eq!(workspace.docs.len(), 1);
+        let document = workspace.document();
+        assert_eq!(document.path, None, "the empty project scene has no file");
+        assert!(
+            document.doc.entities.is_empty(),
+            "the sample fixture must not stand in for project content"
+        );
+        assert!(
+            workspace
+                .log
+                .visible_lines()
+                .iter()
+                .any(|line| line.level == LogLevel::Error && line.text.contains("全部加载失败")),
+            "loading failures have to show up as an error"
         );
     }
 
