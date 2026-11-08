@@ -16,7 +16,7 @@ default = ["pathtrace", "ui", "ui-fontdue", "ibl", "skybox", "shadows", "gtao"]
 #   `ui-fontdue`     fontdue + ttf-parser（全平台，默认）
 #   `ui-directwrite` Windows 系统 DirectWrite（仅 Windows，省掉 fontdue/ttf-parser）
 # 只开 `ui` 不开后端 = 只画 quad、不画文字（省约 90 KB），启动时 warn 一次。
-ui = []
+ui = ["dep:unicode-linebreak"]
 # 文本后端 A：fontdue 光栅 + ttf-parser（约 90 KB），全平台。
 ui-fontdue = ["ui", "dep:fontdue"]
 # 文本后端 B：Windows 系统 DirectWrite + GDI interop（`windows` 绑定只在 Windows 目标启用）。
@@ -50,6 +50,8 @@ slotmap = { workspace = true }
 # 只需要 PNG 编码（截图 + 最近邻缩放）。RGBe/HDR 解码是 `hdr.rs::load_rgbe`
 # 自己实现的，不依赖 image 的 `hdr` feature。
 image = { workspace = true, features = ["png"] }
+# UAX #14 break opportunities for `Text.wrap` (pixel advances, not column widths).
+unicode-linebreak = { workspace = true, optional = true }
 fontdue = { version = "0.9", optional = true }
 
 # 文本后端 B（`ui-directwrite`）：只用 Win32 的 DirectWrite + GDI 子集。

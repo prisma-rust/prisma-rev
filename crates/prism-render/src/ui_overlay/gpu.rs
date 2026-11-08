@@ -326,6 +326,9 @@ impl GlyphAtlas {
     }
 
     /// 行打包：把 bitmap 拷贝进图集，返回图集 rect。
+    ///
+    /// shelf 打包在 `ATLAS_SIZE` 内够用（字形丢弃会打 warn）；真出现丢弃再换
+    /// `etagere` 之类的 2D 矩形打包器，现在没必要为它加依赖。
     fn pack(&mut self, bitmap: &[u8], w: usize, h: usize) -> Option<[u32; 4]> {
         let w = w as u32;
         let h = h as u32;
@@ -1177,8 +1180,13 @@ const MAX_WRAP_LINES: usize = 4096;
 /// 按宽度贪心断行（#527）。
 ///
 /// - `\n` 总是产生新行（保留空行，让作者能控制段落间距）；
-/// - 优先在空格处断行，单个词比整行还宽时按字符断；
+/// - 断点来自 UAX #14（`unicode-linebreak`）：空格、连字符、CJK 字间都能断，
+///   `，` / `。` 这类收尾标点不会被推到行首；
+/// - 单个词比整行还宽时按字符断；
 /// - 断行后行尾空格会被去掉，行首空格同理。
+///
+/// 宽度用的是字体推进量（像素），所以这里没有用 `textwrap`：它按
+/// `unicode-width` 的列宽排布，和实际字体的像素宽度对不上。
 fn wrap_text(content: &str, max_width: f32, advance: &mut impl FnMut(char) -> f32) -> Vec<String> {
     let max_width = if max_width.is_finite() && max_width > 0.0 {
         max_width
@@ -1186,49 +1194,85 @@ fn wrap_text(content: &str, max_width: f32, advance: &mut impl FnMut(char) -> f3
         f32::MAX
     };
     let mut lines: Vec<String> = Vec::new();
-    'paragraphs: for paragraph in content.split('\n') {
-        let mut current = String::new();
-        let mut current_w = 0.0f32;
-        // 最近一个空格的字节下标。
-        let mut last_space: Option<usize> = None;
-
-        for ch in paragraph.chars() {
-            let step = advance(ch).max(0.0);
-            if !current.is_empty() && current_w + step > max_width {
-                match last_space.take() {
-                    Some(index) => {
-                        // 在空格处断：空格之后的部分挪到下一行。
-                        let rest = current[index + 1..].to_string();
-                        current.truncate(index);
-                        lines.push(current.trim_end().to_string());
-                        current = rest.trim_start().to_string();
-                        current_w = 0.0;
-                        for ch in current.chars() {
-                            current_w += advance(ch).max(0.0);
-                        }
-                    }
-                    None => {
-                        lines.push(std::mem::take(&mut current));
-                        current_w = 0.0;
-                    }
-                }
-                if lines.len() >= MAX_WRAP_LINES {
-                    lines.push(current);
-                    break 'paragraphs;
-                }
-            }
-            current.push(ch);
-            current_w += step;
-            if ch == ' ' {
-                last_space = Some(current.len() - 1);
-            }
-        }
-        lines.push(current);
+    for paragraph in content.split('\n') {
+        wrap_paragraph(paragraph, max_width, advance, &mut lines);
         if lines.len() >= MAX_WRAP_LINES {
+            lines.truncate(MAX_WRAP_LINES);
             break;
         }
     }
     lines
+}
+
+fn wrap_paragraph(
+    paragraph: &str,
+    max_width: f32,
+    advance: &mut impl FnMut(char) -> f32,
+    lines: &mut Vec<String>,
+) {
+    if paragraph.is_empty() {
+        lines.push(String::new());
+        return;
+    }
+
+    // 字节偏移 -> 字符下标，以及按字符累计的推进量：任意 `[from, to)` 的行宽
+    // 都是 O(1)，不用为每个候选断点重新测量。
+    let mut char_offsets: Vec<usize> = paragraph.char_indices().map(|(offset, _)| offset).collect();
+    char_offsets.push(paragraph.len());
+    let mut prefix = Vec::with_capacity(char_offsets.len());
+    prefix.push(0.0f32);
+    for ch in paragraph.chars() {
+        let next = prefix[prefix.len() - 1] + advance(ch).max(0.0);
+        prefix.push(next);
+    }
+    let char_index = |byte: usize| char_offsets.binary_search(&byte).unwrap_or_else(|at| at);
+    let width = |from: usize, to: usize| prefix[char_index(to)] - prefix[char_index(from)];
+
+    let breaks: Vec<usize> = unicode_linebreak::linebreaks(paragraph)
+        .map(|(offset, _)| offset)
+        .collect();
+    let mut pos = 0usize;
+    loop {
+        while paragraph[pos..].starts_with(' ') {
+            pos += 1;
+        }
+
+        // 从 `pos` 起最远的、整行宽度仍然放得下的断点。
+        let mut last_fit: Option<usize> = None;
+        for &brk in &breaks[breaks.partition_point(|&brk| brk <= pos)..] {
+            if width(pos, brk) > max_width {
+                break;
+            }
+            last_fit = Some(brk);
+        }
+
+        if let Some(brk) = last_fit {
+            lines.push(paragraph[pos..brk].trim_end().to_string());
+            pos = brk;
+            if pos >= paragraph.len() {
+                return;
+            }
+        } else {
+            // 没有断点放得下：至少吃掉一个字符，按字符截断。
+            let mut end = pos;
+            for ch in paragraph[pos..].chars() {
+                let next = end + ch.len_utf8();
+                if end > pos && width(pos, next) > max_width {
+                    break;
+                }
+                end = next;
+            }
+            lines.push(paragraph[pos..end].to_string());
+            pos = end;
+            if pos >= paragraph.len() {
+                return;
+            }
+        }
+
+        if lines.len() >= MAX_WRAP_LINES {
+            return;
+        }
+    }
 }
 
 /// 往顶点流里推一个四边形（两个三角形，顺时针）。
@@ -1428,6 +1472,23 @@ mod tests {
         let mut advance = ten_px;
         let lines = wrap_text("aa  bb", 40.0, &mut advance);
         assert_eq!(lines, vec!["aa".to_string(), "bb".to_string()]);
+    }
+
+    #[test]
+    fn cjk_text_breaks_between_characters() {
+        let mut advance = ten_px;
+        let lines = wrap_text("中文字", 10.0, &mut advance);
+        assert_eq!(
+            lines,
+            vec!["中".to_string(), "文".to_string(), "字".to_string()]
+        );
+    }
+
+    #[test]
+    fn closing_punctuation_never_starts_a_line() {
+        let mut advance = ten_px;
+        let lines = wrap_text("你好，世界", 30.0, &mut advance);
+        assert_eq!(lines, vec!["你好，".to_string(), "世界".to_string()]);
     }
 
     #[test]
