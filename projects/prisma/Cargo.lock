@@ -1500,6 +1500,7 @@ dependencies = [
  "prism-engine",
  "prism-project-api",
  "prism-reflect",
+ "prism-scene",
 ]
 
 [[package]]

@@ -11,7 +11,6 @@
 use keyframe::functions::{EaseInCubic, EaseInOutCubic, EaseOutCubic};
 use keyframe::{keyframes, AnimationSequence};
 use prism_game_api::{EntityHandle, GameWorld, InputSnapshot, UiQuad};
-use prism_scene::components::Name;
 use prism_scene::ui::{Style, Text};
 
 /// 标题初始位置（margin.top，CENTER 锚点下负值 = 中心上方）。
@@ -176,25 +175,10 @@ fn state_is_valid(world: &GameWorld<'_>, state: &IntroState) -> bool {
 
 /// 在第一帧按 Name 查找场景实体，构造 IntroState。
 fn initialize_intro(world: &GameWorld<'_>) -> Option<IntroState> {
-    let mut entities: std::collections::HashMap<String, EntityHandle> =
-        std::collections::HashMap::new();
-
-    for entity in world.query::<Name>() {
-        let Some(name) = world.get::<Name>(entity) else {
-            continue;
-        };
-        match name.0.as_str() {
-            ENTITY_OVERLAY | ENTITY_TITLE | ENTITY_SUBTITLE | ENTITY_PROMPT => {
-                entities.insert(name.0.clone(), entity);
-            }
-            _ => {}
-        }
-    }
-
-    let overlay_entity = *entities.get(ENTITY_OVERLAY)?;
-    let title_entity = *entities.get(ENTITY_TITLE)?;
-    let subtitle_entity = *entities.get(ENTITY_SUBTITLE)?;
-    let prompt_entity = *entities.get(ENTITY_PROMPT)?;
+    let overlay_entity = world.find_by_name(ENTITY_OVERLAY)?;
+    let title_entity = world.find_by_name(ENTITY_TITLE)?;
+    let subtitle_entity = world.find_by_name(ENTITY_SUBTITLE)?;
+    let prompt_entity = world.find_by_name(ENTITY_PROMPT)?;
 
     log::info!("intro: found all 4 UI entities");
 

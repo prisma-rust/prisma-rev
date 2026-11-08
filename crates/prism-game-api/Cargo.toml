@@ -20,6 +20,9 @@ prism-project-api = { path = "../prism-project-api" }
 # 纯数据 ECS（无 Vulkan / 无 UI）。插件侧只用它的 `Entity` 句柄布局与
 # `Component` blanket impl，永远不会把宿主的 `World` 指针传出去。
 prism-ecs = { path = "../prism-ecs" }
+# `find_by_name` needs the `Name` schema component. `prism-scene` is pure data
+# (no engine, render or UI), so it stays inside the plugin boundary rules.
+prism-scene = { path = "../prism-scene" }
 # 仅 `host` 后端用于松散资产定位（插件构建不会拉进引擎）。
 # **必须 default-features = false**：否则会把 prism-engine 的默认能力（如 `pathtrace`）
 # 强加给每一个玩家，项目模板的 Lego 开关就失效了（#535 实测）。

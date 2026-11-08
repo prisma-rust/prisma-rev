@@ -31,6 +31,7 @@ use prism_ecs::{Component, Entity};
 pub use prism_project_api::keys;
 pub use prism_project_api::{EntityHandle, InputSnapshot};
 use prism_reflect::Reflect;
+use prism_scene::components::Name;
 
 #[cfg(feature = "plugin")]
 use prism_project_api::{HostApi, HOST_CAP_PHYSICS, HOST_CAP_SCENE, SUCCESS};
@@ -444,6 +445,28 @@ impl<'a> GameWorld<'a> {
                 .collect(),
             #[cfg(feature = "plugin")]
             Backend::Plugin(backend) => backend.query(T::type_desc().name),
+        }
+    }
+
+    /// First entity whose [`Name`] equals `name`.
+    ///
+    /// Both backends implement this through component reads, so no extra host
+    /// callback is needed and a plugin and the static player resolve the same
+    /// entity. Names are not required to be unique: when several entities share
+    /// one, the result is the first one in ECS iteration order, which is **not**
+    /// a stable authoring order — keep scene names unique.
+    pub fn find_by_name(&self, name: &str) -> Option<EntityHandle> {
+        match &self.backend {
+            #[cfg(feature = "host")]
+            Backend::Host(world) => world
+                .query::<Name>()
+                .find(|(_, value)| value.0 == name)
+                .map(|(entity, _)| handle_from_entity(entity)),
+            #[cfg(feature = "plugin")]
+            Backend::Plugin(_) => self.query::<Name>().into_iter().find(|&entity| {
+                self.get::<Name>(entity)
+                    .is_some_and(|value| value.0 == name)
+            }),
         }
     }
 
@@ -1229,6 +1252,25 @@ mod tests {
         assert!(api.query::<Health>().is_empty());
     }
 
+    /// #1056: gameplay code binds scene entities by name; the lookup lives in the
+    /// API instead of every project re-walking `query::<Name>()`.
+    #[test]
+    fn host_backend_finds_entities_by_name() {
+        let mut world = World::new();
+        let mut api = GameWorld::host(&mut world);
+
+        let boat = api.spawn();
+        assert!(api.set(boat, Name("boat".to_owned())));
+        let camera = api.spawn();
+        assert!(api.set(camera, Name("camera".to_owned())));
+        let anonymous = api.spawn();
+        assert!(api.set(anonymous, Health { value: 1.0 }));
+
+        assert_eq!(api.find_by_name("boat"), Some(boat));
+        assert_eq!(api.find_by_name("camera"), Some(camera));
+        assert_eq!(api.find_by_name("missing"), None);
+    }
+
     #[test]
     fn writes_to_dead_handles_are_rejected() {
         let mut world = World::new();
@@ -1299,5 +1341,30 @@ mod tests {
 
         drop(commands);
         assert!(world.query::<Name>().next().is_none());
+    }
+
+    /// #1056: the plugin backend resolves names through the same component reads,
+    /// so no extra ABI callback is involved.
+    #[cfg(feature = "plugin")]
+    #[test]
+    fn plugin_backend_finds_entities_by_name() {
+        use prism_scene::components::Name;
+
+        let mut components = prism_scene::ComponentRegistry::new();
+        prism_scene::register_builtin_components(&mut components);
+
+        let mut world = World::new();
+        let mut commands = prism_runtime_host::WorldCommands::new(&mut world, &components, 1);
+        let api = commands.api();
+        let registry = components.type_registry();
+
+        let mut view = GameWorld::plugin(&api, registry);
+        let boat = view.spawn();
+        assert!(view.set(boat, Name("boat".to_owned())));
+        let camera = view.spawn();
+        assert!(view.set(camera, Name("camera".to_owned())));
+
+        assert_eq!(view.find_by_name("camera"), Some(camera));
+        assert_eq!(view.find_by_name("missing"), None);
     }
 }

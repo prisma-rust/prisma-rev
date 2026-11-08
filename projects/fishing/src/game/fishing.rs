@@ -86,31 +86,15 @@ impl FishingState {
 
 /// HUD 顶栏文本实体（场景里叫 `title`，由工程自己的场景摆放）。
 fn find_hud_label(world: &mut GameWorld<'_>) -> Option<EntityHandle> {
-    for entity in world.query::<Name>() {
-        let Some(name) = world.get::<Name>(entity) else {
-            continue;
-        };
-        if name.0 == "title" {
-            return Some(entity);
-        }
-    }
-    None
+    world.find_by_name("title")
 }
 
 /// 每帧推进钓鱼状态机。
 pub fn tick(state: &mut Option<FishingState>, world: &mut GameWorld<'_>, dt: f32) {
     if state.is_none() {
         let mut fresh = FishingState::default();
-        for entity in world.query::<Name>() {
-            let Some(name) = world.get::<Name>(entity) else {
-                continue;
-            };
-            match name.0.as_str() {
-                "boat" => fresh.boat = Some(entity),
-                "bobber" => fresh.bobber = Some(entity),
-                _ => {}
-            }
-        }
+        fresh.boat = world.find_by_name("boat");
+        fresh.bobber = world.find_by_name("bobber");
         // #984：进度从玩家存档里恢复（键就是 `caught`，工程自己定的 schema）。
         fresh.caught = world
             .load_data("caught")

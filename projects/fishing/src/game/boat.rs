@@ -8,7 +8,7 @@
 //! 编辑器加载的动态模块里都能跑，且不需要引擎类型。
 
 use prism_game_api::{EntityHandle, GameWorld};
-use prism_scene::components::{LocalTransform, Name};
+use prism_scene::components::LocalTransform;
 
 /// 相机离场景平面的距离（相机在 +Z 看向 −Z）。
 const CAMERA_Z: f32 = 10.0;
@@ -32,18 +32,11 @@ pub struct BoatState {
 /// 每帧推进船与相机。
 pub fn tick(state: &mut Option<BoatState>, world: &mut GameWorld<'_>, dt: f32) {
     if state.is_none() {
-        let mut found = BoatState::default();
-        for entity in world.query::<Name>() {
-            let Some(name) = world.get::<Name>(entity) else {
-                continue;
-            };
-            match name.0.as_str() {
-                "boat" => found.boat = Some(entity),
-                "camera" => found.camera = Some(entity),
-                _ => {}
-            }
-        }
-        *state = Some(found);
+        *state = Some(BoatState {
+            boat: world.find_by_name("boat"),
+            camera: world.find_by_name("camera"),
+            ..BoatState::default()
+        });
     }
 
     let Some(current) = state.as_mut() else {
