@@ -49,6 +49,7 @@ pub mod descriptor;
 pub(crate) mod dummy;
 pub mod external_overlay;
 pub mod forward_pass;
+pub mod frame_stats;
 pub mod gi;
 pub mod gizmo;
 pub mod gpu_timer;
