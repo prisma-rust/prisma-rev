@@ -87,6 +87,8 @@ pub struct UndoOutcome {
 pub struct Entry {
     pub command: Command,
     pub label: String,
+    /// 这一步的唯一编号（单调递增），保存基线用它而不是下标来比较。
+    pub step: u64,
     coalesce: Option<String>,
     at_ms: u64,
     /// 结构性编辑的选中快照；字段 / Transform 命令为 `None`（实体集合没变）。
@@ -102,7 +104,7 @@ impl Entry {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct UndoStack {
     undo: Vec<Entry>,
     redo: Vec<Entry>,
@@ -111,17 +113,60 @@ pub struct UndoStack {
     /// 交互进行中（拖动 gizmo / 拖拽输入框）：忽略合并时间窗口，
     /// 整段交互始终压成一步。
     sticky: bool,
+    /// 最近分配的步骤编号；`0` 留给「空栈」基线。
+    next_step: u64,
+    /// 最后一次保存时所在的步骤。`None` 表示保存点已经不可达（历史被清空 /
+    /// 从恢复快照重建），此时任何撤销都不能把文档变回干净（#992）。
+    saved_step: Option<u64>,
 }
 
-impl UndoStack {
-    pub fn new() -> Self {
+impl Default for UndoStack {
+    fn default() -> Self {
         Self {
             undo: Vec::new(),
             redo: Vec::new(),
             limit: DEFAULT_LIMIT,
             coalesce_ms: DEFAULT_COALESCE_MS,
             sticky: false,
+            next_step: 0,
+            // 新开的文档与磁盘一致：空栈就是保存点。
+            saved_step: Some(0),
         }
+    }
+}
+
+impl UndoStack {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn take_step(&mut self) -> u64 {
+        self.next_step += 1;
+        self.next_step
+    }
+
+    /// 当前所在步骤：撤销栈最上面一步的编号，空栈为 `0`。
+    pub fn current_step(&self) -> u64 {
+        self.undo.last().map(|entry| entry.step).unwrap_or(0)
+    }
+
+    /// 保存成功：把当前位置记成基线，并断开上一步的合并窗口 ——
+    /// 保存之后再改同一个字段应当开新的一步（#992）。
+    pub fn mark_saved(&mut self) {
+        self.saved_step = Some(self.current_step());
+        if let Some(last) = self.undo.last_mut() {
+            last.coalesce = None;
+        }
+    }
+
+    /// 当前内容是否正好是最后一次保存时的状态。
+    pub fn is_at_saved_step(&self) -> bool {
+        self.saved_step == Some(self.current_step())
+    }
+
+    /// 保存点已无法通过撤销 / 重做到达（恢复快照、清空历史）。
+    pub fn forget_saved_point(&mut self) {
+        self.saved_step = None;
     }
 
     /// 开始一次交互：此后的改动不再受 `coalesce_ms` 时间窗口限制。
@@ -204,6 +249,7 @@ impl UndoStack {
     pub fn clear(&mut self) {
         self.undo.clear();
         self.redo.clear();
+        self.saved_step = None;
     }
 
     /// 一次字段写入。`entity_id + component + path` 相同且在合并窗口内时，
@@ -248,8 +294,10 @@ impl UndoStack {
             after: after.clone(),
         };
         apply_field(doc, entity_id, component, path, &after);
+        let step = self.take_step();
         self.undo.push(Entry {
             label: format!("{} · {}", short_component(component), path),
+            step,
             command,
             coalesce: Some(coalesce),
             at_ms: now_ms,
@@ -289,8 +337,10 @@ impl UndoStack {
             }
         }
         apply_transform(doc, entity_id, &after);
+        let step = self.take_step();
         self.undo.push(Entry {
             label: "修改 Transform".to_string(),
+            step,
             command: Command::Transform {
                 entity_id,
                 before,
@@ -347,8 +397,10 @@ impl UndoStack {
         for (entity_id, _, after) in &changes {
             apply_transform(doc, *entity_id, after);
         }
+        let step = self.take_step();
         self.undo.push(Entry {
             label: "修改 Transform".to_string(),
+            step,
             command: Command::TransformBatch { changes },
             coalesce: Some(coalesce),
             at_ms: now_ms,
@@ -379,8 +431,10 @@ impl UndoStack {
         if before == *after {
             return;
         }
+        let step = self.take_step();
         self.undo.push(Entry {
             label: label.into(),
+            step,
             command: Command::Snapshot {
                 before: Box::new(before),
                 after: Box::new(after.clone()),

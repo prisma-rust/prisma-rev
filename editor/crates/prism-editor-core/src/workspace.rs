@@ -149,6 +149,13 @@ impl Document {
         }
     }
 
+    /// 保存 / 重载之后回到干净状态：脏标记清零，并把撤销栈当前位置记成
+    /// 保存基线，这样撤销回到这里时又会变回干净（#992）。
+    pub fn mark_clean(&mut self) {
+        self.dirty = false;
+        self.undo.mark_saved();
+    }
+
     /// 记下「刚读过 / 刚写过」这个文件的版本戳。
     pub fn note_disk_state(&mut self, root: Option<&std::path::Path>) {
         let (Some(root), Some(path)) = (root, self.path.as_deref()) else {
@@ -2107,7 +2114,7 @@ impl Workspace {
             let document = self.docs.get_mut(index).expect("checked above");
             document.doc = doc;
             document.undo = crate::undo::UndoStack::new();
-            document.dirty = false;
+            document.mark_clean();
             document.note_disk_state(Some(&root));
         }
         self.hydrate_documents();
@@ -2164,7 +2171,7 @@ impl Workspace {
         {
             let document = self.docs.get_mut(index).expect("checked above");
             document.path = Some(path.clone());
-            document.dirty = false;
+            document.mark_clean();
             document.note_disk_state(Some(&root));
         }
         self.refresh_project_files();
@@ -2231,12 +2238,14 @@ impl Workspace {
                     let document = &mut self.docs[index];
                     document.doc = entry.document;
                     document.undo = crate::undo::UndoStack::new();
+                    document.undo.forget_saved_point();
                     document.dirty = true;
                     document.externally_modified = false;
                     index
                 }
                 None => {
                     let mut document = Document::new(entry.kind, entry.path, entry.document);
+                    document.undo.forget_saved_point();
                     document.dirty = true;
                     self.docs.push(document);
                     self.docs.len() - 1
@@ -2298,7 +2307,7 @@ impl Workspace {
         {
             let document = self.document_mut();
             document.path = Some(path.clone());
-            document.dirty = false;
+            document.mark_clean();
         }
         self.refresh_project_files();
         self.log(
@@ -2324,7 +2333,7 @@ impl Workspace {
             let document = self.document_mut();
             document.doc = doc;
             document.undo.clear();
-            document.dirty = false;
+            document.mark_clean();
         }
         self.hydrate_documents();
         // 外部文件可能比当前文档短（git checkout / 脚本重写）。选中集存的是
@@ -2546,7 +2555,7 @@ impl Workspace {
     pub fn mark_saved(&mut self) {
         let title = {
             let document = self.document_mut();
-            document.dirty = false;
+            document.mark_clean();
             document.title()
         };
         self.log(LogSource::Editor, LogLevel::Info, format!("已保存 {title}"));
@@ -4436,7 +4445,8 @@ impl Workspace {
         let Some(outcome) = outcome else {
             return;
         };
-        self.document_mut().dirty = true;
+        let document = self.document_mut();
+        document.dirty = !document.undo.is_at_saved_step();
         self.restore_selection(outcome.selection);
     }
 
@@ -4448,7 +4458,8 @@ impl Workspace {
         let Some(outcome) = outcome else {
             return;
         };
-        self.document_mut().dirty = true;
+        let document = self.document_mut();
+        document.dirty = !document.undo.is_at_saved_step();
         self.restore_selection(outcome.selection);
     }
 
@@ -7627,6 +7638,49 @@ mod tests {
 
         workspace.undo();
         assert_eq!(workspace.selection, vec![0]);
+    }
+
+    /// #992：撤销回到保存点后脏标记要变回 false，重做离开再变回 true。
+    #[test]
+    fn undoing_back_to_the_saved_state_clears_the_dirty_flag() {
+        let mut workspace = Workspace::load_fixture(&fixture());
+        workspace.selection = vec![0];
+        let camera = "prism_engine::scene::Camera";
+        let id = workspace.document().doc.entities[0].id.unwrap();
+
+        workspace.set_field(id, camera, "fov_y_degrees", json!(75.0));
+        assert!(workspace.document().dirty);
+
+        workspace.undo();
+        assert!(!workspace.document().dirty, "撤销回到基线后文档应当不脏");
+
+        workspace.redo();
+        assert!(workspace.document().dirty, "重做又离开了基线");
+
+        workspace.undo();
+        assert!(!workspace.document().dirty);
+    }
+
+    /// #992：保存把基线移到当前步骤；保存后再撤销一步是脏的，撤销回保存点又干净。
+    #[test]
+    fn saving_moves_the_dirty_baseline() {
+        let project = TempProject::new("dirty-baseline");
+        let mut workspace = Workspace::load_fixture(&fixture());
+        workspace.load_project(project.root.clone()).unwrap();
+        workspace.selection = vec![0];
+        let camera = "prism_engine::scene::Camera";
+        let id = workspace.document().doc.entities[0].id.unwrap();
+
+        workspace.set_field(id, camera, "fov_y_degrees", json!(75.0));
+        workspace.save_active_as("dirty-baseline").unwrap();
+        assert!(!workspace.document().dirty);
+
+        // 保存后再改同一个字段不能并进已保存的那一步。
+        workspace.set_field(id, camera, "fov_y_degrees", json!(60.0));
+        assert!(workspace.document().dirty);
+
+        workspace.undo();
+        assert!(!workspace.document().dirty, "撤销回保存点时文档应当不脏");
     }
 
     /// `fixture()` 的 0 号实体只有一个组件；插入两个哑组件才好测顺序。
