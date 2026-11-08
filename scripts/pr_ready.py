@@ -641,6 +641,7 @@ def main() -> int:
     if not args.quick:
         standalone = [
             ("projects/prisma", "projects/prisma/"),
+            ("projects/fishing", "projects/fishing/"),
             ("projects/sponza", "projects/sponza/"),
             ("launcher", "launcher/"),
         ]
