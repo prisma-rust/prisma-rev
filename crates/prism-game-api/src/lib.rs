@@ -190,7 +190,8 @@ impl<'a> GameWorld<'a> {
     ///
     /// 键值都是字符串：结构由工程自己序列化（`serde_json` 也好、只看
     /// `"caught"` 这种计数也好），引擎不理解业务 schema。
-    /// 插件后端（编辑器 Play）还没有存档能力位，此时返回 `false`。
+    /// 插件后端走 `HostApi::save_value`（能力位 `HOST_CAP_SAVE`）；宿主没有
+    /// 存档实现时返回 `false`。
     pub fn save_data(&mut self, key: &str, value: &str) -> bool {
         match &mut self.backend {
             #[cfg(feature = "host")]
@@ -212,10 +213,7 @@ impl<'a> GameWorld<'a> {
                 }
             }
             #[cfg(feature = "plugin")]
-            Backend::Plugin(_) => {
-                log::warn!("save_data is not available in the preview module yet");
-                false
-            }
+            Backend::Plugin(backend) => backend.save_value(key, value.as_bytes()),
         }
     }
 
@@ -228,7 +226,9 @@ impl<'a> GameWorld<'a> {
                 .and_then(|store| store.get(key))
                 .map(str::to_string),
             #[cfg(feature = "plugin")]
-            Backend::Plugin(_) => None,
+            Backend::Plugin(backend) => backend
+                .load_value(key)
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
         }
     }
 
@@ -624,6 +624,71 @@ impl PluginBackend<'_> {
             // 宿主没有提供存活查询时退回「句柄非空」；读写仍会各自校验。
             None => !entity.is_placeholder(),
         }
+    }
+
+    /// 写入玩家存档（#984）；宿主没有能力位时只警告一次。
+    fn save_value(&self, key: &str, value: &[u8]) -> bool {
+        if self.api.capabilities & prism_project_api::HOST_CAP_SAVE == 0 {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                log::warn!("host does not expose player saves (HOST_CAP_SAVE)");
+            });
+            return false;
+        }
+        let Some(save) = self.api.save_value else {
+            return false;
+        };
+        let key = key.as_bytes();
+        let status = unsafe {
+            save(
+                self.api.user_data,
+                key.as_ptr(),
+                key.len(),
+                value.as_ptr(),
+                value.len(),
+            )
+        };
+        status == SUCCESS
+    }
+
+    /// 读玩家存档（#984）：先问长度再取内容，和宿主的两段读取一致。
+    fn load_value(&self, key: &str) -> Option<Vec<u8>> {
+        if self.api.capabilities & prism_project_api::HOST_CAP_SAVE == 0 {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                log::warn!("host does not expose player saves (HOST_CAP_SAVE)");
+            });
+            return None;
+        }
+        let load = self.api.load_value?;
+        let key = key.as_bytes();
+        let len = unsafe {
+            load(
+                self.api.user_data,
+                key.as_ptr(),
+                key.len(),
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if len < 0 {
+            return None;
+        }
+        let mut out = vec![0u8; len as usize];
+        let status = unsafe {
+            load(
+                self.api.user_data,
+                key.as_ptr(),
+                key.len(),
+                out.as_mut_ptr(),
+                out.len(),
+            )
+        };
+        if status < 0 {
+            return None;
+        }
+        out.truncate(status as usize);
+        Some(out)
     }
 
     fn draw(&self, quad: UiQuad) {

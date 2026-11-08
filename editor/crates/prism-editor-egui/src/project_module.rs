@@ -109,6 +109,52 @@ enum BuildOutcome {
 /// 只在没有编译任务时扫源码时间戳；和 350ms 的 debounce 错开，别每帧 stat。
 const DIRTY_SCAN_INTERVAL: Duration = Duration::from_millis(500);
 
+/// 工程存档（#984）：编辑器 Play 的存档写在工程目录下，不碰真实用户数据。
+///
+/// 玩家侧用 `prism_engine::user_data`（`%APPDATA%/PrismaRev/<project>` 之类），
+/// 编辑器这里固定 `<project>/target/play-data/player_data.json` —— 删掉
+/// `target/` 就等于清空 Play 存档，不会污染玩家真正的进度。
+pub struct ProjectSave {
+    store: prism_engine::user_data::UserStore,
+}
+
+impl ProjectSave {
+    /// 存档目录建不出来时返回 `None`（能力位不声明）。
+    fn new(root: &Path) -> Option<Self> {
+        let dir = root.join("target").join("play-data");
+        if let Err(error) = std::fs::create_dir_all(&dir) {
+            log::warn!("project save unavailable ({}): {error}", dir.display());
+            return None;
+        }
+        Some(Self {
+            store: prism_engine::user_data::UserStore::open(
+                dir.join(prism_engine::user_data::FILE_NAME),
+            ),
+        })
+    }
+}
+
+impl prism_runtime_host::SaveIo for ProjectSave {
+    fn save_value(&mut self, key: &str, value: &[u8]) -> bool {
+        let Ok(value) = std::str::from_utf8(value) else {
+            log::warn!("project save '{key}': value is not UTF-8");
+            return false;
+        };
+        self.store.set(key, value);
+        match self.store.flush() {
+            Ok(_) => true,
+            Err(error) => {
+                log::warn!("project save '{key}': {error}");
+                false
+            }
+        }
+    }
+
+    fn load_value(&mut self, key: &str) -> Option<Vec<u8>> {
+        self.store.get(key).map(|value| value.as_bytes().to_vec())
+    }
+}
+
 /// 项目模块的宿主侧驱动器。
 pub struct ProjectModuleDriver {
     manifest: Option<PathBuf>,
@@ -144,6 +190,8 @@ pub struct ProjectModuleDriver {
     last_tick_error: Option<String>,
     /// 项目代码在上一 tick 请求的换场（#482），由宿主在 tick 结束后取走执行。
     pending_scene: Option<SceneRequest>,
+    /// 工程存档（#984）：Play 存档放 `<project>/target/play-data/`。
+    save: Option<ProjectSave>,
 }
 
 impl ProjectModuleDriver {
@@ -189,6 +237,7 @@ impl ProjectModuleDriver {
             last_error: None,
             last_tick_error: None,
             pending_scene: None,
+            save: ProjectSave::new(root),
         };
 
         if driver.prebuilt.is_some() {
@@ -337,6 +386,11 @@ impl ProjectModuleDriver {
             .with_assets(&self.assets)
             .with_scene_switch()
             .with_raycast(engine_raycast);
+        // 工程存档（#984）：Play 存档写在 `<project>/target/play-data/`，
+        // 与玩家的真实存档分开；没有可写目录时不声明能力位。
+        if let Some(save) = self.save.as_mut() {
+            commands = commands.with_save(save);
+        }
         // 项目代码可以调 `GameWorld::save_scene_state()`（#484）；引擎在这里，
         // runtime-host 只持有函数指针。
         commands = commands.with_scene_state(
