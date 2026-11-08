@@ -635,6 +635,12 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   无任务栏进度、无触摸、左右修饰键按左侧处理；指针锁定是「隐藏 + `ClipCursor` + 回中」，
   不是 Raw Input。细节见 `crates/prism-platform/src/win32.rs` 的模块文档。
 - Win32 后端**只做过交叉编译验证**：改它要同步更新 PR 的「需真机冒烟」清单。
+- **决策（#1033）：保留并冻结。** 它存在的理由是发布体积：`win32-native` 构建的依赖树里
+  winit 计数为 0（#547），这是 `scripts/check_deps.py` 守的那条预算的一部分，删掉后端就要把
+  winit 加回 Windows 发布包。冻结的含义：**不再补功能**（IME、拖放、多显示器 DPI、触摸、
+  任务栏进度都不会做），只接受「修正确性 bug + 跟上 `PlatformWindow` / `PlatformEvent`
+  的新增中立事件」；任何功能扩展先改这条决策。要重新评估的前提只有一个：Windows 发布包里
+  winit 的开销降到可以忽略，那时删后端比维护两套更划算。
 - 用户项目侧用 feature 选择：`projects/prisma` 的 `winit-window`（默认）/ `win32-window`，
   `prism-app` 在项目里必须 `default-features = false`，否则 Cargo 的 feature 只能加不能减，
   选中 win32 也仍会带进 winit。

@@ -5,6 +5,10 @@
 //! `PeekMessageW` family, plus a `WndProc` that translates `WM_*` into
 //! [`PlatformEvent`].
 //!
+//! This backend is **frozen**: correctness fixes and new neutral `PlatformEvent`
+//! variants only, no feature work (see `AGENTS.md` § Window backends, decision
+//! recorded in #1033).
+//!
 //! # Why the message loop is not a blocking `GetMessageW`
 //!
 //! The main thread must keep advancing the simulation even when no window message
