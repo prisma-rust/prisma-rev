@@ -34,111 +34,30 @@ pub fn build_app() -> prism_app::App {
 
 #[cfg(feature = "preview-module")]
 mod preview {
-    use std::sync::OnceLock;
-
     use prism_game_api::GameWorld;
-    use prism_project_api::{guard, HostApi, ProjectApi, ABI_VERSION, INVALID_ARGUMENT, SUCCESS};
 
     use crate::intro::{self, IntroState};
 
-    /// 项目模块持有的全部状态。
-    ///
-    /// 它**不会**出现在宿主世界里：宿主只拿到一个 `*mut c_void`。
+    /// 项目模块持有的全部状态。它**不会**出现在宿主世界里：宿主只拿到一个
+    /// `*mut c_void`。
     struct PreviewState {
         intro: Option<IntroState>,
-        scene_generation: Option<u64>,
     }
 
-    /// 组件 schema：编码组件时生成 RTTIBin 的类型表。只需建一次。
-    fn registry() -> &'static prism_scene::ComponentRegistry {
-        static REGISTRY: OnceLock<prism_scene::ComponentRegistry> = OnceLock::new();
-        REGISTRY.get_or_init(|| {
-            let mut registry = prism_scene::ComponentRegistry::new();
-            prism_scene::register_builtin_components(&mut registry);
-            registry
-        })
+    fn new_state() -> PreviewState {
+        PreviewState { intro: None }
     }
 
-    pub unsafe extern "C" fn get_api(out: *mut ProjectApi) -> i32 {
-        if out.is_null() {
-            return INVALID_ARGUMENT;
-        }
-        unsafe {
-            *out = ProjectApi {
-                abi_version: ABI_VERSION,
-                schema_fingerprint: registry().schema_fingerprint(),
-                create: Some(create),
-                tick: Some(tick),
-                shutdown: Some(shutdown),
-            };
-        }
-        SUCCESS
+    fn tick_state(state: &mut PreviewState, world: &mut GameWorld<'_>, dt: f32) {
+        intro::tick(&mut state.intro, world, dt);
     }
 
-    unsafe extern "C" fn create(host: *const HostApi, out: *mut *mut std::ffi::c_void) -> i32 {
-        guard(|| unsafe {
-            if host.is_null() || out.is_null() {
-                return INVALID_ARGUMENT;
-            }
-            let host = &*host;
-            if host.abi_version != ABI_VERSION
-                || host.schema_fingerprint != registry().schema_fingerprint()
-            {
-                return INVALID_ARGUMENT;
-            }
-            let state = Box::new(PreviewState {
-                intro: None,
-                scene_generation: None,
-            });
-            *out = Box::into_raw(state).cast();
-            // The module is its own dylib with its own `log` instance. Without
-            // this bridge, `log::info!` in project code never reaches the host
-            // console, and a panic would unwind across `extern "C"`.
-            prism_game_api::install_host_logger(host);
-            prism_game_api::install_host_panic_hook();
-            log::info!("prisma: preview module started");
-            SUCCESS
-        })
+    prism_game_api::export_project! {
+        state = PreviewState,
+        init = new_state,
+        tick = tick_state,
+        log_name = "prisma",
     }
-
-    unsafe extern "C" fn tick(
-        host_api: *const HostApi,
-        state: *mut std::ffi::c_void,
-        dt: f32,
-    ) -> i32 {
-        guard(|| unsafe {
-            let Some(state) = state.cast::<PreviewState>().as_mut() else {
-                return INVALID_ARGUMENT;
-            };
-            if host_api.is_null() {
-                return INVALID_ARGUMENT;
-            }
-            let host = &*host_api;
-
-            // 场景重载会让所有实体句柄失效：丢掉绑定的状态，下一帧按 Name 重绑。
-            if state.scene_generation != Some(host.scene_generation) {
-                state.intro = None;
-                state.scene_generation = Some(host.scene_generation);
-            }
-
-            let mut world = GameWorld::plugin(host, registry().type_registry());
-            intro::tick(&mut state.intro, &mut world, dt);
-            SUCCESS
-        })
-    }
-
-    unsafe extern "C" fn shutdown(state: *mut std::ffi::c_void) {
-        if !state.is_null() {
-            drop(unsafe { Box::from_raw(state.cast::<PreviewState>()) });
-        }
-    }
-}
-
-/// 编辑器解析的动态模块入口。
-#[cfg(feature = "preview-module")]
-#[no_mangle]
-pub unsafe extern "C" fn prism_project_get_api(out: *mut prism_project_api::ProjectApi) -> i32 {
-    unsafe { preview::get_api(out) }
 }
 
 // ===========================================================================

@@ -138,9 +138,10 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
   `fishing.pdb` 去模块目录找符号，把 dll 改名成 `fishing-<nanos>.dll` 会让调用栈里
   工程帧全部退化成导出名（`prism_project_get_api`）。
 - **模块日志与 panic 要桥接**：模块是独立 dylib，自带一份 `log` 和 `std`，宿主的
-  logger / panic hook 都看不见它。工程在 `create` 里调用
-  `prism_game_api::install_host_logger(&host)` + `install_host_panic_hook()`，
-  之后 `log::info!` 与 `panicked at …` + `Backtrace` 都经 `HostApi::log` 进 Console
+  logger / panic hook 都看不见它。工程的入口由 `prism_game_api::export_project!`
+  生成：它在 `create` 里调用 `install_host_logger` + `install_host_panic_hook`，
+  校验 ABI 与 schema fingerprint，并在场景代数变化时重建工程状态；之后
+  `log::info!` 与 `panicked at …` + `Backtrace` 都经 `HostApi::log` 进 Console
   （target `project`，来源 `Game`）。panic 本身由 `prism_project_api::guard()` 在
   ABI 边界兜住（不能跨 `extern "C"` unwind）。
 - **tick 失败会 latch**：模块返回错误（含 panic）后停止调用，直到重新编译 / 重新

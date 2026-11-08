@@ -33,6 +33,34 @@ pub use prism_project_api::{EntityHandle, InputSnapshot};
 use prism_reflect::Reflect;
 use prism_scene::components::Name;
 
+/// The schema layer, re-exported for the `export_project!` macro so projects do
+/// not have to depend on `prism-project-api` directly.
+#[doc(hidden)]
+pub use prism_project_api as __project_api;
+
+#[cfg(feature = "plugin")]
+mod project_entry;
+
+/// The builtin scene component registry every project module shares.
+///
+/// `export_project!` uses it for the schema fingerprint and for the RTTIBin type
+/// table; a project with extra components can keep its own registry instead.
+pub fn builtin_registry() -> &'static prism_scene::ComponentRegistry {
+    static REGISTRY: std::sync::OnceLock<prism_scene::ComponentRegistry> =
+        std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        let mut registry = prism_scene::ComponentRegistry::new();
+        prism_scene::register_builtin_components(&mut registry);
+        registry
+    })
+}
+
+/// Schema fingerprint of [`builtin_registry`], which the host compares with its
+/// own registry in `create`.
+pub fn builtin_schema_fingerprint() -> u64 {
+    builtin_registry().schema_fingerprint()
+}
+
 #[cfg(feature = "plugin")]
 use prism_project_api::{HostApi, HOST_CAP_PHYSICS, HOST_CAP_SCENE, SUCCESS};
 #[cfg(feature = "plugin")]
