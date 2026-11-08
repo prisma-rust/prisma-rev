@@ -70,3 +70,18 @@ fn test_default_frequency_crosses_lattice_cells() {
         cells.len()
     );
 }
+
+#[test]
+fn test_hash_stays_stable_at_large_coordinates() {
+    // Regression for the sin-based hash: at large world offsets neighbouring
+    // lattice cells used to collapse through f64 precision loss.
+    let base = 1.0e9;
+    let a = noise_2d([base, base]);
+    let b = noise_2d([base + 0.25, base + 0.75]);
+    assert!((-1.0..=1.0).contains(&a), "noise out of range: {a}");
+    assert!((-1.0..=1.0).contains(&b), "noise out of range: {b}");
+    assert!(
+        (a - b).abs() > 1e-12,
+        "hash collapsed at large coordinates: {a} == {b}"
+    );
+}

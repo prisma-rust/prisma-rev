@@ -12,20 +12,29 @@ const ROT_MAT: [[f64; 2]; 2] = [[0.8, -0.6], [0.6, 0.8]];
 // Hash helpers
 // ---------------------------------------------------------------------------
 
-/// Pseudo-random hash from a 2D coordinate, returning value in [0, 1).
+/// Pseudo-random hash from a 2D lattice coordinate, returning value in [0, 1).
+///
+/// Integer-only mixing: the previous `sin(dot) * 43758.5453` hash depends on the
+/// platform libm, so the same seed could build a different heightmap on Windows,
+/// Linux and Android. It also lost precision for large coordinates.
 #[inline]
 fn hash2(p: [f64; 2]) -> f64 {
-    let dot = p[0] * 12.9898 + p[1] * 78.233;
-    let frac = (dot.sin() * 43758.5453).fract();
-    frac.abs()
+    hash2_seeded(p, 0)
 }
 
-/// Integer-based hash for 1D input.
-#[allow(dead_code)]
+/// [`hash2`] with a seed mixed in.
 #[inline]
-fn hash1(n: f64) -> f64 {
-    let x = n * std::f64::consts::FRAC_1_PI;
-    (n * 17.0 * x.fract()).fract().abs()
+fn hash2_seeded(p: [f64; 2], seed: u64) -> f64 {
+    let x = (p[0] as i64) as u64;
+    let y = (p[1] as i64) as u64;
+    let mut h = seed ^ 0x9E37_79B9_7F4A_7C15;
+    h ^= x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    h = (h ^ (h >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    h ^= y.wrapping_mul(0x94D0_49BB_1331_11EB);
+    h = (h ^ (h >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    h ^= h >> 31;
+    // The top 53 bits map exactly onto [0, 1) in an f64.
+    (h >> 11) as f64 * (1.0 / 9_007_199_254_740_992.0)
 }
 
 // ---------------------------------------------------------------------------
@@ -152,7 +161,6 @@ pub fn ridge_domain_warp(
     let mut a = 0.0f64;
     let mut b = 1.0f64;
     let mut d = [0.0f64; 2];
-    let mut m = [[1.0, 0.0], [0.0, 1.0]];
 
     for _ in 0..octaves {
         let n = noised_2d(p);
@@ -165,11 +173,6 @@ pub fn ridge_domain_warp(
 
         b *= gain;
         p = rotate(p, lacunarity);
-        let new_m00 = lacunarity * (ROT_MAT[0][0] * m[0][0] + ROT_MAT[0][1] * m[1][0]);
-        let new_m01 = lacunarity * (ROT_MAT[0][0] * m[0][1] + ROT_MAT[0][1] * m[1][1]);
-        let new_m10 = lacunarity * (ROT_MAT[1][0] * m[0][0] + ROT_MAT[1][1] * m[1][0]);
-        let new_m11 = lacunarity * (ROT_MAT[1][0] * m[0][1] + ROT_MAT[1][1] * m[1][1]);
-        m = [[new_m00, new_m01], [new_m10, new_m11]];
     }
 
     a

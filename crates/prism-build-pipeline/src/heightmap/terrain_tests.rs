@@ -40,3 +40,17 @@ fn terrain_deterministic() {
     let b = generate_terrain(64, 64, 7, 64.0);
     assert_eq!(a.data, b.data);
 }
+
+#[test]
+fn terrain_noise_stays_stable_at_large_coordinates() {
+    // Regression for the sin-based hash: large world offsets must not collapse
+    // neighbouring samples to the same value through f64 precision loss.
+    let a = noise_2d([1.0e9, 1.0e9], 7);
+    let b = noise_2d([1.0e9 + 0.25, 1.0e9 + 0.75], 7);
+    assert!((-1.0..=1.0).contains(&a), "noise out of range: {a}");
+    assert!((-1.0..=1.0).contains(&b), "noise out of range: {b}");
+    assert!(
+        (a - b).abs() > 1e-12,
+        "hash collapsed at large coordinates: {a} == {b}"
+    );
+}

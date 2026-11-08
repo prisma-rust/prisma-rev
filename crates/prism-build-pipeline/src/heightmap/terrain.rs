@@ -9,11 +9,23 @@ use super::Heightmap;
 // Hash / noise
 // ---------------------------------------------------------------------------
 
-/// 2D 值噪声哈希，seed 混入相位。返回 [0, 1)。
+/// 2D value-noise hash with the seed mixed in, returning [0, 1).
+///
+/// Integer-only mixing: `f64::sin` is provided by the platform libm, so the old
+/// `sin(dot) * 43758.5453` hash lost precision at large coordinates and could
+/// build a different heightmap on Windows, Linux and Android.
 #[inline]
 fn hash2(p: [f64; 2], seed: u64) -> f64 {
-    let dot = p[0] * 12.9898 + p[1] * 78.233 + (seed as f64) * 0.0000017;
-    (dot.sin() * 43_758.545_3).fract().abs()
+    let x = (p[0] as i64) as u64;
+    let y = (p[1] as i64) as u64;
+    let mut h = seed ^ 0x9E37_79B9_7F4A_7C15;
+    h ^= x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    h = (h ^ (h >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    h ^= y.wrapping_mul(0x94D0_49BB_1331_11EB);
+    h = (h ^ (h >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    h ^= h >> 31;
+    // The top 53 bits map exactly onto [0, 1) in an f64.
+    (h >> 11) as f64 * (1.0 / 9_007_199_254_740_992.0)
 }
 
 /// 2D 值噪声，返回 [−1, 1]。
