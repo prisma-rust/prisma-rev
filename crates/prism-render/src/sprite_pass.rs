@@ -250,10 +250,7 @@ impl SpritePass {
                     pipeline.layout,
                     vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                     0,
-                    std::slice::from_raw_parts(
-                        &push as *const bindings::SpritePush as *const u8,
-                        bindings::PUSH_CONSTANT_SIZE as usize,
-                    ),
+                    bytemuck::bytes_of(&push),
                 );
                 device.cmd_bind_vertex_buffers(cmd, 0, &[self.instance_buffer], &[0]);
                 // 6 vertices = 2 triangles; one instance per sprite.

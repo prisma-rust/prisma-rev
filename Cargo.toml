@@ -39,6 +39,10 @@ ash = "0.38"
 ash-window = "0.13"
 raw-window-handle = "0.6"
 
+# Byte casting for GPU uploads (push constants, vertex / index buffers) and for
+# the shader-bindings structs whose offsets come from Slang reflection.
+bytemuck = { version = "1", features = ["derive"] }
+
 # Window / events
 # 平台后端由使用方显式选择（见 prism-platform 的 x11 / wayland feature）：
 # Linux 上 winit 默认会把 X11 + Wayland 两套栈全编进来（~1 MB），

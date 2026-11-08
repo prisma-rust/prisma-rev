@@ -42,6 +42,7 @@ prism-gfx = { path = "../prism-gfx" }
 ash = { workspace = true }
 ash-window = { workspace = true }
 raw-window-handle = { workspace = true }
+bytemuck = { workspace = true }
 log = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }

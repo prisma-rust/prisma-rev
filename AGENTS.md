@@ -411,6 +411,11 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
 - `PUSH_CONSTANT_SIZE` is that std140 struct size, maxed with the reflected block size and
   `PUSH_SIZE_FALLBACK`. `VkPushConstantRange::size` may stay larger than `size_of` (it only needs
   to be a superset of the shader's block); `cmd_push_constants` sends `size_of`.
+- Generated structs derive `bytemuck::Pod` + `bytemuck::Zeroable`; call sites send them with
+  `bytemuck::bytes_of(&push)` instead of a hand-written `from_raw_parts` cast. Hand-written
+  push-constant structs (`OutlinePush`, `BakePush`) derive the same traits. The size invariant is
+  pinned by `crates/prism-render/tests/push_constant_sizes.rs`
+  (`size_of` must equal `PUSH_CONSTANT_SIZE`).
 - Layout regressions are covered by `cargo test --manifest-path crates/xtask/Cargo.toml`, which
   checks every committed reflection JSON against the generated offsets.
 - If a Slang shader lacks `emit_reflection` in `compile.sh`, add it so the bindgen covers it.

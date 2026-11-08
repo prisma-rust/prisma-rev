@@ -19,7 +19,7 @@ pub const PUSH_CONSTANT_SIZE: u32 = 4;
 /// explicit `_pad_*` fillers, so `size_of` is 4 bytes and every field sits
 /// where the shader expects it.
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct RtRenderPush {
     /// offset 0, size 4
     pub pattern: u32,

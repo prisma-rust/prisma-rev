@@ -263,7 +263,13 @@ fn emit_push_struct(struct_name: &str, fields: &[StructField]) -> Result<String>
          /// explicit `_pad_*` fillers, so `size_of` is {total} bytes and every field sits\n\
          /// where the shader expects it.\n"
     ));
-    out.push_str("#[repr(C)]\n#[derive(Clone, Copy, Default)]\n");
+    // `Pod` + `Zeroable` let call sites send the struct with `bytemuck::bytes_of`
+    // instead of hand-written `from_raw_parts` casts. The generator emits every
+    // std140 hole as an explicit `_pad_*` field, so the struct has no implicit
+    // padding and the derive is sound.
+    out.push_str(
+        "#[repr(C)]\n#[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]\n",
+    );
     out.push_str(&format!("pub struct {struct_name} {{\n"));
     for member in &members {
         match member {

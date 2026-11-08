@@ -252,7 +252,7 @@ impl GroundGrid {
                 self.layout,
                 vk::ShaderStageFlags::VERTEX,
                 0,
-                std::slice::from_raw_parts(&push as *const _ as *const u8, size_of::<GizmoPush>()),
+                bytemuck::bytes_of(&push),
             );
             device.cmd_draw(cmd, count, 1, 0, 0);
         }

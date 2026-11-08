@@ -661,10 +661,7 @@ impl PostPass {
                 pipeline.layout,
                 vk::ShaderStageFlags::FRAGMENT,
                 0,
-                std::slice::from_raw_parts(
-                    push as *const _ as *const u8,
-                    std::mem::size_of::<shader_bindings::post::PostPush>(),
-                ),
+                bytemuck::bytes_of(push),
             );
             // Fullscreen triangle (3 verts, no vertex buffer - SV_VertexID).
             device.cmd_draw(cmd, 3, 1, 0, 0);
