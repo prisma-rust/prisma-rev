@@ -24,6 +24,24 @@ fn test_ridge_domain_warp_range() {
 }
 
 #[test]
+fn hash_is_portable_integer_mix() {
+    // Coordinates are the only input and the mix uses integer arithmetic, so
+    // these values must be identical on every platform (a sine hash was not).
+    let golden = hash2([0.0, 0.0]);
+    assert_eq!(golden, 0.652_448_486_374_032_2);
+    // Fractional coordinates select the same lattice cell.
+    assert_eq!(hash2([0.75, 0.25]), golden);
+}
+
+#[test]
+fn hash_stays_in_range_for_large_coordinates() {
+    for p in [[-1e9, 1e9], [1e12, -1e12], [-0.5, -0.5]] {
+        let v = hash2(p);
+        assert!((0.0..1.0).contains(&v), "hash2({p:?}) = {v}");
+    }
+}
+
+#[test]
 fn test_reproducibility_seed_equivalent() {
     // Same input should give same output.
     let a = noise_2d([1.234, 5.678]);

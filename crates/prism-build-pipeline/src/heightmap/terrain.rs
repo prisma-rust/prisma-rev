@@ -9,11 +9,26 @@ use super::Heightmap;
 // Hash / noise
 // ---------------------------------------------------------------------------
 
-/// 2D 值噪声哈希，seed 混入相位。返回 [0, 1)。
+/// SplitMix64 finalizer: integer-only, so every platform produces the same bits.
+#[inline]
+fn mix64(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^ (x >> 31)
+}
+
+/// 2D 值噪声哈希，seed 混入整数混合。返回 [0, 1)。
+///
+/// 不能再用 `f64::sin`：libm 的实现因平台而异，同一个 seed 在
+/// Windows / Linux / Android 上会得到不同地形；大坐标还会丢精度。
 #[inline]
 fn hash2(p: [f64; 2], seed: u64) -> f64 {
-    let dot = p[0] * 12.9898 + p[1] * 78.233 + (seed as f64) * 0.0000017;
-    (dot.sin() * 43_758.545_3).fract().abs()
+    let ix = p[0].floor() as i64 as u64;
+    let iy = p[1].floor() as i64 as u64;
+    let h = mix64(ix ^ mix64(iy ^ mix64(seed)));
+    // Keep the 53 bits an f64 mantissa can represent exactly.
+    (h >> 11) as f64 * (1.0 / 9_007_199_254_740_992.0)
 }
 
 /// 2D 值噪声，返回 [−1, 1]。
