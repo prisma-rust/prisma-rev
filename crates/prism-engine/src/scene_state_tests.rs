@@ -444,3 +444,99 @@ fn explicit_paths_work_without_a_save_directory_resource() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// #1051: the advanced hour survives a save/load round trip through a file.
+#[test]
+fn scene_state_round_trips_the_time_of_day() {
+    let dir = std::env::temp_dir().join(format!("prism-scene-state-clock-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("scene_state.json");
+
+    let mut world = World::new();
+    let clock_entity = world.spawn();
+    world.insert(clock_entity, SceneEntityId(4));
+    world.insert(
+        clock_entity,
+        TimeOfDay {
+            hours: 21.25,
+            ..Default::default()
+        },
+    );
+    save_scene_state_to(&world, &path);
+
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("\"version\":5"), "{text}");
+    assert!(text.contains("\"timeOfDay\""), "{text}");
+
+    // A fresh world at the authored hour must pick the saved one back up.
+    let mut loaded = World::new();
+    let restored = loaded.spawn();
+    loaded.insert(restored, SceneEntityId(4));
+    loaded.insert(restored, TimeOfDay::default());
+    apply_scene_state(&mut loaded, &text);
+
+    let clock = loaded.get::<TimeOfDay>(restored).unwrap();
+    assert!((clock.hours - 21.25).abs() < 1e-4, "{text}");
+    assert_eq!(
+        clock.day_length_seconds,
+        TimeOfDay::default().day_length_seconds,
+        "only the hour is restored; day length stays authored data"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// #1051: clocks are paired by `.scene.json` id, not by pool order.
+#[test]
+fn time_of_day_is_matched_by_entity_id() {
+    let mut world = World::new();
+    let first = world.spawn();
+    world.insert(first, SceneEntityId(1));
+    world.insert(
+        first,
+        TimeOfDay {
+            hours: 1.0,
+            ..Default::default()
+        },
+    );
+    let second = world.spawn();
+    world.insert(second, SceneEntityId(2));
+    world.insert(
+        second,
+        TimeOfDay {
+            hours: 2.0,
+            ..Default::default()
+        },
+    );
+
+    let json = r#"{"version":5,"timeOfDay":[{"id":2,"hours":22.0},{"id":1,"hours":11.0}]}"#;
+    apply_scene_state(&mut world, json);
+
+    assert!(
+        (world.get::<TimeOfDay>(first).unwrap().hours - 11.0).abs() < 1e-4,
+        "id 1 must get its own hour"
+    );
+    assert!(
+        (world.get::<TimeOfDay>(second).unwrap().hours - 22.0).abs() < 1e-4,
+        "id 2 must get its own hour"
+    );
+}
+
+/// #1051: a v4 (or older) file has no clocks and must not reset the scene's.
+#[test]
+fn files_without_clocks_leave_the_clock_alone() {
+    let mut world = World::new();
+    let clock_entity = world.spawn();
+    world.insert(
+        clock_entity,
+        TimeOfDay {
+            hours: 9.0,
+            ..Default::default()
+        },
+    );
+
+    apply_scene_state(&mut world, r#"{"version":4,"transforms":[]}"#);
+
+    assert_eq!(world.get::<TimeOfDay>(clock_entity).unwrap().hours, 9.0);
+}
