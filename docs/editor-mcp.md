@@ -41,11 +41,18 @@ cargo run -p prism-editor-mcp -- --project projects/fishing
 | `schema_list` | 所有组件 + 嵌套结构体的字段、枚举变体、只读标记 |
 | `entity_get` | 按 `id` 或名字取实体 |
 | `field_set` | **反射写入**一个字段（`a.b` / `list[0].x` 都支持） |
-| `component_add` / `component_remove` | 挂 / 摘组件（默认值来自 schema） |
+| `component_add` | 给实体挂组件（默认值来自 schema） |
+| `component_remove` | 摘掉实体的一个组件 |
 | `asset_inspect` | 检查已 cook 的资源（`RSKL`/`RSKN`/`RANI`/`RMES`/`RTEX`/`RMAT`）：计数、摘要、校验问题 |
 | `asset_validate` | 只跑校验（权重和、joint 越界、索引/子网格区间、关键帧时间与顺序），`ok=true` 表示通过 |
-| `game_run` / `game_stop` / `game_logs` | 起停游戏、读日志尾部 |
+| `game_run` | 在项目根起游戏（默认 `cargo run --release`），日志进缓冲区 |
+| `game_stop` | 结束 `game_run` / `screenshot` 启动的进程 |
+| `game_logs` | 读最近 N 行游戏日志（stdout + stderr） |
 | `screenshot` | 起游戏 → 抓图 → 结束，返回 PNG 路径 |
+
+这张表和 `editor_*` 段的两张表都由
+`crates/prism-editor-mcp/tests/docs_tool_table.rs` 守着：注册了工具却没写进文档，
+测试会直接列出漏掉的名字。加工具时同步补一行即可，不用改生成器。
 
 ### `field_set` 为什么安全
 
