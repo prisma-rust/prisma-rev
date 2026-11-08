@@ -313,23 +313,6 @@ pub fn tick(state: &mut Option<IntroState>, world: &mut GameWorld<'_>, dt: f32) 
     }
 }
 
-/// 静态 Player 的系统入口。
-///
-/// `IntroState` 是项目私有状态：这里把它临时从 ECS resource 里取出，交给
-/// 与插件形态完全相同的 [`tick`]，再放回去。引擎只看到自己的通用 resource
-/// 机制，不认识 `IntroState`。
-#[cfg(feature = "player-core")]
-pub fn tick_system(world: &mut prism_engine::ecs::World, dt: f32) {
-    let mut state = world.remove_resource::<IntroState>();
-    {
-        let mut api = GameWorld::host(world);
-        tick(&mut state, &mut api, dt);
-    }
-    if let Some(state) = state {
-        world.insert_resource(state);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{

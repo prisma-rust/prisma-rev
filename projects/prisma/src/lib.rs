@@ -24,7 +24,7 @@ pub fn build_app() -> prism_app::App {
     // 音频子系统（`prism-app/audio`，默认关）不在这里启用：本项目没有 AudioSource，
     // 开了也只是建一个空引擎 + 解码线程。要放声音时同时打开 feature 与这一行。
     let mut app = prism_app::app().with_subsystem(prism_app::Subsystem::Render);
-    app.add_system("intro::tick", intro::tick_system);
+    app.add_game_system::<intro::IntroState, _>("intro::tick", intro::tick);
     app
 }
 

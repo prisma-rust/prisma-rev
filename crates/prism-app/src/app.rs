@@ -253,6 +253,29 @@ fn normalize_asset_path(path: &str) -> String {
     parts.join("/")
 }
 
+/// Project state parked in the world while its gameplay system is not running.
+///
+/// The wrapper keeps a project resource from colliding with an engine or another
+/// project's resource of the same type.
+struct GameplayState<S>(Option<S>);
+
+/// Run one gameplay tick with the project state temporarily taken out of the world.
+fn tick_gameplay_state<S, F>(world: &mut prism_engine::ecs::World, tick: &mut F, dt: f32)
+where
+    S: Send + Sync + 'static,
+    F: FnMut(&mut Option<S>, &mut prism_game_api::GameWorld<'_>, f32),
+{
+    let mut state = world
+        .remove_resource::<GameplayState<S>>()
+        .map(|held| held.0)
+        .unwrap_or(None);
+    {
+        let mut api = prism_game_api::GameWorld::host(world);
+        tick(&mut state, &mut api, dt);
+    }
+    world.insert_resource(GameplayState(state));
+}
+
 impl App {
     /// 无参构造 = 默认配置的完整引擎（无演示内容）。
     pub fn new() -> Self {
@@ -424,6 +447,29 @@ impl App {
         F: FnMut(&mut prism_engine::ecs::World, f32) + 'static,
     {
         self.engine_mut().schedule_mut().add_system(label, f);
+        self
+    }
+
+    /// Register a gameplay system whose project state lives in an ECS resource.
+    ///
+    /// `tick` gets the same signature the preview module uses, so gameplay code is
+    /// written once: the state arrives as `Option<&mut S>`, and `None` means it could
+    /// not be bound yet (for example right after a scene reload). The state is put
+    /// back before the system returns and after a scene switch, so a project cannot
+    /// silently drop it by forgetting `insert_resource` (#1054).
+    pub fn add_game_system<S, F>(&mut self, label: &str, mut tick: F) -> &mut Self
+    where
+        S: Send + Sync + 'static,
+        F: FnMut(&mut Option<S>, &mut prism_game_api::GameWorld<'_>, f32) + 'static,
+    {
+        self.engine_mut()
+            .world_mut()
+            .insert_resource(GameplayState::<S>(None));
+        self.engine_mut()
+            .schedule_mut()
+            .add_system(label, move |world, dt| {
+                tick_gameplay_state::<S, _>(world, &mut tick, dt);
+            });
         self
     }
 
@@ -1992,6 +2038,35 @@ mod tests {
         assert_eq!(
             normalize_asset_path("assets/env/../env/sky.hdr"),
             "env/sky.hdr"
+        );
+    }
+
+    /// #1054：玩法状态在 tick 之间必须活过 `remove_resource` / `insert_resource`，
+    /// 且第一次 tick 拿到 `None`（插件形态同一语义）。
+    #[test]
+    fn gameplay_state_survives_between_ticks() {
+        let mut world = prism_engine::ecs::World::new();
+        let mut first_tick_state = None;
+        let mut tick =
+            |state: &mut Option<u32>, _world: &mut prism_game_api::GameWorld<'_>, _dt: f32| {
+                first_tick_state = first_tick_state.or(Some(*state));
+                *state = Some(state.unwrap_or(41) + 1);
+            };
+
+        tick_gameplay_state::<u32, _>(&mut world, &mut tick, 0.0);
+        tick_gameplay_state::<u32, _>(&mut world, &mut tick, 0.0);
+
+        assert_eq!(
+            first_tick_state,
+            Some(None),
+            "the first tick starts unbound"
+        );
+        assert_eq!(
+            world
+                .get_resource::<GameplayState<u32>>()
+                .map(|held| held.0),
+            Some(Some(43)),
+            "the state must be put back after every tick"
         );
     }
 

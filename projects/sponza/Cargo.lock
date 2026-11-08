@@ -1437,6 +1437,7 @@ dependencies = [
  "ndk",
  "prism-asset",
  "prism-engine",
+ "prism-game-api",
  "prism-platform",
  "prism-render",
  "raw-window-handle",
@@ -1488,6 +1489,18 @@ dependencies = [
  "serde",
  "serde_json",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "prism-game-api"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "prism-ecs",
+ "prism-engine",
+ "prism-project-api",
+ "prism-reflect",
+ "prism-scene",
 ]
 
 [[package]]

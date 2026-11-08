@@ -1454,6 +1454,7 @@ dependencies = [
  "ndk",
  "prism-asset",
  "prism-engine",
+ "prism-game-api",
  "prism-platform",
  "prism-render",
  "raw-window-handle",
