@@ -447,6 +447,22 @@ impl<'a> GameWorld<'a> {
         }
     }
 
+    /// The first entity whose [`Name`](prism_scene::components::Name) equals
+    /// `name`, in world (query) order.
+    ///
+    /// Scene authoring allows duplicate names, so this is not a unique lookup;
+    /// when several entities share a name the first one wins. Works on both
+    /// backends: the plugin side reads `Name` through the component callbacks,
+    /// so no ABI operation is involved.
+    pub fn find_by_name(&self, name: &str) -> Option<EntityHandle> {
+        self.query::<prism_scene::components::Name>()
+            .into_iter()
+            .find(|entity| {
+                self.get::<prism_scene::components::Name>(*entity)
+                    .is_some_and(|found| found.0 == name)
+            })
+    }
+
     pub fn get<T: Component + Reflect + Clone>(&self, entity: EntityHandle) -> Option<T> {
         match &self.backend {
             #[cfg(feature = "host")]
@@ -1211,6 +1227,52 @@ mod tests {
             r#"{"layers":[]}"#
         );
         assert!(api.read_asset_text("missing.json").is_err());
+    }
+
+    /// #1056: gameplay code looks entities up by authoring name instead of
+    /// hand-rolling a `query::<Name>` + compare loop.
+    #[cfg(feature = "host")]
+    #[test]
+    fn find_by_name_uses_world_order_for_duplicates() {
+        use prism_scene::components::Name;
+
+        let mut world = World::new();
+        let boat = world.spawn();
+        world.insert(boat, Name("boat".to_owned()));
+        let camera = world.spawn();
+        world.insert(camera, Name("camera".to_owned()));
+        let duplicate = world.spawn();
+        world.insert(duplicate, Name("boat".to_owned()));
+
+        let api = GameWorld::host(&mut world);
+        assert_eq!(api.find_by_name("boat"), Some(handle_from_entity(boat)));
+        assert_eq!(api.find_by_name("camera"), Some(handle_from_entity(camera)));
+        assert_eq!(api.find_by_name("missing"), None);
+    }
+
+    /// The plugin backend reads `Name` through the component callbacks, so the
+    /// lookup needs no dedicated ABI operation.
+    #[cfg(feature = "plugin")]
+    #[test]
+    fn plugin_backend_finds_entities_by_name() {
+        use prism_scene::components::Name;
+
+        let mut components = prism_scene::ComponentRegistry::new();
+        prism_scene::register_builtin_components(&mut components);
+
+        let mut world = World::new();
+        let mut commands = prism_runtime_host::WorldCommands::new(&mut world, &components, 1);
+        let api = commands.api();
+
+        let mut view = GameWorld::plugin(&api, components.type_registry());
+        let boat = view.spawn();
+        assert!(view.set(boat, Name("boat".to_owned())));
+        let camera = view.spawn();
+        assert!(view.set(camera, Name("camera".to_owned())));
+
+        assert_eq!(view.find_by_name("boat"), Some(boat));
+        assert_eq!(view.find_by_name("camera"), Some(camera));
+        assert_eq!(view.find_by_name("missing"), None);
     }
 
     #[test]
