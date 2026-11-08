@@ -11,5 +11,6 @@ serde_json = { workspace = true }
 log = { workspace = true }
 # Asset thumbnails (#982): decode only the formats the panel can preview.
 image = { workspace = true, features = ["png"] }
+glam = { workspace = true }
 # `assets/settings.ini` 方言（与引擎 / editor-api 共用一份解析器）。
 prism-ini = { path = "../../../crates/prism-ini" }
