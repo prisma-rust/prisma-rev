@@ -13,7 +13,8 @@
 //! | `panel:<tab>` | dock 里的面板（`sceneView` / `hierarchy` / …） | ✅ | — |
 //! | `doc:<index>` | 打开的文档 | ✅ | — |
 //! | `entity:<id>` | 层级树实体 | ✅ | — |
-//! | `asset:<path>` | 资产面板条目 | ✅ | — |
+//! | `asset:<path>` | 资产面板条目（只选中） | ✅ | — |
+//! | `open:<path>` | 打开 / 激活该资产对应的文档（等同双击） | ✅ | — |
 //! | `field:<entity>:<component>:<path>` | 检查器字段 | — | ✅ |
 //! | `resolution:<WxH>` / `resolution:fit:<WxH>` / `resolution:match` | Game 视图预览分辨率 / 宽高比（#463/#585） | ✅ | — |
 //! | `dialog:<kind>` | 模态对话框（`delete-entities` / `close` / …） | — | — |
