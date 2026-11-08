@@ -96,6 +96,9 @@ deviating from those conventions is a bug. (`README.md` is the human-facing over
   菜单栏 / 主工具栏 / 状态栏 + split-tree docking（拖 splitter、tab 切换、浮动窗口）+
   层级 / 检查器 / 资产 / 文档 / 日志 / 历史 / 设置类面板；数据层直接复用
   `editor/crates/prism-editor-core`（与 UI 框架无关）。
+  组件 schema 只有一个来源：`prism_editor_api::build_schema`（`prism-scene` 反射注册表的
+  投影），启动时经 `Workspace::set_schema` 装入并回填文档缺失字段；`editor/public/demo.json`
+  **不再保存 schema 快照**（旧的快照会随组件演进悄悄过期，检查器里看不到新组件）。
   **Scene / Game 视图零拷贝**：`prism-render` 渲染到自己的离屏 `VkImage`，egui-ash 与
   引擎共用同一个 `VkDevice` / 队列，`ImageRegistry::register_user_texture` 注册
   `offscreen_image_view()` 后由 `painter.image()` 直接采样 —— 没有

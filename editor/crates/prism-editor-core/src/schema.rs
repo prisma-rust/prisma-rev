@@ -1,8 +1,12 @@
-//! 组件 schema（`prism_editor_api::build_schema` 的 Rust 镜像）。
+//! UI-side model of the component schema.
 //!
-//! 检查器完全由 schema 驱动：字段的控件类型来自 `kind` / `structType` / `variants`
-//! 与 形状的 `PropertyDrawer`（`renderer` + `attributes`）。因此新增一个
-//! 组件或字段不需要改 UI —— 与 Web 编辑器是同一份规则。
+//! The data comes from `prism_editor_api::build_schema` (the projection of the
+//! `prism-scene` reflection registry); the host installs it into
+//! [`crate::Workspace`] through [`Schema::from_value`] at startup. This module
+//! only defines the shape the inspector consumes and how a field picks its
+//! widget: `kind` / `structType` / `variants` plus the `PropertyDrawer`
+//! (`renderer` + `attributes`). Adding a component or a field therefore never
+//! needs a UI change.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
