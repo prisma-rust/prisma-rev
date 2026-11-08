@@ -154,3 +154,58 @@ fn file_roundtrip() {
 
     std::fs::remove_file(&path).ok();
 }
+
+#[test]
+fn save_is_atomic_and_round_trips_exactly() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Library/AssetDatabase.json");
+    let mut db = AssetDatabase::new();
+    let id = db.generate_id();
+    db.insert(AssetRecord::new(
+        id,
+        "test.bin".into(),
+        AssetType::Binary,
+        "raw",
+    ))
+    .unwrap();
+
+    db.save(&path).unwrap();
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        serde_json::to_string_pretty(&db).unwrap().as_bytes()
+    );
+
+    let loaded = AssetDatabase::load(&path).unwrap();
+    assert!(loaded.get(id).is_some());
+
+    // A second save replaces the file in place and leaves no staging file.
+    db.save(&path).unwrap();
+    let leftovers: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains(".tmp-"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "leftover staging files: {leftovers:?}"
+    );
+}
+
+#[test]
+fn corrupt_database_is_moved_aside() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("AssetDatabase.json");
+    std::fs::write(&path, b"{\"records\":[").unwrap();
+
+    let error = AssetDatabase::load(&path).unwrap_err();
+    let DatabaseError::Corrupt { backup, .. } = &error else {
+        panic!("expected Corrupt, got {error:?}");
+    };
+    assert!(!path.exists(), "corrupt file must be moved away");
+    assert_eq!(std::fs::read(backup).unwrap(), b"{\"records\":[");
+
+    // The next command can rebuild and save to the same path.
+    AssetDatabase::new().save(&path).unwrap();
+    assert_eq!(AssetDatabase::load(&path).unwrap().len(), 0);
+}
