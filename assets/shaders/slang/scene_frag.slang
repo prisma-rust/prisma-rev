@@ -515,7 +515,6 @@ struct SceneOutput
     float2 velocity  : SV_Target2;
 };
 
-[shader("fragment")]
 // #517: texture-layer splat helpers. `slot` is a material SSBO index; a
 // missing layer is u32::MAX and contributes nothing.
 float3 sampleSplatAlbedo(uint slot, float2 uv)
@@ -529,6 +528,7 @@ float3 sampleSplatAlbedo(uint slot, float2 uv)
     return mat.base_color.rgb;
 }
 
+[shader("fragment")]
 SceneOutput fragmentMain(MeshVaryings in)
 {
     // Transparent draws write 1 into normal.w. TaaPass uses this as a

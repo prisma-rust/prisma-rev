@@ -1,16 +1,16 @@
 [package]
-name = "prism-editor-tool"
+name = "prism-terrain-tool"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Editor tools: heightmap generator, terrain utilities, etc."
+description = "Terrain tooling: procedural heightmap generator, erosion, heightmap export."
 
 [lib]
-name = "prism_editor_tool"
+name = "prism_terrain_tool"
 path = "src/lib.rs"
 
 [[bin]]
-name = "prism-editor-tool"
+name = "prism-terrain-tool"
 path = "src/main.rs"
 
 [dependencies]
