@@ -70,3 +70,10 @@ fn test_default_frequency_crosses_lattice_cells() {
         cells.len()
     );
 }
+
+#[test]
+fn hash_is_platform_independent() {
+    // Integer hashing keeps the lattice value identical on every platform.
+    let v = hash2([3.0, -7.0]);
+    assert_eq!(v, 0.234_019_962_531_421_65);
+}

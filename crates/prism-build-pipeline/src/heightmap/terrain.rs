@@ -9,11 +9,29 @@ use super::Heightmap;
 // Hash / noise
 // ---------------------------------------------------------------------------
 
-/// 2D 值噪声哈希，seed 混入相位。返回 [0, 1)。
+/// splitmix64 finalizer: strong avalanche with pure integer math.
+#[inline]
+fn mix64(mut z: u64) -> u64 {
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// Hash a lattice point to [0, 1).
+///
+/// Integer hashing keeps the value identical across platforms. The previous
+/// `sin(dot) * 43758.5453` trick depended on the platform libm and lost
+/// precision on large coordinates, so one seed produced different terrain on
+/// Windows, Linux and Android.
 #[inline]
 fn hash2(p: [f64; 2], seed: u64) -> f64 {
-    let dot = p[0] * 12.9898 + p[1] * 78.233 + (seed as f64) * 0.0000017;
-    (dot.sin() * 43_758.545_3).fract().abs()
+    let x = p[0] as i64 as u64;
+    let y = p[1] as i64 as u64;
+    let mut h = seed ^ 0x9E37_79B9_7F4A_7C15;
+    h = mix64(h ^ x);
+    h = mix64(h ^ y);
+    // 53 bits is exactly the f64 mantissa width, so the result stays uniform.
+    (h >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
 }
 
 /// 2D 值噪声，返回 [−1, 1]。

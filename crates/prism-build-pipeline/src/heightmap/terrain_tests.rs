@@ -40,3 +40,11 @@ fn terrain_deterministic() {
     let b = generate_terrain(64, 64, 7, 64.0);
     assert_eq!(a.data, b.data);
 }
+
+#[test]
+fn hash_is_platform_independent() {
+    // The lattice hash used to be `sin(dot) * 43758.5453`, which depends on the
+    // platform libm. Pin an exact value so a switch back to that trick fails.
+    let v = hash2([3.0, -7.0], 42);
+    assert_eq!(v, 0.295_792_354_259_441_06);
+}
