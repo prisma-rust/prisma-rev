@@ -26,6 +26,12 @@ pub struct Thumbnail {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
+    /// Size of the source file before downscaling.
+    ///
+    /// Sprite-sheet frame grids are laid out in source pixels (#982): a 960×16
+    /// sheet keeps 15 columns even though the preview is only 64 px wide.
+    source_width: u32,
+    source_height: u32,
 }
 
 impl Thumbnail {
@@ -40,8 +46,14 @@ impl Thumbnail {
             .and_then(|slice| <[u8; 4]>::try_from(slice).ok())
     }
 
+    /// Size of the thumbnail, i.e. after downscaling.
     pub fn size(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+
+    /// Size of the source image, i.e. before downscaling.
+    pub fn source_size(&self) -> (u32, u32) {
+        (self.source_width, self.source_height)
     }
 
     /// Bytes of RGBA data; always `width * height * 4`.
@@ -72,6 +84,8 @@ pub fn decode_thumbnail(bytes: &[u8], max_side: u32) -> Option<Thumbnail> {
             width,
             height,
             rgba: rgba.into_raw(),
+            source_width: width,
+            source_height: height,
         });
     }
     let scale = max_side as f32 / width.max(height) as f32;
@@ -87,6 +101,8 @@ pub fn decode_thumbnail(bytes: &[u8], max_side: u32) -> Option<Thumbnail> {
         width: target_width,
         height: target_height,
         rgba: resized.into_raw(),
+        source_width: width,
+        source_height: height,
     })
 }
 
@@ -212,6 +228,11 @@ mod tests {
         let bytes = png_bytes(256, 128, [200, 100, 50, 255]);
         let thumbnail = decode_thumbnail(&bytes, 32).expect("decoded");
         assert_eq!(thumbnail.size(), (32, 16));
+        assert_eq!(
+            thumbnail.source_size(),
+            (256, 128),
+            "sprite frame grids need the source size (#982)"
+        );
         assert_eq!(thumbnail.byte_len(), 32 * 16 * 4);
         assert_eq!(thumbnail.pixel(31, 15).map(|pixel| pixel[3]), Some(255));
     }

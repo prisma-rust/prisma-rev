@@ -183,14 +183,38 @@ fn thumbnail_texture(
     path: &str,
     kind: AssetKind,
 ) -> Option<(egui::TextureId, [u32; 2])> {
+    thumbnail_image(ui, workspace, state, path, kind).map(|image| (image.texture, image.size))
+}
+
+/// 缩略图 + 源图尺寸（精灵帧网格要按源图像素切，#982）。
+struct ThumbnailImage {
+    texture: egui::TextureId,
+    /// 缩略图自身尺寸（已降采样）。
+    size: [u32; 2],
+    /// 源文件尺寸（未降采样）。
+    source: [u32; 2],
+}
+
+fn thumbnail_image(
+    ui: &Ui,
+    workspace: &Workspace,
+    state: &mut UiState,
+    path: &str,
+    kind: AssetKind,
+) -> Option<ThumbnailImage> {
     if !matches!(kind, AssetKind::Texture | AssetKind::Env) {
         return None;
     }
-    if let Some(handle) = state.thumbnail_textures.get(path) {
-        let size = handle.size();
-        return Some((handle.id(), [size[0] as u32, size[1] as u32]));
-    }
     let root = workspace.project_root.as_deref()?;
+    if let Some(handle) = state.thumbnail_textures.get(path) {
+        let handle_size = handle.size();
+        let size = [handle_size[0] as u32, handle_size[1] as u32];
+        return Some(ThumbnailImage {
+            texture: handle.id(),
+            size,
+            source: state.thumbnail_sources.get(path).copied().unwrap_or(size),
+        });
+    }
     if state.thumbnail_budget == 0 {
         // 本帧额度用完：先显示类型图标，下一帧继续（#982）。
         return None;
@@ -200,11 +224,12 @@ fn thumbnail_texture(
         state
             .thumbnails
             .get(root, path, prism_editor_core::thumbnails::DEFAULT_MAX_SIDE)?;
+    let size = [thumbnail.width, thumbnail.height];
+    let (source_width, source_height) = thumbnail.source_size();
     let image = egui::ColorImage::from_rgba_unmultiplied(
         [thumbnail.width as usize, thumbnail.height as usize],
         &thumbnail.rgba,
     );
-    let size = [thumbnail.width, thumbnail.height];
     let handle = ui.ctx().load_texture(
         format!("asset-thumb:{path}"),
         image,
@@ -212,7 +237,14 @@ fn thumbnail_texture(
     );
     let id = handle.id();
     state.thumbnail_textures.insert(path.to_string(), handle);
-    Some((id, size))
+    state
+        .thumbnail_sources
+        .insert(path.to_string(), [source_width, source_height]);
+    Some(ThumbnailImage {
+        texture: id,
+        size,
+        source: [source_width, source_height],
+    })
 }
 
 /// 无底色的图标按钮（层级的眼睛 / 展开箭头：只有图标，没有按钮框）。
@@ -443,6 +475,8 @@ pub struct UiState {
     /// 文件变了由 `ThumbnailCache` 的版本戳负责失效。
     pub thumbnails: prism_editor_core::thumbnails::ThumbnailCache,
     pub thumbnail_textures: std::collections::HashMap<String, egui::TextureHandle>,
+    /// 源图像素尺寸，按路径缓存：精灵帧网格按源图像素切，不能用降采样后的缩略图尺寸（#982）。
+    pub thumbnail_sources: std::collections::HashMap<String, [u32; 2]>,
     /// 本帧还可以解码几张缩略图（#982）。
     ///
     /// 一个目录里可能有 600 张精灵图，全部解码一次会把面板卡成“白屏几秒”；
@@ -2737,6 +2771,8 @@ fn inspector_single(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState,
         );
         if name == "prism_engine::scene::LineRenderer" {
             line_renderer_editor(ui, workspace, entity_id, &schema.name, &value);
+        } else if name == "prism_engine::scene::SpriteRenderer" {
+            sprite_preview(ui, workspace, state, &value);
         } else if name == "prism_engine::scene::SpriteAnimation" {
             sprite_animation_editor(ui, workspace, index, entity_id, &value);
         } else if name == "prism_engine::scene::Animator" {
@@ -2881,6 +2917,158 @@ fn apply_line_point_action(points: &mut Vec<Value>, action: LinePointAction) {
             points.insert(index + 1, json!(midpoint));
         }
     }
+}
+
+/// 精灵贴图的帧网格：`(列数, 行数)`，`None` 表示这张表不能按 `frame_size` 整齐切开。
+///
+/// 纯函数，便于测试：列数优先用作者写的 `sheet_columns`（0 = 由纹理宽度推导），
+/// 行数由纹理高度推导；只要 `frame_size` 除不尽源图就返回 `None` —— 运行时会把
+/// 越界帧夹住，看起来只是「切歪了」，这里要让作者直接看到原因。
+pub fn sprite_frame_grid(
+    source: [u32; 2],
+    frame_size: [u32; 2],
+    sheet_columns: u32,
+) -> Option<(u32, u32)> {
+    if frame_size[0] == 0 || frame_size[1] == 0 {
+        // 0 = 整张纹理就是一帧，没有网格。
+        return None;
+    }
+    if source[0] < frame_size[0] || source[1] < frame_size[1] {
+        return None;
+    }
+    if source[0] % frame_size[0] != 0 || source[1] % frame_size[1] != 0 {
+        return None;
+    }
+    let rows = source[1] / frame_size[1];
+    let columns = if sheet_columns > 0 {
+        sheet_columns
+    } else {
+        source[0] / frame_size[0]
+    };
+    (columns > 0 && rows > 0).then_some((columns, rows))
+}
+
+/// 检查器里的精灵贴图预览（#982）。
+///
+/// 摆 2D 场景时「这一帧到底切得对不对」只能靠 Play 猜，所以贴图直接画在卡片里：
+/// 按 `frame_size` 切网格，当前 `frame_index`（`sheet_row` 行内）描边。
+fn sprite_preview(ui: &mut Ui, workspace: &Workspace, state: &mut UiState, renderer: &Value) {
+    let path = renderer
+        .get("sprite_path")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if path.is_empty() {
+        return;
+    }
+    let frame_size = renderer
+        .get("frame_size")
+        .and_then(Value::as_array)
+        .and_then(|size| {
+            let width = size.first().and_then(Value::as_u64)? as u32;
+            let height = size.get(1).and_then(Value::as_u64)? as u32;
+            Some([width, height])
+        })
+        .unwrap_or([0, 0]);
+    let sheet_columns = renderer
+        .get("sheet_columns")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as u32;
+    let sheet_row = renderer
+        .get("sheet_row")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as u32;
+    let frame_index = renderer
+        .get("frame_index")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as u32;
+
+    ui.label(RichText::new("Sprite Preview").strong().size(11.0));
+    let Some(image) = thumbnail_image(ui, workspace, state, path, AssetKind::Texture) else {
+        ui.label(
+            RichText::new(format!("no preview for {path}"))
+                .weak()
+                .size(10.0),
+        );
+        return;
+    };
+
+    let (response, painter) = ui.allocate_painter(egui::vec2(160.0, 160.0), egui::Sense::hover());
+    let bounds = response.rect.shrink(2.0);
+    let image_rect = fit_into(bounds, image.size[0], image.size[1]);
+    painter.image(
+        image.texture,
+        image_rect,
+        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+        egui::Color32::WHITE,
+    );
+
+    let Some((columns, rows)) = sprite_frame_grid(image.source, frame_size, sheet_columns) else {
+        let (source_width, source_height) = (image.source[0], image.source[1]);
+        ui.label(
+            RichText::new(if frame_size == [0, 0] {
+                format!("whole texture is one frame ({source_width}×{source_height})")
+            } else {
+                format!(
+                    "frame size {}×{} does not tile a {source_width}×{source_height} sheet",
+                    frame_size[0], frame_size[1]
+                )
+            })
+            .size(10.0)
+            .color(ui.visuals().warn_fg_color),
+        );
+        return;
+    };
+
+    let cell = egui::vec2(
+        image_rect.width() / columns as f32,
+        image_rect.height() / rows as f32,
+    );
+    let grid = egui::Stroke::new(1.0, egui::Color32::from_white_alpha(70));
+    for column in 1..columns {
+        let x = image_rect.left() + cell.x * column as f32;
+        painter.line_segment(
+            [
+                egui::pos2(x, image_rect.top()),
+                egui::pos2(x, image_rect.bottom()),
+            ],
+            grid,
+        );
+    }
+    for row in 1..rows {
+        let y = image_rect.top() + cell.y * row as f32;
+        painter.line_segment(
+            [
+                egui::pos2(image_rect.left(), y),
+                egui::pos2(image_rect.right(), y),
+            ],
+            grid,
+        );
+    }
+
+    // 与运行时一致：帧先在本行内从左到右，超过列数才进入下一行。
+    let column = frame_index % columns;
+    let row = (sheet_row + frame_index / columns).min(rows - 1);
+    let highlight = egui::Rect::from_min_size(
+        image_rect.min + egui::vec2(cell.x * column as f32, cell.y * row as f32),
+        cell,
+    );
+    painter.rect_stroke(
+        highlight,
+        0.0,
+        egui::Stroke::new(2.0, ui.visuals().selection.bg_fill),
+        egui::StrokeKind::Inside,
+    );
+    let total = columns * rows;
+    ui.label(
+        RichText::new(format!(
+            "frame {} of {total} ({columns}×{rows} cells, {}×{} px each)",
+            row * columns + column + 1,
+            frame_size[0],
+            frame_size[1]
+        ))
+        .size(10.0)
+        .weak(),
+    );
 }
 
 fn sprite_animation_editor(
@@ -12989,5 +13177,43 @@ mod terrain_stats_tests {
             .expect("2×2 heightmap");
         assert_eq!(stats.min, -2.0);
         assert_eq!(stats.max, 1.0);
+    }
+}
+
+#[cfg(test)]
+mod sprite_preview_tests {
+    use super::sprite_frame_grid;
+
+    #[test]
+    fn a_single_row_sheet_derives_its_columns_from_the_texture() {
+        // 960×16 sheet with 64×16 frames = 15 cells in one row.
+        assert_eq!(sprite_frame_grid([960, 16], [64, 16], 0), Some((15, 1)));
+    }
+
+    #[test]
+    fn a_multi_row_atlas_counts_rows_from_the_height() {
+        assert_eq!(sprite_frame_grid([256, 128], [64, 32], 0), Some((4, 4)));
+    }
+
+    #[test]
+    fn an_explicit_column_count_wins_over_the_derived_one() {
+        assert_eq!(sprite_frame_grid([256, 128], [32, 32], 4), Some((4, 4)));
+    }
+
+    #[test]
+    fn a_whole_texture_frame_has_no_grid() {
+        assert_eq!(sprite_frame_grid([960, 16], [0, 0], 0), None);
+    }
+
+    #[test]
+    fn a_frame_size_that_does_not_tile_the_sheet_is_rejected() {
+        // 100 is not a multiple of 30, so the last column would be clipped.
+        assert_eq!(sprite_frame_grid([100, 50], [30, 25], 0), None);
+        assert_eq!(sprite_frame_grid([100, 50], [25, 25], 0), Some((4, 2)));
+    }
+
+    #[test]
+    fn a_frame_larger_than_the_texture_is_rejected() {
+        assert_eq!(sprite_frame_grid([32, 32], [64, 64], 0), None);
     }
 }
