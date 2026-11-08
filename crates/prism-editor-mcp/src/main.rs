@@ -114,3 +114,54 @@ fn handle(
         other => protocol::failure(id, -32601, format!("不支持的方法 '{other}'")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    /// The tool tables in `docs/editor-mcp.md` are the only entry point agents
+    /// have; a missing row means a tool that cannot be discovered. Keep the
+    /// documented names and required arguments in sync with the definitions.
+    #[test]
+    fn docs_tables_list_every_registered_tool() {
+        const DOCS: &str = include_str!("../../../docs/editor-mcp.md");
+        let documented: BTreeSet<&str> = DOCS
+            .lines()
+            .filter_map(|line| {
+                let rest = line.strip_prefix("| `")?;
+                let (name, _) = rest.split_once('`')?;
+                name.chars()
+                    .all(|ch| ch.is_ascii_lowercase() || ch == '_')
+                    .then_some(name)
+            })
+            .collect();
+
+        let mut definitions = tools::definitions();
+        definitions.extend(game::definitions());
+        definitions.extend(editor_egui::definitions());
+        let registered: BTreeSet<&str> = definitions.iter().map(|def| def.name).collect();
+
+        assert_eq!(
+            documented, registered,
+            "docs/editor-mcp.md 的工具表与注册表不一致（左 = 文档，右 = 代码）"
+        );
+
+        for def in &definitions {
+            let required = def
+                .input_schema
+                .get("required")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str);
+            for arg in required {
+                assert!(
+                    DOCS.contains(&format!("`{arg}`")),
+                    "工具 `{}` 的必填参数 `{arg}` 没有写进 docs/editor-mcp.md",
+                    def.name
+                );
+            }
+        }
+    }
+}
