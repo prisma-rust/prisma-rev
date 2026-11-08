@@ -351,7 +351,7 @@ pub fn render_thread_main(
             frame_time_ms,
             gpu_timings.supported.then_some(gpu_timings.total_ms),
         );
-        if frame_count % 30 == 0 {
+        if frame_count.is_multiple_of(30) {
             frame_stats_summary = frame_stats.summary();
         }
 

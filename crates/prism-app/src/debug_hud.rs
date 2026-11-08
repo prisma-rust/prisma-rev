@@ -169,6 +169,7 @@ mod tests {
             frame_time_ms: 16.0,
             fps: 60.0,
             pt_frame_count: None,
+            frame_stats: Default::default(),
             gpu_timings: Some(GpuTimings {
                 supported: true,
                 total_ms: 12.5,
@@ -207,5 +208,48 @@ mod tests {
         let lines = append(&stats);
         assert!(lines[0].contains("GPU n/a"), "{lines:?}");
         assert!(lines.iter().all(|line| !line.starts_with("GPU passes")));
+    }
+
+    /// #1002: the tail is only shown once the ring buffer has enough samples.
+    #[test]
+    fn hud_shows_percentiles_after_enough_frames() {
+        let mut frames = prism_render::frame_stats::FrameStats::new(120);
+        for _ in 0..60 {
+            frames.push_frame(16.0, None);
+        }
+        let stats = RenderStats {
+            frame_time_ms: 16.0,
+            fps: 60.0,
+            pt_frame_count: None,
+            gpu_timings: None,
+            frame_stats: frames.summary(),
+        };
+        let lines = append(&stats);
+        assert!(
+            lines.iter().any(|line| line.contains("p50 16.0 ms")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("1% low")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn hud_hides_percentiles_before_enough_frames() {
+        let mut frames = prism_render::frame_stats::FrameStats::new(120);
+        frames.push_frame(16.0, None);
+        let stats = RenderStats {
+            frame_time_ms: 16.0,
+            fps: 60.0,
+            pt_frame_count: None,
+            gpu_timings: None,
+            frame_stats: frames.summary(),
+        };
+        let lines = append(&stats);
+        assert!(
+            !lines.iter().any(|line| line.contains("p50")),
+            "a single sample is not a distribution: {lines:?}"
+        );
     }
 }
