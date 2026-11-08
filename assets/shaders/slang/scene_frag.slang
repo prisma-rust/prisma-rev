@@ -22,9 +22,10 @@
 //   set 5, binding 1 - probe volume grid metadata UBO (ProbeVolumeInfo)
 // brdf LUT: registered in the bindless Texture2D[] table at slot pc.env_handle
 //           (the env_handle push constant is repurposed for the BRDF LUT index).
-// Push constants: PbrBindlessPush (96 bytes, mirrors Rust
-//                  PbrBindlessPushConstants). lightViewProj lives in the
-//                  UBO so the push constant stays under 128 bytes.
+// Push constants: PbrBindlessPush (120 bytes, mirrored by
+//                  `shader_bindings::scene_frag::PbrBindlessPush`).
+//                  lightViewProj lives in the UBO so the push constant stays
+//                  under the 128-byte guarantee.
 //
 // MRT: the fragment stage now writes two color attachments:
 //   SV_Target0 - linear HDR lit color (PostPass tonemaps this -> swapchain)
@@ -515,7 +516,6 @@ struct SceneOutput
     float2 velocity  : SV_Target2;
 };
 
-[shader("fragment")]
 // #517: texture-layer splat helpers. `slot` is a material SSBO index; a
 // missing layer is u32::MAX and contributes nothing.
 float3 sampleSplatAlbedo(uint slot, float2 uv)
@@ -529,6 +529,7 @@ float3 sampleSplatAlbedo(uint slot, float2 uv)
     return mat.base_color.rgb;
 }
 
+[shader("fragment")]
 SceneOutput fragmentMain(MeshVaryings in)
 {
     // Transparent draws write 1 into normal.w. TaaPass uses this as a

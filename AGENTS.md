@@ -66,7 +66,8 @@ deviating from those conventions is a bug. (`README.md` is the human-facing over
 - `crates/prism-app` — platform layer (winit event loop, window, `FrameHook` extension point,
   `run_on_android` helper). **UI-framework-free**; the Android JNI entry lives in the user project.
 - `crates/prism-platform` — platform abstraction (window system, Vulkan surface, input routing).
-- `crates/prism-editor-tool` — editor tools (heightmap generator CLI, terrain utilities).
+- `crates/prism-terrain-tool` — 地形工具 CLI（程序化高度图生成 / 侵蚀 / 高度图导出），
+  与编辑器、引擎无关，可单独运行。
 - `crates/prism-editor-api` — 编辑器 / MCP 的**数据层**：把 `prism-scene` 组件注册表投影成
   属性面板 schema + `.scene.json` 定位/读写/校验。UI-framework-free、Vulkan-free，被
   `crates/prism-editor-mcp` 使用。
