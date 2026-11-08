@@ -21,6 +21,9 @@
   - 严格遵守 **load/store op** 最小化；中间 RT 能 `DONT_CARE` 就 `DONT_CARE`。
   - 避免跨 tile 的随机全局内存访问（bindless 大数组的访问模式要可控）。
   - 半分辨率阴影 / GI 等重 pass 默认降采样（见 `RayQueryPass` 的 `scale = 0.5`）。
+  - shader 的资源用量有构建期上限（`assets/shaders/budgets.json` + `xtask` 的
+    `shader-budget`）：一个 pass 悄悄多接几张采样纹理、或 push constant 涨到几百字节，
+    自检就会失败，而不是等移动端跑不动才发现。
 - **不回移植旧架构**：不存在"为了兼容旧 renderer 将就"的妥协。
   旧的单体 `renderer.rs`（995 行）已被拆掉，新代码一律走 **RenderGraph + pass 节点**。
   任何"临时塞进 legacy_renderer"的写法都是 bug（legacy 仅作过渡，目标是彻底删除）。

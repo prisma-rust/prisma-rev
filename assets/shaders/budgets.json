@@ -1,0 +1,145 @@
+{
+  "version": 1,
+  "shaders": {
+    "gizmo": {
+      "sampled_images": 0,
+      "sampled_image_arrays": 0,
+      "samplers": 0,
+      "uniform_buffers": 0,
+      "storage_buffers": 0,
+      "acceleration_structures": 0,
+      "descriptors": 0,
+      "push_constant_bytes": 128
+    },
+    "gtao": {
+      "sampled_images": 4,
+      "sampled_image_arrays": 0,
+      "samplers": 3,
+      "uniform_buffers": 0,
+      "storage_buffers": 0,
+      "acceleration_structures": 0,
+      "descriptors": 7,
+      "push_constant_bytes": 96
+    },
+    "mesh_vert": {
+      "sampled_images": 0,
+      "sampled_image_arrays": 0,
+      "samplers": 0,
+      "uniform_buffers": 1,
+      "storage_buffers": 2,
+      "acceleration_structures": 0,
+      "descriptors": 3,
+      "push_constant_bytes": 128
+    },
+    "particles": {
+      "sampled_images": 0,
+      "sampled_image_arrays": 0,
+      "samplers": 0,
+      "uniform_buffers": 0,
+      "storage_buffers": 0,
+      "acceleration_structures": 0,
+      "descriptors": 0,
+      "push_constant_bytes": 96
+    },
+    "post": {
+      "sampled_images": 3,
+      "sampled_image_arrays": 0,
+      "samplers": 0,
+      "uniform_buffers": 1,
+      "storage_buffers": 0,
+      "acceleration_structures": 0,
+      "descriptors": 4,
+      "push_constant_bytes": 88
+    },
+    "pt_render": {
+      "sampled_images": 4,
+      "sampled_image_arrays": 1,
+      "samplers": 1,
+      "uniform_buffers": 0,
+      "storage_buffers": 8,
+      "acceleration_structures": 1,
+      "descriptors": 15,
+      "push_constant_bytes": 144
+    },
+    "rt_preview": {
+      "sampled_images": 0,
+      "sampled_image_arrays": 1,
+      "samplers": 1,
+      "uniform_buffers": 0,
+      "storage_buffers": 0,
+      "acceleration_structures": 0,
+      "descriptors": 2,
+      "push_constant_bytes": 4
+    },
+    "rt_render": {
+      "sampled_images": 0,
+      "sampled_image_arrays": 0,
+      "samplers": 0,
+      "uniform_buffers": 0,
+      "storage_buffers": 0,
+      "acceleration_structures": 0,
+      "descriptors": 0,
+      "push_constant_bytes": 4
+    },
+    "scene_frag": {
+      "sampled_images": 6,
+      "sampled_image_arrays": 1,
+      "samplers": 2,
+      "uniform_buffers": 2,
+      "storage_buffers": 2,
+      "acceleration_structures": 0,
+      "descriptors": 13,
+      "push_constant_bytes": 128
+    },
+    "shadow_depth": {
+      "sampled_images": 0,
+      "sampled_image_arrays": 0,
+      "samplers": 0,
+      "uniform_buffers": 0,
+      "storage_buffers": 1,
+      "acceleration_structures": 0,
+      "descriptors": 1,
+      "push_constant_bytes": 160
+    },
+    "skybox": {
+      "sampled_images": 1,
+      "sampled_image_arrays": 0,
+      "samplers": 0,
+      "uniform_buffers": 0,
+      "storage_buffers": 0,
+      "acceleration_structures": 0,
+      "descriptors": 1,
+      "push_constant_bytes": 96
+    },
+    "sprites": {
+      "sampled_images": 0,
+      "sampled_image_arrays": 1,
+      "samplers": 1,
+      "uniform_buffers": 0,
+      "storage_buffers": 1,
+      "acceleration_structures": 0,
+      "descriptors": 3,
+      "push_constant_bytes": 80
+    },
+    "taa": {
+      "sampled_images": 5,
+      "sampled_image_arrays": 0,
+      "samplers": 0,
+      "uniform_buffers": 1,
+      "storage_buffers": 0,
+      "acceleration_structures": 0,
+      "descriptors": 6,
+      "push_constant_bytes": 0
+    },
+    "ui_overlay": {
+      "sampled_images": 1,
+      "sampled_image_arrays": 1,
+      "samplers": 1,
+      "uniform_buffers": 0,
+      "storage_buffers": 0,
+      "acceleration_structures": 0,
+      "descriptors": 3,
+      "push_constant_bytes": 0
+    }
+  }
+}

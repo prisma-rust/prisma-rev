@@ -259,6 +259,47 @@ def file_matches_generated(generated: Path, checked_in: Path) -> bool:
     return produced.replace(b"\r\n", b"\n") == existing.replace(b"\r\n", b"\n")
 
 
+def shader_budget_check(changed: list[str]) -> Check:
+    """Compare shader resource usage with the committed budget table."""
+    check = Check("shader budget", ["shader-budget", "assets/shaders/budgets.json"])
+    check.done = True
+    touched = has_prefix(changed, "assets/shaders/") or has_prefix(changed, "crates/xtask/")
+    if not touched:
+        check.status = "skip"
+        check.detail = "no shader changes"
+        return check
+
+    eprint("→ shader budget: count descriptors and push constants")
+    code, out = run(
+        [
+            "cargo",
+            "run",
+            "--quiet",
+            "--manifest-path",
+            str(ROOT / "crates" / "xtask" / "Cargo.toml"),
+            "--bin",
+            "shader-budget",
+            "--",
+            "--reflection-dir",
+            str(ROOT / "assets" / "shaders" / "reflection"),
+            "--budget",
+            str(ROOT / "assets" / "shaders" / "budgets.json"),
+        ]
+    )
+    check.output = out
+    if code == 0:
+        check.status = "ok"
+        check.detail = out.strip().splitlines()[-1] if out.strip() else ""
+        eprint("  ok")
+        return check
+
+    check.status = "fail"
+    check.detail = "budget exceeded"
+    eprint("  FAILED")
+    eprint("\n".join(out.rstrip().splitlines()[-25:]))
+    return check
+
+
 def shader_bindings_check(changed: list[str]) -> Check:
     """在临时目录重跑 bindgen，与已提交的 bindings 比对；不修改工作区。"""
     check = Check("shader bindings drift", ["shader-bindgen", "(temp out)"])
@@ -592,6 +633,7 @@ def main() -> int:
         )
 
     checks.append(shader_bindings_check(changed))
+    checks.append(shader_budget_check(changed))
     checks.append(dependency_budget_check())
     if args.all or any(path.endswith("Cargo.toml") for path in changed):
         checks.append(feature_matrix_check())
