@@ -45,14 +45,10 @@ mod project_entry;
 ///
 /// `export_project!` uses it for the schema fingerprint and for the RTTIBin type
 /// table; a project with extra components can keep its own registry instead.
+/// The instance lives in `prism-scene`, so project modules, the engine and the
+/// editor all hash the same schema.
 pub fn builtin_registry() -> &'static prism_scene::ComponentRegistry {
-    static REGISTRY: std::sync::OnceLock<prism_scene::ComponentRegistry> =
-        std::sync::OnceLock::new();
-    REGISTRY.get_or_init(|| {
-        let mut registry = prism_scene::ComponentRegistry::new();
-        prism_scene::register_builtin_components(&mut registry);
-        registry
-    })
+    prism_scene::builtin_registry()
 }
 
 /// Schema fingerprint of [`builtin_registry`], which the host compares with its
