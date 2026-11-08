@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use prism_editor_mcp::protocol::ToolDef;
+use prism_editor_mcp::ToolDef;
 
 /// The process started by `editor_launch`.
 #[derive(Default)]

@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use prism_editor_mcp::protocol::ToolDef;
+use prism_editor_mcp::ToolDef;
 
 /// Log buffer capacity: enough to diagnose problems without exhausting memory.
 const LOG_CAPACITY: usize = 2000;
