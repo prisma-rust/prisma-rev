@@ -772,6 +772,7 @@ impl App {
         self.apply_launch_config();
         // 日志兜底（try_init 幂等，已初始化时静默失败）。
         let _ = env_logger::try_init();
+        Self::log_asset_root();
         let event_loop = winit::event_loop::EventLoop::new().expect("failed to create event loop");
         self.run_on(event_loop).expect("fatal application error");
     }
@@ -797,7 +798,19 @@ impl App {
     pub fn run(self) {
         self.apply_launch_config();
         let _ = env_logger::try_init();
+        Self::log_asset_root();
         self.run_win32().expect("fatal application error");
+    }
+
+    /// 日志可用之后打一行资产根目录（#985）。
+    ///
+    /// `asset_paths::asset_root()` 每个资产查询都会调用一次，那里只能留 `trace`；
+    /// 启动日志里有一行就够定位「assets/ 到底解析到了哪」，也不用再让编辑器
+    /// 的日志面板被几百行同样的路径刷满。
+    fn log_asset_root() {
+        if let Some(root) = prism_engine::asset_paths::asset_root() {
+            log::debug!("asset root: {}", root.display());
+        }
     }
 
     /// 恢复时重启随挂起释放的子系统（音频流 / 解码线程）。
