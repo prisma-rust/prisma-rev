@@ -2610,6 +2610,7 @@ version = "0.1.0"
 dependencies = [
  "log",
  "prism-asset",
+ "prism-ini",
  "prism-reflect",
  "prism-scene",
  "serde",
@@ -2621,6 +2622,7 @@ name = "prism-editor-core"
 version = "0.1.0"
 dependencies = [
  "log",
+ "prism-ini",
  "serde",
  "serde_json",
 ]
@@ -2664,6 +2666,7 @@ dependencies = [
  "prism-anim",
  "prism-asset",
  "prism-ecs",
+ "prism-ini",
  "prism-project-api",
  "prism-reflect",
  "prism-render",
@@ -2681,6 +2684,13 @@ dependencies = [
  "glam 0.33.12",
  "prism-reflect",
  "serde",
+]
+
+[[package]]
+name = "prism-ini"
+version = "0.1.0"
+dependencies = [
+ "log",
 ]
 
 [[package]]

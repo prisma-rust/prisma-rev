@@ -9,3 +9,5 @@ description = "PrismaRev 编辑器的数据层：dock 布局树、场景文档�
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
+# `assets/settings.ini` 方言（与引擎 / editor-api 共用一份解析器）。
+prism-ini = { path = "../../../crates/prism-ini" }

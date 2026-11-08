@@ -63,6 +63,8 @@ deviating from those conventions is a bug. (`README.md` is the human-facing over
   翻译成 Vulkan 状态（剔除位、混合因子……）留在 `prism-render`。
 - `crates/prism-scene` — 场景 schema 层：纯数据组件、`ComponentRegistry`、`.scene.json`
   作者格式、RSCN v4 编解码。UI / render / audio-free；cooker 与 engine 共用这一份 schema。
+- `crates/prism-ini` — `assets/settings.ini` 方言的唯一实现（解析 / 写回 / 类型转换），
+  只依赖 `log`；engine、`prism-editor-api`、`prism-editor-core` 都只 re-export 它。
 - `crates/prism-render` — Vulkan backend: context, swapchain, render-graph passes (`forward_pass.rs`/`shadow_map_pass.rs`/`skybox_pass.rs`),
   `GraphRenderer` driver (`graph_renderer.rs`), IBL cubemap (`ibl.rs`), bindless/PBR.
   **UI-framework-free**; hosts inject UI via the neutral `SwapchainOverlay` trait (`external_overlay.rs`).
@@ -551,10 +553,11 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   值可加双引号（支持 `\"` `\\` `\n`），不加引号取到行尾并 trim；解析器只产出
   `String`，类型转换由调用方做（失败 → 默认值 + `warn!`）；未知 section/key 忽略并
   `debug!`；重复 section 合并、后者覆盖前者。
-- 解析器有三份**同方言**实现，改一处必须同步另外两处：
-  `crates/prism-engine/src/config/ini.rs`（引擎读取）、
+- 解析器只有一份：`crates/prism-ini`（零业务依赖，只依赖 `log`）。三个使用方都只是
+  re-export，不要各自再抄一份：`crates/prism-engine/src/config/ini.rs`（引擎读取）、
   `crates/prism-editor-api/src/ini.rs`（MCP / 工具，需保留未知段）、
   `editor/crates/prism-editor-core/src/ini.rs`（编辑器数据层）。
+  改方言 = 改 `prism-ini` + `docs/DESIGN.md` §10.14。
 - `[render] internal_resolution`（`640x360` / `off`）与 `internal_scale_mode`
   （`stretch` / `integer`）把场景渲染分辨率与窗口分辨率分开（#613）：中间目标按内部
   尺寸渲染、相机按内部宽高比投影、`PostPass` 再放大到窗口（`integer` = 最近邻 +

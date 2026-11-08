@@ -1,0 +1,9 @@
+[package]
+name = "prism-ini"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The project settings INI dialect: one parser shared by the engine, editor tools and editor data layer"
+
+[dependencies]
+log = { workspace = true }
