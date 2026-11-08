@@ -984,6 +984,13 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
         }
     }
 
+    // Foot IK (#560 P4) smoothing state: engine-owned, loaded like the runtime map
+    // above and written back after the pass.
+    let mut foot_ik_states: HashMap<Entity, super::foot_ik::FootIkState> = world
+        .query::<super::foot_ik::FootIkState>()
+        .map(|(entity, state)| (entity, state.clone()))
+        .collect();
+
     let mut updates: Vec<(Entity, BonePalette, AnimatorPlayhead)> = Vec::new();
     let mut events: Vec<AnimEvent> = Vec::new();
     // 动画 LOD（#560 P6）：远处实体冻结、近档隔帧求值；图运行时保留状态等回来再续。
@@ -1047,6 +1054,7 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
                         entity,
                         &mut root_motion_moves,
                     );
+                    foot_ik_pass(world, entity, &skeleton, &mut pose, &mut foot_ik_states, dt);
                     playhead.pose = pose.clone();
                     let palette = BonePalette::from_matrices(&skeleton.bone_palette(&pose));
                     updates.push((entity, palette, playhead));
@@ -1429,6 +1437,7 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
             entity,
             &mut root_motion_moves,
         );
+        foot_ik_pass(world, entity, &skeleton, &mut pose, &mut foot_ik_states, dt);
         // 这份姿态就是下一次过渡的淡出源（不需要 clone：上面已经用完 `pose`）。
         playhead.pose = pose;
         let palette = BonePalette::from_matrices(&skeleton.bone_palette(&playhead.pose));
@@ -1453,6 +1462,11 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
     for (entity, palette, playhead) in updates {
         world.insert(entity, palette);
         world.insert(entity, playhead);
+    }
+    for (entity, state) in foot_ik_states {
+        if world.is_alive(entity) {
+            world.insert(entity, state);
+        }
     }
     // 状态由引擎写回组件：编辑器 / 存档看到的就是当前状态，不用再问播放头。
     for (entity, state) in state_updates {
@@ -1483,6 +1497,21 @@ pub fn animator_system(world: &mut World, dt: f32) -> usize {
     }
     world.insert_resource(AnimEvents { events });
     count
+}
+
+/// Run foot placement for one entity while the animator streams over the world.
+///
+/// Skipped for entities that are not solved this frame (LOD throttling, missing
+/// `FootIk`) — the helper itself decides and leaves the pose alone.
+fn foot_ik_pass(
+    world: &World,
+    entity: Entity,
+    skeleton: &Skeleton,
+    pose: &mut Pose,
+    states: &mut HashMap<Entity, super::foot_ik::FootIkState>,
+    dt: f32,
+) {
+    super::foot_ik::apply_for_entity(world, entity, skeleton, pose, states, dt);
 }
 
 /// 交叉淡入时长：负值 / NaN / 无穷都按 0（直接切换）处理。

@@ -90,7 +90,9 @@ deviating from those conventions is a bug. (`README.md` is the human-facing over
   `apply_two_bone_ik` + Foot Placement，只依赖 `prism-anim` + glam，不依赖 engine / render /
   ECS。地面查询由调用方注入；引擎侧的现成实现是
   `prism_engine::anim_ground::SceneGroundQuery`（走 `physics::raycast_excluding`，纯 ECS 几何，
-  不需要 `prism-app/physics`），逐帧接线尚未完成。约定见 [`docs/anim-ik.md`](docs/anim-ik.md)。
+  不需要 `prism-app/physics`）。场景实体加 `FootIk` 组件即接线：`animator_system` 在算骨骼
+  调色板之前跑 `scene::systems::foot_ik`（动画图与普通剪辑分支都跑，LOD 冻结的远处实体跳过），
+  关节名解析失败时姿态原样保留。约定见 [`docs/anim-ik.md`](docs/anim-ik.md)。
 - `crates/prism-cooker` — **build-time** layer: importers, cookers, asset database, CookProfile,
   and the `prism-cook` CLI (`src/main.rs`). Depends on `prism-asset` + `prism-scene`; never
   pulled into the game runtime. See DESIGN.md §10.
