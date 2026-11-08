@@ -222,10 +222,12 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
     parser, `cargo run` must not. Reload replaces the whole module — never call it
     "hot reload".
   - Module logs and panics need a bridge: the dylib has its own `log`/`std`, so the
-    host logger and panic hook never see them. A project must call
-    `prism_game_api::install_host_logger(&host)` and `install_host_panic_hook()` in
-    `create`; `prism_project_api::guard()` keeps panics from unwinding across
-    `extern "C"`. A failed tick latches (no per-frame panic replay) until reload.
+    host logger and panic hook never see them. A project's entry point comes from
+    `prism_game_api::export_project!`; it installs `install_host_logger` +
+    `install_host_panic_hook`, validates the ABI and schema fingerprint in `create`,
+    and rebuilds the project state when the scene generation changes.
+    `prism_project_api::guard()` keeps panics from unwinding across `extern "C"`.
+    A failed tick latches (no per-frame panic replay) until reload.
   - Compilation runs **off** the viewport thread and reports progress through
     `ViewportSnapshot.build`; scene cook/pack and project builds report through
     `editor_build_status`. Never run `cargo`/cook synchronously in a viewport or command
