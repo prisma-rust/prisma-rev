@@ -43,6 +43,32 @@ apply_two_bone_ik(&skeleton, &mut pose, TwoBoneChain::new(0, 1, 2), target, pole
 过近折叠、pole 决定弯曲方向、pole 平行回退、权重混合、各类退化输入、
 写回 `Pose` 后的实际位置、权重 0 不动姿态、非法骨骼下标。
 
+## Foot Placement
+
+`FootPlacement`（`src/foot.rs`）按帧把两只脚贴到地面，再让骨盆跟着降下来：
+
+```rust
+let report = placement.update(
+    &skeleton, &mut pose,
+    0,                                  // 骨盆关节
+    [left_chain, right_chain],          // thigh -> knee -> ankle
+    &settings, &ground_queries, dt,
+);
+```
+
+- 地面由调用方注入：实现 `GroundQuery::cast(origin, direction, max_distance)` 即可。
+  引擎里接物理射线（#522），测试里是平面或台阶。
+- 每只脚从踝上方 `probe_height` 向下探测：打不到地面、地面高出 `max_step_up`
+  （墙）或低于 `max_step_down`（洞）都视为没地面，权重按 `blend_seconds` 衰减到 0，
+  脚留在最后一次的目标位置。
+- **骨盆只会下降**：以未叠加修正的骨盆为基准，算出最吃紧那条腿超出的距离，
+  向下移动并夹在 `pelvis_min..=0`。往上抬只会让已经着地的脚更够不着，抬脚由
+  两骨 IK 自己弯膝解决。修正量按「已烘焙进姿态的偏移」记差，重复调用不会累积。
+- 两条腿的 `upper` 必须都挂在骨盆关节下（`parent == hips`）；骨盆本身不被旋转，否则
+  两条腿会各自把同一根骨骼转一次。
+- `weight = 0` 直接清空状态并保持姿态不变；非法链 / 姿态长度不符返回
+  `applied = false`，不写任何骨骼。
+
 ## 未接线
 
 引擎还没有消费这个求解器：Foot Placement 需要物理射线查询（#522）与

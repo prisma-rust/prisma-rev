@@ -34,7 +34,7 @@ impl TwoBoneChain {
 
     /// The three joints must exist and be distinct: a duplicated joint would
     /// silently rotate the same bone twice.
-    fn is_valid_for(&self, joint_count: usize) -> bool {
+    pub(crate) fn is_valid_for(&self, joint_count: usize) -> bool {
         self.upper != self.middle
             && self.upper != self.end
             && self.middle != self.end
