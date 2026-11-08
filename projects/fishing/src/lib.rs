@@ -26,8 +26,11 @@ pub fn build_app() -> prism_app::App {
         .with_subsystem(prism_app::Subsystem::Audio);
 
     app.add_system("game::world", world_system);
-    app.add_system("game::fishing", fishing_system)
-        .add_system("game::boat", boat_system);
+    // Keep this order identical to the preview module: `fishing` reads the boat
+    // transform that `boat` wrote this frame. A different order makes the
+    // player lag the Play view by one frame (#1058).
+    app.add_system("game::boat", boat_system);
+    app.add_system("game::fishing", fishing_system);
     app
 }
 
