@@ -4,12 +4,12 @@
 ## 为什么要有这个脚本
 
 精灵目录是 gitignore 的：仓库里只提交**生成方式**，不提交图。但「生成方式」必须
-和场景数据对得上 —— 湖面图层的文件名由 `assets/lake_layers.json` 的 `slug` 决定：
+和场景数据对得上 —— 湖面图层的文件名由 `assets/data/lake_layers.json` 的 `slug` 决定：
 
     运行时（`projects/fishing/src/game/world.rs::layer_path`）:
         sprites/bg/{slug}@{time_of_day}.png
 
-所以这个脚本**从 `lake_layers.json` 读 slug 和时段**，不再自己维护一份图层表。
+所以这个脚本**从 `data/lake_layers.json` 读 slug 和时段**，不再自己维护一份图层表。
 以前脚本里硬编码的是 `far-mountains` 这种短名，而数据里是 `+70_far-mountains`，
 跑一次生成出来的是 632 张没人引用的图，而且会覆盖掉本来能用的美术。
 
@@ -20,7 +20,7 @@
     python scripts/gen_placeholder_sprites.py --force      # 允许覆盖已有文件
     python scripts/gen_placeholder_sprites.py --check      # 只检查磁盘上的美术是否齐全
 
-`--check` 只比较文件名：每个 `lake_layers.json` 里的图层 × 每个时段都要有对应
+`--check` 只比较文件名：每个 `data/lake_layers.json` 里的图层 × 每个时段都要有对应
 的 PNG（缺了就是空白图层，退出码 1）；多出来的图只提示，不算错。
 
 已有目录默认**不覆盖**：这是一套手工调过的美术，占位图不该悄悄把它顶掉。
@@ -39,11 +39,11 @@ from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parent.parent
 PROJECT = ROOT / "projects" / "fishing"
-LAYERS = PROJECT / "assets" / "lake_layers.json"
+LAYERS = PROJECT / "assets" / "data" / "lake_layers.json"
 OUT = PROJECT / "assets" / "sprites"
 
 # 图层 slug 里的关键词 → 占位图的底色与尺寸（远 → 近由 slug 的顺序决定）。
-# `lake_layers.json` 的 slug 形如 `+72_sky` / `+13_+1_front-rocks`，数字是排序权重。
+# `data/lake_layers.json` 的 slug 形如 `+72_sky` / `+13_+1_front-rocks`，数字是排序权重。
 STYLES = [
     ("sky", (150, 176, 196), (1600, 340)),
     ("cloud", (232, 238, 244), (600, 200)),
@@ -109,7 +109,7 @@ def style_for(slug: str) -> tuple[tuple[int, int, int], tuple[int, int]]:
 
 
 def expected_files(data: dict) -> list[str]:
-    """`lake_layers.json` → 相对 `sprites/` 的完整文件清单。"""
+    """`data/lake_layers.json` → 相对 `sprites/` 的完整文件清单。"""
     tods = data.get("time_of_day") or ["dawn", "day", "dusk", "night"]
     files: list[str] = []
     for layer in data.get("layers", []):
@@ -266,7 +266,7 @@ def check(out: Path) -> int:
         if len(missing) > 10:
             print(f"  ... {len(missing) - 10} more")
     if extra:
-        print(f"extra {len(extra)} (not referenced by lake_layers.json):")
+        print(f"extra {len(extra)} (not referenced by data/lake_layers.json):")
         for name in extra[:10]:
             print(f"  + {name}")
         if len(extra) > 10:
@@ -278,7 +278,7 @@ def check(out: Path) -> int:
     if extra:
         print("ok: every layer/time-of-day has art (extra files are unused)")
     else:
-        print("ok: art matches assets/lake_layers.json exactly")
+        print("ok: art matches assets/data/lake_layers.json exactly")
     return 0
 
 
@@ -289,7 +289,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--check",
         action="store_true",
-        help="verify the art on disk covers every layer/time-of-day in lake_layers.json",
+        help="verify the art on disk covers every layer/time-of-day in data/lake_layers.json",
     )
     args = parser.parse_args(argv)
     if args.check:

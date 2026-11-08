@@ -812,6 +812,11 @@ prism-scene::rscn::encode_scene
   任何引用解析
   不到（文件不存在、绝对路径、逃出 `assets/`）都会让 `build-scenes` **非零退出**并列
   出路径——否则打包产物会在运行期静默缺资源（#530）；
+  与场景引用无关、运行时按**路径字符串**读取的内容按「目录即内容」整体打包：
+  `sprites/`（运行时生成的精灵）、`audio/`（`play_sound("audio/…")`）、
+  `data/`（关卡配置等工程数据，#1049）。`asset_paths::read_asset_text` /
+  `asset_exists` 先找松散文件、再按包内路径清单回退到 `.pak`，所以桌面与
+  Android 打包版读同一份数据；
 - `prism-build-pipeline cook <input.scene.json>` 单场景 cook，直接调用 `SceneCooker`；
 - 通用纹理/网格/二进制资产仍走 `prism-cook import/build`；
 - `prism-build-pipeline pack <cooked-dir>` 把已 cook 的目录打成 `.pak`，并写

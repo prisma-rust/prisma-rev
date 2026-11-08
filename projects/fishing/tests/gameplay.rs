@@ -6,7 +6,7 @@
 //!
 //! 运行（工程目录内）：`cargo test`
 //!
-//! `world::tick` 会读 `assets/lake_layers.json`，靠 `prism_engine::asset_paths`
+//! `world::tick` 会读 `assets/data/lake_layers.json`，靠 `prism_engine::asset_paths`
 //! 从 cwd 往上找 `assets/`，所以必须在 `projects/fishing` 下跑。
 
 use prism_game_api::{keys, EntityHandle, GameWorld, InputSnapshot};
@@ -55,7 +55,7 @@ fn lake_world_spawns_every_layer_with_transform() {
     assert_eq!(
         lake.layer_count(),
         8,
-        "expected the 8 layers from assets/lake_layers.json (cwd must be projects/fishing)"
+        "expected the 8 layers from assets/data/lake_layers.json (cwd must be projects/fishing)"
     );
 
     let layers: Vec<EntityHandle> = api.query::<SpriteRenderer>();

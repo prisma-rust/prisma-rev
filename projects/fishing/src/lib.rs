@@ -106,7 +106,7 @@ mod preview {
         game::boat::tick(&mut state.boat, world, dt);
         game::fishing::tick(&mut state.fishing, world, dt);
         if first_tick {
-            // 第一次 tick 会把 `lake_layers.json` 里的图层全部 spawn 出来：
+            // 第一次 tick 会把 `data/lake_layers.json` 里的图层全部 spawn 出来：
             // 这条日志是「工程代码真的跑起来了」最直接的证据。
             let layers = state
                 .world

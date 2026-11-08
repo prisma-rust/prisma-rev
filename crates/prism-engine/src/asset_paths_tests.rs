@@ -154,3 +154,74 @@ fn optional_packages_stay_out_of_the_top_level_scan() {
         .collect();
     assert_eq!(split, vec!["optional_audio.pak"]);
 }
+
+/// 测试期间设置 `PRISMREV_ASSET_ROOT`，结束时恢复原值。
+struct EnvRoot {
+    previous: Option<std::ffi::OsString>,
+}
+
+impl EnvRoot {
+    fn set(root: &Path) -> Self {
+        let previous = std::env::var_os(ASSET_ROOT_ENV);
+        std::env::set_var(ASSET_ROOT_ENV, root);
+        Self { previous }
+    }
+}
+
+impl Drop for EnvRoot {
+    fn drop(&mut self) {
+        match self.previous.as_ref() {
+            Some(value) => std::env::set_var(ASSET_ROOT_ENV, value),
+            None => std::env::remove_var(ASSET_ROOT_ENV),
+        }
+    }
+}
+
+/// #1049：松散文件不存在时，`asset_exists` / `read_asset_text` 回退到 `.pak`。
+/// 打包版（Android / 发布包）只有 `.pak`，关卡数据必须还能读到。
+#[test]
+fn packaged_assets_are_visible_without_loose_files() {
+    use prism_asset::package::PackageBuilder;
+    use prism_asset::{AssetId, AssetType};
+
+    fn write_pak(assets: &Path, entries: &[(&str, &[u8])]) {
+        let mut builder = PackageBuilder::new();
+        for (path, bytes) in entries {
+            builder.add_asset(
+                AssetId::from_path(path),
+                AssetType::Binary,
+                bytes.to_vec(),
+                &[],
+            );
+        }
+        std::fs::write(assets.join("scenes.pak"), builder.build().unwrap()).unwrap();
+    }
+
+    let tree = TempTree::new("pak-fallback");
+    let root = tree.with_assets("");
+    let assets = root.join("assets");
+    let layers = br#"{"layers":[]}"#;
+    write_pak(&assets, &[("data/lake_layers.json", layers)]);
+
+    let _env = EnvRoot::set(&root);
+    assert!(
+        !asset_path("data/lake_layers.json").unwrap().exists(),
+        "回退测试必须没有松散文件"
+    );
+    assert!(asset_exists("data/lake_layers.json"));
+    assert!(!asset_exists("data/missing.json"));
+    assert_eq!(
+        read_asset_text("data/lake_layers.json").unwrap(),
+        String::from_utf8_lossy(layers)
+    );
+    assert!(read_asset_text("data/missing.json").is_err());
+    // 反斜杠与开头的 `./` 都归一到同一个包内路径。
+    assert!(asset_exists("./data\\lake_layers.json"));
+
+    // 重建包后缓存必须换成新内容（mtime + 长度都变了）。
+    write_pak(&assets, &[("data/lake_layers.json", b"v2")]);
+    assert_eq!(
+        read_asset_text("data/lake_layers.json").unwrap(),
+        "v2".to_string()
+    );
+}
