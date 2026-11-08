@@ -81,8 +81,11 @@ impl Engine {
 
     /// 创建空引擎——不运行任何初始化阶段。
     pub fn empty() -> Self {
+        let mut world = World::new();
+        // 一次性音效队列（#987）：项目代码排队，宿主每帧取走。
+        world.insert_resource(crate::sound::SoundCommands::default());
         Self {
-            world: World::new(),
+            world,
             scene: crate::scene::SceneManager::new(),
             schedule: Schedule::new(),
             timer: crate::util::timer::TimerService::new(),

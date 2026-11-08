@@ -156,6 +156,112 @@ impl prism_runtime_host::SaveIo for ProjectSave {
 }
 
 /// 项目模块的宿主侧驱动器。
+/// 工程一次性音效的混音器（#987）。
+///
+/// 编辑器 Play 里模块和宿主是**两个**引擎实例，模块拿不到 `App` 的音频设备，
+/// 所以这里给驱动自己一份 `AudioEngine`：模块调 `GameWorld::play_sound` → ABI
+/// 回调 → 这里解码 + 播放。声部 id 由这里分配（从 1 开始，`0` 表示失败）。
+pub struct ProjectAudio {
+    engine: prism_audio::AudioEngine,
+    voices: std::collections::HashMap<u32, ProjectVoice>,
+    next_id: u32,
+}
+
+struct ProjectVoice {
+    handle: prism_audio::PlaybackHandle,
+    /// 保留片段用于 `repeat`（`AudioEngine` 没有循环标志，播完重放）。
+    clip: prism_audio::AudioData,
+    volume: f32,
+    repeat: bool,
+}
+
+impl ProjectAudio {
+    /// 没有声卡 / 音频设备初始化失败时返回 `None`（能力位不声明）。
+    fn new() -> Option<Self> {
+        match prism_audio::AudioEngine::new(prism_audio::AudioConfig::default()) {
+            Ok(engine) => Some(Self {
+                engine,
+                voices: std::collections::HashMap::new(),
+                next_id: 0,
+            }),
+            Err(error) => {
+                log::warn!("project module audio unavailable: {error}");
+                None
+            }
+        }
+    }
+
+    /// 每帧推进混音器并重放循环音效。
+    fn update(&mut self) {
+        self.engine.update();
+        for voice in self.voices.values_mut() {
+            if !voice.repeat || self.engine.is_playing(&voice.handle) {
+                continue;
+            }
+            let handle = self.engine.play(&voice.clip);
+            if handle.is_valid() {
+                self.engine.set_volume(&handle, voice.volume);
+                voice.handle = handle;
+            }
+        }
+        // 播完且不循环的声部直接释放，避免 id 表无限增长。
+        self.voices
+            .retain(|_, voice| voice.repeat || self.engine.is_playing(&voice.handle));
+    }
+}
+
+impl prism_runtime_host::AudioIo for ProjectAudio {
+    fn play_sound(&mut self, path: &str, volume: f32, repeat: bool) -> u32 {
+        let path = path.to_string();
+        let Some(file) = prism_engine::asset_paths::asset_path(&path) else {
+            log::warn!("project audio: '{path}' has no asset root");
+            return 0;
+        };
+        if !file.is_file() {
+            log::warn!("project audio: '{path}' not found");
+            return 0;
+        }
+        let clip = match prism_audio::decoder::decode_file(&file) {
+            Ok(clip) => clip,
+            Err(error) => {
+                log::warn!("project audio: decode '{path}' failed: {error}");
+                return 0;
+            }
+        };
+        let handle = self.engine.play(&clip);
+        if !handle.is_valid() {
+            return 0;
+        }
+        let volume = volume.clamp(0.0, 1.0);
+        self.engine.set_volume(&handle, volume);
+        log::debug!(
+            "project audio: '{path}' started as id {} (volume {volume:.2}, repeat {repeat})",
+            self.next_id.wrapping_add(1).max(1)
+        );
+        self.next_id = self.next_id.wrapping_add(1).max(1);
+        let id = self.next_id;
+        self.voices.insert(
+            id,
+            ProjectVoice {
+                handle,
+                clip,
+                volume,
+                repeat,
+            },
+        );
+        id
+    }
+
+    fn stop_sound(&mut self, id: u32) {
+        if let Some(voice) = self.voices.remove(&id) {
+            self.engine.stop(&voice.handle);
+        }
+    }
+}
+
+// 注意：`ProjectAudio` 必须在**构造**驱动时创建，不能在模块 tick 里创建。
+// 在 tick 里 `AudioEngine::new`（打开 cpal 流）会把编辑器卡死——世界正被模块
+// 借用，音频回调线程起来后 UI 线程再也拿不回控制权。构造时创建一次最安全。
 pub struct ProjectModuleDriver {
     manifest: Option<PathBuf>,
     target_dir: Option<PathBuf>,
@@ -186,6 +292,8 @@ pub struct ProjectModuleDriver {
     /// `PRISMREV_PROJECT_MODULE` 指定的预构建模块（只尝试加载一次）。
     prebuilt: Option<PathBuf>,
     events: Vec<ProjectEvent>,
+    /// 工程一次性音效（#987）：编辑器 Play 下模块通过 ABI 回调把声音交给它。
+    audio: Option<ProjectAudio>,
     last_error: Option<String>,
     last_tick_error: Option<String>,
     /// 项目代码在上一 tick 请求的换场（#482），由宿主在 tick 结束后取走执行。
@@ -234,6 +342,7 @@ impl ProjectModuleDriver {
             faulted: false,
             prebuilt,
             events: Vec::new(),
+            audio: ProjectAudio::new(),
             last_error: None,
             last_tick_error: None,
             pending_scene: None,
@@ -390,6 +499,13 @@ impl ProjectModuleDriver {
         // 与玩家的真实存档分开；没有可写目录时不声明能力位。
         if let Some(save) = self.save.as_mut() {
             commands = commands.with_save(save);
+        }
+
+        // 一次性音效（#987）：没有声卡时 `ProjectAudio::new` 返回 `None`，能力位
+        // 不声明，项目代码拿到 `play_sound() == None` 而不是静默成功。
+        if let Some(audio) = self.audio.as_mut() {
+            audio.update();
+            commands = commands.with_audio(audio);
         }
         // 项目代码可以调 `GameWorld::save_scene_state()`（#484）；引擎在这里，
         // runtime-host 只持有函数指针。

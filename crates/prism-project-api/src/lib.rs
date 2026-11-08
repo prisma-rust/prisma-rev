@@ -90,6 +90,10 @@ pub const HOST_CAP_PHYSICS: u64 = 1 << 7;
 /// （[`HOST_CAP_STATE`]）分开：这是工程自己决定 schema 的键值存储。
 pub const HOST_CAP_SAVE: u64 = 1 << 8;
 
+/// 一次性音效（`play_sound` / `stop_sound`，#987）。宿主注入音频实现后才会
+/// 声明该能力位；没有它时编辑器 Play 是一次性音效的哑巴。
+pub const HOST_CAP_AUDIO: u64 = 1 << 9;
+
 // ---------------------------------------------------------------------------
 // POD payloads
 // ---------------------------------------------------------------------------
@@ -388,6 +392,23 @@ pub type LoadValue = unsafe extern "C" fn(
     out_cap: usize,
 ) -> i32;
 
+/// 播放一个一次性音效（#987）：`path` 是相对 `assets/` 的 UTF-8 路径，
+/// `volume` 是 0..1 的线性增益，`repeat = 1` 表示循环。
+///
+/// 成功时返回 [`SUCCESS`] 并写 `out_id`（非 0，可用于 `stop_sound`）；
+/// 片段不存在 / 解码失败 / 宿主没有音频时返回负数，`out_id` 保持 0。
+pub type PlaySound = unsafe extern "C" fn(
+    user_data: *mut core::ffi::c_void,
+    path: *const u8,
+    path_len: usize,
+    volume: f32,
+    repeat: u8,
+    out_id: *mut u32,
+) -> i32;
+
+/// 停止 `play_sound` 返回的音效 id；未知或已结束的 id 返回 [`SUCCESS`]。
+pub type StopSound = unsafe extern "C" fn(user_data: *mut core::ffi::c_void, id: u32) -> i32;
+
 pub type LogMessage = unsafe extern "C" fn(
     user_data: *mut core::ffi::c_void,
     level: u32,
@@ -511,6 +532,10 @@ pub struct HostApi {
     /// 玩家存档（#984）；能力位 [`HOST_CAP_SAVE`]。
     pub save_value: Option<SaveValue>,
     pub load_value: Option<LoadValue>,
+
+    /// 一次性音效（#987）；能力位 [`HOST_CAP_AUDIO`]。
+    pub play_sound: Option<PlaySound>,
+    pub stop_sound: Option<StopSound>,
 }
 
 impl HostApi {
@@ -542,6 +567,9 @@ impl HostApi {
             raycast: None,
             save_value: None,
             load_value: None,
+
+            play_sound: None,
+            stop_sound: None,
         }
     }
 }
