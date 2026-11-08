@@ -602,11 +602,6 @@ impl EditorApp {
         );
         app.doc_hash = document_hash(&app.workspace);
         app.render_report = read_report(app.project_root.as_deref());
-        let failures = app.workspace.project_load_failures().len();
-        if failures > 0 {
-            app.state.status =
-                format!("{failures} document(s) failed to load — see the Console panel");
-        }
         app.workspace.log(
             prism_editor_core::LogSource::Editor,
             prism_editor_core::LogLevel::Info,
@@ -4014,6 +4009,28 @@ impl EditorApp {
             ui.label(RichText::new(&self.state.status).size(11.0));
             if !self.workspace.status.is_empty() {
                 ui.label(RichText::new(&self.workspace.status).size(11.0).weak());
+            }
+            // 加载失败的文档必须一直挂在状态栏上：只写一条 Console 日志的话，
+            // 用户看到的仍是空场景 / 示例内容，却不知道自己的工程没读完（#1020）。
+            let failures = self.workspace.project_load_failures();
+            if !failures.is_empty() {
+                let label = if failures.len() == 1 {
+                    "1 document failed to load".to_string()
+                } else {
+                    format!("{} documents failed to load", failures.len())
+                };
+                let hint = format!(
+                    "{}\n\nFix the file and restart the editor. The editor shows an empty scene \
+                     instead of the sample fixture.",
+                    failures.join("\n")
+                );
+                ui.label(
+                    RichText::new(label)
+                        .size(11.0)
+                        .strong()
+                        .color(Color32::from_rgb(232, 96, 96)),
+                )
+                .on_hover_text(hint);
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 // 模块编译状态 + 显式的 Compile：没有脚本层，代码就是一个可重载的 cdylib，
