@@ -62,7 +62,9 @@ BAD_SUFFIXES = (
     ".pem",
     ".key",
 )
-BAD_PARTS = ("node_modules/", "target/", "/target/", "dist/")
+# 整段目录名匹配，不是子串：`crates/prism-anim-retarget/` 这类合法路径里也有
+# `target/` 字样，按子串判断会让新 crate 直接判成构建产物。
+BAD_PARTS = ("node_modules", "target", "dist")
 BAD_NAMES = {".env", "local.properties", "id_rsa", "id_ed25519"}
 
 
@@ -401,7 +403,7 @@ def artifact_guard(changed: list[str]) -> Check:
         lowered = path.lower()
         if lowered.endswith(BAD_SUFFIXES) or name in BAD_NAMES:
             bad.append(path)
-        elif any(part in path for part in BAD_PARTS):
+        elif any(part in BAD_PARTS for part in Path(path).parts):
             bad.append(path)
     if bad:
         check.status = "fail"
