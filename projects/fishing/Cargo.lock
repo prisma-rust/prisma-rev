@@ -2290,6 +2290,7 @@ dependencies = [
  "prism-asset",
  "prism-audio",
  "prism-ecs",
+ "prism-ini",
  "prism-project-api",
  "prism-reflect",
  "prism-render",
@@ -2318,6 +2319,13 @@ dependencies = [
  "glam 0.33.12",
  "prism-reflect",
  "serde",
+]
+
+[[package]]
+name = "prism-ini"
+version = "0.1.0"
+dependencies = [
+ "log",
 ]
 
 [[package]]
