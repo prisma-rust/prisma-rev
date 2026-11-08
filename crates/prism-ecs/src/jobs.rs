@@ -15,6 +15,7 @@
 use std::any::Any;
 use std::collections::VecDeque;
 use std::panic::{self, AssertUnwindSafe};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread::Result as ThreadResult;
 
@@ -96,10 +97,22 @@ impl Call {
     }
 }
 
+/// A job plus the [`Pool::run_all`] call that queued it.
+///
+/// The owner lets a waiting call drain only its own jobs: without it a caller
+/// helping the queue could run another call's chunk, which looks like a foreign
+/// thread running that chunk and leaks its panic into the wrong call.
+struct Queued {
+    owner: usize,
+    job: Job,
+}
+
 /// Worker pool shared by every [`scoped_parallel_chunks`] call.
 struct Pool {
-    jobs: Mutex<VecDeque<Job>>,
+    jobs: Mutex<VecDeque<Queued>>,
     work_available: Condvar,
+    /// Hands every [`Pool::run_all`] call a distinct owner id.
+    next_call: AtomicUsize,
 }
 
 /// Number of workers [`Pool::new`] managed to spawn, for the reuse test.
@@ -111,6 +124,7 @@ impl Pool {
         let pool = Arc::new(Self {
             jobs: Mutex::new(VecDeque::new()),
             work_available: Condvar::new(),
+            next_call: AtomicUsize::new(0),
         });
         for index in 0..threads {
             let worker = Arc::clone(&pool);
@@ -133,7 +147,7 @@ impl Pool {
         pool
     }
 
-    fn lock(&self) -> MutexGuard<'_, VecDeque<Job>> {
+    fn lock(&self) -> MutexGuard<'_, VecDeque<Queued>> {
         self.jobs.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -143,8 +157,8 @@ impl Pool {
             let job = {
                 let mut jobs = self.lock();
                 loop {
-                    if let Some(job) = jobs.pop_front() {
-                        break job;
+                    if let Some(queued) = jobs.pop_front() {
+                        break queued.job;
                     }
                     jobs = self
                         .work_available
@@ -160,7 +174,8 @@ impl Pool {
     /// panic among them. Returns only once every job has been dropped.
     fn run_all(&self, jobs: Vec<Job>) {
         let call = Arc::new(Call::new(jobs.len()));
-        let jobs: Vec<Job> = jobs
+        let owner = self.next_call.fetch_add(1, Ordering::Relaxed);
+        let jobs: Vec<Queued> = jobs
             .into_iter()
             .map(|job| {
                 let call = Arc::clone(&call);
@@ -168,16 +183,28 @@ impl Pool {
                     let outcome = panic::catch_unwind(AssertUnwindSafe(job));
                     call.complete(outcome);
                 });
-                job
+                Queued { owner, job }
             })
             .collect();
         self.lock().extend(jobs);
         self.work_available.notify_all();
 
         // Help instead of idling: a nested `scoped_parallel_chunks` call (or a
-        // pool that failed to spawn its workers) would otherwise deadlock.
-        while let Some(job) = self.lock().pop_front() {
-            job();
+        // pool that failed to spawn its workers) would otherwise deadlock. Only
+        // this call's jobs are taken, so a waiting caller never runs (and never
+        // reports the panic of) a chunk that belongs to another call.
+        loop {
+            let job = {
+                let mut jobs = self.lock();
+                match jobs.iter().position(|queued| queued.owner == owner) {
+                    Some(index) => jobs.remove(index).map(|queued| queued.job),
+                    None => None,
+                }
+            };
+            match job {
+                Some(job) => job(),
+                None => break,
+            }
         }
         call.wait();
     }
