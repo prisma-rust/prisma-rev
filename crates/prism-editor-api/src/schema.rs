@@ -4,10 +4,8 @@
 //! （`bool` / `f32` / `string` / `struct` / `list` / `option` / `array`…）
 //! 生成对应控件，`struct` 字段再按类型名递归查表。
 
-use std::sync::OnceLock;
-
 use prism_reflect::{FieldDesc, FieldType, TypeRegistry};
-use prism_scene::{register_builtin_components, ComponentRegistry};
+use prism_scene::ComponentRegistry;
 use serde::Serialize;
 
 use crate::property_drawer::{PropertyDrawer, PropertyDrawerRegistry};
@@ -84,18 +82,14 @@ impl Schema {
 ///
 /// 注册内置组件要建若干 `HashMap` 并注册整棵反射类型树，而字段写入 /
 /// 规范化是**输入事件级**的热路径（拖动滑块时每帧都会调用），因此这里只
-/// 构建一次。注册表构建后只读，`ComponentRegistry` 的回调都要求
+/// 构建一次。实例由 `prism_scene::builtin_registry` 提供，编辑器、引擎与
+/// 工程模块共用同一份 schema。注册表构建后只读，回调都要求
 /// `Send + Sync`，可以安全地跨线程共享。
 ///
 /// 需要追加自定义组件的宿主仍然用 [`build_schema_with`] 传入自己的注册表，
 /// 不受这里影响。
 pub fn builtin_registry() -> &'static ComponentRegistry {
-    static REGISTRY: OnceLock<ComponentRegistry> = OnceLock::new();
-    REGISTRY.get_or_init(|| {
-        let mut registry = ComponentRegistry::new();
-        register_builtin_components(&mut registry);
-        registry
-    })
+    prism_scene::builtin_registry()
 }
 
 /// 构建完整 schema（内置组件的唯一来源是 `prism-scene` 的注册表）。
@@ -255,6 +249,7 @@ fn leaf_schema(ty: &FieldType, registry: &TypeRegistry) -> FieldSchema {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use prism_scene::register_builtin_components;
 
     #[test]
     fn schema_exposes_enum_variants_for_dropdowns() {

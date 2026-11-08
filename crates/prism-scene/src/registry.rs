@@ -393,19 +393,31 @@ impl Default for ComponentRegistry {
 // 内置组件注册
 // ---------------------------------------------------------------------------
 
-/// 注册所有内置场景与 UI 组件到 registry。
+/// The builtin registry, built once per process.
 ///
-/// 这是作者 JSON、cook 工具和运行时共用的唯一 schema 入口。
-/// Returns the builtin components schema fingerprint.
-pub fn builtin_schema_fingerprint() -> u64 {
-    static FINGERPRINT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *FINGERPRINT.get_or_init(|| {
+/// Authoring JSON, the cook tools, the engine and project modules all need the
+/// same schema; sharing one instance keeps their fingerprints from drifting.
+/// The registry is immutable after construction, so it can be shared across
+/// threads. Hosts that add their own components still build a separate
+/// registry with [`register_builtin_components`].
+pub fn builtin_registry() -> &'static ComponentRegistry {
+    static REGISTRY: std::sync::OnceLock<ComponentRegistry> = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| {
         let mut registry = ComponentRegistry::new();
         register_builtin_components(&mut registry);
-        registry.schema_fingerprint()
+        registry
     })
 }
 
+/// Returns the builtin components schema fingerprint.
+pub fn builtin_schema_fingerprint() -> u64 {
+    builtin_registry().schema_fingerprint()
+}
+
+/// Registers every builtin scene and UI component.
+///
+/// This is the single schema entry point shared by authoring JSON, the cook
+/// tools and the runtime.
 pub fn register_builtin_components(registry: &mut ComponentRegistry) {
     use crate::components::*;
     #[cfg(feature = "group-ui")]
@@ -619,6 +631,17 @@ mod tests {
         let entity = world.spawn();
         assert!(!registry.apply_object(&mut world, entity, &object));
         assert!(world.get::<Camera>(entity).is_none());
+    }
+
+    #[test]
+    fn builtin_registry_is_shared() {
+        // Project modules and the engine must hash the same schema, so the
+        // registry is built once and handed out by reference.
+        assert!(std::ptr::eq(builtin_registry(), builtin_registry()));
+        assert_eq!(
+            builtin_registry().schema_fingerprint(),
+            builtin_schema_fingerprint()
+        );
     }
 
     #[test]
