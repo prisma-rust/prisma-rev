@@ -49,6 +49,9 @@ audio = ["dep:prism-audio", "prism-engine/audio"]
 
 [dependencies]
 prism-engine = { path = "../prism-engine", default-features = false }
+# `add_game_system` hands gameplay code the same `GameWorld` the preview module uses.
+# `plugin` is not needed here: the player borrows the world directly.
+prism-game-api = { path = "../prism-game-api", default-features = false, features = ["host"] }
 prism-render = { path = "../prism-render", default-features = false }
 prism-platform = { path = "../prism-platform", default-features = false }
 prism-audio = { path = "../prism-audio", optional = true }
