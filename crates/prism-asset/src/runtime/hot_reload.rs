@@ -115,6 +115,20 @@ impl HotReloadWatcher {
 
     /// Create a new polling watcher for multiple `.pak` files.
     pub fn watch_files(paths: Vec<PathBuf>, interval: Duration) -> Result<Self, HotReloadError> {
+        Self::watch_files_with_thread_setup(paths, interval, || {})
+    }
+
+    /// Create a new polling watcher for multiple `.pak` files, calling
+    /// `on_thread_start` on the polling thread before the first poll.
+    ///
+    /// The hook lets the host apply a scheduling hint (for example lowering
+    /// the polling thread behind the render thread) without this crate
+    /// depending on a platform layer.
+    pub fn watch_files_with_thread_setup(
+        paths: Vec<PathBuf>,
+        interval: Duration,
+        on_thread_start: impl FnOnce() + Send + 'static,
+    ) -> Result<Self, HotReloadError> {
         let (tx, rx) = mpsc::channel::<HotReloadEvent>();
         let tx_clone = tx.clone();
         let stop = Arc::new(Mutex::new(false));
@@ -130,31 +144,34 @@ impl HotReloadWatcher {
 
         let handle = thread::Builder::new()
             .name("hot-reload-poller".into())
-            .spawn(move || loop {
-                if let Ok(flag) = stop_clone.lock() {
-                    if *flag {
-                        return;
-                    }
-                }
-                thread::sleep(interval);
-
-                for p in &paths {
-                    match stamp_of(p) {
-                        Some(new) => {
-                            let changed = match mtimes.get(p) {
-                                Some(&old) => stamp_changed(old, new),
-                                None => true,
-                            };
-                            if changed {
-                                mtimes.insert(p.clone(), new);
-                                let _ = tx_clone.send(HotReloadEvent::PakModified(p.clone()));
-                            }
+            .spawn(move || {
+                on_thread_start();
+                loop {
+                    if let Ok(flag) = stop_clone.lock() {
+                        if *flag {
+                            return;
                         }
-                        None => {
-                            let _ = tx_clone.send(HotReloadEvent::WatchError(format!(
-                                "Cannot stat {}",
-                                p.display()
-                            )));
+                    }
+                    thread::sleep(interval);
+
+                    for p in &paths {
+                        match stamp_of(p) {
+                            Some(new) => {
+                                let changed = match mtimes.get(p) {
+                                    Some(&old) => stamp_changed(old, new),
+                                    None => true,
+                                };
+                                if changed {
+                                    mtimes.insert(p.clone(), new);
+                                    let _ = tx_clone.send(HotReloadEvent::PakModified(p.clone()));
+                                }
+                            }
+                            None => {
+                                let _ = tx_clone.send(HotReloadEvent::WatchError(format!(
+                                    "Cannot stat {}",
+                                    p.display()
+                                )));
+                            }
                         }
                     }
                 }

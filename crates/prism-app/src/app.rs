@@ -1084,6 +1084,9 @@ impl App {
         let thread = std::thread::Builder::new()
             .name("render".into())
             .spawn(move || {
+                if !prism_platform::thread::favour_current() {
+                    log::debug!("render thread keeps the default scheduling priority");
+                }
                 render_thread_main(
                     shared_clone,
                     target,
@@ -1134,7 +1137,12 @@ impl App {
 
         let thread = std::thread::Builder::new()
             .name("audio-decode".into())
-            .spawn(move || crate::audio_decode_runner::audio_decode_thread_main(rx, result_tx))
+            .spawn(move || {
+                if !prism_platform::thread::put_behind_current() {
+                    log::debug!("audio decode thread keeps the default scheduling priority");
+                }
+                crate::audio_decode_runner::audio_decode_thread_main(rx, result_tx)
+            })
             .expect("failed to spawn audio decode thread");
 
         self.audio_decode_tx = Some(tx);
@@ -1855,9 +1863,14 @@ fn spawn_pak_watcher() -> Option<prism_engine::scene::hot_reload::HotReloadWatch
         log::warn!("hot reload: no `.pak` under assets/ to watch");
         return None;
     }
-    match prism_engine::scene::hot_reload::HotReloadWatcher::watch_files(
+    match prism_engine::scene::hot_reload::HotReloadWatcher::watch_files_with_thread_setup(
         paks.clone(),
         Duration::from_millis(500),
+        || {
+            if !prism_platform::thread::put_behind_current() {
+                log::debug!("hot reload poller keeps the default scheduling priority");
+            }
+        },
     ) {
         Ok(watcher) => {
             log::info!(

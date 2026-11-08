@@ -20,6 +20,7 @@
 
 mod config;
 mod event;
+pub mod thread;
 mod window;
 
 #[cfg(feature = "winit-backend")]

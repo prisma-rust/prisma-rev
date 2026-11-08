@@ -133,3 +133,28 @@ fn a_rebuilt_package_refreshes_loaded_assets() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn the_thread_setup_hook_runs_on_the_polling_thread() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut watcher = HotReloadWatcher::watch_files_with_thread_setup(
+        Vec::new(),
+        Duration::from_millis(50),
+        move || {
+            let name = std::thread::current().name().map(str::to_owned);
+            let _ = tx.send(name);
+        },
+    )
+    .unwrap();
+
+    let name = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the setup hook must run");
+    assert_eq!(
+        name.as_deref(),
+        Some("hot-reload-poller"),
+        "the hook must run on the poller thread, not the caller"
+    );
+
+    watcher.stop();
+}
