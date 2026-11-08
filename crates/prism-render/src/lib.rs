@@ -49,6 +49,8 @@ pub mod descriptor;
 pub(crate) mod dummy;
 pub mod external_overlay;
 pub mod forward_pass;
+/// Frame-time statistics and the exportable benchmark report (#1002).
+pub mod frame_stats;
 pub mod gi;
 pub mod gizmo;
 pub mod gpu_timer;

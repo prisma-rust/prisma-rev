@@ -120,6 +120,16 @@ impl FrameHarness {
         )
     }
 
+    /// Total GPU time of the most recently submitted frame, in milliseconds.
+    ///
+    /// GPU timestamps are resolved one frame after submission, which a static
+    /// scene does not notice. `None` when the device cannot report timestamps,
+    /// so a benchmark can fall back to CPU-only numbers (#1002).
+    pub fn gpu_total_ms(&self) -> Option<f64> {
+        let timings = self.renderer.gpu_timings();
+        (timings.supported && !timings.is_empty()).then(|| f64::from(timings.total_ms))
+    }
+
     /// Render the fixed scene once and return tightly packed RGBA8 pixels.
     pub fn render(&mut self, options: FrameOptions) -> Vec<u8> {
         let item = draw_item(self.mesh);

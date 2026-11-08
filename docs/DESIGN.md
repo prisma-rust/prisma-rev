@@ -24,6 +24,9 @@
   - shader 的资源用量有构建期上限（`assets/shaders/budgets.json` + `xtask` 的
     `shader-budget`）：一个 pass 悄悄多接几张采样纹理、或 push constant 涨到几百字节，
     自检就会失败，而不是等移动端跑不动才发现。
+  - 帧时间有固定的度量格式（`prism-render/src/frame_stats.rs`，`prism-bench-report` v1）：
+    分位数、1% / 0.1% low 与固定边界直方图一起导出。直方图边界属于格式的一部分、不随配置
+    变化，否则两次运行的直方图不能相加，也就回答不了「这次改动让尾部变差了吗」。
 - **不回移植旧架构**：不存在"为了兼容旧 renderer 将就"的妥协。
   旧的单体 `renderer.rs`（995 行）已被拆掉，新代码一律走 **RenderGraph + pass 节点**。
   任何"临时塞进 legacy_renderer"的写法都是 bug（legacy 仅作过渡，目标是彻底删除）。
