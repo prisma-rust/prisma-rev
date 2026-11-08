@@ -239,6 +239,15 @@ impl VulkanContext {
     pub fn has_extension(&self, name: &CStr) -> bool {
         self.enabled_extensions.iter().any(|c| c.as_c_str() == name)
     }
+
+    /// `deviceName` of the adapter this context runs on, or `None` when the
+    /// driver leaves it empty. Used to label benchmark reports (#1002).
+    pub fn adapter_name(&self) -> Option<String> {
+        let raw = &self.physical_device_properties.device_name;
+        let name = unsafe { CStr::from_ptr(raw.as_ptr()) }.to_string_lossy();
+        let name = name.trim();
+        (!name.is_empty()).then(|| name.to_owned())
+    }
 }
 
 impl Drop for VulkanContext {

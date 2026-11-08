@@ -214,6 +214,9 @@ pub fn render_thread_main(
     let mut consecutive_errors: u32 = 0;
     let screenshot = crate::screenshot::ScreenshotPlan::from_env();
     let mut screenshot_done = false;
+    let mut bench =
+        crate::bench_report::BenchPlan::from_env().map(crate::bench_report::BenchCollector::new);
+    let mut bench_report_written = false;
 
     while shared.running.load(std::sync::atomic::Ordering::Relaxed) {
         // 检查来自主线程的 PT 重置请求
@@ -353,6 +356,35 @@ pub fn render_thread_main(
         );
         if frame_count.is_multiple_of(30) {
             frame_stats_summary = frame_stats.summary();
+        }
+
+        // Benchmark report (#1002): warm-up frames only count down, and the file
+        // is written once on the frame that completes the sample set.
+        if let Some(collector) = bench.as_mut() {
+            let complete = collector.sample(
+                frame_time_ms,
+                gpu_timings.supported.then_some(gpu_timings.total_ms),
+            );
+            if complete && !bench_report_written {
+                bench_report_written = true;
+                let extent = renderer.extent();
+                let metadata = collector.metadata(
+                    renderer.context().adapter_name(),
+                    Some((extent.width, extent.height)),
+                );
+                match collector.write(&metadata) {
+                    Ok(()) => log::info!(
+                        "benchmark report written: {} ({} samples, {} warm-up frames)",
+                        collector.plan().path.display(),
+                        collector.samples(),
+                        collector.plan().warmup_frames,
+                    ),
+                    Err(e) => log::error!(
+                        "benchmark report write failed ({}): {e}",
+                        collector.plan().path.display()
+                    ),
+                }
+            }
         }
 
         // 渲染图报告（Web 编辑器可视化）：首帧 + 低频刷新。

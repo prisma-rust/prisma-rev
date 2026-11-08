@@ -121,13 +121,53 @@ pub struct FrameStatsSummary {
     pub gpu: Option<SeriesSummary>,
 }
 
+/// What a report needs to be comparable between runs.
+///
+/// The frame timings alone cannot answer "is this run better", because a
+/// different device, resolution or warm-up length changes the numbers. The
+/// caller fills this from the renderer; the fields stay optional so a report
+/// can still be written when a value is unknown.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BenchMetadata {
+    /// Vulkan `deviceName` of the adapter that rendered the run.
+    pub adapter: Option<String>,
+    /// Render extent in pixels.
+    pub extent: Option<(u32, u32)>,
+    /// Frames dropped before sampling started.
+    pub warmup_frames: u32,
+    /// Scene or project label, when the host knows one.
+    pub scene: Option<String>,
+}
+
 impl FrameStatsSummary {
     /// Minimal report body: format/version plus both series and the fixed
-    /// histogram edges. Device and scene metadata belong to the caller.
+    /// histogram edges. Use [`FrameStatsSummary::to_json_with_metadata`] when
+    /// the run has device or resolution information to record.
     pub fn to_json(&self) -> String {
-        let mut json = format!(
-            "{{\"format\":\"{BENCH_REPORT_FORMAT}\",\"version\":{BENCH_REPORT_VERSION},\"histogramEdgesMs\":["
-        );
+        self.to_json_with_metadata(&BenchMetadata::default())
+    }
+
+    /// Report body with the metadata of one run.
+    pub fn to_json_with_metadata(&self, metadata: &BenchMetadata) -> String {
+        let mut json =
+            format!("{{\"format\":\"{BENCH_REPORT_FORMAT}\",\"version\":{BENCH_REPORT_VERSION}");
+        if let Some(adapter) = &metadata.adapter {
+            json.push_str(",\"adapter\":\"");
+            push_escaped(&mut json, adapter);
+            json.push('"');
+        }
+        if let Some((width, height)) = metadata.extent {
+            json.push_str(&format!(",\"extent\":\"{width}x{height}\""));
+        }
+        if let Some(scene) = &metadata.scene {
+            json.push_str(",\"scene\":\"");
+            push_escaped(&mut json, scene);
+            json.push('"');
+        }
+        if metadata.warmup_frames > 0 {
+            json.push_str(&format!(",\"warmupFrames\":{}", metadata.warmup_frames));
+        }
+        json.push_str(",\"histogramEdgesMs\":[");
         for (i, edge) in FRAME_HISTOGRAM_EDGES_MS.iter().enumerate() {
             if i > 0 {
                 json.push(',');
@@ -170,6 +210,21 @@ impl SeriesSummary {
             self.low_1pct_fps,
             self.low_0_1pct_fps,
         )
+    }
+}
+
+/// Appends `text` with the escapes a JSON string requires.
+fn push_escaped(out: &mut String, text: &str) {
+    for ch in text.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            ch if (ch as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", ch as u32)),
+            ch => out.push(ch),
+        }
     }
 }
 
@@ -326,5 +381,34 @@ mod tests {
         let empty = FrameStats::new(8).summary().to_json();
         assert!(empty.contains("\"cpu\":null"), "{empty}");
         assert!(empty.contains("\"gpu\":null"), "{empty}");
+    }
+
+    #[test]
+    fn json_carries_the_run_metadata() {
+        let mut stats = FrameStats::new(8);
+        stats.push_frame(16.0, None);
+        let metadata = BenchMetadata {
+            adapter: Some("Test \"GPU\"".to_owned()),
+            extent: Some((1280, 720)),
+            warmup_frames: 30,
+            scene: Some("lake".to_owned()),
+        };
+        let json = stats.summary().to_json_with_metadata(&metadata);
+        assert!(json.contains("\"adapter\":\"Test \\\"GPU\\\"\""), "{json}");
+        assert!(json.contains("\"extent\":\"1280x720\""), "{json}");
+        assert!(json.contains("\"warmupFrames\":30"), "{json}");
+        assert!(json.contains("\"scene\":\"lake\""), "{json}");
+        assert!(json.contains("\"format\":\"prism-bench-report\""), "{json}");
+    }
+
+    #[test]
+    fn json_omits_unknown_metadata() {
+        let json = FrameStats::new(8)
+            .summary()
+            .to_json_with_metadata(&BenchMetadata::default());
+        assert!(!json.contains("\"adapter\""), "{json}");
+        assert!(!json.contains("\"extent\""), "{json}");
+        assert!(!json.contains("\"scene\""), "{json}");
+        assert!(!json.contains("\"warmupFrames\""), "{json}");
     }
 }
