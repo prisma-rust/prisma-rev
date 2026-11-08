@@ -4,8 +4,19 @@
 //! 拾取优先用实体真实局部包围盒（网格 AABB / 精灵尺寸），没有数据时退回
 //! 单位立方体（`[-0.5,0.5]³` × scale）。
 
+use glam::{Mat3, Quat, Vec2, Vec3};
+
 use crate::doc::{EntityJson, SceneDoc, TransformJson};
 use crate::workspace::OrbitCamera;
+
+/// `[x, y, z, w]` → glam 四元数（公开接口仍用数组，调用方不用改）。
+fn quat(q: [f32; 4]) -> Quat {
+    Quat::from_xyzw(q[0], q[1], q[2], q[3])
+}
+
+fn quat_array(q: Quat) -> [f32; 4] {
+    [q.x, q.y, q.z, q.w]
+}
 
 pub const GIZMO_SCREEN_PIXELS: f32 = 90.0;
 pub const GIZMO_PICK_RADIUS: f32 = 8.0;
@@ -179,45 +190,31 @@ pub fn wrap_angle(angle: f32) -> f32 {
 
 /// 四元数乘法（`a * b`，与 glam 的 `Quat::mul_quat` 同序）。
 pub fn quat_mul(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
-    let (ax, ay, az, aw) = (a[0], a[1], a[2], a[3]);
-    let (bx, by, bz, bw) = (b[0], b[1], b[2], b[3]);
-    [
-        aw * bx + ax * bw + ay * bz - az * by,
-        aw * by - ax * bz + ay * bw + az * bx,
-        aw * bz + ax * by - ay * bx + az * bw,
-        aw * bw - ax * bx - ay * by - az * bz,
-    ]
+    quat_array(quat(a) * quat(b))
 }
 
 /// 绕世界轴旋转 `angle` 弧度的四元数。
 pub fn quat_axis_angle(axis: usize, angle: f32) -> [f32; 4] {
-    let half = angle * 0.5;
-    let (sin, cos) = half.sin_cos();
-    match axis {
-        0 => [sin, 0.0, 0.0, cos],
-        1 => [0.0, sin, 0.0, cos],
-        _ => [0.0, 0.0, sin, cos],
-    }
+    let axis = match axis {
+        0 => Vec3::X,
+        1 => Vec3::Y,
+        _ => Vec3::Z,
+    };
+    quat_array(Quat::from_axis_angle(axis, angle))
 }
 
 /// 用四元数旋转向量（测试 / 旋转后的轴端点用）。
 pub fn quat_rotate(q: [f32; 4], v: [f32; 3]) -> [f32; 3] {
-    let qv = [q[0], q[1], q[2]];
-    let uv = cross(qv, v);
-    let uuv = cross(qv, uv);
-    add(v, add(scale(uv, 2.0 * q[3]), scale(uuv, 2.0)))
+    (quat(q) * Vec3::from(v)).to_array()
 }
 
 pub fn quat_normalize(q: [f32; 4]) -> [f32; 4] {
-    let len = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3])
-        .sqrt()
-        .max(1e-6);
-    [q[0] / len, q[1] / len, q[2] / len, q[3] / len]
+    quat_array(quat(q) / quat(q).length().max(1e-6))
 }
 
 /// 单位四元数的共轭（= 逆）。
 pub fn quat_conjugate(q: [f32; 4]) -> [f32; 4] {
-    [-q[0], -q[1], -q[2], q[3]]
+    quat_array(quat(q).conjugate())
 }
 
 /// 四元数 → XYZ 欧拉角（度）。
@@ -225,19 +222,16 @@ pub fn quat_conjugate(q: [f32; 4]) -> [f32; 4] {
 /// 约定 `R = Rz * Ry * Rx`（glam 的 `EulerRot::XYZ`），检查器用它把
 /// `rotation` 显示成可读的角度；`euler_degrees_to_quat` 是它的逆。
 pub fn quat_to_euler_degrees(q: [f32; 4]) -> [f32; 3] {
-    let length = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+    let q = quat(q);
+    let length = q.length();
     if length < 1e-8 {
         return [0.0; 3];
     }
-    let [x, y, z, w] = [q[0] / length, q[1] / length, q[2] / length, q[3] / length];
-    // 旋转矩阵 R = Rz Ry Rx 的元素（行主序）。
-    let m00 = 1.0 - 2.0 * (y * y + z * z);
-    let m10 = 2.0 * (x * y + z * w);
-    let m20 = 2.0 * (x * z - y * w);
-    let m21 = 2.0 * (y * z + x * w);
-    let m22 = 1.0 - 2.0 * (x * x + y * y);
-    let m11 = 1.0 - 2.0 * (x * x + z * z);
-    let m12 = 2.0 * (y * z - x * w);
+    // 旋转矩阵按列取：`m[c][r]` 与下面的 `m00..m22` 行主序下标一致。
+    let m = Mat3::from_quat(q / length);
+    let (m00, m10, m20) = (m.x_axis.x, m.x_axis.y, m.x_axis.z);
+    let (m21, m22) = (m.y_axis.z, m.z_axis.z);
+    let (m11, m12) = (m.y_axis.y, m.z_axis.y);
 
     let sin_y = (-m20).clamp(-1.0, 1.0);
     let ey = sin_y.asin();
@@ -252,29 +246,21 @@ pub fn quat_to_euler_degrees(q: [f32; 4]) -> [f32; 3] {
 
 /// XYZ 欧拉角（度）→ 四元数，[`quat_to_euler_degrees`] 的逆。
 pub fn euler_degrees_to_quat(euler: [f32; 3]) -> [f32; 4] {
-    let half = [
-        euler[0].to_radians() * 0.5,
-        euler[1].to_radians() * 0.5,
-        euler[2].to_radians() * 0.5,
-    ];
-    let (sx, cx) = half[0].sin_cos();
-    let (sy, cy) = half[1].sin_cos();
-    let (sz, cz) = half[2].sin_cos();
-    // q = qz * qy * qx
-    [
-        cz * cy * sx - sz * sy * cx,
-        cz * sy * cx + sz * cy * sx,
-        sz * cy * cx - cz * sy * sx,
-        cz * cy * cx + sz * sy * sx,
-    ]
+    // `R = Rz * Ry * Rx`：先绕 X、再 Y、最后 Z（固定轴）。
+    quat_array(
+        Quat::from_rotation_z(euler[2].to_radians())
+            * Quat::from_rotation_y(euler[1].to_radians())
+            * Quat::from_rotation_x(euler[0].to_radians()),
+    )
 }
 
 /// 局部三轴在世界空间的方向（列向量）。
 pub fn basis_from_quat(q: [f32; 4]) -> [[f32; 3]; 3] {
+    let q = quat(q);
     [
-        quat_rotate(q, [1.0, 0.0, 0.0]),
-        quat_rotate(q, [0.0, 1.0, 0.0]),
-        quat_rotate(q, [0.0, 0.0, 1.0]),
+        (q * Vec3::X).to_array(),
+        (q * Vec3::Y).to_array(),
+        (q * Vec3::Z).to_array(),
     ]
 }
 
@@ -621,16 +607,15 @@ pub struct CameraFrame {
 }
 
 pub fn camera_frame(camera: &OrbitCamera) -> CameraFrame {
-    let eye = camera.eye();
-    let target = camera.target;
-    let forward = normalize([target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]]);
-    let right = normalize(cross(forward, [0.0, 1.0, 0.0]));
-    let up = cross(right, forward);
+    let eye = Vec3::from(camera.eye());
+    let forward = (Vec3::from(camera.target) - eye).normalize_or_zero();
+    let right = forward.cross(Vec3::Y).normalize_or_zero();
+    let up = right.cross(forward);
     CameraFrame {
-        eye,
-        right,
-        up,
-        forward,
+        eye: eye.to_array(),
+        right: right.to_array(),
+        up: up.to_array(),
+        forward: forward.to_array(),
         ortho_half_height: camera.ortho_half_height(),
         fov_y_degrees: if camera.fov_y_degrees.is_finite() {
             camera.fov_y_degrees.clamp(10.0, 170.0)
@@ -646,32 +631,27 @@ fn half_fov_tan(frame: &CameraFrame) -> f32 {
 }
 
 pub fn normalize(v: [f32; 3]) -> [f32; 3] {
-    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-6);
-    [v[0] / len, v[1] / len, v[2] / len]
+    (Vec3::from(v) / Vec3::from(v).length().max(1e-6)).to_array()
 }
 
 pub fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
+    Vec3::from(a).cross(Vec3::from(b)).to_array()
 }
 
 pub fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+    Vec3::from(a).dot(Vec3::from(b))
 }
 
 pub fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+    (Vec3::from(a) - Vec3::from(b)).to_array()
 }
 
 pub fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+    (Vec3::from(a) + Vec3::from(b)).to_array()
 }
 
 pub fn scale(a: [f32; 3], factor: f32) -> [f32; 3] {
-    [a[0] * factor, a[1] * factor, a[2] * factor]
+    (Vec3::from(a) * factor).to_array()
 }
 
 /// 世界坐标 → 屏幕坐标（像素，相对视口左上角），返回 `(x, y, depth)`。
@@ -681,8 +661,9 @@ pub fn project(
     width: f32,
     height: f32,
 ) -> Option<(f32, f32, f32)> {
-    let delta = sub(point, frame.eye);
-    let depth = dot(delta, frame.forward);
+    let origin = Vec3::from(frame.eye);
+    let delta = Vec3::from(point) - origin;
+    let depth = delta.dot(Vec3::from(frame.forward));
     if depth <= 0.05 {
         return None;
     }
@@ -692,15 +673,15 @@ pub fn project(
         Some(half_h) => {
             let half_h = half_h.max(1e-4);
             (
-                dot(delta, frame.right) / (half_h * aspect),
-                dot(delta, frame.up) / half_h,
+                delta.dot(Vec3::from(frame.right)) / (half_h * aspect),
+                delta.dot(Vec3::from(frame.up)) / half_h,
             )
         }
         None => {
             let tan_half = half_fov_tan(frame);
             (
-                dot(delta, frame.right) / depth / tan_half / aspect,
-                dot(delta, frame.up) / depth / tan_half,
+                delta.dot(Vec3::from(frame.right)) / depth / tan_half / aspect,
+                delta.dot(Vec3::from(frame.up)) / depth / tan_half,
             )
         }
     };
@@ -724,23 +705,21 @@ pub fn ray_from_screen(
         2.0 * x / width.max(1.0) - 1.0,
         1.0 - 2.0 * y / height.max(1.0),
     );
+    let eye = Vec3::from(frame.eye);
+    let right = Vec3::from(frame.right);
+    let up = Vec3::from(frame.up);
+    let forward = Vec3::from(frame.forward);
     if let Some(half_h) = frame.ortho_half_height {
         // 正交：所有射线方向相同，起点在近平面上按半宽 / 半高铺开。
         let half_h = half_h.max(1e-4);
-        let offset = add(
-            scale(frame.right, ndc_x * half_h * aspect),
-            scale(frame.up, ndc_y * half_h),
-        );
-        return (add(frame.eye, offset), frame.forward);
+        let offset = right * (ndc_x * half_h * aspect) + up * (ndc_y * half_h);
+        return ((eye + offset).to_array(), forward.to_array());
     }
     let tan_half = half_fov_tan(frame);
     let ndc_x = ndc_x * aspect * tan_half;
     let ndc_y = ndc_y * tan_half;
-    let direction = normalize(add(
-        frame.forward,
-        add(scale(frame.right, ndc_x), scale(frame.up, ndc_y)),
-    ));
-    (frame.eye, direction)
+    let direction = (forward + right * ndc_x + up * ndc_y).normalize();
+    (eye.to_array(), direction.to_array())
 }
 
 /// 射线与轴对齐盒求交，返回最近命中距离。
@@ -897,8 +876,8 @@ pub fn pick_gizmo_axis_oriented(
 }
 
 pub fn normalize2(v: (f32, f32)) -> [f32; 2] {
-    let len = (v.0 * v.0 + v.1 * v.1).sqrt().max(1e-6);
-    [v.0 / len, v.1 / len]
+    let v = Vec2::new(v.0, v.1);
+    (v / v.length().max(1e-6)).to_array()
 }
 
 /// 实体局部单位立方体的 8 个角（世界坐标，含旋转与缩放）。
@@ -1571,6 +1550,21 @@ mod tests {
             &entities,
         );
         assert!(misses.is_empty());
+    }
+
+    #[test]
+    fn euler_conversion_composes_glam_axis_rotations() {
+        let euler = [20.0f32, -35.0, 50.0];
+        let expected = glam::Quat::from_rotation_z(euler[2].to_radians())
+            * glam::Quat::from_rotation_y(euler[1].to_radians())
+            * glam::Quat::from_rotation_x(euler[0].to_radians());
+        let q = euler_degrees_to_quat(euler);
+        for (got, want) in q
+            .iter()
+            .zip([expected.x, expected.y, expected.z, expected.w])
+        {
+            assert!((got - want).abs() < 1e-6, "{q:?} != {expected:?}");
+        }
     }
 
     #[test]
