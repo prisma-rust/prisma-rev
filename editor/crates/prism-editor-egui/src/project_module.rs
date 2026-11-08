@@ -975,7 +975,7 @@ mod tests {
         // fishing 用 `input.key(keys::SPACE)` 检测持续收线。
         input.begin_frame();
         let snapshot = input_snapshot(&input, [1280.0, 720.0]);
-        assert!(snapshot.key(KeyCode::Space.bit_index()));
+        assert!(snapshot.key(KeyCode::Space.bit_index().expect("named key")));
         assert_eq!(snapshot.screen, [1280.0, 720.0]);
     }
 
@@ -1010,18 +1010,24 @@ mod tests {
         let mut input = InputManager::new();
         input.handle_keyboard(KeyCode::Space, ElementState::Pressed);
         let snapshot = input_snapshot(&input, [1.0, 1.0]);
-        assert!(snapshot.key(KeyCode::Space.bit_index()), "按住位图");
-        assert!(snapshot.key_pressed(KeyCode::Space.bit_index()), "按下边沿");
-        assert!(!snapshot.key_released(KeyCode::Space.bit_index()));
+        assert!(
+            snapshot.key(KeyCode::Space.bit_index().expect("named key")),
+            "按住位图"
+        );
+        assert!(
+            snapshot.key_pressed(KeyCode::Space.bit_index().expect("named key")),
+            "按下边沿"
+        );
+        assert!(!snapshot.key_released(KeyCode::Space.bit_index().expect("named key")));
 
         // 松开的那一帧：按住位图清掉，释放边沿置位。
         // 宿主每帧开头会 `begin_frame`，这里照做，否则上一帧的按下边沿还留着。
         input.begin_frame();
         input.handle_keyboard(KeyCode::Space, ElementState::Released);
         let snapshot = input_snapshot(&input, [1.0, 1.0]);
-        assert!(!snapshot.key(KeyCode::Space.bit_index()));
-        assert!(!snapshot.key_pressed(KeyCode::Space.bit_index()));
-        assert!(snapshot.key_released(KeyCode::Space.bit_index()));
+        assert!(!snapshot.key(KeyCode::Space.bit_index().expect("named key")));
+        assert!(!snapshot.key_pressed(KeyCode::Space.bit_index().expect("named key")));
+        assert!(snapshot.key_released(KeyCode::Space.bit_index().expect("named key")));
     }
 
     #[test]

@@ -286,7 +286,48 @@ jobs:
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
-  # 3. Slang shaders: compile to SPIR-V + reflection, then verify the committed
+  # 3. 用户工程：`projects/*` 各自是独立 workspace，根 workspace 的 `cargo build`
+  #    覆盖不到它们。引擎改了组件字段而工程没跟上（`LineRenderer` 加字段那次），
+  #    或者工程自己的 `Cargo.lock` 过期，都只有下游动手时才会发现 —— 这个 job
+  #    把它们每次都构建一遍（#981）。
+  # ---------------------------------------------------------------------------
+  user-projects:
+    name: user projects build
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      # 工程链接 prism-app（默认带 audio feature），需要 ALSA 头文件；
+      # .spv 由下面的 setup-slang 编译，include_bytes! 才有东西可嵌。
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvulkan-dev libasound2-dev
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ env.CACHE_VERSION }}-projects
+
+      - name: Setup slang + compile shaders
+        uses: ./.github/actions/setup-slang
+
+      # `--locked`：工程的 Cargo.lock 也要跟着引擎走，否则本地能跑、CI 用旧锁。
+      - name: Build every project workspace
+        run: |
+          for manifest in projects/*/Cargo.toml; do
+            echo "::group::${manifest}"
+            cargo build --locked --manifest-path "${manifest}"
+            echo "::endgroup::"
+          done
+
+  # ---------------------------------------------------------------------------
+  # 4. Slang shaders: compile to SPIR-V + reflection, then verify the committed
   #    Rust bindings match freshly-generated ones (drift guard).
   # ---------------------------------------------------------------------------
   shaders:

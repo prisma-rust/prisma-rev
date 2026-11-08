@@ -35,6 +35,41 @@ impl ScreenSize {
     }
 }
 
+/// 窗口像素 ↔ UI 布局空间的映射（#988）。
+///
+/// UI 现在和场景一起画在 PostPass 的目标矩形里（`internal_resolution` + 整数倍
+/// 缩放时矩形比窗口小）。布局仍然按窗口像素算，所以指针要先换算回布局空间，
+/// 命中测试才和画出来的位置对得上。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UiScreenMapping {
+    /// 布局空间 → 窗口的缩放（目标矩形宽度 / 窗口宽度）。
+    pub scale: f32,
+    /// 目标矩形左上角在窗口里的像素偏移。
+    pub offset: [f32; 2],
+}
+
+impl Default for UiScreenMapping {
+    fn default() -> Self {
+        Self {
+            scale: 1.0,
+            offset: [0.0, 0.0],
+        }
+    }
+}
+
+impl UiScreenMapping {
+    /// 窗口像素 → 布局空间。`scale` 非有限或非正时退化成恒等映射。
+    pub fn window_to_layout(&self, point: [f32; 2]) -> [f32; 2] {
+        if !(self.scale.is_finite() && self.scale > 0.0) {
+            return point;
+        }
+        [
+            (point[0] - self.offset[0]) / self.scale,
+            (point[1] - self.offset[1]) / self.scale,
+        ]
+    }
+}
+
 /// Layout System —— 每帧运行，计算所有 UI 元素的屏幕空间矩形。
 pub fn ui_layout_system(world: &mut World) {
     let screen = world
