@@ -2621,6 +2621,7 @@ dependencies = [
 name = "prism-editor-core"
 version = "0.1.0"
 dependencies = [
+ "image",
  "log",
  "prism-ini",
  "serde",

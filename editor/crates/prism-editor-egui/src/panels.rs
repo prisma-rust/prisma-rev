@@ -97,12 +97,15 @@ pub fn row_height(compact: bool) -> f32 {
 }
 
 /// 列表行（桌面 / Web 风格）：整行底色 + 文本，用于资产 / 文档这类列表。
+///
+/// `thumbnail` 是纹理缩略图（#982）：有图时在行首画 14 px 小图，文字右移让位。
 fn list_row(
     ui: &mut Ui,
     colors: &prism_editor_core::ThemeColors,
     selected: bool,
     compact: bool,
     text: &str,
+    thumbnail: Option<(egui::TextureId, [u32; 2])>,
 ) -> egui::Response {
     use prism_editor_core::ThemeToken;
     let (rect, response) = ui.allocate_exact_size(
@@ -130,14 +133,86 @@ fn list_row(
         },
     );
     // 用 painter 直接画文字：`Label` 会参与命中测试，把整行的点击吃掉。
+    let mut text_left = rect.left() + 6.0;
+    if let Some((texture, [width, height])) = thumbnail {
+        let side = (row_height(compact) - 4.0).max(8.0);
+        let image_rect = fit_into(
+            egui::Rect::from_min_size(
+                egui::pos2(rect.left() + 3.0, rect.center().y - side * 0.5),
+                egui::vec2(side, side),
+            ),
+            width,
+            height,
+        );
+        ui.painter().image(
+            texture,
+            image_rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+        text_left += side + 2.0;
+    }
     ui.painter().text(
-        egui::pos2(rect.left() + 6.0, rect.center().y),
+        egui::pos2(text_left, rect.center().y),
         egui::Align2::LEFT_CENTER,
         text,
         egui::FontId::proportional(11.5),
         text_color,
     );
     response
+}
+
+/// 缩略图在给定方框里等比居中（不拉伸像素画）。
+fn fit_into(bounds: egui::Rect, width: u32, height: u32) -> egui::Rect {
+    let width = width.max(1) as f32;
+    let height = height.max(1) as f32;
+    let scale = (bounds.width() / width)
+        .min(bounds.height() / height)
+        .max(0.0);
+    let size = egui::vec2(width * scale, height * scale);
+    egui::Rect::from_center_size(bounds.center(), size)
+}
+
+/// 纹理资产的缩略图（#982）：第一次用到时解码 + 上传，之后每帧只查表。
+///
+/// 返回 `(egui 纹理, [宽, 高])`，交给调用方决定画多大。
+fn thumbnail_texture(
+    ui: &Ui,
+    workspace: &Workspace,
+    state: &mut UiState,
+    path: &str,
+    kind: AssetKind,
+) -> Option<(egui::TextureId, [u32; 2])> {
+    if !matches!(kind, AssetKind::Texture | AssetKind::Env) {
+        return None;
+    }
+    if let Some(handle) = state.thumbnail_textures.get(path) {
+        let size = handle.size();
+        return Some((handle.id(), [size[0] as u32, size[1] as u32]));
+    }
+    let root = workspace.project_root.as_deref()?;
+    if state.thumbnail_budget == 0 {
+        // 本帧额度用完：先显示类型图标，下一帧继续（#982）。
+        return None;
+    }
+    state.thumbnail_budget = state.thumbnail_budget.saturating_sub(1);
+    let thumbnail =
+        state
+            .thumbnails
+            .get(root, path, prism_editor_core::thumbnails::DEFAULT_MAX_SIDE)?;
+    let image = egui::ColorImage::from_rgba_unmultiplied(
+        [thumbnail.width as usize, thumbnail.height as usize],
+        &thumbnail.rgba,
+    );
+    let size = [thumbnail.width, thumbnail.height];
+    let handle = ui.ctx().load_texture(
+        format!("asset-thumb:{path}"),
+        image,
+        egui::TextureOptions::LINEAR,
+    );
+    let id = handle.id();
+    state.thumbnail_textures.insert(path.to_string(), handle);
+    Some((id, size))
 }
 
 /// 无底色的图标按钮（层级的眼睛 / 展开箭头：只有图标，没有按钮框）。
@@ -362,6 +437,17 @@ pub struct UiState {
     /// 选中资产上一次算好的详情 + 时间戳：详情会扫磁盘上的文档，不能每帧重算（#514）。
     pub asset_details: Option<(String, prism_editor_core::AssetDetails)>,
     pub asset_details_at: Option<std::time::Instant>,
+    /// 纹理缩略图缓存（数据层解码）+ 已上传的 egui 纹理（#982）。
+    ///
+    /// 资产面板一屏最多画几十行，只有可见行才会解码；两者都按路径缓存，
+    /// 文件变了由 `ThumbnailCache` 的版本戳负责失效。
+    pub thumbnails: prism_editor_core::thumbnails::ThumbnailCache,
+    pub thumbnail_textures: std::collections::HashMap<String, egui::TextureHandle>,
+    /// 本帧还可以解码几张缩略图（#982）。
+    ///
+    /// 一个目录里可能有 600 张精灵图，全部解码一次会把面板卡成“白屏几秒”；
+    /// 每帧只放几张，几百张图在 1 秒左右陆续出现，滚动不中断。
+    pub thumbnail_budget: u32,
     /// Animation Graph 面板的节点布局缓存：(图路径, 布局)。
     pub anim_graph_layout: Option<(String, prism_editor_core::AnimGraphLayout)>,
     /// Animation Graph 面板的跨帧输入缓冲（新增节点 / 正在编辑的骨骼掩码）。
@@ -1805,6 +1891,21 @@ fn asset_inspector(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) 
                 _ => "unknown size".to_string(),
             };
             ui.label(RichText::new(format!("{size} · {}", format_bytes(*bytes))).size(11.0));
+            // 贴图本身（#982）：最多 160 px，等比缩放，像素画不被拉伸。
+            if let Some((texture, [thumb_width, thumb_height])) =
+                thumbnail_texture(ui, workspace, state, &path, details.asset.kind)
+            {
+                let bounds = egui::vec2(160.0, 160.0);
+                let (rect, _) = ui.allocate_exact_size(bounds, egui::Sense::hover());
+                ui.painter().rect_filled(rect, 0.0, Color32::from_gray(24));
+                let image_rect = fit_into(rect, thumb_width, thumb_height);
+                ui.painter().image(
+                    texture,
+                    image_rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            }
         }
         AssetPreview::Document => {
             ui.label(RichText::new("scene / prefab document").weak().size(11.0));
@@ -4684,8 +4785,13 @@ fn asset_grid(
                 ui.horizontal(|ui| {
                     for path in chunk {
                         let name = path.rsplit('/').next().unwrap_or(path);
-                        let response =
-                            asset_grid_cell(ui, icons::FOLDER, name, state.asset_selected(path));
+                        let response = asset_grid_cell(
+                            ui,
+                            icons::FOLDER,
+                            name,
+                            state.asset_selected(path),
+                            None,
+                        );
                         if response.double_clicked() {
                             navigate_assets(state, path);
                         } else if response.clicked() {
@@ -4723,9 +4829,10 @@ fn asset_grid(
                         let selected = state.asset_selected(path);
                         let drag_id = egui::Id::new(("asset-grid-drag", path.as_str()));
                         let payload = widgets::AssetDrag { path: path.clone() };
+                        let thumb = thumbnail_texture(ui, workspace, state, path, *kind);
                         let response = ui
                             .dnd_drag_source(drag_id, payload, |ui| {
-                                asset_grid_cell(ui, asset_kind_icon(*kind), name, selected)
+                                asset_grid_cell(ui, asset_kind_icon(*kind), name, selected, thumb)
                             })
                             .inner;
                         if response.clicked() {
@@ -4959,7 +5066,13 @@ fn ping_asset(workspace: &mut Workspace, state: &mut UiState, path: &str) {
 }
 
 /// 网格里一个格子（图标 + 文件名），返回点击响应。
-fn asset_grid_cell(ui: &mut Ui, icon: &str, name: &str, selected: bool) -> egui::Response {
+fn asset_grid_cell(
+    ui: &mut Ui,
+    icon: &str,
+    name: &str,
+    selected: bool,
+    thumbnail: Option<(egui::TextureId, [u32; 2])>,
+) -> egui::Response {
     let visuals = ui.visuals().clone();
     let cell = egui::vec2(84.0, 84.0);
     let (rect, response) = ui.allocate_exact_size(cell, egui::Sense::click());
@@ -4976,13 +5089,29 @@ fn asset_grid_cell(ui: &mut Ui, icon: &str, name: &str, selected: bool) -> egui:
             egui::Color32::from_rgba_unmultiplied(255, 255, 255, 12),
         );
     }
-    ui.painter().text(
-        rect.center_top() + egui::vec2(0.0, 12.0),
-        egui::Align2::CENTER_TOP,
-        icon,
-        egui::FontId::proportional(26.0),
-        visuals.text_color(),
-    );
+    // 有缩略图时画图（等比放进 52 px 方框），否则退回类型图标（#982）。
+    if let Some((texture, [width, height])) = thumbnail {
+        let bounds = egui::Rect::from_center_size(
+            rect.center_top() + egui::vec2(0.0, 30.0),
+            egui::vec2(52.0, 52.0),
+        );
+        let mut image_rect = fit_into(bounds, width, height);
+        image_rect = image_rect.intersect(rect.shrink(2.0));
+        ui.painter().image(
+            texture,
+            image_rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+    } else {
+        ui.painter().text(
+            rect.center_top() + egui::vec2(0.0, 12.0),
+            egui::Align2::CENTER_TOP,
+            icon,
+            egui::FontId::proportional(26.0),
+            visuals.text_color(),
+        );
+    }
     let mut job = egui::text::LayoutJob::simple_singleline(
         truncate_label(name, 14),
         egui::FontId::proportional(10.5),
@@ -5010,6 +5139,8 @@ fn truncate_label(name: &str, max: usize) -> String {
 }
 
 pub fn assets(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
+    // 每帧的缩略图解码额度（#982）：一屏几十行之外不抢 CPU，滚动仍然跟手。
+    state.thumbnail_budget = 12;
     // ---- 导航：后退 / 前进 / 面包屑（Project 窗口的路径栏） ----
     ui.horizontal(|ui| {
         let can_back = state.asset_history_pos > 0;
@@ -5271,7 +5402,7 @@ pub fn assets(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
                             icons::FOLDER,
                             path.rsplit('/').next().unwrap_or(path)
                         );
-                        let row = list_row(ui, &colors, selected, state.compact, &label);
+                        let row = list_row(ui, &colors, selected, state.compact, &label, None);
                         // 拖资产经过目录行：高亮；松手 = 移入该目录（#471）。
                         if row.dnd_hover_payload::<widgets::AssetDrag>().is_some() {
                             ui.painter().rect_filled(
@@ -5375,9 +5506,17 @@ pub fn assets(ui: &mut Ui, workspace: &mut Workspace, state: &mut UiState) {
                             };
                         let drag_id = egui::Id::new(("asset-drag", path.as_str()));
                         let payload = widgets::AssetDrag { path: path.clone() };
+                        let thumb = thumbnail_texture(ui, workspace, state, path, *kind);
                         let response = ui
                             .dnd_drag_source(drag_id, payload, |ui| {
-                                list_row(ui, &workspace.colors(), selected, state.compact, &label)
+                                list_row(
+                                    ui,
+                                    &workspace.colors(),
+                                    selected,
+                                    state.compact,
+                                    &label,
+                                    thumb,
+                                )
                             })
                             .inner;
                         if response.clicked() {
