@@ -17,6 +17,11 @@
 //! pool order, so inserting or deleting an entity no longer shifts every saved
 //! pose (#118). Files without ids still restore positionally.
 //!
+//! **Format version 5:** Clock entities are serialized too, so a project that
+//! advances `TimeOfDay` does not need its own save path just to keep the hour
+//! (#1051). Only `hours` is restored: the rest of the component stays authored
+//! data from the scene.
+//!
 //! **Format version 3:** Camera state is sourced from the data components
 //! (`Camera` + `FlyCameraController` + `LocalTransform`) instead of the old
 //! `crate::camera::Camera` enum. `fov_y` is still serialized in radians for
@@ -28,12 +33,12 @@ use prism_ecs::{Entity, World};
 
 use crate::scene::components::{
     Active, Camera, DirectionalLight as SceneDirLight, FlyCameraController, LocalTransform,
-    PointLight as ScenePtLight,
+    PointLight as ScenePtLight, TimeOfDay,
 };
 use crate::scene::runtime_components::SceneEntityId;
 use crate::scene::systems::camera;
 
-const SCENE_STATE_VERSION: u32 = 4;
+const SCENE_STATE_VERSION: u32 = 5;
 
 /// v1 wrote point-light positions in a separate array; v2+ keeps them with the
 /// light, so the positional back-fill below only applies to v1 files.
@@ -134,6 +139,16 @@ struct SavedPointLight {
     light: ScenePtLight,
     position: Option<Vec3>,
     active: bool,
+}
+
+/// A saved clock: the stable id plus the advanced hour.
+///
+/// Everything else on [`TimeOfDay`] (day length, sunrise, colors, …) is
+/// authoring data owned by the scene, so restoring it would undo scene edits.
+#[derive(Clone, Debug)]
+struct SavedTimeOfDay {
+    id: Option<u32>,
+    hours: f32,
 }
 
 /// 取实体的稳定 id（没有 `.scene.json` id 时返回 `None`）。
@@ -238,6 +253,13 @@ fn saved_transform_to_json(saved: &SavedTransform) -> String {
         fmt4(saved.transform.rotation),
         fmt3(saved.transform.scale),
     )
+}
+
+fn saved_time_of_day_to_json(saved: &SavedTimeOfDay) -> String {
+    match saved.id {
+        Some(id) => format!("{{\"id\":{id},\"hours\":{}}}", saved.hours),
+        None => format!("{{\"hours\":{}}}", saved.hours),
+    }
 }
 
 fn local_transform_from_fields(position: Vec3, rotation: Quat, scale: Vec3) -> LocalTransform {
@@ -347,6 +369,13 @@ pub fn save_scene_state_to(world: &World, path: &std::path::Path) {
             transform: transform.clone(),
         })
         .collect();
+    let clocks: Vec<SavedTimeOfDay> = world
+        .query::<TimeOfDay>()
+        .map(|(entity, clock)| SavedTimeOfDay {
+            id: scene_entity_id(world, entity),
+            hours: clock.normalized_hours(),
+        })
+        .collect();
 
     let mut json = String::new();
     json.push_str("{\n");
@@ -379,6 +408,16 @@ pub fn save_scene_state_to(world: &World, path: &std::path::Path) {
             json.push(',');
         }
         let _ = write!(json, "{}", saved_transform_to_json(t));
+    }
+    json.push_str("],\n");
+
+    // Clocks
+    json.push_str("\"timeOfDay\":[\n");
+    for (i, clock) in clocks.iter().enumerate() {
+        if i > 0 {
+            json.push(',');
+        }
+        let _ = write!(json, "{}", saved_time_of_day_to_json(clock));
     }
     json.push_str("]\n");
     json.push_str("}\n");
@@ -532,6 +571,40 @@ fn apply_scene_state(world: &mut World, text: &str) {
         }
     }
 
+    // --- Time of day ---
+    // v5 pairs clocks with the scene by stable id; records without an id fall
+    // back to pool order, like every other array in this file.
+    if let Some(clock_array) = extract_array(&text, "timeOfDay") {
+        let parsed = parse_time_of_day_array(&clock_array);
+        let parsed_count = parsed.len();
+        let mut remaining: Vec<Entity> = world
+            .query::<TimeOfDay>()
+            .map(|(entity, _)| entity)
+            .collect();
+        let scene_clocks = remaining.len();
+        let mut unmatched: Vec<SavedTimeOfDay> = Vec::new();
+        for saved in parsed {
+            let matched = saved.id.and_then(|id| {
+                let index = remaining
+                    .iter()
+                    .position(|entity| scene_entity_id(world, *entity) == Some(id))?;
+                Some(remaining.remove(index))
+            });
+            match matched {
+                Some(entity) => apply_saved_time_of_day(world, entity, saved.hours),
+                None => unmatched.push(saved),
+            }
+        }
+        if parsed_count > scene_clocks {
+            log::warn!(
+                "scene state contains {parsed_count} clock(s), but the loaded scene has only {scene_clocks}; ignoring unmatched saved clocks"
+            );
+        }
+        for (entity, saved) in remaining.into_iter().zip(unmatched) {
+            apply_saved_time_of_day(world, entity, saved.hours);
+        }
+    }
+
     // --- Non-light transforms ---
     // v4+ 按 `.scene.json` 稳定 id 配对，场景里插入/删除实体不会再让后面的位姿整体
     // 错位（#118）；没有 id 的旧记录退回按顺序配对。
@@ -578,6 +651,17 @@ fn apply_scene_state(world: &mut World, text: &str) {
         if let Some(existing) = world.get_mut::<LocalTransform>(entity) {
             *existing = new.transform;
         }
+    }
+}
+
+/// Restores the saved hour on an existing clock entity. The other fields stay
+/// as authored, so a scene edit is never undone by an old save.
+fn apply_saved_time_of_day(world: &mut World, entity: Entity, hours: f32) {
+    if !hours.is_finite() {
+        return;
+    }
+    if let Some(clock) = world.get_mut::<TimeOfDay>(entity) {
+        clock.hours = hours.rem_euclid(24.0);
     }
 }
 
@@ -733,6 +817,32 @@ fn parse_pt_light_array(s: &str) -> Vec<SavedPointLight> {
         };
         if let Some(light) = SavedPointLight::from_json(&obj_str) {
             out.push(light);
+        }
+    }
+    out
+}
+
+/// Parse the `timeOfDay` array: `{ "id": n, "hours": h }` records.
+fn parse_time_of_day_array(s: &str) -> Vec<SavedTimeOfDay> {
+    let mut out = Vec::new();
+    let mut rest = s.trim();
+    while !rest.is_empty() {
+        let open = match rest.find('{') {
+            Some(i) => i,
+            None => break,
+        };
+        let obj_str = match extract_object_nested(&rest[open..]) {
+            Some((obj, consumed)) => {
+                rest = &rest[open + consumed..];
+                obj
+            }
+            None => break,
+        };
+        if let Some(hours) = find_field_f32(&obj_str, "hours") {
+            out.push(SavedTimeOfDay {
+                id: find_field_u32(&obj_str, "id"),
+                hours,
+            });
         }
     }
     out
