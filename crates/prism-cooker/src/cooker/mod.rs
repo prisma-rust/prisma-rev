@@ -238,6 +238,31 @@ const RTXI_MAGIC: &[u8; 4] = b"RTXI";
 /// Maximum mip levels for a single texture.
 const MAX_MIP_LEVELS: u32 = 16;
 
+/// Add one RGBA8 texel to a premultiplied accumulator: `[r·a, g·a, b·a, a]`.
+fn accumulate_premultiplied(acc: &mut [u64; 4], rgba: &[u8], idx: usize) {
+    let alpha = rgba[idx + 3] as u64;
+    acc[0] += rgba[idx] as u64 * alpha;
+    acc[1] += rgba[idx + 1] as u64 * alpha;
+    acc[2] += rgba[idx + 2] as u64 * alpha;
+    acc[3] += alpha;
+}
+
+/// Turn a premultiplied accumulator back into an RGBA8 texel.
+///
+/// The colour is divided by the accumulated alpha rather than by the texel
+/// count, which is what makes transparent texels contribute nothing. A fully
+/// transparent result carries no colour, so it is written as `0,0,0,0`.
+fn resolve_premultiplied(acc: &[u64; 4], count: u64) -> [u8; 4] {
+    let alpha_sum = acc[3];
+    if alpha_sum == 0 {
+        return [0, 0, 0, 0];
+    }
+    let count = count.max(1);
+    let channel = |sum: u64| ((sum + alpha_sum / 2) / alpha_sum) as u8;
+    let alpha = ((alpha_sum + count / 2) / count) as u8;
+    [channel(acc[0]), channel(acc[1]), channel(acc[2]), alpha]
+}
+
 /// Cooks texture data by reconstructing the RGBA image, generating a mip
 /// chain (box-filtered), and packing into a runtime-ready binary:
 ///
@@ -290,7 +315,13 @@ impl TextureCooker {
         )
     }
 
-    /// 面积平均缩放（只用于缩小）。
+    /// Area-average downscale (shrink only), filtered in premultiplied space.
+    ///
+    /// Averaging stored RGBA directly pulls the colour of fully transparent
+    /// texels into their neighbours, which leaves a dark fringe around sprites
+    /// after `max_size` downscaling (#1037). Premultiplying the colour by alpha
+    /// first gives those texels no weight, and the result is divided back out
+    /// afterwards.
     fn resize_rgba(width: u32, height: u32, rgba: &[u8], new_w: u32, new_h: u32) -> Vec<u8> {
         let mut out = Vec::with_capacity(new_w as usize * new_h as usize * 4);
         for y in 0..new_h {
@@ -299,26 +330,25 @@ impl TextureCooker {
             for x in 0..new_w {
                 let x0 = x * width / new_w;
                 let x1 = ((x + 1) * width / new_w).max(x0 + 1).min(width);
-                let mut acc = [0u32; 4];
-                let mut count = 0u32;
+                let mut acc = [0u64; 4];
+                let mut count = 0u64;
                 for sy in y0..y1 {
                     for sx in x0..x1 {
                         let idx = ((sy * width) + sx) as usize * 4;
-                        for channel in 0..4 {
-                            acc[channel] += rgba[idx + channel] as u32;
-                        }
+                        accumulate_premultiplied(&mut acc, rgba, idx);
                         count += 1;
                     }
                 }
-                for channel in acc {
-                    out.push((channel / count.max(1)) as u8);
-                }
+                out.extend_from_slice(&resolve_premultiplied(&acc, count));
             }
         }
         out
     }
 
-    /// Generate a mip chain using simple 2×2 box filtering.
+    /// Generate a mip chain using 2×2 box filtering in premultiplied space.
+    ///
+    /// Same reasoning as [`Self::resize_rgba`]: mip levels of a sprite with a
+    /// transparent border must not sample the stored colour of those texels.
     fn generate_mips(width: u32, height: u32, rgba: &[u8]) -> Vec<(u32, u32, Vec<u8>)> {
         let mut mips = Vec::new();
         mips.push((width, height, rgba.to_vec()));
@@ -334,12 +364,8 @@ impl TextureCooker {
 
             for y in 0..dst_h {
                 for x in 0..dst_w {
-                    // 2×2 box filter.
-                    let mut r = 0u32;
-                    let mut g = 0u32;
-                    let mut b = 0u32;
-                    let mut a = 0u32;
-                    let mut count = 0u32;
+                    let mut acc = [0u64; 4];
+                    let mut count = 0u64;
 
                     for dy in 0..2 {
                         for dx in 0..2 {
@@ -348,19 +374,13 @@ impl TextureCooker {
                             // Guard against source dimensions (not the target).
                             if sx < src_w && sy < src_h {
                                 let idx = ((sy * src_w) + sx) as usize * 4;
-                                r += prev[idx] as u32;
-                                g += prev[idx + 1] as u32;
-                                b += prev[idx + 2] as u32;
-                                a += prev[idx + 3] as u32;
+                                accumulate_premultiplied(&mut acc, &prev, idx);
                                 count += 1;
                             }
                         }
                     }
 
-                    next.push((r / count) as u8);
-                    next.push((g / count) as u8);
-                    next.push((b / count) as u8);
-                    next.push((a / count) as u8);
+                    next.extend_from_slice(&resolve_premultiplied(&acc, count));
                 }
             }
 

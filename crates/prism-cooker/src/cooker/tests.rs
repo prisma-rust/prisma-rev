@@ -504,6 +504,83 @@ fn texture_cooker_honours_max_size_and_keeps_the_aspect_ratio() {
     assert_eq!(rtex_header(&result.cooked_data), (2, 2, 2));
 }
 
+/// Decode every mip level of a cooked RGBA8 RTEX payload.
+fn rtex_mip_levels(data: &[u8]) -> Vec<(u32, u32, Vec<u8>)> {
+    assert_eq!(&data[..4], b"RTEX");
+    let width = u32::from_le_bytes(data[5..9].try_into().unwrap());
+    let height = u32::from_le_bytes(data[9..13].try_into().unwrap());
+    let levels = u32::from_le_bytes(data[13..17].try_into().unwrap());
+    let offsets_at = 18usize;
+    let mut out = Vec::with_capacity(levels as usize);
+    for level in 0..levels as usize {
+        let at = offsets_at + level * 4;
+        let start = u32::from_le_bytes(data[at..at + 4].try_into().unwrap()) as usize;
+        let w = (width >> level).max(1);
+        let h = (height >> level).max(1);
+        let len = w as usize * h as usize * 4;
+        out.push((w, h, data[start..start + len].to_vec()));
+    }
+    out
+}
+
+fn cook_rgba8_texture(
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    settings: &profile::CookSettings,
+    raw_id: u64,
+) -> Vec<u8> {
+    let intermediate = make_texture_intermediate(width, height, pixels);
+    let id = AssetId::from_raw((1u64 << 32) | raw_id);
+    let record = crate::db::AssetRecord::new(
+        id,
+        "alpha.png".into(),
+        AssetType::Texture,
+        "texture-importer",
+    );
+    let ctx = CookContext {
+        record: &record,
+        imported_data: &intermediate,
+        settings,
+    };
+    TextureCooker.cook(&ctx).unwrap().cooked_data
+}
+
+#[test]
+fn downscale_filters_alpha_premultiplied() {
+    // Opaque white next to a transparent black texel. Averaging the stored RGBA
+    // would darken the survivor to 127; premultiplied filtering keeps it white
+    // and only changes coverage (#1037).
+    let pixels = [255u8, 255, 255, 255, 0, 0, 0, 0];
+    let mut settings = profile::CookSettings::default();
+    settings.texture.max_size = 1;
+    let cooked = cook_rgba8_texture(&pixels, 2, 1, &settings, 120);
+
+    let mips = rtex_mip_levels(&cooked);
+    assert_eq!((mips[0].0, mips[0].1), (1, 1));
+    let texel = &mips[0].2;
+    assert_eq!(&texel[..3], &[255, 255, 255], "colour must not darken");
+    assert!(
+        (127..=128).contains(&texel[3]),
+        "alpha should average to about half, got {}",
+        texel[3]
+    );
+}
+
+#[test]
+fn mip_chain_filters_alpha_premultiplied() {
+    // One opaque white texel out of four: the 1×1 mip keeps full colour and
+    // quarter coverage instead of a dark grey (#1037).
+    let pixels = [255u8, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let settings = profile::CookSettings::default();
+    let cooked = cook_rgba8_texture(&pixels, 2, 2, &settings, 121);
+
+    let mips = rtex_mip_levels(&cooked);
+    assert_eq!(mips.len(), 2);
+    assert_eq!((mips[1].0, mips[1].1), (1, 1));
+    assert_eq!(&mips[1].2, &[255, 255, 255, 64]);
+}
+
 #[test]
 fn texture_cooker_can_skip_the_mip_chain() {
     let pixels = std::iter::repeat_n([10u8, 20, 30, 255], 4 * 4)
