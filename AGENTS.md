@@ -142,7 +142,7 @@ deviating from those conventions is a bug. (`README.md` is the human-facing over
     **只有宿主机是 aarch64**（Asahi / 树莓派 / ARM 服务器 / Termux）时还需要
     [`docs/android-arm64.md`](docs/android-arm64.md) 的 NDK / build-tools 替换步骤。
     与 `launcher/` 那条「启动器 + 游戏」双 Activity 的路互不影响，不要把它们合并。
-- `projects/prisma-sponza/` — Sponza 样例用户项目，
+- `projects/sponza/` — Sponza 样例用户项目，
   同为独立 workspace（package 名与目录名一致）。
 - `crates/xtask` — **excluded** from default workspace; desktop/CI only (needs `slangc`).
 - `assets/shaders/` — Slang sources in `slang/`, compiled `.spv` (gitignored, not committed) +
@@ -314,7 +314,7 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   lists them under `optional_paks`, and the runtime only mounts them when
   `GpuAssetResolver::load_optional_packages()` is called (`assets/optional/` is not part
   of the startup scan). `build-scenes` accepts the same flag against the staged layout.
-- The `projects/prisma/`, `projects/prisma-sponza/`, `launcher/` and `editor/` standalone workspaces need their own `cargo build` / `cargo clippy`
+- The `projects/prisma/`, `projects/sponza/`, `launcher/` and `editor/` standalone workspaces need their own `cargo build` / `cargo clippy`
   runs — a root-workspace build does **not** cover them.
 
 ## Editor MCP server (agent 改场景 / 跑游戏 / 抓图)

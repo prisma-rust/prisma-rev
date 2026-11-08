@@ -94,7 +94,7 @@ cargo test --workspace                 # ~400 测试（含 CRT 状态机单测�
   独立 workspace：`cd projects/prisma && cargo run`）；编辑器是 `editor/`（Tauri 2 + Vue 3，
   需要 `pnpm tauri dev`）；`launcher/` 是 Android 启动壳（独立 workspace），
   桌面 Hub 在独立仓库 [`Excurs1ons/prisma-hub`](https://github.com/Excurs1ons/prisma-hub)。
-- `projects/prisma/`、`projects/prisma-sponza/`、`launcher/`、`editor/`、
+- `projects/prisma/`、`projects/sponza/`、`launcher/`、`editor/`、
   `crates/xtask` 不在根 workspace 的默认覆盖内——
   根 workspace 构建不包含它们，需各自 `cd` 进去单独 build/clippy。
 - 首次全量构建较久（依赖多，磁盘约 2GB+）；`target/` 被外部清理后需重新构建。

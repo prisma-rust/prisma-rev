@@ -599,7 +599,7 @@ def main() -> int:
     if not args.quick:
         standalone = [
             ("projects/prisma", "projects/prisma/"),
-            ("projects/prisma-sponza", "projects/prisma-sponza/"),
+            ("projects/sponza", "projects/sponza/"),
             ("launcher", "launcher/"),
         ]
         for name, prefix in standalone:
