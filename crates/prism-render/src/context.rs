@@ -5,6 +5,7 @@
 
 use std::ffi::{c_char, CStr, CString};
 use std::os::raw::c_void;
+use std::sync::Mutex;
 
 use ash::vk;
 
@@ -59,6 +60,12 @@ pub struct VulkanContext {
 
     /// 对象所有权：`Owned` 在析构时销毁设备/实例，`External` 留给宿主。
     ownership: ContextOwnership,
+
+    /// Host-visible staging buffer shared by one-shot uploads (#1030).
+    ///
+    /// Created lazily the first time something is uploaded, so a context that
+    /// never uploads pays nothing.
+    pub(crate) staging: Mutex<Option<crate::buffer::StagingRing>>,
 
     // Held for drop ordering / FFI lifetime.
     _debug_messenger: Option<vk::DebugUtilsMessengerEXT>,
@@ -140,6 +147,7 @@ impl VulkanContext {
             acceleration_structure_fn,
             enabled_extensions,
             ownership: ContextOwnership::Owned,
+            staging: Mutex::new(None),
             _debug_messenger: debug_messenger,
         })
     }
@@ -203,6 +211,7 @@ impl VulkanContext {
             acceleration_structure_fn,
             enabled_extensions,
             ownership: ContextOwnership::External,
+            staging: Mutex::new(None),
             _debug_messenger: None,
         })
     }
@@ -252,6 +261,13 @@ impl VulkanContext {
 
 impl Drop for VulkanContext {
     fn drop(&mut self) {
+        // The staging ring is ours even when the device belongs to the host, so
+        // release it before the ownership check below.
+        if let Ok(mut staging) = self.staging.lock() {
+            if let Some(ring) = staging.take() {
+                ring.destroy(&self.device);
+            }
+        }
         // 外部（宿主）创建的对象由宿主销毁：UI 框架的 device 生命周期比渲染器长，
         // 在这里销毁会让 UI 侧句柄悬空。
         if self.ownership == ContextOwnership::External {

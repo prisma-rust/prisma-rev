@@ -83,11 +83,277 @@ pub fn find_memory_type(
     None
 }
 
-/// Upload data to a device-local buffer via a temporary staging buffer.
+// ---------------------------------------------------------------------------
+// staging
+// ---------------------------------------------------------------------------
+
+/// Largest upload that reuses the shared staging ring. Bigger payloads get a
+/// transient staging buffer so a single huge file does not pin that much memory
+/// for the rest of the session.
+const STAGING_RING_MAX: vk::DeviceSize = 64 * 1024 * 1024;
+
+/// Initial capacity of the shared staging ring; it grows on demand.
+const STAGING_RING_INITIAL: vk::DeviceSize = 1 << 20;
+
+/// Offsets handed out by [`StagingRing`] are multiples of this.
+const STAGING_ALIGN: vk::DeviceSize = 16;
+
+/// One host-visible buffer reused by every one-shot upload (#1030).
 ///
-/// Reads `data` (as raw bytes) and copies it into `destination_buffer`
-/// through a host-visible staging buffer. The staging buffer is destroyed
-/// after the copy is submitted.
+/// Previously each upload created and destroyed its own staging buffer,
+/// `VkDeviceMemory` and fence, so loading a scene allocated and freed two
+/// device memory blocks per mesh or texture. A ring keeps one mapping alive and
+/// reuses one fence; uploads stay synchronous, so a slot can be overwritten as
+/// soon as the previous [`StagingRing::submit_and_wait`] returned.
+pub(crate) struct StagingRing {
+    buffer: vk::Buffer,
+    memory: vk::DeviceMemory,
+    /// Persistent host mapping. Stored as `usize` because a raw pointer would
+    /// make [`VulkanContext`] neither `Send` nor `Sync`.
+    mapped: usize,
+    capacity: vk::DeviceSize,
+    cursor: vk::DeviceSize,
+    fence: vk::Fence,
+}
+
+impl StagingRing {
+    fn create(context: &VulkanContext, capacity: vk::DeviceSize) -> anyhow::Result<Self> {
+        let (buffer, memory) = create_buffer(
+            context,
+            capacity,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            MemoryProperties::HOST_VISIBLE | MemoryProperties::HOST_COHERENT,
+        )
+        .context("create staging ring buffer")?;
+        let mapped = unsafe {
+            context
+                .device
+                .map_memory(memory, 0, capacity, vk::MemoryMapFlags::empty())
+        }
+        .context("map staging ring memory")? as usize;
+        let fence = unsafe {
+            context
+                .device
+                .create_fence(&vk::FenceCreateInfo::default(), None)
+        }
+        .context("create staging ring fence")?;
+        Ok(Self {
+            buffer,
+            memory,
+            mapped,
+            capacity,
+            cursor: 0,
+            fence,
+        })
+    }
+
+    /// Releases the Vulkan objects. The ring is never used afterwards.
+    pub(crate) fn destroy(self, device: &ash::Device) {
+        unsafe {
+            device.unmap_memory(self.memory);
+            device.destroy_buffer(self.buffer, None);
+            device.free_memory(self.memory, None);
+            device.destroy_fence(self.fence, None);
+        }
+    }
+
+    /// Reserves `size` bytes and returns their offset in the ring.
+    fn reserve(
+        &mut self,
+        context: &VulkanContext,
+        size: vk::DeviceSize,
+    ) -> anyhow::Result<vk::DeviceSize> {
+        let len = align_up(size, STAGING_ALIGN);
+        if self.cursor + len > self.capacity {
+            // Every earlier copy waited on `fence`, so restarting at 0 is safe.
+            self.cursor = 0;
+        }
+        if len > self.capacity {
+            let capacity = len.next_power_of_two().max(STAGING_RING_INITIAL);
+            let grown = Self::create(context, capacity)?;
+            let old = std::mem::replace(self, grown);
+            old.destroy(&context.device);
+        }
+        let offset = self.cursor;
+        self.cursor += len;
+        Ok(offset)
+    }
+
+    fn write(&self, offset: vk::DeviceSize, data: &[u8]) {
+        debug_assert!(
+            offset + data.len() as vk::DeviceSize <= self.capacity,
+            "staging write out of bounds"
+        );
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr(),
+                (self.mapped as *mut u8).add(offset as usize),
+                data.len(),
+            );
+        }
+        // The ring is HOST_COHERENT, so no flush is needed.
+    }
+
+    fn submit_and_wait(
+        &self,
+        context: &VulkanContext,
+        queue: vk::Queue,
+        cmd: vk::CommandBuffer,
+    ) -> anyhow::Result<()> {
+        submit_and_wait_fence(&context.device, queue, self.fence, cmd)
+    }
+}
+
+fn align_up(value: vk::DeviceSize, align: vk::DeviceSize) -> vk::DeviceSize {
+    value.div_ceil(align) * align
+}
+
+/// Submits `cmd` on `queue`, waits for `fence` and resets it for the next use.
+fn submit_and_wait_fence(
+    device: &ash::Device,
+    queue: vk::Queue,
+    fence: vk::Fence,
+    cmd: vk::CommandBuffer,
+) -> anyhow::Result<()> {
+    let cmds = [cmd];
+    let submit_info = vk::SubmitInfo::default().command_buffers(&cmds);
+    unsafe { device.queue_submit(queue, &[submit_info], fence) }.context("submit staging copy")?;
+    unsafe { device.wait_for_fences(&[fence], true, u64::MAX) }.context("wait for staging copy")?;
+    unsafe { device.reset_fences(&[fence]) }.context("reset staging fence")?;
+    Ok(())
+}
+
+/// Where the bytes of one upload live: the shared ring or a transient buffer.
+enum StagingLease<'a> {
+    Ring {
+        context: &'a VulkanContext,
+        guard: std::sync::MutexGuard<'a, Option<StagingRing>>,
+        offset: vk::DeviceSize,
+    },
+    Transient {
+        context: &'a VulkanContext,
+        buffer: vk::Buffer,
+        memory: vk::DeviceMemory,
+        fence: vk::Fence,
+    },
+}
+
+impl<'a> StagingLease<'a> {
+    fn acquire(context: &'a VulkanContext, size: vk::DeviceSize) -> anyhow::Result<Self> {
+        if size > STAGING_RING_MAX {
+            let (buffer, memory) = create_buffer(
+                context,
+                size,
+                vk::BufferUsageFlags::TRANSFER_SRC,
+                MemoryProperties::HOST_VISIBLE | MemoryProperties::HOST_COHERENT,
+            )
+            .context("create staging buffer")?;
+            let fence = unsafe {
+                context
+                    .device
+                    .create_fence(&vk::FenceCreateInfo::default(), None)
+            }
+            .context("create upload fence")?;
+            return Ok(Self::Transient {
+                context,
+                buffer,
+                memory,
+                fence,
+            });
+        }
+        let mut guard = context
+            .staging
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if guard.is_none() {
+            *guard = Some(StagingRing::create(context, STAGING_RING_INITIAL)?);
+        }
+        let offset = guard
+            .as_mut()
+            .expect("staging ring was just created")
+            .reserve(context, size)?;
+        Ok(Self::Ring {
+            context,
+            guard,
+            offset,
+        })
+    }
+
+    fn buffer(&self) -> vk::Buffer {
+        match self {
+            Self::Ring { guard, .. } => guard.as_ref().expect("staging ring").buffer,
+            Self::Transient { buffer, .. } => *buffer,
+        }
+    }
+
+    fn offset(&self) -> vk::DeviceSize {
+        match self {
+            Self::Ring { offset, .. } => *offset,
+            Self::Transient { .. } => 0,
+        }
+    }
+
+    fn write(&mut self, data: &[u8]) -> anyhow::Result<()> {
+        match self {
+            Self::Ring { guard, offset, .. } => {
+                guard.as_ref().expect("staging ring").write(*offset, data);
+                Ok(())
+            }
+            Self::Transient {
+                context, memory, ..
+            } => {
+                let size = data.len() as vk::DeviceSize;
+                let ptr = unsafe {
+                    context
+                        .device
+                        .map_memory(*memory, 0, size, vk::MemoryMapFlags::empty())
+                }
+                .context("map staging memory")?;
+                unsafe {
+                    std::ptr::copy_nonoverlapping(data.as_ptr(), ptr as *mut u8, data.len());
+                    context.device.unmap_memory(*memory);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn submit_and_wait(&self, queue: vk::Queue, cmd: vk::CommandBuffer) -> anyhow::Result<()> {
+        match self {
+            Self::Ring { context, guard, .. } => guard
+                .as_ref()
+                .expect("staging ring")
+                .submit_and_wait(context, queue, cmd),
+            Self::Transient { context, fence, .. } => {
+                submit_and_wait_fence(&context.device, queue, *fence, cmd)
+            }
+        }
+    }
+}
+
+impl Drop for StagingLease<'_> {
+    fn drop(&mut self) {
+        if let Self::Transient {
+            context,
+            buffer,
+            memory,
+            fence,
+        } = self
+        {
+            unsafe {
+                context.device.destroy_buffer(*buffer, None);
+                context.device.free_memory(*memory, None);
+                context.device.destroy_fence(*fence, None);
+            }
+        }
+    }
+}
+
+/// Upload data to a device-local buffer through the shared staging ring.
+///
+/// Reads `data` (as raw bytes) and copies it into `destination_buffer` through
+/// a host-visible staging buffer owned by `context`. The transfer is
+/// synchronous and returns once the GPU finished reading the staging copy.
 ///
 /// # Safety
 ///
@@ -102,24 +368,8 @@ pub unsafe fn upload_to_buffer(
     size: vk::DeviceSize,
     data: &[u8],
 ) -> anyhow::Result<()> {
-    // Create staging buffer (host-visible, host-coherent).
-    let (staging_buffer, staging_memory) = create_buffer(
-        context,
-        size,
-        vk::BufferUsageFlags::TRANSFER_SRC,
-        MemoryProperties::HOST_VISIBLE | MemoryProperties::HOST_COHERENT,
-    )
-    .context("create staging buffer")?;
-
-    // Map and copy data.
-    let ptr = unsafe {
-        context
-            .device
-            .map_memory(staging_memory, 0, size, vk::MemoryMapFlags::empty())
-    }
-    .context("map staging memory")?;
-    unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), ptr as *mut u8, data.len()) };
-    unsafe { context.device.unmap_memory(staging_memory) };
+    let mut staging = StagingLease::acquire(context, size).context("acquire staging buffer")?;
+    staging.write(data).context("write staging buffer")?;
 
     // One-shot command buffer to copy staging -> destination.
     let alloc_info = vk::CommandBufferAllocateInfo::default()
@@ -134,46 +384,30 @@ pub unsafe fn upload_to_buffer(
     unsafe { context.device.begin_command_buffer(cmd_buf, &begin_info) }
         .context("begin staging command buffer")?;
 
-    let copy_region = vk::BufferCopy::default().size(size);
+    let copy_region = vk::BufferCopy::default()
+        .src_offset(staging.offset())
+        .size(size);
     unsafe {
-        context
-            .device
-            .cmd_copy_buffer(cmd_buf, staging_buffer, destination_buffer, &[copy_region]);
+        context.device.cmd_copy_buffer(
+            cmd_buf,
+            staging.buffer(),
+            destination_buffer,
+            &[copy_region],
+        );
     }
 
     unsafe { context.device.end_command_buffer(cmd_buf) }.context("end staging command buffer")?;
 
-    let cmd_bufs = [cmd_buf];
-    let submit_info = vk::SubmitInfo::default().command_buffers(&cmd_bufs);
-
-    // Submit with a dedicated fence so we only block on THIS transfer, not the
-    // entire graphics queue (queue_wait_idle would stall unrelated work).
-    let fence = unsafe {
-        context
-            .device
-            .create_fence(&vk::FenceCreateInfo::default(), None)
-    }
-    .context("create upload fence")?;
-    unsafe {
-        context
-            .device
-            .queue_submit(graphics_queue, &[submit_info], fence)
-    }
-    .context("submit staging copy")?;
-
-    // Wait only for this submission to finish before cleaning up.
-    unsafe { context.device.wait_for_fences(&[fence], true, u64::MAX) }
-        .context("wait for upload fence")?;
-    unsafe { context.device.destroy_fence(fence, None) };
+    // Waiting on the staging fence blocks only this transfer; unrelated work on
+    // the graphics queue keeps running.
+    staging
+        .submit_and_wait(graphics_queue, cmd_buf)
+        .context("submit staging copy")?;
     unsafe {
         context
             .device
             .free_command_buffers(command_pool, &[cmd_buf])
     };
-
-    // Clean up staging resources.
-    unsafe { context.device.destroy_buffer(staging_buffer, None) };
-    unsafe { context.device.free_memory(staging_memory, None) };
 
     Ok(())
 }
@@ -266,20 +500,11 @@ pub unsafe fn create_and_upload_image(
     // `pixels` may hold a whole pre-baked mip chain (KTX2), so the staging
     // buffer is sized by what the caller provided, not by the base level.
     let size = pixels.len() as vk::DeviceSize;
-    let (staging, staging_memory) = create_buffer(
-        context,
-        size,
-        vk::BufferUsageFlags::TRANSFER_SRC,
-        MemoryProperties::HOST_VISIBLE | MemoryProperties::HOST_COHERENT,
-    )
-    .context("create texture staging buffer")?;
-    {
-        let ptr = device
-            .map_memory(staging_memory, 0, size, vk::MemoryMapFlags::empty())
-            .context("map texture staging memory")?;
-        std::ptr::copy_nonoverlapping(pixels.as_ptr(), ptr as *mut u8, pixels.len());
-        device.unmap_memory(staging_memory);
-    }
+    let mut staging =
+        StagingLease::acquire(context, size).context("create texture staging buffer")?;
+    staging
+        .write(pixels)
+        .context("write texture staging memory")?;
 
     let cmd = device
         .allocate_command_buffers(
@@ -318,6 +543,7 @@ pub unsafe fn create_and_upload_image(
     );
 
     let copy = vk::BufferImageCopy::default()
+        .buffer_offset(staging.offset())
         .image_subresource(
             vk::ImageSubresourceLayers::default()
                 .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -328,7 +554,7 @@ pub unsafe fn create_and_upload_image(
         .image_extent(extent);
     device.cmd_copy_buffer_to_image(
         cmd,
-        staging,
+        staging.buffer(),
         image,
         vk::ImageLayout::TRANSFER_DST_OPTIMAL,
         &[copy],
@@ -348,7 +574,7 @@ pub unsafe fn create_and_upload_image(
             as u64;
         for level in 1..mip_levels {
             let copy = vk::BufferImageCopy::default()
-                .buffer_offset(offset)
+                .buffer_offset(staging.offset() + offset)
                 .image_subresource(
                     vk::ImageSubresourceLayers::default()
                         .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -359,7 +585,7 @@ pub unsafe fn create_and_upload_image(
                 .image_extent(mip_extent(width, height, level));
             device.cmd_copy_buffer_to_image(
                 cmd,
-                staging,
+                staging.buffer(),
                 image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 &[copy],
@@ -569,23 +795,10 @@ pub unsafe fn create_and_upload_image(
         .end_command_buffer(cmd)
         .context("end texture upload command buffer")?;
 
-    let fence = device
-        .create_fence(&vk::FenceCreateInfo::default(), None)
-        .context("create texture upload fence")?;
-    device
-        .queue_submit(
-            graphics_queue,
-            &[vk::SubmitInfo::default().command_buffers(&[cmd])],
-            fence,
-        )
+    staging
+        .submit_and_wait(graphics_queue, cmd)
         .context("submit texture upload")?;
-    device
-        .wait_for_fences(&[fence], true, u64::MAX)
-        .context("wait for texture upload")?;
-    device.destroy_fence(fence, None);
     device.free_command_buffers(command_pool, &[cmd]);
-    device.destroy_buffer(staging, None);
-    device.free_memory(staging_memory, None);
 
     let view = device
         .create_image_view(
