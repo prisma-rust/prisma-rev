@@ -349,6 +349,9 @@ pub struct GraphRenderer {
     ui_fonts: std::collections::BTreeMap<String, Vec<u8>>,
     /// True when no surface is available (headless / CI / server mode).
     is_headless: bool,
+    /// A minimized window has a valid surface but no drawable extent. Keep the
+    /// existing swapchain and targets alive until the surface becomes usable.
+    surface_suspended: bool,
     /// Offscreen target for headless mode — owned device-local image +
     /// host-visible staging buffer. `None` in windowed mode.
     offscreen: Option<OffscreenTarget>,
@@ -720,6 +723,7 @@ impl GraphRenderer {
             ui_overlay_offscreen: None,
             ui_fonts: std::collections::BTreeMap::new(),
             is_headless: false,
+            surface_suspended: false,
             offscreen: None,
             headless_fence: vk::Fence::null(),
             pending_screenshot: None,
@@ -1149,6 +1153,7 @@ impl GraphRenderer {
             ui_overlay_offscreen: None,
             ui_fonts: std::collections::BTreeMap::new(),
             is_headless: true,
+            surface_suspended: false,
             pending_screenshot: None,
             screenshot: None,
             gpu_timer,
@@ -2035,6 +2040,22 @@ impl GraphRenderer {
         if self.is_headless {
             return Ok(());
         }
+        let Some(swapchain) = self.swapchain.as_ref() else {
+            return Ok(());
+        };
+        let desired_extent = swapchain.desired_extent(self.runtime.context.physical_device)?;
+        if desired_extent.width == 0 || desired_extent.height == 0 {
+            self.surface_suspended = true;
+            log::debug!(
+                "swapchain recreate deferred while surface is suspended ({}x{})",
+                desired_extent.width,
+                desired_extent.height
+            );
+            return Ok(());
+        }
+        // From this point on, any early return must keep frame acquisition
+        // suspended until the swapchain and lazy pass targets are rebuilt.
+        self.surface_suspended = true;
         // Wait for the GPU to finish all in-flight work BEFORE destroying any
         // framebuffers. The previous frame's command buffer references both
         // the ForwardPass framebuffers and the external overlay framebuffers; without
@@ -2076,7 +2097,10 @@ impl GraphRenderer {
         }
 
         if let Some(sw) = self.swapchain.as_mut() {
-            sw.recreate(&self.runtime.context)?;
+            if !sw.recreate_if_drawable(&self.runtime.context)? {
+                self.surface_suspended = true;
+                return Ok(());
+            }
         }
 
         // 通知外部叠加层：per-swapchain framebuffers 已按新 views 重建。
@@ -2134,6 +2158,7 @@ impl GraphRenderer {
         // recreate re-transitions from UNDEFINED instead of trusting a layout
         // that no longer matches the fresh images.
         self.graph.reset_layouts();
+        self.surface_suspended = false;
         Ok(())
     }
 
@@ -2286,6 +2311,21 @@ impl GraphRenderer {
                 render_finished: vk::Semaphore::null(),
             }));
         }
+        if self.surface_suspended {
+            let desired_extent = self
+                .swapchain
+                .as_ref()
+                .context("begin_frame called with no swapchain")?
+                .desired_extent(self.runtime.context.physical_device)?;
+            if desired_extent.width == 0 || desired_extent.height == 0 {
+                return Ok(None);
+            }
+            self.recreate_swapchain()?;
+            if self.surface_suspended {
+                return Ok(None);
+            }
+        }
+
         let device = self.runtime.context.device.clone();
 
         // --- Acquire next image ---
