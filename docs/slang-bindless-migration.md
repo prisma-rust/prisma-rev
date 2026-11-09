@@ -37,14 +37,15 @@ Push constant 结构**不手写**：全部来自 `shader_bindings::<module>::*`�
 
 ### 桌面/CI 收尾步骤
 ```bash
-# 1) 装 slang (对应你的平台)：
+# 1) 装 slang 2026.21+（对应你的平台）：
 #    https://github.com/shader-slang/slang/releases
+#    也可以解压到 tools/slang-dl/，compile.sh 会自动用它。
 #    Termux/aarch64 无法用官方 glibc 版；请在桌面/CI 做这一步。
 
 # 2) 编译 shader -> .spv + 反射 JSON
 #    需要 slangc 2026.21 或更新（已提交的反射就是这个版本生成的）；
 #    更旧的版本会被脚本拒绝，因为它会静默丢掉 "version" / "combined" / "sizes" 等字段。
-export SLANGC=/path/to/slangc      # 或让 slangc 在 PATH 上
+#    （SLANGC 可覆盖；否则依次找 tools/slang-dl/bin/slangc 和 PATH）
 bash assets/shaders/compile.sh
 #   产出 assets/shaders/*.spv；反射 JSON 先写到临时目录，再和已提交的逐字节比对。
 #   不一致时脚本失败并列出行（默认不覆盖仓库里的文件）。确认 schema 变更是有意的，再用

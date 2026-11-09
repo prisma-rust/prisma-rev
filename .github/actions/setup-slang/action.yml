@@ -31,9 +31,9 @@ runs:
         path: |
           assets/shaders/*.spv
           assets/shaders/reflection/*.json
-        key: spv-${{ runner.os }}-${{ env.SLANG_VERSION }}-${{ hashFiles('assets/shaders/slang/**', 'assets/shaders/compile.sh', 'assets/shaders/fix_spirv.py') }}
+        key: spv-${{ runner.os }}-${{ env.SLANG_VERSION }}-${{ hashFiles('assets/shaders/slang/**', 'assets/shaders/compile.sh') }}
 
-    - name: Install SPIR-V tools (spirv-dis / spirv-as for fix_spirv.py)
+    - name: Install SPIR-V tools (spirv-val gate)
       if: inputs.compile == 'true' && (inputs.cache_shaders == 'false' || steps.spv.outputs.cache-hit != 'true')
       shell: bash
       run: sudo apt-get update && sudo apt-get install -y spirv-tools
@@ -76,4 +76,4 @@ runs:
         path: |
           assets/shaders/*.spv
           assets/shaders/reflection/*.json
-        key: spv-${{ runner.os }}-${{ env.SLANG_VERSION }}-${{ hashFiles('assets/shaders/slang/**', 'assets/shaders/compile.sh', 'assets/shaders/fix_spirv.py') }}
+        key: spv-${{ runner.os }}-${{ env.SLANG_VERSION }}-${{ hashFiles('assets/shaders/slang/**', 'assets/shaders/compile.sh') }}
