@@ -1264,9 +1264,6 @@ impl App {
                 world.insert_resource(mapping);
             }
 
-            // --- 输入：帧开始，清空瞬时状态 ---
-            self.input.begin_frame();
-
             if simulate {
                 // --- Fixed timestep: integer nanosecond clock, capped catch-up ---
                 const FIXED_STEP: Duration = Duration::from_nanos(16_666_667);
@@ -1335,6 +1332,12 @@ impl App {
                 );
             }
         } // engine 借用在此结束
+
+        // Window events arrive after the previous tick, so transient input must
+        // be cleared only after this frame's gameplay / UI have read the
+        // snapshot. Otherwise a fresh Space / mouse press edge is dropped
+        // before the ECS sees it. Held state stays valid across frames.
+        self.input.begin_frame();
 
         // --- 开发期热重载（#495）：重建 `.pak` 后不用退出再进 ---
         self.poll_asset_changes();

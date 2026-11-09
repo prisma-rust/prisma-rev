@@ -223,6 +223,12 @@ split into capabilities rather than exposing the whole engine:
 - `time`: fixed-step and frame timing;
 - `assets`: typed handles or path queries through the runtime asset layer.
 
+Input is sampled on every render frame. Held state (movement, aiming) stays
+frame-local; projects that run fixed simulation steps should capture key edges
+from each snapshot and consume the merged edges once on the next step with
+`prism_game_api::InputEdgeBuffer`. Catch-up steps reuse the latest held state,
+but must not replay the same press/release edge on every step.
+
 Editor-only services are excluded. Selection, gizmos, dock panels, document
 undo, and Tauri commands never cross into the project module.
 
