@@ -155,14 +155,14 @@ Vulkan 渲染循环的核心是**同步原语的正确配对**。最容易出错
 
 **问题**：validation 层 `vkCreateShaderModule()` 报 `Invalid explicit layout decorations on type`（`%_runtimearr_XX ArrayStride 8`），VUID-StandaloneSpirv-None-10684。
 
-**原因**：`Texture2D[]` / `SamplerState[]`（`UniformConstant` 运行时数组）被 Slang 错误加上 `OpDecorate <arr> ArrayStride 8`。SPIR-V 校验禁止对"元素是 opaque 类型（image/sampler）的运行时数组"加显式 layout 装饰。该 bug 在 `spirv_1_3`~`spirv_1_6` 所有 profile 上都复现。
+**原因**：`Texture2D[]` / `SamplerState[]`（`UniformConstant` 运行时数组）被 Slang 错误加上 `OpDecorate <arr> ArrayStride 8`。SPIR-V 校验禁止对"元素是 opaque 类型（image/sampler）的运行时数组"加显式 layout 装饰。该 bug 在 `spirv_1_3`~`spirv_1_6` 所有 profile 上都复现，**Slang 2026.21 起已修复**。
 
 **教训**：
-- 编译后必须过 `spirv-val`；这种错误在 debug validation 下才会暴露，release 不校验但驱动行为未定义。
-- 修复：用 `shaders/fix_spirv.py` 在编译后剥离——只删"元素是 `OpTypeImage`/`OpTypeSampler` 的运行时数组"的 `ArrayStride`；**SSBO / struct 数组的 `ArrayStride` 是合法的，必须保留**。
-- 编译脚本（`compile.bat` / `compile.sh`）要把 `fix_spirv.py` 串进 bindless 着色器的产物链。
+- 编译后必须过 `spirv-val`；这种错误在 debug validation 下才会暴露，release 不校验但驱动行为未定义。`compile.sh` 末尾的 gate 就是干这个的。
+- 2025.x / 2026.13 的产物需要剥离非法 `ArrayStride`（只删"元素是 `OpTypeImage`/`OpTypeSampler` 的运行时数组"，**SSBO / struct 数组的合法 stride 必须保留**）。这段后处理（`fix_spirv.py`）已在升级到 Slang 2026.21 后删除；不要再手动加回来，直接升级编译器。
+- 任何环境都优先用 `tools/slang-dl/bin/slangc`（2026.21+），`compile.sh` 会自动探测。2025.11 另有 `scene_frag.slang` 段错误，同样只能靠升级解决。
 
-**手编陷阱（本次新增）**：不要手动调 `slangc` 时加 `-emit-spirv-directly`。该开关绕过了 `fix_spirv.py` 的后处理流程，会直接吐出带非法 `ArrayStride` 的 spv，立刻触发上面的 VUID-10684（`vkCreateShaderModule` 报 `Invalid explicit layout decorations on type for operand '%bindlessSrvs'`）。**统一用 `bash shaders/compile.sh`（或 `run.ps1`，内部调 compile.sh）重编**；手编只用 `compile_stage` 那组参数：`-target spirv -entry <name> -stage <vert|frag> -fvk-use-entrypoint-name`，**不带** `-emit-spirv-directly`。重编后用 `spirv-val.exe <file>.spv` 确认无输出（即无错误）再提交。
+**手编陷阱**：不要绕过 `compile.sh` 直接手调 `slangc`（尤其是旧版本 + `-emit-spirv-directly`），否则会吐出带非法 `ArrayStride` 的 spv。统一用 `bash assets/shaders/compile.sh`（或 `run.ps1`）；手编后至少跑一次 `spirv-val.exe <file>.spv` 再提交。
 
 ## 14. 改了 shader 源文件却没生效？先确认三件事
 
@@ -403,8 +403,8 @@ GTAO+PostPass 集成时一次性暴露了 5 个验证错误，按修复顺序：
 
 ### 30.2 shaders job 环境依赖
 
-- **`shaders/compile.sh` 依赖 `spirv-tools`（`spirv-dis` / `spirv-as`），CI 的 shaders job 之前没装**：`fix_spirv.py`（剥离 bindless 运行时数组的非法 `ArrayStride`，见 §13）调用 `spirv-dis` 反汇编，缺工具直接 `FileNotFoundError` 崩溃。修复：在 ci.yml 的 shaders job 加 `sudo apt-get install -y spirv-tools`。
-- **`shaders/compile.sh` 只在 `scene_frag` 上跑 `fix_spv`**（仅 bindless 那个 shader 有 ArrayStride 问题）。其余 shader 不调 `fix_spirv`，不需要 spirv-tools。
+- **`shaders/compile.sh` 依赖 `spirv-tools`（`spirv-val`）**：CI 的 shaders job 通过 `sudo apt-get install -y spirv-tools` 安装，作为 SPIR-V 合法性 gate。旧的 `fix_spirv.py`（剥离 bindless 运行时数组的非法 `ArrayStride`，见 §13）已随 Slang 2026.21 删除，`spirv-dis` / `spirv-as` 不再是必需依赖。
+- **`shaders/compile.sh` 只保留末尾的统一 gate**：每个 `.spv` 都过 `spirv-val`，不再按 shader 逐个后处理。
 
 ### 30.3 drift check：改了 shader 源必须重生成并提交产物
 
@@ -870,7 +870,9 @@ fix_spv "$OUT/gi_render.comp.spv"
 fix_spv "$OUT/pt_render.comp.spv"
 ```
 
-**教训**：
+> **已废弃（2026-11）**：Slang 2026.21 不再对 opaque runtime array 生成 `ArrayStride`，`fix_spirv.py` 和这些 `fix_spv` 调用已全部删除。CI 与本地统一使用 2026.21，`compile.sh` 末尾的 `spirv-val` gate 负责拦截回归。本节保留作为历史记录，判断规则不再适用。
+
+**教训**（以下仅适用于 Slang ≤ 2026.13；2026.21 起已不需要）：
 - `fix_spv` 不是针对特定文件名，而是针对**任何包含 bindless runtime array 声明**的 SPIR-V 模块。添加新的 slang 文件时，如果它声明或 import 了 `SamplerState[]` / `Texture2D[]` 等 opaque runtime array，就必须加上 `fix_spv`。
 - 一个简单的判断规则：如果 `.slang` 文件包含 `globalSamplers[]` 或 `bindlessSrvs[]` 声明，或者 import 了包含这些声明的模块（`path_integrator.slang`），则编译后需要 `fix_spv`。
 - Slang 的 runtime array ArrayStride bug 影响所有使用 bindless 纹理的 compute shader，不只是 fragment shader。§13 提到的是 fragment shader 的复现，§33 提到 slangc 数据腐败——这里是第三个变种：编译器生成的 SPIR-V 被 `spirv-val` 拒绝。

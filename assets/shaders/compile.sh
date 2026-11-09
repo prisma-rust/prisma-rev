@@ -14,13 +14,16 @@
 # the committed ones. `--write-reflection` adopts them (then rerun
 # `xtask shader-bindgen` and commit both).
 #
-# Requires `slangc` on PATH (from a Slang release), or set SLANGC=/path/to/slangc.
+# Requires `slangc` from a Slang release (2026.21+). Lookup order:
+#   $SLANGC            — explicit override
+#   tools/slang-dl/bin — the local prebuilt download (Windows/Linux)
+#   PATH               — system install
 #
 #   bash assets/shaders/compile.sh                     # build + verify reflection
 #   bash assets/shaders/compile.sh --write-reflection  # adopt the new reflection
 #
 # Env:
-#   SLANGC              slangc binary (default: slangc on PATH)
+#   SLANGC              slangc binary (default: tools/slang-dl, then PATH)
 #   SLANG_PROFILE       SPIR-V profile (default: spirv_1_4)
 #   SLANGC_MIN_VERSION  minimum accepted slangc release (default: 2026.21;
 #                       `0` disables the check — only for throwaway experiments)
@@ -30,7 +33,18 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC="$HERE/slang"
 OUT="$HERE"                      # .spv land next to the existing GLSL .spv
 REFL="$HERE/reflection"
-SLANGC="${SLANGC:-slangc}"
+SLANGC="${SLANGC:-}"
+if [ -z "$SLANGC" ]; then
+  local_slangc="$HERE/../../tools/slang-dl/bin/slangc"
+  if [ -x "$local_slangc.exe" ]; then
+    local_slangc="$local_slangc.exe"
+  fi
+  if [ -x "$local_slangc" ]; then
+    SLANGC="$local_slangc"
+  else
+    SLANGC=slangc
+  fi
+fi
 PROFILE="${SLANG_PROFILE:-spirv_1_4}"
 # Release that produced the committed reflection JSON. Older compilers emit the
 # same field offsets but drop schema fields (`version`, `combined`, `sizes`),
@@ -57,7 +71,7 @@ done
 if ! command -v "$SLANGC" >/dev/null 2>&1 && [ ! -x "$SLANGC" ]; then
   echo "ERROR: slangc not found. Install a Slang release or set SLANGC=/path/to/slangc" >&2
   echo "  $SLANG_DOWNLOAD" >&2
-  echo "  e.g. tools/slang/bin/slangc (desktop only — glibc binary won't run under Termux)" >&2
+  echo "  e.g. tools/slang-dl/bin/slangc (desktop only — glibc binary won't run under Termux)" >&2
   exit 1
 fi
 
@@ -196,22 +210,6 @@ emit_reflection() {
   fi
 }
 
-# fix_spv <file.spv>
-# Slang emits an illegal `ArrayStride` decoration on UniformConstant runtime
-# arrays of opaque types (sampled images / samplers) used for bindless
-# descriptor indexing. SPIR-V validation rejects explicit layout decorations on
-# such runtime arrays (VUID-StandaloneSpirv-None-10684), so the module fails to
-# load under the validation layer. fix_spirv.py strips only those illegal
-# decorations. Safe to run on any .spv; it leaves legal strides untouched.
-fix_spv() {
-  local spv="$1"
-  if command -v python3 >/dev/null 2>&1; then
-    python3 "$HERE/fix_spirv.py" "$spv" "$spv"
-  else
-    echo "  WARNING: python3 not found; skipping ArrayStride fix for $spv" >&2
-  fi
-}
-
 # Compare the freshly generated reflection with the committed files. Only
 # --write-reflection copies the new files into the repo.
 settle_reflection() {
@@ -303,11 +301,10 @@ emit_reflection taa vertexMain vertex fragmentMain fragment
 # for the shadow map is read from the per-frame UBO (not push constants) so
 # the push constant stays under the 128-byte Vulkan limit.
 compile_stage scene_frag fragmentMain fragment
-fix_spv "$OUT/scene_frag.frag.spv"
 emit_reflection scene_frag fragmentMain fragment
 
 # post: vertex + fragment (fullscreen HDR -> sRGB swapchain tonemap). Self
-# contained (no bindless/IBL), so no ArrayStride fix-up needed.
+# contained (no bindless/IBL).
 compile_stage post vertexMain vertex
 compile_stage post fragmentMain fragment
 emit_reflection post vertexMain vertex fragmentMain fragment
@@ -323,24 +320,20 @@ emit_reflection gtao vertexMain vertex fragmentMain fragment
 # Dispatched (dims.x, dims.y, dims.z) — one thread per probe. Requires
 # VK_KHR_ray_query hardware. Output: RWTexture3D coefficient-major depth slices.
 compile_stage gi_bake bakeMain compute
-fix_spv "$OUT/gi_bake.comp.spv"
 
 # gi_render: compute shader for offline path-traced image rendering (ray-query).
 # Dispatched per pixel — renders an HDR image directly. Requires
 # VK_KHR_ray_query hardware. Output: RWTexture2D RGBA32F.
 compile_stage gi_render renderMain compute
-fix_spv "$OUT/gi_render.comp.spv"
 
 # pt_render: real-time path tracing compute shader (temporal accumulation).
 # Dispatched per pixel — traces 1 sample/frame, accumulates for convergence.
 # Requires VK_KHR_ray_query hardware. Output: RWTexture2D RGBA32F (accumulated).
 compile_stage pt_render ptMain compute
-fix_spv "$OUT/pt_render.comp.spv"
 emit_reflection pt_render ptMain compute
 
 # harness_copy: tiny compute kernel for the reusable GPU shader harness test
-# (`crates/prism-render/tests/shader_harness_gpu.rs`). No bindless state, so
-# the SPIR-V needs no ArrayStride fix-up.
+# (`crates/prism-render/tests/shader_harness_gpu.rs`). No bindless state.
 compile_stage harness_copy main compute
 
 # harness_bench: grid-stride compute kernel for the best-of-N benchmark test
@@ -350,20 +343,15 @@ compile_stage harness_bench main compute
 
 # ui_overlay: vertex + fragment (coloured quads on top of the scene output).
 # The fragment stage samples the scene's bindless texture table for
-# background images (#591), so Slang's illegal ArrayStride on bindless opaque
-# runtime arrays applies here too (#580) — some slangc builds emit it.
+# background images (#591).
 compile_stage ui_overlay vertexMain vertex
 compile_stage ui_overlay fragmentMain fragment
-fix_spv "$OUT/ui_overlay.frag.spv"
 emit_reflection ui_overlay vertexMain vertex fragmentMain fragment
 
 # sprites: vertex + fragment (2D sprite quads sampled through the bindless
 # texture table, drawn inside ForwardPass' HDR render pass).
 compile_stage sprites vertexMain vertex
 compile_stage sprites fragmentMain fragment
-# Slang puts an illegal ArrayStride on the bindless opaque runtime arrays;
-# strip it before validation/startup (#580).
-fix_spv "$OUT/sprites.frag.spv"
 emit_reflection sprites vertexMain vertex fragmentMain fragment
 
 # particles: vertex + fragment (world-space billboards, no texture: the radial
@@ -384,7 +372,6 @@ emit_reflection rt_render vertexMain vertex fragmentMain fragment
 # RenderTexture through the bindless SRV table (经典 RT usage).
 compile_stage rt_preview vertexMain vertex
 compile_stage rt_preview fragmentMain fragment
-fix_spv "$OUT/rt_preview.frag.spv"
 emit_reflection rt_preview vertexMain vertex fragmentMain fragment
 
 # Hard gate: every emitted module must be valid SPIR-V (#580). Slang can emit
