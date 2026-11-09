@@ -79,6 +79,37 @@ pub struct RaycastHit {
     pub is_trigger: bool,
 }
 
+/// Buffers keyboard edges from render-frame snapshots until the next gameplay
+/// simulation step. Held state remains frame-local; only press/release edges
+/// are merged into the snapshot returned by [`Self::take_for_step`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InputEdgeBuffer {
+    edges: [u64; 8],
+}
+
+impl InputEdgeBuffer {
+    /// Accumulate key edges observed during this render frame.
+    pub fn capture(&mut self, snapshot: InputSnapshot) {
+        for (pending, current) in self.edges.iter_mut().zip(snapshot.key_edges) {
+            *pending |= current;
+        }
+    }
+
+    /// Add accumulated edges to the current snapshot, then consume them once.
+    pub fn take_for_step(&mut self, mut snapshot: InputSnapshot) -> InputSnapshot {
+        for (current, pending) in snapshot.key_edges.iter_mut().zip(self.edges) {
+            *current |= pending;
+        }
+        self.edges = [0; 8];
+        snapshot
+    }
+
+    /// Discard pending edges, for example when beginning deterministic replay.
+    pub fn clear(&mut self) {
+        self.edges = [0; 8];
+    }
+}
+
 /// Converts an ECS handle into a cross-boundary handle.
 pub fn handle_from_entity(entity: Entity) -> EntityHandle {
     EntityHandle {
@@ -1030,6 +1061,40 @@ impl PluginBackend<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_edges_accumulate_until_consumed_without_staling_held_state() {
+        let mut edges = InputEdgeBuffer::default();
+        let mut press = InputSnapshot::default();
+        press.set_key(keys::SPACE, true);
+        press.set_key_edge(keys::SPACE, true);
+        edges.capture(press);
+        edges.capture(InputSnapshot::default());
+
+        let mut current = InputSnapshot::default();
+        current.set_key(keys::SPACE, false);
+        let stepped = edges.take_for_step(current);
+        assert!(stepped.key_pressed(keys::SPACE));
+        assert!(!stepped.key(keys::SPACE));
+        assert!(!edges
+            .take_for_step(InputSnapshot::default())
+            .key_pressed(keys::SPACE));
+    }
+
+    #[test]
+    fn input_edge_buffer_merges_press_and_release_edges() {
+        let mut edges = InputEdgeBuffer::default();
+        let mut press = InputSnapshot::default();
+        press.set_key_edge(keys::SPACE, true);
+        edges.capture(press);
+        let mut release = InputSnapshot::default();
+        release.set_key_edge(keys::SPACE, false);
+        edges.capture(release);
+
+        let stepped = edges.take_for_step(InputSnapshot::default());
+        assert!(stepped.key_pressed(keys::SPACE));
+        assert!(stepped.key_released(keys::SPACE));
+    }
 
     /// #589: the static Player's input comes from the `InputSnapshot` the engine
     /// writes into the world each frame, not from the default value at
