@@ -1,0 +1,27 @@
+{
+  "version": 3,
+  "entities": [
+    {
+      "id": 0,
+      "name": "camera",
+      "parent": null,
+      "transform": {
+        "position": [160.0, 90.0, 10.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "components": {
+        "prism_engine::scene::Camera": {
+          "background_color": [0.025, 0.035, 0.08, 1.0],
+          "clear_flags": "SolidColor",
+          "enabled": true,
+          "exposure": 1.0,
+          "far": 1000.0,
+          "near": 0.1,
+          "orthographic": true,
+          "orthographic_size": 90.0
+        }
+      }
+    }
+  ]
+}
