@@ -878,8 +878,9 @@ fn build_module(manifest: &Path, target_dir: &Path) -> BuildOutcome {
         };
     }
 
-    let package = package_name(manifest).unwrap_or_else(|| "game".to_string());
-    let library = target_dir.join("debug").join(library_file_name(&package));
+    let library = target_dir
+        .join("debug")
+        .join(library_file_name(&module_library_name(manifest)));
     if library.is_file() {
         BuildOutcome::Built {
             path: library,
@@ -1012,6 +1013,42 @@ fn package_name(manifest: &Path) -> Option<String> {
     None
 }
 
+/// Read `[lib] name` from a project manifest.
+///
+/// The lib target name decides the cdylib filename. A project can keep a
+/// user-facing bin name and use a different internal library name, so the Game
+/// View loader must follow the lib target instead of assuming the package name.
+fn lib_name(manifest: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(manifest).ok()?;
+    let mut in_lib = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_lib = line == "[lib]";
+            continue;
+        }
+        if !in_lib {
+            continue;
+        }
+        let Some(rest) = line.strip_prefix("name") else {
+            continue;
+        };
+        let rest = rest.trim_start().strip_prefix('=')?.trim();
+        let name = rest.trim_matches('"').trim_matches('\'');
+        if !name.is_empty() {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+/// Library name for the Game View module: `[lib] name`, else the package name.
+fn module_library_name(manifest: &Path) -> String {
+    lib_name(manifest)
+        .or_else(|| package_name(manifest))
+        .unwrap_or_else(|| "game".to_string())
+}
+
 fn file_modified(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).ok()?.modified().ok()
 }
@@ -1081,6 +1118,27 @@ mod tests {
         let name = library_file_name("my-game");
         assert!(name.contains("my_game"));
         assert!(name.ends_with(".so") || name.ends_with(".dll") || name.ends_with(".dylib"));
+    }
+
+    #[test]
+    fn lib_section_name_wins_over_the_package_name() {
+        let dir = temp_dir("lib-name");
+        let manifest = dir.join("Cargo.toml");
+        std::fs::write(
+            &manifest,
+            "[package]\nname = \"my-game\"\n\n[lib]\nname = \"my_game_core\"\n",
+        )
+        .unwrap();
+        assert_eq!(module_library_name(&manifest), "my_game_core");
+        assert!(library_file_name(&module_library_name(&manifest)).contains("my_game_core"));
+    }
+
+    #[test]
+    fn module_library_name_falls_back_to_the_package_name() {
+        let dir = temp_dir("lib-fallback");
+        let manifest = dir.join("Cargo.toml");
+        std::fs::write(&manifest, "[package]\nname = \"my-game\"\n").unwrap();
+        assert_eq!(module_library_name(&manifest), "my-game");
     }
 
     #[test]
