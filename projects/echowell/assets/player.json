@@ -1,0 +1,19 @@
+{
+  "fixed_hz": 60.0,
+  "max_run_speed": 90.0,
+  "ground_acceleration": 1000.0,
+  "air_acceleration": 650.0,
+  "gravity": 900.0,
+  "max_fall_speed": 160.0,
+  "jump_speed": 300.0,
+  "coyote_seconds": 0.10,
+  "jump_buffer_seconds": 0.08,
+  "variable_jump_seconds": 0.20,
+  "dash_speed": 240.0,
+  "dash_seconds": 0.15,
+  "dash_end_speed": 160.0,
+  "wall_jump_speed": 280.0,
+  "wall_jump_horizontal_speed": 150.0,
+  "respawn_seconds": 0.50,
+  "player_half_size": [6.0, 8.0]
+}

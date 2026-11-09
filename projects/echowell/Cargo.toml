@@ -1,0 +1,50 @@
+[package]
+name = "echowell"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "EchoWell - a small 2D precision platformer vertical slice"
+
+[workspace]
+
+[lib]
+name = "echowell_core"
+crate-type = ["lib", "cdylib"]
+
+[[bin]]
+name = "echowell"
+path = "src/main.rs"
+required-features = ["player"]
+
+[features]
+default = ["player"]
+player = ["dep:prism-app", "dep:prism-engine", "prism-game-api/host", "prism-app/audio"]
+preview-module = [
+    "dep:prism-project-api",
+    "prism-game-api/plugin",
+    "prism-scene/group-3d",
+    "prism-scene/group-2d",
+    "prism-scene/group-ui",
+]
+
+[dependencies]
+prism-app = { path = "../../crates/prism-app", optional = true }
+prism-engine = { path = "../../crates/prism-engine", optional = true }
+prism-game-api = { path = "../../crates/prism-game-api", default-features = false }
+prism-project-api = { path = "../../crates/prism-project-api", optional = true }
+prism-scene = { path = "../../crates/prism-scene", default-features = false }
+glam = "0.33.2"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+prism-ecs = { path = "../../crates/prism-ecs" }
+prism-game-api = { path = "../../crates/prism-game-api", features = ["host"] }
+
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
