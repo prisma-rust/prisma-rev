@@ -11,6 +11,7 @@
 
   * 只对**改动过的 .rs 文件**跑 rustfmt（仓库既有 fmt 漂移不算在每个 PR 头上）；
   * 对改动的 .rs 检查注释规范（迁移期只告警，见 `docs/code-style.md`）；
+  * 校验根 `Cargo.toml` 与各独立 workspace 的版本号一致（`scripts/version.py`）；
   * 改动到的根 workspace crate：clippy --all-targets -D warnings + cargo test；
   * 改到 shader/reflection/bindings：在临时目录重跑 shader-bindgen，比对是否漂移；
   * 改到 editor/：cargo test（独立 workspace，含数据层与 egui 壳）；
@@ -379,6 +380,18 @@ def shader_bindings_check(changed: list[str]) -> Check:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def version_check() -> Check:
+    """版本号一致性（`scripts/version.py check`）。
+
+    根 `Cargo.toml` 是唯一源；`editor/`、`launcher/`、`xtask` 不能继承，只能同步。
+    这里把它变成 PR 的常规检查，避免发布时才发现漂移。
+    """
+    return Check(
+        "版本一致性",
+        [sys.executable, str(ROOT / "scripts" / "version.py"), "check"],
+    )
+
+
 def dependency_budget_check() -> Check:
     """玩家依赖树预算（`scripts/check_deps.py`）。
 
@@ -609,6 +622,7 @@ def main() -> int:
     checks: list[Check] = [whitespace_check(), artifact_guard(changed)]
     checks.append(format_check(rs_files, args.verbose))
     checks.append(comment_check(base))
+    checks.append(version_check())
 
     if default_crates:
         clippy_cmd = ["cargo", "clippy"]
@@ -681,6 +695,10 @@ def main() -> int:
         elif check.name.startswith("依赖预算") and check.status == "ok":
             match = re.search(r"player (\d+)/(\d+) crates", check.output)
             check.detail = f"{match.group(1)}/{match.group(2)} crates" if match else ""
+
+        elif check.name == "版本一致性" and check.status == "ok":
+            match = re.search(r"version: (\S+)", check.output)
+            check.detail = match.group(1) if match else ""
 
         elif check.name.startswith("clippy (") and check.status == "ok":
             check.detail = "-D warnings"

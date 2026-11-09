@@ -168,6 +168,11 @@ jobs:
       - name: rustfmt --check
         run: cargo fmt --all -- --check
 
+      # The root Cargo.toml is the only version source; standalone workspaces
+      # cannot inherit it, so drift is checked here instead of at release time.
+      - name: version consistency
+        run: python3 scripts/version.py check
+
       # Desktop crates only (prism-app needs the NDK target for Android).
       - name: clippy (desktop crates)
         run: >
