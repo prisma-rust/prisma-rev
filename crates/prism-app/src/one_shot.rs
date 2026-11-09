@@ -8,7 +8,6 @@
 //! 长音乐请用 `AudioSource` 组件，那条路是异步解码 + 按路径缓存的。
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use prism_asset::runtime::ResourceManager;
 use prism_audio::{AudioData, AudioEngine, PlaybackHandle};

@@ -277,6 +277,9 @@ impl<'a> GameWorld<'a> {
         match &mut self.backend {
             #[cfg(feature = "host")]
             Backend::Host(_) => {
+                // The host backend cannot switch scenes itself; the runtime
+                // host (HOST_CAP_SCENE) executes the request after the tick.
+                let _ = (path, additive);
                 log::warn!(
                     "load_scene({path:?}, additive = {additive}) is only available through the runtime host (HOST_CAP_SCENE)"
                 );
