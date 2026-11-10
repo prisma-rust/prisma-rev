@@ -508,10 +508,10 @@ fn sprite_entries(world: &World) -> Vec<(SortKey, prism_render::SpriteDrawItem)>
             let uv_rect = if sref.uv_rect != [0.0, 0.0, 1.0, 1.0] {
                 let mut uv = sref.uv_rect;
                 if sprite.flip_x {
-                    std::mem::swap(&mut uv[0], &mut uv[2]);
+                    uv.swap(0, 2);
                 }
                 if sprite.flip_y {
-                    std::mem::swap(&mut uv[1], &mut uv[3]);
+                    uv.swap(1, 3);
                 }
                 uv
             } else {
