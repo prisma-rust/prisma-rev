@@ -61,16 +61,51 @@ pub struct MaterialSlots {
 ///
 /// Same role as [`MeshRef`] for meshes: the scene only stores the authoring
 /// texture path, while the resolved bindless texture handle lives here.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SpriteRef {
     /// Stable asset id (hot-reload / debugging).
     pub asset_id: SceneAssetId,
     /// Bindless SRV slot of the resolved texture (what the sprite pass reads).
     pub texture_slot: u32,
-    /// Pixel size of the uploaded texture, filled in after upload.
+    /// Pixel size of the uploaded texture or atlas sub-sprite, filled in after upload.
     pub size: [u32; 2],
     /// `0` = not resolved yet; bumped on hot-reload.
     pub generation: u32,
+    /// Atlas UV rect `[u0, v0, u1, v1]` (defaults to `[0.0, 0.0, 1.0, 1.0]` for standalone textures).
+    pub uv_rect: [f32; 4],
+    /// Trimmed offset `[x, y]` in pixels relative to original sprite top-left.
+    pub trimmed_offset: [i32; 2],
+    /// Original sprite size before alpha trimming `[width, height]`.
+    pub original_size: [u32; 2],
+}
+
+impl SpriteRef {
+    /// Helper to construct a standard standalone sprite reference.
+    pub fn new(asset_id: SceneAssetId, texture_slot: u32, size: [u32; 2], generation: u32) -> Self {
+        Self {
+            asset_id,
+            texture_slot,
+            size,
+            generation,
+            uv_rect: [0.0, 0.0, 1.0, 1.0],
+            trimmed_offset: [0, 0],
+            original_size: size,
+        }
+    }
+}
+
+impl Default for SpriteRef {
+    fn default() -> Self {
+        Self {
+            asset_id: SceneAssetId::generate(),
+            texture_slot: 0,
+            size: [0, 0],
+            generation: 0,
+            uv_rect: [0.0, 0.0, 1.0, 1.0],
+            trimmed_offset: [0, 0],
+            original_size: [0, 0],
+        }
+    }
 }
 
 /// GPU texture reference for a 2D [`Tilemap`](prism_scene::components::Tilemap) tileset.

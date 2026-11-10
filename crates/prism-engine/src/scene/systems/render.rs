@@ -505,12 +505,24 @@ fn sprite_entries(world: &World) -> Vec<(SortKey, prism_render::SpriteDrawItem)>
                 world_transform.0.w_axis.z,
                 entity.id(),
             );
+            let uv_rect = if sref.uv_rect != [0.0, 0.0, 1.0, 1.0] {
+                let mut uv = sref.uv_rect;
+                if sprite.flip_x {
+                    uv.swap(0, 2);
+                }
+                if sprite.flip_y {
+                    uv.swap(1, 3);
+                }
+                uv
+            } else {
+                sprite_uv_rect(sprite, sref.size)
+            };
             (
                 key,
                 prism_render::SpriteDrawItem {
                     model: model.to_cols_array_2d(),
                     corners: None,
-                    uv_rect: sprite_uv_rect(sprite, sref.size),
+                    uv_rect,
                     color: sprite.color,
                     texture: sref.texture_slot,
                     src_blend: sprite.src_blend,

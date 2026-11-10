@@ -291,12 +291,7 @@ fn tilemaps_sort_against_sprites_by_layer() {
     );
     world.insert(
         sprite,
-        crate::scene::components::SpriteRef {
-            asset_id: SceneAssetId::generate(),
-            texture_slot: 9,
-            size: [16, 16],
-            generation: 1,
-        },
+        crate::scene::components::SpriteRef::new(SceneAssetId::generate(), 9, [16, 16], 1),
     );
 
     let items = crate::scene::systems::render::scene_2d_system(&world);

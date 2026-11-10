@@ -216,3 +216,262 @@ pub fn decode_rmat(data: &[u8]) -> Option<RmatInfo> {
         texture_ids,
     })
 }
+
+// ---------------------------------------------------------------------------
+// RATL (.ratlas 2D Sprite Atlas)
+// ---------------------------------------------------------------------------
+
+pub const RATL_MAGIC: &[u8; 4] = b"RATL";
+pub const RATL_VERSION: u8 = 1;
+
+/// Metadata for a single sprite entry within an atlas.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AtlasSpriteEntry {
+    /// Sprite name (e.g. `idle_0` or `character/run`).
+    pub name: String,
+    /// 64-bit FNV-1a hash of the name for fast runtime lookup.
+    pub name_hash: u64,
+    /// Pixel rectangle `[x, y, width, height]` on the atlas texture.
+    pub pixel_rect: [u32; 4],
+    /// Normalized UV rectangle `[u0, v0, u1, v1]`.
+    pub uv_rect: [f32; 4],
+    /// Original pixel dimensions `[width, height]` before alpha trimming.
+    pub original_size: [u32; 2],
+    /// Offset `[x, y]` of the trimmed region relative to original sprite top-left.
+    pub trimmed_offset: [i32; 2],
+    /// Pivot position `[pivot_x, pivot_y]` (0..1, defaults to `[0.5, 0.5]`).
+    pub pivot: [f32; 2],
+    /// 9-slice borders `[top, right, bottom, left]` in pixels (0 = no 9-slice).
+    pub nine_slice: [u32; 4],
+}
+
+/// Decoded sprite atlas metadata (.ratlas file).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RatlInfo {
+    /// Path to the underlying texture asset (typically an .rtex file).
+    pub texture_path: String,
+    /// Total width of the atlas texture.
+    pub width: u32,
+    /// Total height of the atlas texture.
+    pub height: u32,
+    /// All sprite entries packed into this atlas.
+    pub sprites: Vec<AtlasSpriteEntry>,
+}
+
+impl RatlInfo {
+    /// Find a sprite entry by name (matches hash first, falling back to name comparison).
+    pub fn find_sprite(&self, name: &str) -> Option<&AtlasSpriteEntry> {
+        let hash = hash_sprite_name(name);
+        self.sprites
+            .iter()
+            .find(|s| s.name_hash == hash || s.name == name)
+    }
+
+    /// Find a sprite entry by 64-bit name hash.
+    pub fn find_sprite_by_hash(&self, hash: u64) -> Option<&AtlasSpriteEntry> {
+        self.sprites.iter().find(|s| s.name_hash == hash)
+    }
+}
+
+/// 64-bit FNV-1a hash function for sprite names.
+pub fn hash_sprite_name(name: &str) -> u64 {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut hash = FNV_OFFSET_BASIS;
+    for &byte in name.as_bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+/// Encode [`RatlInfo`] into binary `.ratlas` bytes.
+pub fn encode_ratl(info: &RatlInfo) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(RATL_MAGIC);
+    out.push(RATL_VERSION);
+    let tex_bytes = info.texture_path.as_bytes();
+    out.extend_from_slice(&(tex_bytes.len() as u16).to_le_bytes());
+    out.extend_from_slice(tex_bytes);
+    out.extend_from_slice(&info.width.to_le_bytes());
+    out.extend_from_slice(&info.height.to_le_bytes());
+    out.extend_from_slice(&(info.sprites.len() as u32).to_le_bytes());
+    for s in &info.sprites {
+        let name_bytes = s.name.as_bytes();
+        out.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+        out.extend_from_slice(name_bytes);
+        out.extend_from_slice(&s.name_hash.to_le_bytes());
+        for &val in &s.pixel_rect {
+            out.extend_from_slice(&val.to_le_bytes());
+        }
+        for &val in &s.uv_rect {
+            out.extend_from_slice(&val.to_le_bytes());
+        }
+        for &val in &s.original_size {
+            out.extend_from_slice(&val.to_le_bytes());
+        }
+        for &val in &s.trimmed_offset {
+            out.extend_from_slice(&val.to_le_bytes());
+        }
+        for &val in &s.pivot {
+            out.extend_from_slice(&val.to_le_bytes());
+        }
+        for &val in &s.nine_slice {
+            out.extend_from_slice(&val.to_le_bytes());
+        }
+    }
+    out
+}
+
+/// Decode binary `.ratlas` bytes into [`RatlInfo`].
+pub fn decode_ratl(data: &[u8]) -> Option<RatlInfo> {
+    if data.len() < 7 || &data[..4] != RATL_MAGIC || data[4] != RATL_VERSION {
+        return None;
+    }
+    let mut pos = 5;
+    let tex_len = u16::from_le_bytes(data.get(pos..pos + 2)?.try_into().ok()?) as usize;
+    pos += 2;
+    let tex_bytes = data.get(pos..pos + tex_len)?;
+    pos += tex_len;
+    let texture_path = std::str::from_utf8(tex_bytes).ok()?.to_string();
+
+    let width = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+    pos += 4;
+    let height = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+    pos += 4;
+    let sprite_count = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?) as usize;
+    pos += 4;
+
+    let mut sprites = Vec::with_capacity(sprite_count);
+    for _ in 0..sprite_count {
+        let name_len = u16::from_le_bytes(data.get(pos..pos + 2)?.try_into().ok()?) as usize;
+        pos += 2;
+        let name_bytes = data.get(pos..pos + name_len)?;
+        pos += name_len;
+        let name = std::str::from_utf8(name_bytes).ok()?.to_string();
+
+        let name_hash = u64::from_le_bytes(data.get(pos..pos + 8)?.try_into().ok()?);
+        pos += 8;
+
+        let mut pixel_rect = [0u32; 4];
+        for v in &mut pixel_rect {
+            *v = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+            pos += 4;
+        }
+
+        let mut uv_rect = [0.0f32; 4];
+        for v in &mut uv_rect {
+            *v = f32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+            pos += 4;
+        }
+
+        let mut original_size = [0u32; 2];
+        for v in &mut original_size {
+            *v = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+            pos += 4;
+        }
+
+        let mut trimmed_offset = [0i32; 2];
+        for v in &mut trimmed_offset {
+            *v = i32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+            pos += 4;
+        }
+
+        let mut pivot = [0.0f32; 2];
+        for v in &mut pivot {
+            *v = f32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+            pos += 4;
+        }
+
+        let mut nine_slice = [0u32; 4];
+        for v in &mut nine_slice {
+            *v = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+            pos += 4;
+        }
+
+        sprites.push(AtlasSpriteEntry {
+            name,
+            name_hash,
+            pixel_rect,
+            uv_rect,
+            original_size,
+            trimmed_offset,
+            pivot,
+            nine_slice,
+        });
+    }
+
+    if pos != data.len() {
+        return None;
+    }
+
+    Some(RatlInfo {
+        texture_path,
+        width,
+        height,
+        sprites,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ratl_encode_decode_roundtrip() {
+        let entry1 = AtlasSpriteEntry {
+            name: "hero_idle".into(),
+            name_hash: hash_sprite_name("hero_idle"),
+            pixel_rect: [4, 4, 32, 48],
+            uv_rect: [0.0078125, 0.0078125, 0.0703125, 0.1015625],
+            original_size: [32, 50],
+            trimmed_offset: [0, 2],
+            pivot: [0.5, 0.0],
+            nine_slice: [0, 0, 0, 0],
+        };
+        let entry2 = AtlasSpriteEntry {
+            name: "ui_button".into(),
+            name_hash: hash_sprite_name("ui_button"),
+            pixel_rect: [40, 4, 64, 32],
+            uv_rect: [0.078125, 0.0078125, 0.203125, 0.0703125],
+            original_size: [64, 32],
+            trimmed_offset: [0, 0],
+            pivot: [0.5, 0.5],
+            nine_slice: [8, 8, 8, 8],
+        };
+        let info = RatlInfo {
+            texture_path: "textures/atlas.rtex".into(),
+            width: 512,
+            height: 512,
+            sprites: vec![entry1.clone(), entry2.clone()],
+        };
+
+        let encoded = encode_ratl(&info);
+        assert_eq!(&encoded[..4], RATL_MAGIC);
+        assert_eq!(encoded[4], RATL_VERSION);
+
+        let decoded = decode_ratl(&encoded).expect("should decode valid RATL");
+        assert_eq!(decoded.texture_path, "textures/atlas.rtex");
+        assert_eq!(decoded.width, 512);
+        assert_eq!(decoded.height, 512);
+        assert_eq!(decoded.sprites.len(), 2);
+        assert_eq!(decoded.sprites[0], entry1);
+        assert_eq!(decoded.sprites[1], entry2);
+
+        let found = decoded
+            .find_sprite("hero_idle")
+            .expect("hero_idle must be found");
+        assert_eq!(found.name, "hero_idle");
+        assert_eq!(found.pixel_rect, [4, 4, 32, 48]);
+
+        let not_found = decoded.find_sprite("hero_attack");
+        assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn ratl_decode_rejects_corrupted() {
+        assert!(decode_ratl(b"").is_none());
+        assert!(decode_ratl(b"GARBAGE").is_none());
+        assert!(decode_ratl(b"RATL\x02").is_none()); // wrong version
+    }
+}

@@ -427,12 +427,7 @@ fn ensure_sprite_ref(world: &mut World, entity: Entity) {
     if has_sprite {
         world.insert(
             entity,
-            SpriteRef {
-                asset_id: SceneAssetId::generate(),
-                texture_slot: 0,
-                size: [0, 0],
-                generation: 0,
-            },
+            SpriteRef::new(SceneAssetId::generate(), 0, [0, 0], 0),
         );
     }
 }

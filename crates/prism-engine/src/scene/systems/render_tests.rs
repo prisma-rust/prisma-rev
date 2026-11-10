@@ -408,12 +408,7 @@ fn spawn_sprite(
     world.insert(e, sprite);
     world.insert(
         e,
-        SpriteRef {
-            asset_id: SceneAssetId::generate(),
-            texture_slot,
-            size: texture_size,
-            generation: 1,
-        },
+        SpriteRef::new(SceneAssetId::generate(), texture_slot, texture_size, 1),
     );
     e
 }
@@ -441,6 +436,32 @@ fn sprite_entity_yields_draw_item_with_world_size() {
     assert!((items[0].model[0][0] - 0.32).abs() < 1e-6);
     assert!((items[0].model[1][1] - 0.32).abs() < 1e-6);
     assert!((items[0].model[3][0]).abs() < 1e-6);
+}
+
+#[test]
+fn sprite_atlas_uv_rect_and_flip_applied() {
+    let mut world = World::new();
+    let e = spawn_sprite(
+        &mut world,
+        glam::Vec3::ZERO,
+        SpriteRenderer {
+            sprite_path: "atlases/player.ratlas#walk_0".into(),
+            pixels_per_unit: 100.0,
+            flip_x: true,
+            ..SpriteRenderer::default()
+        },
+        [32, 32],
+        3,
+    );
+    if let Some(sref) = world.get_mut::<SpriteRef>(e) {
+        sref.uv_rect = [0.1, 0.2, 0.5, 0.8];
+    }
+
+    let items = scene_sprite_system(&world);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].texture, 3);
+    // Since flip_x is true, u0 and u1 are swapped: [0.5, 0.2, 0.1, 0.8]
+    assert_eq!(items[0].uv_rect, [0.5, 0.2, 0.1, 0.8]);
 }
 
 #[test]

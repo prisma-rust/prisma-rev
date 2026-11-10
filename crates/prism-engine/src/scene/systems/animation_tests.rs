@@ -19,12 +19,7 @@ fn spawn(world: &mut World, animation: SpriteAnimation, texture: [u32; 2]) -> pr
     world.insert(entity, animation);
     world.insert(
         entity,
-        SpriteRef {
-            asset_id: SceneAssetId::generate(),
-            texture_slot: 1,
-            size: texture,
-            generation: 1,
-        },
+        SpriteRef::new(SceneAssetId::generate(), 1, texture, 1),
     );
     entity
 }
