@@ -1,7 +1,7 @@
 //! ANF 单元测试（#1161）。
 
-use ash::vk;
 use super::anf::{is_qualcomm_adreno, AnfCaps, QUALCOMM_VENDOR_ID};
+use ash::vk;
 
 #[test]
 fn test_is_qualcomm_adreno_by_vendor_id() {

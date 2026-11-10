@@ -2125,8 +2125,9 @@ impl GraphRenderer {
                     log::warn!("TaaPass recreate_target failed: {e:#}");
                 }
             }
+            let render_extent = self.render_extent();
             if let Some(anf) = self.graph.pass_mut::<crate::anf::AnfPass>() {
-                if let Err(e) = anf.recreate_target(&self.runtime.context, self.render_extent(), extent) {
+                if let Err(e) = anf.recreate_target(&self.runtime.context, render_extent, extent) {
                     log::warn!("AnfPass recreate_target failed: {e:#}");
                 }
             }
@@ -2224,8 +2225,9 @@ impl GraphRenderer {
                 log::warn!("TaaPass recreate_target failed (offscreen resize): {e:#}");
             }
         }
+        let render_extent = self.render_extent();
         if let Some(anf) = self.graph.pass_mut::<crate::anf::AnfPass>() {
-            if let Err(e) = anf.recreate_target(&context, self.render_extent(), extent) {
+            if let Err(e) = anf.recreate_target(&context, render_extent, extent) {
                 log::warn!("AnfPass recreate_target failed (offscreen resize): {e:#}");
             }
         }

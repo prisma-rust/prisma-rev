@@ -32,6 +32,9 @@
 )]
 
 pub mod acceleration_structure;
+pub mod anf;
+#[cfg(test)]
+mod anf_tests;
 /// 主线程(CPU) ↔ 渲染线程(GPU) 资产解析请求/结果桥接类型。
 pub mod asset_bridge;
 pub mod asset_decoders;
@@ -90,9 +93,6 @@ pub mod shader;
 /// after recompiling shaders on a host with slangc - see shaders/compile.sh.
 pub mod shader_bindings;
 pub mod taa;
-pub mod anf;
-#[cfg(test)]
-mod anf_tests;
 /// 方向光阴影贴图边长（texel）。
 ///
 /// 放在不受 feature 门限的位置：引擎侧算 texel 吸附时要用它，而 `shadows` 砖块

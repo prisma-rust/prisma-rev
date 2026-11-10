@@ -9,13 +9,13 @@ use anyhow::{Context as _, Result};
 use ash::vk;
 use std::ffi::c_void;
 
+use crate::buffer::find_memory_type;
 use crate::context::VulkanContext;
 use crate::render_graph::{
     GraphResources, PassInfo, PassKind, RenderContext, RenderGraphBuilder, RenderPassNode,
-    ResourceType, ResourceUsage, ANF_COLOR_H, FORWARD_COLOR_H, FORWARD_DEPTH_H,
+    RenderSettings, ResourceType, ResourceUsage, ANF_COLOR_H, FORWARD_COLOR_H, FORWARD_DEPTH_H,
     FORWARD_VELOCITY_H,
 };
-use crate::render_pass::find_memory_type;
 
 /// Qualcomm 厂商 ID（0x5143）。
 pub const QUALCOMM_VENDOR_ID: u32 = 0x5143;
@@ -25,7 +25,11 @@ pub fn is_qualcomm_adreno(properties: &vk::PhysicalDeviceProperties) -> bool {
     if properties.vendor_id == QUALCOMM_VENDOR_ID {
         return true;
     }
-    let name_bytes = properties.device_name.iter().map(|&c| c as u8).collect::<Vec<_>>();
+    let name_bytes = properties
+        .device_name
+        .iter()
+        .map(|&c| c as u8)
+        .collect::<Vec<_>>();
     let name_str = std::ffi::CStr::from_bytes_until_nul(&name_bytes)
         .ok()
         .and_then(|s| s.to_str().ok())
@@ -322,38 +326,16 @@ impl RenderPassNode for AnfPass {
 
     fn graph_info(&self) -> PassInfo {
         PassInfo {
+            index: usize::MAX,
             name: "AnfPass".into(),
             kind: PassKind::Anf,
+            inputs: vec![FORWARD_COLOR_H, FORWARD_DEPTH_H, FORWARD_VELOCITY_H],
+            outputs: vec![ANF_COLOR_H],
         }
     }
 
-    fn setup(&mut self, builder: &mut RenderGraphBuilder) {
-        builder.read_resource(
-            FORWARD_COLOR_H,
-            ResourceUsage {
-                access: vk::AccessFlags::SHADER_READ,
-                stage: vk::PipelineStageFlags::COMPUTE_SHADER,
-                layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            },
-        );
-        builder.read_resource(
-            FORWARD_DEPTH_H,
-            ResourceUsage {
-                access: vk::AccessFlags::SHADER_READ,
-                stage: vk::PipelineStageFlags::COMPUTE_SHADER,
-                layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            },
-        );
-        builder.read_resource(
-            FORWARD_VELOCITY_H,
-            ResourceUsage {
-                access: vk::AccessFlags::SHADER_READ,
-                stage: vk::PipelineStageFlags::COMPUTE_SHADER,
-                layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            },
-        );
-
-        let handle = builder.create_resource_at(
+    fn setup(&mut self, graph: &mut RenderGraphBuilder, _settings: &RenderSettings) {
+        graph.create_resource_at(
             ANF_COLOR_H,
             ResourceType::ColorAttachment {
                 format: vk::Format::R16G16B16A16_SFLOAT,
@@ -361,14 +343,30 @@ impl RenderPassNode for AnfPass {
                 sample_count: vk::SampleCountFlags::TYPE_1,
             },
         );
-        builder.write_resource(
-            handle,
-            ResourceUsage {
-                access: vk::AccessFlags::SHADER_WRITE,
-                stage: vk::PipelineStageFlags::COMPUTE_SHADER,
-                layout: vk::ImageLayout::GENERAL,
-            },
-        );
+        graph.read_usage(ResourceUsage {
+            handle: FORWARD_COLOR_H,
+            access: vk::AccessFlags::SHADER_READ,
+            stage: vk::PipelineStageFlags::COMPUTE_SHADER,
+            layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        });
+        graph.read_usage(ResourceUsage {
+            handle: FORWARD_DEPTH_H,
+            access: vk::AccessFlags::SHADER_READ,
+            stage: vk::PipelineStageFlags::COMPUTE_SHADER,
+            layout: vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+        });
+        graph.read_usage(ResourceUsage {
+            handle: FORWARD_VELOCITY_H,
+            access: vk::AccessFlags::SHADER_READ,
+            stage: vk::PipelineStageFlags::COMPUTE_SHADER,
+            layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        });
+        graph.write_usage(ResourceUsage {
+            handle: ANF_COLOR_H,
+            access: vk::AccessFlags::SHADER_WRITE,
+            stage: vk::PipelineStageFlags::COMPUTE_SHADER,
+            layout: vk::ImageLayout::GENERAL,
+        });
     }
 
     fn execute(&mut self, ctx: &RenderContext, resources: &mut GraphResources) -> Result<()> {
@@ -437,8 +435,8 @@ impl RenderPassNode for AnfPass {
                 );
             }
 
-            resources.publish_view(ANF_COLOR_H, self.output_view);
-            resources.publish_image(ANF_COLOR_H, self.output_image);
+            resources.set_image_view(ANF_COLOR_H, self.output_view);
+            resources.set_image(ANF_COLOR_H, self.output_image);
         }
 
         Ok(())
@@ -477,8 +475,7 @@ fn create_anf_output_image(
 
     let reqs = unsafe { device.get_image_memory_requirements(image) };
     let memory_type = find_memory_type(
-        &context.instance,
-        context.physical_device,
+        context,
         reqs.memory_type_bits,
         vk::MemoryPropertyFlags::DEVICE_LOCAL,
     )
