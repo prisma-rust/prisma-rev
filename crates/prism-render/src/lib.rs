@@ -90,6 +90,9 @@ pub mod shader;
 /// after recompiling shaders on a host with slangc - see shaders/compile.sh.
 pub mod shader_bindings;
 pub mod taa;
+pub mod anf;
+#[cfg(test)]
+mod anf_tests;
 /// 方向光阴影贴图边长（texel）。
 ///
 /// 放在不受 feature 门限的位置：引擎侧算 texel 吸附时要用它，而 `shadows` 砖块
@@ -114,6 +117,7 @@ pub(crate) mod vulkan_compat;
 // SceneDrawItem is the engine<->renderer exchange type for resolved draws.
 pub use graph_renderer::SceneDrawItem;
 
+pub use anf::{is_qualcomm_adreno, AnfCaps, AnfPass};
 pub use buffer::create_buffer;
 pub use capabilities::RayTracingCaps;
 pub use context::VulkanContext;

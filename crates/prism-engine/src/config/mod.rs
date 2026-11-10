@@ -88,6 +88,12 @@ pub struct RenderConfig {
     pub taa: Option<bool>,
     /// TAA 历史混合强度（0..=0.95）。
     pub taa_strength: Option<f32>,
+    /// Qualcomm Adreno Neural Fusion 超分辨率（#1161）。
+    pub anf_sr: Option<bool>,
+    /// ANF 锐化强度（0.0..=1.0）。
+    pub anf_sharpness: Option<f32>,
+    /// Qualcomm Adreno Neural Fusion 插帧（#1161）。
+    pub anf_fg: Option<bool>,
     /// 0 = HDR tonemap, 1 = depth, 2 = view-space normal。
     pub debug_rt: Option<u32>,
     /// 前向管线线框模式（#431）。
@@ -221,6 +227,15 @@ impl RenderConfig {
         if let Some(value) = self.taa_strength {
             settings.taa_strength = value.clamp(0.0, 0.95);
         }
+        if let Some(value) = self.anf_sr {
+            settings.anf_sr = value;
+        }
+        if let Some(value) = self.anf_sharpness {
+            settings.anf_sharpness = value.clamp(0.0, 1.0);
+        }
+        if let Some(value) = self.anf_fg {
+            settings.anf_fg = value;
+        }
         if let Some(rt) = self.debug_rt {
             settings.debug_rt = rt;
         }
@@ -281,6 +296,9 @@ impl RenderConfig {
             motion_blur_max_pixels: ini.get_f32("render", "motion_blur_max_pixels"),
             taa: ini.get_bool("render", "taa"),
             taa_strength: ini.get_f32("render", "taa_strength"),
+            anf_sr: ini.get_bool("render", "anf_sr"),
+            anf_sharpness: ini.get_f32("render", "anf_sharpness"),
+            anf_fg: ini.get_bool("render", "anf_fg"),
             debug_rt: ini.get_u32("render", "debug_rt"),
             wireframe: ini.get_bool("render", "wireframe"),
             shaded_wireframe: ini.get_bool("render", "shaded_wireframe"),
@@ -528,6 +546,9 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "motion_blur_max_pixels",
             "taa",
             "taa_strength",
+            "anf_sr",
+            "anf_sharpness",
+            "anf_fg",
             "debug_rt",
             "wireframe",
             "shaded_wireframe",
