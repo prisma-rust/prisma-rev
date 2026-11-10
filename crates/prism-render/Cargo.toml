@@ -6,7 +6,7 @@ license.workspace = true
 description = "Vulkan rendering backend for PrismaRev"
 
 [features]
-# ---- Lego：项目模板决定编译哪些能力（见 docs/DESIGN.md §12） ----
+# ---- Modular building blocks: project templates select features (see docs/DESIGN.md §12) ----
 # 默认「全量」，库和示例行为不变；项目模板按需挑砖。
 default = ["pathtrace", "ui", "ui-fontdue", "ibl", "skybox", "shadows", "gtao"]
 # UI 叠加总开关（字形图集 + 管线 + 屏幕空间四边形）。纯 3D/无 UI 项目可关：

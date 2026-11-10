@@ -445,6 +445,7 @@ After Render  = present + end_frame
 - 在 `setup` 时注册自己的 pass 节点到 RenderGraph。
 - 在 `update` / `prepare` / `render` 阶段被 App 依次调用。
 - 持有自己的资源生命周期（如 `RtPipeline` 持有 RT working target、main view target）。
+- **应用层 `AppPlugin`（#1165）**：`prism-app::plugin::AppPlugin` 提供顶层模块化插件契约，将渲染、物理、音频解耦为 `DefaultPlugins`，用户项目可通过 `add_plugin` / `disable_plugin` 自由选择与替换子系统。
 
 当前 `ShadowMapPass` / `ForwardPass` / `GtaoPass` / `PostPass` 顺序固定写死在 `GraphRenderer::new` 中，下一步扩展改为 App 在 `render` 钩子中按需添加 pass。
 
@@ -1148,7 +1149,7 @@ cp target/release/prisma /tmp/p && strip /tmp/p && ls -l /tmp/p   # strip 后（
 
 ---
 
-## 12. Lego：项目模板决定编译哪些子系统
+## 12. 积木：项目模板决定编译哪些子系统
 
 引擎不替项目做取舍。**能力 = 砖块，`Cargo.toml` = 图纸**：项目模板挑哪些 feature，
 就只编译、只链接哪些子系统。引擎自身的 `default` 保持「全量」，这样库和示例不会被

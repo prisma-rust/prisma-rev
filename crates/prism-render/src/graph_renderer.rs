@@ -636,7 +636,7 @@ impl GraphRenderer {
         // Registered when hardware acceleration structures are supported;
         // checks RenderSettings.render_mode internally to decide whether to
         // dispatch. Scene geometry is uploaded later via set_geometry.
-        // `pathtrace` feature 关闭时整块不编译（Lego，见 DESIGN §12）。
+        // Omitted entirely when `pathtrace` feature is disabled (building blocks, see DESIGN §12).
         #[cfg(feature = "pathtrace")]
         #[cfg(feature = "pathtrace")]
         let pt_pass = if context.rt_caps.acceleration_structure {

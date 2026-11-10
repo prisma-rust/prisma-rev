@@ -6,7 +6,7 @@ license.workspace = true
 description = "Scene schema, ECS scene components, and RSCN v4 codec for PrismaRev"
 
 [features]
-# 组件分组（Lego）：关闭一组 = 该组组件不再注册、其 serde/反射代码不进二进制。
+# Component groups (building blocks): disabling a group skips registration and serde/reflection code.
 # 核心组（Active / Name / Transform / Camera / PrefabInstance）永远编译。
 default = ["group-3d", "group-2d", "group-ui"]
 group-3d = []

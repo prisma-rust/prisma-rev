@@ -24,8 +24,8 @@ prism-ecs = { path = "../prism-ecs" }
 # (no engine, render or UI), so it stays inside the plugin boundary rules.
 prism-scene = { path = "../prism-scene" }
 # 仅 `host` 后端用于松散资产定位（插件构建不会拉进引擎）。
-# **必须 default-features = false**：否则会把 prism-engine 的默认能力（如 `pathtrace`）
-# 强加给每一个玩家，项目模板的 Lego 开关就失效了（#535 实测）。
+# **Must use default-features = false**: otherwise prism-engine defaults (such as `pathtrace`)
+# are forced onto every player, breaking project template building-block toggles (#535 verified).
 prism-engine = { path = "../prism-engine", optional = true, default-features = false }
 log.workspace = true
 
