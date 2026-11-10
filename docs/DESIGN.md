@@ -851,9 +851,7 @@ prism-scene::rscn::encode_scene
   - `prism-render/src/asset_decoders.rs`（`decode_rtex` / `decode_rmes`）按 Cooker 真实布局
     （RTEX 版本字段 + mip 偏移表、RMES 属性偏移 + 平面顶点块）解析成
     `TextureUploadInput` / `MeshUploadInput`，含格式码映射（RGBA8 / BC5 / BC6H）与越界校验；
-  - **尚未完成**：两个 GPU 解码器目前没有调用点，还没接到 `BatchUploader`；RTEX 预烘焙 mip 链
-    只上传 base level（`TextureUploadInput` 只能承载单级紧密像素），见 #106。
-    因此 `.pak → GPU` 的纹理/网格端到端仍待补。
+  - **进展**：`prism-engine` 的 `load_texture_data` 已支持完整拼接预烘焙 RTEX mip 链（`TextureUploadInput.mip_levels > 1` + 紧密打包所有 mip 级像素），由 `BatchUploader` 直接拷贝至 GPU，避免多余 blit 并保留各向异性过滤质量（#1156）。两处 GPU 解码器（`asset_decoders.rs`）可继续作为独立解析备选。
 
 - **[G2] Cooker 输出格式与引擎对接** ✅ **场景链路已打通**：`SceneCooker` 产出 RSCN v4，`prism-engine` 的 `SceneLoader` 用同一份 `prism-scene` schema 解码；`prism-cooker` 中有真实 `.scene.json` 的 cook/decode 测试。纹理/网格的压缩数据端到端对比仍待补。
 
