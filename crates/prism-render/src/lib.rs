@@ -32,6 +32,9 @@
 )]
 
 pub mod acceleration_structure;
+pub mod anf;
+#[cfg(test)]
+mod anf_tests;
 /// 主线程(CPU) ↔ 渲染线程(GPU) 资产解析请求/结果桥接类型。
 pub mod asset_bridge;
 pub mod asset_decoders;
@@ -114,6 +117,7 @@ pub(crate) mod vulkan_compat;
 // SceneDrawItem is the engine<->renderer exchange type for resolved draws.
 pub use graph_renderer::SceneDrawItem;
 
+pub use anf::{is_qualcomm_adreno, AnfCaps, AnfPass};
 pub use buffer::create_buffer;
 pub use capabilities::RayTracingCaps;
 pub use context::VulkanContext;

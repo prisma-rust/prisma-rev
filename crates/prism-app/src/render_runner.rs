@@ -472,6 +472,7 @@ fn render_one_frame(
 
     let extent = renderer.extent();
     renderer.set_taa(settings.taa, settings.taa_strength);
+    renderer.set_anf_sr(settings.anf_sr, settings.anf_sharpness);
     let mut frame_data = FrameUBOData {
         view_proj: scene.view_proj.to_cols_array_2d(),
         camera_position: [

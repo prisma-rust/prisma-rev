@@ -48,6 +48,7 @@
   descriptor-indexing / ray-query / dynamic-rendering 等特性，据此决定启用哪条路径。
 - **能力驱动降级**，不靠 `#[cfg(target_os)]` 平台硬编码：
   - 有 `VK_KHR_ray_query` → 走 RayQuery 软阴影 / 反射；否则退化为 raster 硬阴影。
+  - 支持 Qualcomm Adreno Neural Fusion（ANF）与 Adreno 矩阵核心 → 启用 `AnfPass` 神经超分辨率（SR）与插帧（FG）；桌面 / 非高通 / 未预置 `libanf.so` 的设备自动退化为内置 TAA 或全分辨率渲染，保证跨平台统一二进制不崩溃。
   - 支持 descriptor indexing → 走 bindless SRV 表；否则退化为传统 descriptor set。
   - 高版本 Vulkan 可用 dynamic rendering / transient 附件 → 自动采用以省带宽。
 - 探测逻辑集中、可测试，不被散落到各 pass 里。

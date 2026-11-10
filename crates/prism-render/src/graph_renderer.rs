@@ -621,6 +621,8 @@ impl GraphRenderer {
         // `RenderSettings::taa` is false.
         let taa_pass =
             crate::taa::TaaPass::new(&context, swapchain.extent).context("TaaPass::new")?;
+        let anf_pass = crate::anf::AnfPass::new(&context, swapchain.extent, swapchain.extent)
+            .context("AnfPass::new")?;
 
         // PostPass parameters: 2 in-flight frames = 2 descriptor sets.
         let frame_count = 2u32;
@@ -673,6 +675,7 @@ impl GraphRenderer {
         #[cfg(feature = "gtao")]
         graph.add_pass(Box::new(gtao_pass));
         graph.add_pass(Box::new(taa_pass));
+        graph.add_pass(Box::new(anf_pass));
         graph.add_pass(Box::new(rt_scheduler));
         #[cfg(feature = "pathtrace")]
         if let Some(pt) = pt_pass {
@@ -1063,6 +1066,8 @@ impl GraphRenderer {
 
         let taa_pass = crate::taa::TaaPass::new(&context, offscreen.extent())
             .context("TaaPass::new (headless)")?;
+        let anf_pass = crate::anf::AnfPass::new(&context, offscreen.extent(), offscreen.extent())
+            .context("AnfPass::new (headless)")?;
 
         // CRT 调度器（headless 下同样接入图，支持无窗口离屏 RT 调度）。
         let rt_scheduler = crate::rt_scheduler::RenderTextureScheduler::new(&context);
@@ -1095,6 +1100,7 @@ impl GraphRenderer {
         #[cfg(feature = "gtao")]
         graph.add_pass(Box::new(gtao_pass));
         graph.add_pass(Box::new(taa_pass));
+        graph.add_pass(Box::new(anf_pass));
         graph.add_pass(Box::new(rt_scheduler));
         #[cfg(feature = "pathtrace")]
         if let Some(pt) = pt_pass {
@@ -1902,7 +1908,7 @@ impl GraphRenderer {
     /// Apply this frame's TAA subpixel jitter to `frame_data` and remember the
     /// NDC offset for `TaaPass`. Call once per frame before `prepare` (#883).
     pub fn apply_taa_jitter(&mut self, frame_data: &mut FrameUBOData) {
-        let jitter = if self.settings.taa {
+        let jitter = if self.settings.taa || self.settings.anf_sr {
             let j = taa_jitter(self.taa_frame);
             self.taa_frame = self.taa_frame.wrapping_add(1);
             j
@@ -1925,6 +1931,12 @@ impl GraphRenderer {
         }
         self.settings.taa = enabled;
         self.settings.taa_strength = strength.clamp(0.0, 0.95);
+    }
+
+    /// Enable/disable ANF Super Resolution and configure sharpness (#1161).
+    pub fn set_anf_sr(&mut self, enabled: bool, sharpness: f32) {
+        self.settings.anf_sr = enabled;
+        self.settings.anf_sharpness = sharpness.clamp(0.0, 1.0);
     }
 
     pub fn set_internal_resolution(
@@ -2113,6 +2125,12 @@ impl GraphRenderer {
                     log::warn!("TaaPass recreate_target failed: {e:#}");
                 }
             }
+            let render_extent = self.render_extent();
+            if let Some(anf) = self.graph.pass_mut::<crate::anf::AnfPass>() {
+                if let Err(e) = anf.recreate_target(&self.runtime.context, render_extent, extent) {
+                    log::warn!("AnfPass recreate_target failed: {e:#}");
+                }
+            }
             // CRT 调度器的 RenderTextures 跟随 swapchain 尺寸（演示 RT 全屏）。
             if let Some(sched) = self
                 .graph
@@ -2205,6 +2223,12 @@ impl GraphRenderer {
         if let Some(taa) = self.graph.pass_mut::<crate::taa::TaaPass>() {
             if let Err(e) = taa.recreate_target(&context, extent) {
                 log::warn!("TaaPass recreate_target failed (offscreen resize): {e:#}");
+            }
+        }
+        let render_extent = self.render_extent();
+        if let Some(anf) = self.graph.pass_mut::<crate::anf::AnfPass>() {
+            if let Err(e) = anf.recreate_target(&context, render_extent, extent) {
+                log::warn!("AnfPass recreate_target failed (offscreen resize): {e:#}");
             }
         }
         if let Some(sched) = self
