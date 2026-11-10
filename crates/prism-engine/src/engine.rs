@@ -421,9 +421,9 @@ impl Engine {
     ///
     /// `FixedUpdate()` · UE sub‑stepped tick.
     pub fn fixed_update(&mut self, fixed_dt: f32, input_manager: &InputManager) {
-        // Camera/input is variable-rate and is updated exactly once in
-        // `update`. Running it here as well double-consumed mouse deltas.
-        let _ = (fixed_dt, input_manager);
+        let _ = input_manager;
+        // 2D 物理步进模拟（#1160）：默认重力 9.81 m/s² 向下（-Y）
+        crate::physics2d::step_2d(&mut self.world, fixed_dt, [0.0, -9.81]);
     }
 
     /// Variable‑timestep per‑frame update: game logic, camera, input.
@@ -437,6 +437,7 @@ impl Engine {
             dt,
             look_active,
         );
+        crate::scene::systems::camera2d::camera_2d_system(&mut self.world, dt);
 
         // ── 填充 UI 输入状态 ──────────────────────────────────────
         let pos = input_manager.mouse_position();

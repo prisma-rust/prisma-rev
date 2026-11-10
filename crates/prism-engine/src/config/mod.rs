@@ -110,6 +110,7 @@ impl RenderConfig {
         if let Some(mode) = &self.render_mode {
             settings.render_mode = match mode.as_str() {
                 "path_trace" | "path-trace" | "pathtrace" => RenderMode::PathTrace,
+                "sprites_2d" | "sprites2d" | "2d" => RenderMode::Sprites2D,
                 "raster" => RenderMode::Raster,
                 other => {
                     log::warn!("settings: unknown render_mode '{other}'; using raster");

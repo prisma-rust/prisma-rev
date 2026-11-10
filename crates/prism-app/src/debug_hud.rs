@@ -79,6 +79,7 @@ impl DebugHud {
         let mode = match settings.render_mode {
             RenderMode::Raster => "Raster",
             RenderMode::PathTrace => "PathTrace",
+            RenderMode::Sprites2D => "Sprites2D",
         };
         let tonemap = match settings.tonemap_mode {
             0 => "Reinhard",

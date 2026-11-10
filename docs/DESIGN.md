@@ -1174,7 +1174,7 @@ cp target/release/prisma /tmp/p && strip /tmp/p && ls -l /tmp/p   # strip 后（
 | 文本光栅 A | `prism-render/ui-fontdue`（透传） | on | fontdue + ttf-parser（全平台，约 90 KB）；换成 `ui-directwrite` 可省掉 |
 | 文本光栅 B | `prism-render/ui-directwrite`（透传，**Windows 专属**） | off | 用系统 `dwrite.dll` 光栅，fontdue/ttf-parser 不进二进制 |
 | 组件组 3D | `prism-scene/group-3d`（透传 `prism-app`/`prism-engine`） | on | 灯光/天空盒/网格/相机控制/GI 配置不注册，serde 与反射代码不链接 |
-| 组件组 2D | `prism-scene/group-2d` | on | 精灵/线段/精灵动画不注册 |
+| 组件组 2D | `prism-scene/group-2d` | on | 精灵/线段/瓦片地图/2D相机/2D物理（RigidBody2D/Collider2D）不注册 |
 | 组件组 UI | `prism-scene/group-ui` | on | Node/Style/Text/布局类型不注册 |
 | IBL | `prism-render/ibl`（透传） | on | 环境 cubemap 卷积/irradiance/prefilter/BRDF LUT/HDR 解码不编译；退化为 1x1 中性灰，descriptor 布局不变。3D 档 −64 KB |
 | 天空盒 | `prism-render/skybox`（依赖 `ibl`） | on | `skybox.vert/frag.spv` + 管线；`SkyboxPass` 退化成空实现，调用点不变 |

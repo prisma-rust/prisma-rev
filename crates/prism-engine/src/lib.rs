@@ -26,6 +26,9 @@ pub mod input;
 pub mod input_facade;
 pub mod launch_config;
 pub mod physics;
+pub mod physics2d;
+#[cfg(test)]
+mod physics2d_tests;
 pub mod render_settings;
 pub mod render_system;
 pub mod scene;

@@ -497,6 +497,10 @@ pub fn register_builtin_components(registry: &mut ComponentRegistry) {
         // 但也可能在纯 3D 工程里做逻辑计时，所以不受 `group-2d` 限制更合理；
         // 目前与 Light2D 一起登记，保持「没有 2D 就没有昼夜表现」的一致。
         registry.register_reflect_serde::<TimeOfDay>("prism_engine::scene::TimeOfDay");
+        // #1160：2D 相机与 2D 物理
+        registry.register_reflect_serde::<Camera2D>("prism_engine::scene::Camera2D");
+        registry.register_reflect_serde::<RigidBody2D>("prism_engine::scene::RigidBody2D");
+        registry.register_reflect_serde::<Collider2D>("prism_engine::scene::Collider2D");
     }
 
     // ── 本地变换 ──

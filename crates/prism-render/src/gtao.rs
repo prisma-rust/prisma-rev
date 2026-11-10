@@ -34,8 +34,9 @@ use std::time::Instant;
 use crate::context::VulkanContext;
 use crate::pipeline::{GraphicsPipeline, PipelineDesc};
 use crate::render_graph::{
-    GraphResources, PassInfo, PassKind, RenderContext, RenderGraphBuilder, RenderPassNode,
-    RenderSettings, ResourceUsage, FORWARD_DEPTH_H, FORWARD_NORMAL_H, FORWARD_VELOCITY_H,
+    GraphResources, PassInfo, PassKind, RenderContext, RenderGraphBuilder, RenderMode,
+    RenderPassNode, RenderSettings, ResourceUsage, FORWARD_DEPTH_H, FORWARD_NORMAL_H,
+    FORWARD_VELOCITY_H,
 };
 use crate::render_pass::find_memory_type;
 use crate::shader;
@@ -942,6 +943,9 @@ impl RenderPassNode for GtaoPass {
         ctx: &RenderContext,
         resources: &mut GraphResources,
     ) -> anyhow::Result<()> {
+        if ctx.frame.render_mode == RenderMode::Sprites2D {
+            return Ok(());
+        }
         let depth_view = match resources.published_view(FORWARD_DEPTH_H) {
             Some(v) => v,
             None => {
