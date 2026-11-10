@@ -55,12 +55,12 @@ pub mod gizmo;
 pub mod gpu_timer;
 pub mod graph_renderer;
 pub mod ground_grid;
-/// 半分辨率环境光遮蔽 pass（Lego 砖块 `gtao`）。
+/// Half-resolution ambient occlusion pass (building-block feature `gtao`).
 #[cfg(feature = "gtao")]
 pub mod gtao;
 pub mod hdr;
-/// 图像光照（Lego 砖块 `ibl`）的内部实现；模块本身始终存在，
-/// 关闭时只保留描述符布局与 1×1 中性灰回退（见 `make_ibl`）。
+/// Image-based lighting (building-block feature `ibl`); the module is always compiled,
+/// falling back to descriptor layout and 1×1 neutral grey fallback when disabled (see `make_ibl`).
 pub mod ibl;
 pub mod lut;
 pub mod managers;
@@ -92,8 +92,8 @@ pub mod shader_bindings;
 pub mod taa;
 /// 方向光阴影贴图边长（texel）。
 ///
-/// 放在不受 feature 门限的位置：引擎侧算 texel 吸附时要用它，而 `shadows` 砖块
-/// 可能被关掉（Lego 最小档）。`shadow_map_pass` 内部 re-export 同一个常量。
+/// Placed outside feature gates: needed by engine texel snapping even when the `shadows`
+/// building block is disabled in minimal profiles. `shadow_map_pass` re-exports this same constant.
 pub const SHADOW_MAP_SIZE: u32 = 2048;
 
 /// 阴影贴图边长的合法范围（#526）：低于 256 基本不可用，高于 8192 在移动端 /
@@ -101,7 +101,7 @@ pub const SHADOW_MAP_SIZE: u32 = 2048;
 pub const MIN_SHADOW_MAP_SIZE: u32 = 256;
 pub const MAX_SHADOW_MAP_SIZE: u32 = 8192;
 
-/// 方向光阴影贴图 pass（Lego 砖块 `shadows`）。
+/// Directional shadow-map pass (building-block feature `shadows`).
 #[cfg(feature = "shadows")]
 pub mod shadow_map_pass;
 pub mod skybox_pass;

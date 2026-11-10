@@ -8,7 +8,7 @@ description = "Application layer and main loop for PrismaRev"
 [features]
 default = ["pathtrace", "ui", "ui-fontdue", "ibl", "skybox", "shadows", "gtao", "group-3d", "group-2d", "group-ui"]
 legacy-disk-scenes = []
-# Lego 开关：透传到 prism-render（见 docs/DESIGN.md §12）。
+# Modular building-block toggles: forwarded to prism-render (see docs/DESIGN.md §12).
 pathtrace = ["prism-render/pathtrace"]
 ui = ["prism-render/ui"]
 # 文本光栅后端（透传）：默认 fontdue；Windows 可选系统 DirectWrite。

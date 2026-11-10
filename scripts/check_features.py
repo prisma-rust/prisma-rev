@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lego 特性矩阵：保证「关掉某块能力」的组合真的能编译。
+"""积木特性矩阵：保证「关掉某块能力」的组合真的能编译。
 
     python scripts/check_features.py          # 跑默认矩阵
     python scripts/check_features.py --list   # 只打印组合
@@ -77,9 +77,9 @@ def main() -> int:
             sys.stderr.write("  ok\n")
 
     if failed:
-        print(f"| Lego 特性矩阵 | ❌ | 失败：{', '.join(failed)} |")
+        print(f"| 积木特性矩阵 | ❌ | 失败：{', '.join(failed)} |")
         return 1
-    print(f"| Lego 特性矩阵 | ✅ | {len(MATRIX)} 个组合 |")
+    print(f"| 积木特性矩阵 | ✅ | {len(MATRIX)} 个组合 |")
     return 0
 
 
