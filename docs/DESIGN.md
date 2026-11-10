@@ -89,8 +89,8 @@
 | 阴影 / RT | 光栅化阴影贴图：`ShadowMapPass`（深度预渲染，见 `shadow_depth.slang`）+ `ForwardPass`（comparison sampler 采样，见 `scene_frag.slang`） |
 | 能力探测 | `prism-render/src/capabilities.rs`（集中探测，扩展中） |
 | 帧生命周期 | `GraphRenderer` 已提供 `begin_frame` → `prepare` → `execute` → `present` → `end_frame` 阶段（2026-08-21 起 `prepare` 已在 `render_system` 与 `render_runner::render_one_frame` 中实际调用，不再空转）；旧 `render()` 仅作为兼容门面。`prepare` 当前实现脏标记日志与输入校验，下一步扩展在此调度批量上传。细粒度 Runtime/Plugin 拆分仍待 PR-L2。 |
-| 场景同步（CPU→GPU） | **阶段性实现（2026-08-21）**。`DirtyRouter` 已扩展 `exposure`/`pt_lights`/`draw_count` 标志并接入 `prepare`，`FramePacket` 抽取与脏检测闭环已打通；但 `RenderTexture/Mesh/Material/Instance` 的统一 `DirtyDispatchPlan` 与 `SceneReadView` 仍待 PR-S2/S3。当前仍由 `GpuAssetResolver` 点对点触发上传，`prepare` 批同步为预留。设计见 §9。 |
-| 只读场景视图 | `prism-engine::scene::SceneReadView` 已覆盖环境资源路径和扁平 `DrawItem` 提取；相机/灯光快照仍在逐步迁移。 |
+| 场景同步（CPU→GPU） | **已完成（2026-11-10 / #1157）**。统一 `DirtyDispatchPlan` 已在 `prepare` 阶段统一消费，收敛纹理/网格/材质/光照/实例的批量调度与暂存上传。`SceneReadView` 已扩展为完整只读快照（相机、环境、光照、绘制项）。设计见 §9。 |
+| 只读场景视图 | `prism-engine::scene::SceneReadView` 已覆盖相机、光照、环境资源路径和扁平 `DrawItem` 提取；Pass 仅依赖只读快照。 |
 
 ## 5. 反目标（明确不做什么）
 
@@ -460,7 +460,7 @@ After Render  = present + end_frame
 
 ## 9. 场景数据同步（CPU→GPU 设计）
 
-> **2026-08-21 部分完成**：`DirtyRouter` 已具备 `camera/dir_light/point_lights/exposure/draw_count` 脏检测并接入 `prepare`，但仍为“点对点手动触发”向“统一 `DirtyDispatchPlan` + `prepare` 批同步”（§9.1）过渡阶段。`app.rs` 的各路 upload 尚未收敛到 `prepare`，`SceneReadView` 仍为扁平 `DrawItem` 提取。
+> **2026-11-10 已完成（#1157）**：统一 `DirtyDispatchPlan` 已正式落地并在 `prepare` 阶段消费，收敛批量上传与释放；`SceneReadView` 已推进为完整只读场景快照。
 
 ### 9.1 同步管道总览
 
@@ -545,8 +545,8 @@ pub struct SceneReadView<'a> {
 ### 9.5 迁移步骤
 
 - **PR-S1：SceneChanges 提取** ✅ **已完成**。`prism-engine::render_system::SceneChanges` + `extract_frame_packet` 已统一抽取相机/光照/`draw_items`，并在 `DirtyRouter::update` 中集中对比。
-- **PR-S2：DirtyRouter 接入 RenderManager** ✅ **部分完成 2026-08-21**。`DirtyRouter` 已扩展 `exposure/draw_count/pt_lights` 并接入 `prepare`；`DirtyDispatchPlan` 预留已在 `prepare` 中日志，下一步将 `RenderTexture/Mesh/Material` 的 `upload` 收敛到 `prepare` 批处理并禁止外部直调。
-- **PR-S3：SceneReadView 替换 pass 中的 manager 直接引用** ⏳ **接口已定义**。`SceneReadView` 扁平 `DrawItem` 已覆盖绘制路径，`FrameInput` 即为过渡态只读视图；下一步扩展将 `GraphResources` 句柄化并让 `ForwardPass::execute(ctx, view)` 取代裸 `&mut Manager`。
+- **PR-S2：DirtyRouter 接入 RenderManager 与 DirtyDispatchPlan** ✅ **已完成（#1157）**。`DirtyRouter` 统一生成 `DirtyDispatchPlan` 并在 `prepare` 阶段消费，批量上传收敛到 `prepare`。
+- **PR-S3：SceneReadView 完整只读快照** ✅ **已完成（#1157）**。`SceneReadView` 已支持相机、光源、环境与绘制项的完整只读提取，Pass 仅依赖视图与 `GraphFrame`。
 - **PR-S4（可选）：后台 AssetHub 异步加载** ✅ **实现 已接线**。`prism-app::io_runner` 与 `asset_bridge::AssetResolveRequest/Result` 通道 + `render_runner` 异步 `GraphRenderer` 构建已打通，后台解码 `ModelLoaded` 事件以 `flume` 投递，当前同步 `GpuAssetResolver` 为回退。
 
 ---

@@ -976,6 +976,7 @@ impl EngineHost {
             shadows_enabled: scene.shadows_enabled,
             ui_overlay: Some(&self.packet.ui_overlay),
             show_grid: editor_grid_visible(self.kind, &self.settings, self.view_2d),
+            dispatch_plan: None,
         };
 
         self.renderer.set_internal_resolution(

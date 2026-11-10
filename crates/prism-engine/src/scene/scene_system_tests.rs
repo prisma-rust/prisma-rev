@@ -337,3 +337,17 @@ fn a_persistent_child_survives_a_dead_parent() {
     assert!(!world.is_alive(parent));
     assert!(world.is_alive(child));
 }
+
+#[test]
+fn scene_read_view_extracts_cameras_and_lights() {
+    let world = World::new();
+    let view = SceneReadView::new(&world);
+    assert!(view.light_samples().is_empty());
+    let cameras = view.cameras(&glam::Mat4::IDENTITY, 16.0 / 9.0);
+    assert_eq!(
+        cameras.len(),
+        1,
+        "empty world should produce fallback camera"
+    );
+    assert!(!cameras[0].has_camera);
+}

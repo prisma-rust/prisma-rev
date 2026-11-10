@@ -486,47 +486,8 @@ fn collect_scene_changes_into(
             }
         }
     }
-    let mut cameras: Vec<prism_render::render_graph::CameraView> = camera_entities
-        .iter()
-        .filter_map(|entity| {
-            let out = scene::systems::camera::compute_camera_output_for(
-                world,
-                *entity,
-                surface_rotation,
-            )?;
-            let flags = scene::systems::camera::clear_flags(world, *entity);
-            Some(prism_render::render_graph::CameraView {
-                view_proj: out.view_proj.to_cols_array_2d(),
-                view: out.view.to_cols_array_2d(),
-                inv_view: out.view.inverse().to_cols_array_2d(),
-                eye: out.eye.to_array(),
-                clear_color: scene::systems::camera::clear_color(world, *entity),
-                clear_color_enabled: flags.clears_color(),
-                clear_depth: flags.clears_depth(),
-                draw_skybox: flags.draws_skybox(),
-                exposure: out.exposure,
-                has_camera: true,
-            })
-        })
-        .collect();
-    if cameras.is_empty() {
-        // 没有可用相机：保留旧的灰底回退，不画天空盒。
-        let fallback =
-            scene::systems::camera::fallback_camera_output(surface_rotation, display_aspect);
-        cameras.push(prism_render::render_graph::CameraView {
-            view_proj: fallback.view_proj.to_cols_array_2d(),
-            view: fallback.view.to_cols_array_2d(),
-            inv_view: fallback.view.inverse().to_cols_array_2d(),
-            eye: fallback.eye.to_array(),
-            clear_color: scene::systems::camera::DEFAULT_CLEAR_COLOR,
-            clear_color_enabled: true,
-            clear_depth: true,
-            draw_skybox: false,
-            exposure: fallback.exposure,
-            has_camera: false,
-        });
-    }
-    out.cameras = cameras;
+    let scene_view = scene::SceneReadView::new(world);
+    out.cameras = scene_view.cameras(surface_rotation, display_aspect);
 
     // 1.5 正交标志 —— 与取景/清屏来自**同一台**相机。PT 主光线据此决定
     //     是共享相机原点（透视）还是逐像素近平面起点（正交，issue #10）。
@@ -535,7 +496,7 @@ fn collect_scene_changes_into(
         .map(|cam| cam.orthographic)
         .unwrap_or(false);
     // 2. 光源 —— 统一 `Light`（形状）与旧三组件归一成 `LightSample`。
-    let samples = scene::systems::lights::collect_light_samples(world);
+    let samples = scene_view.light_samples();
     let dir_light = samples
         .iter()
         .find(|sample| sample.kind == scene::systems::lights::LightKind::Directional)
@@ -805,13 +766,16 @@ pub fn render_system(
         ],
     };
 
-    // 2.5. 扩展脏检测：draw_items 内容变化（矩阵 / mesh / material / 阴影标志）
-    //      也视为场景脏（触发 BLAS/instance 更新与 PT 累积重置），不只比较数量。
+    // 2.5. 统一脏分派计划（DESIGN §9 / #1157）：
+    //      draw_items 内容变化（矩阵 / mesh / material / 阴影标志）
+    //      也视为场景脏，收敛到统一的 DirtyDispatchPlan。
     let draw_items_dirty = dirty_router.draw_items_dirty(draw_items_signature(draw_items));
     if draw_items_dirty {
         log::trace!("dirty: draw_items changed");
     }
     let pt_bounces_dirty = dirty_router.pt_bounces_dirty(settings.pt_max_bounces);
+    let dispatch_plan =
+        dirty_router.plan_dispatch(scene, draw_items_dirty, pt_bounces_dirty, 0, 0, 0);
 
     // 3. Drive the render-graph phase API.
     renderer.set_occlusion_culling(settings.occlusion_culling);
@@ -879,6 +843,7 @@ pub fn render_system(
         shadows_enabled: *shadows_enabled,
         ui_overlay: Some(ui_overlay),
         show_grid: settings.show_grid,
+        dispatch_plan: Some(&dispatch_plan),
     };
     // §8 五阶段：prepare 阶段批量同步（当前实现 dirty 日志 + 未来上传点）
     renderer.prepare(&ctx, &input).map_err(|e| {

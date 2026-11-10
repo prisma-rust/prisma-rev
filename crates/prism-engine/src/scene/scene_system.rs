@@ -55,6 +55,78 @@ impl<'a> SceneReadView<'a> {
         Self { world }
     }
 
+    /// 借出底层 ECS World 只读引用。
+    pub fn world(&self) -> &'a World {
+        self.world
+    }
+
+    /// 提取启用的相机实体输出（包含矩阵与曝光参数）。
+    pub fn active_camera_output(
+        &self,
+        surface_rotation: &glam::Mat4,
+    ) -> Option<super::systems::camera::CameraOutput> {
+        super::systems::camera::compute_camera_output(self.world, surface_rotation)
+    }
+
+    /// 提取所有参与合成的相机层（已按 Camera.depth 升序排序）。
+    pub fn cameras(
+        &self,
+        surface_rotation: &glam::Mat4,
+        display_aspect: f32,
+    ) -> Vec<prism_render::render_graph::CameraView> {
+        let camera_entities = super::systems::camera::all_cameras(self.world);
+        let mut list: Vec<prism_render::render_graph::CameraView> = camera_entities
+            .iter()
+            .filter_map(|entity| {
+                let out = super::systems::camera::compute_camera_output_for(
+                    self.world,
+                    *entity,
+                    surface_rotation,
+                )?;
+                let flags = super::systems::camera::clear_flags(self.world, *entity);
+                Some(prism_render::render_graph::CameraView {
+                    view_proj: out.view_proj.to_cols_array_2d(),
+                    view: out.view.to_cols_array_2d(),
+                    inv_view: out.view.inverse().to_cols_array_2d(),
+                    eye: out.eye.to_array(),
+                    clear_color: super::systems::camera::clear_color(self.world, *entity),
+                    clear_color_enabled: flags.clears_color(),
+                    clear_depth: flags.clears_depth(),
+                    draw_skybox: flags.draws_skybox(),
+                    exposure: out.exposure,
+                    has_camera: true,
+                })
+            })
+            .collect();
+        if list.is_empty() {
+            let fallback =
+                super::systems::camera::fallback_camera_output(surface_rotation, display_aspect);
+            list.push(prism_render::render_graph::CameraView {
+                view_proj: fallback.view_proj.to_cols_array_2d(),
+                view: fallback.view.to_cols_array_2d(),
+                inv_view: fallback.view.inverse().to_cols_array_2d(),
+                eye: fallback.eye.to_array(),
+                clear_color: super::systems::camera::DEFAULT_CLEAR_COLOR,
+                clear_color_enabled: true,
+                clear_depth: true,
+                draw_skybox: false,
+                exposure: fallback.exposure,
+                has_camera: false,
+            });
+        }
+        list
+    }
+
+    /// 提取场景中收集的光源样本。
+    pub fn light_samples(&self) -> Vec<super::systems::lights::LightSample> {
+        super::systems::lights::collect_light_samples(self.world)
+    }
+
+    /// 采集光源样本到调用方缓冲。
+    pub fn light_samples_into(&self, out: &mut Vec<super::systems::lights::LightSample>) {
+        super::systems::lights::collect_light_samples_into(self.world, out);
+    }
+
     pub fn environment_asset_path(&self) -> Option<String> {
         // Skybox is the authoritative source. A scene with a disabled Skybox
         // deliberately opts out of IBL, so do not fall back to the legacy
