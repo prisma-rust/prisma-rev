@@ -413,6 +413,493 @@ pub fn decode_ratl(data: &[u8]) -> Option<RatlInfo> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// RANIM2D (.ranim2d 2D Animation Format)
+// ---------------------------------------------------------------------------
+
+pub const RANIM2D_MAGIC: &[u8; 4] = b"RA2D";
+pub const RANIM2D_VERSION: u8 = 1;
+
+/// Playback direction for 2D animation tags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Anim2DDirection {
+    Forward = 0,
+    Reverse = 1,
+    PingPong = 2,
+}
+
+impl Anim2DDirection {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::Reverse,
+            2 => Self::PingPong,
+            _ => Self::Forward,
+        }
+    }
+}
+
+/// An animation tag / clip within a 2D animation asset (e.g. "idle", "run").
+#[derive(Debug, Clone, PartialEq)]
+pub struct Anim2DTag {
+    pub name: String,
+    pub from_frame: u32,
+    pub to_frame: u32,
+    pub direction: Anim2DDirection,
+    pub repeat: u32,
+}
+
+/// A single keyframe within a 2D animation sequence.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Anim2DFrame {
+    /// Sprite name inside the atlas (e.g. "player_0").
+    pub sprite_name: String,
+    /// Duration of this frame in milliseconds.
+    pub duration_ms: u32,
+}
+
+/// User slice / attachment point defined on the sprite canvas.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Anim2DSlice {
+    pub name: String,
+    pub bounds: [i32; 4],
+    pub pivot: Option<[f32; 2]>,
+}
+
+/// Decoded 2D animation metadata (.ranim2d).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ranim2DInfo {
+    /// Path to the referenced .ratlas sprite atlas asset.
+    pub atlas_path: String,
+    pub frames: Vec<Anim2DFrame>,
+    pub tags: Vec<Anim2DTag>,
+    pub slices: Vec<Anim2DSlice>,
+}
+
+impl Ranim2DInfo {
+    pub fn find_tag(&self, name: &str) -> Option<&Anim2DTag> {
+        self.tags.iter().find(|t| t.name == name)
+    }
+
+    pub fn find_slice(&self, name: &str) -> Option<&Anim2DSlice> {
+        self.slices.iter().find(|s| s.name == name)
+    }
+
+    pub fn total_duration_ms(&self) -> u32 {
+        self.frames.iter().map(|f| f.duration_ms).sum()
+    }
+}
+
+/// Encode [`Ranim2DInfo`] into binary `.ranim2d` bytes.
+pub fn encode_ranim2d(info: &Ranim2DInfo) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(RANIM2D_MAGIC);
+    out.push(RANIM2D_VERSION);
+
+    let atlas_bytes = info.atlas_path.as_bytes();
+    out.extend_from_slice(&(atlas_bytes.len() as u16).to_le_bytes());
+    out.extend_from_slice(atlas_bytes);
+
+    // Frames
+    out.extend_from_slice(&(info.frames.len() as u32).to_le_bytes());
+    for f in &info.frames {
+        let name_bytes = f.sprite_name.as_bytes();
+        out.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+        out.extend_from_slice(name_bytes);
+        out.extend_from_slice(&f.duration_ms.to_le_bytes());
+    }
+
+    // Tags
+    out.extend_from_slice(&(info.tags.len() as u32).to_le_bytes());
+    for t in &info.tags {
+        let name_bytes = t.name.as_bytes();
+        out.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+        out.extend_from_slice(name_bytes);
+        out.extend_from_slice(&t.from_frame.to_le_bytes());
+        out.extend_from_slice(&t.to_frame.to_le_bytes());
+        out.push(t.direction as u8);
+        out.extend_from_slice(&t.repeat.to_le_bytes());
+    }
+
+    // Slices
+    out.extend_from_slice(&(info.slices.len() as u32).to_le_bytes());
+    for s in &info.slices {
+        let name_bytes = s.name.as_bytes();
+        out.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+        out.extend_from_slice(name_bytes);
+        for &val in &s.bounds {
+            out.extend_from_slice(&val.to_le_bytes());
+        }
+        if let Some(p) = s.pivot {
+            out.push(1);
+            out.extend_from_slice(&p[0].to_le_bytes());
+            out.extend_from_slice(&p[1].to_le_bytes());
+        } else {
+            out.push(0);
+        }
+    }
+
+    out
+}
+
+/// Decode binary `.ranim2d` bytes into [`Ranim2DInfo`].
+pub fn decode_ranim2d(data: &[u8]) -> Option<Ranim2DInfo> {
+    if data.len() < 7 || &data[..4] != RANIM2D_MAGIC || data[4] != RANIM2D_VERSION {
+        return None;
+    }
+    let mut pos = 5;
+    let atlas_len = u16::from_le_bytes(data.get(pos..pos + 2)?.try_into().ok()?) as usize;
+    pos += 2;
+    let atlas_bytes = data.get(pos..pos + atlas_len)?;
+    pos += atlas_len;
+    let atlas_path = std::str::from_utf8(atlas_bytes).ok()?.to_string();
+
+    // Frames
+    let frames_count = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?) as usize;
+    pos += 4;
+    let mut frames = Vec::with_capacity(frames_count);
+    for _ in 0..frames_count {
+        let name_len = u16::from_le_bytes(data.get(pos..pos + 2)?.try_into().ok()?) as usize;
+        pos += 2;
+        let name_bytes = data.get(pos..pos + name_len)?;
+        pos += name_len;
+        let sprite_name = std::str::from_utf8(name_bytes).ok()?.to_string();
+        let duration_ms = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+        pos += 4;
+        frames.push(Anim2DFrame {
+            sprite_name,
+            duration_ms,
+        });
+    }
+
+    // Tags
+    let tags_count = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?) as usize;
+    pos += 4;
+    let mut tags = Vec::with_capacity(tags_count);
+    for _ in 0..tags_count {
+        let name_len = u16::from_le_bytes(data.get(pos..pos + 2)?.try_into().ok()?) as usize;
+        pos += 2;
+        let name_bytes = data.get(pos..pos + name_len)?;
+        pos += name_len;
+        let name = std::str::from_utf8(name_bytes).ok()?.to_string();
+        let from_frame = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+        pos += 4;
+        let to_frame = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+        pos += 4;
+        let dir_byte = *data.get(pos)?;
+        pos += 1;
+        let repeat = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+        pos += 4;
+        tags.push(Anim2DTag {
+            name,
+            from_frame,
+            to_frame,
+            direction: Anim2DDirection::from_u8(dir_byte),
+            repeat,
+        });
+    }
+
+    // Slices
+    let slices_count = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?) as usize;
+    pos += 4;
+    let mut slices = Vec::with_capacity(slices_count);
+    for _ in 0..slices_count {
+        let name_len = u16::from_le_bytes(data.get(pos..pos + 2)?.try_into().ok()?) as usize;
+        pos += 2;
+        let name_bytes = data.get(pos..pos + name_len)?;
+        pos += name_len;
+        let name = std::str::from_utf8(name_bytes).ok()?.to_string();
+
+        let mut bounds = [0i32; 4];
+        for v in &mut bounds {
+            *v = i32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+            pos += 4;
+        }
+
+        let has_pivot = *data.get(pos)?;
+        pos += 1;
+        let pivot = if has_pivot == 1 {
+            let px = f32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+            pos += 4;
+            let py = f32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+            pos += 4;
+            Some([px, py])
+        } else {
+            None
+        };
+
+        slices.push(Anim2DSlice {
+            name,
+            bounds,
+            pivot,
+        });
+    }
+
+    if pos != data.len() {
+        return None;
+    }
+
+    Some(Ranim2DInfo {
+        atlas_path,
+        frames,
+        tags,
+        slices,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// RTILEMAP (.rtilemap 2D Tilemap Format)
+// ---------------------------------------------------------------------------
+
+pub const RTILEMAP_MAGIC: &[u8; 4] = b"RTMG";
+pub const RTILEMAP_VERSION: u8 = 1;
+
+/// A single grid tile layer in a tilemap.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TilemapLayer {
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub visible: bool,
+    pub opacity: f32,
+    pub offset: [f32; 2],
+    pub tiles: Vec<u32>,
+}
+
+/// An object placed in a tilemap object layer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TilemapObject {
+    pub id: u32,
+    pub name: String,
+    pub class_name: String,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub rotation: f32,
+    pub visible: bool,
+}
+
+/// Merged collision box from greedy contour consolidation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MergedCollisionBox {
+    pub rect: [f32; 4],
+}
+
+/// Decoded tilemap level data (.rtilemap).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RtilemapInfo {
+    pub width: u32,
+    pub height: u32,
+    pub tile_width: u32,
+    pub tile_height: u32,
+    pub tileset_path: String,
+    pub layers: Vec<TilemapLayer>,
+    pub objects: Vec<TilemapObject>,
+    pub collision_boxes: Vec<MergedCollisionBox>,
+}
+
+/// Encode [`RtilemapInfo`] into binary `.rtilemap` bytes.
+pub fn encode_rtilemap(info: &RtilemapInfo) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(RTILEMAP_MAGIC);
+    out.push(RTILEMAP_VERSION);
+
+    out.extend_from_slice(&info.width.to_le_bytes());
+    out.extend_from_slice(&info.height.to_le_bytes());
+    out.extend_from_slice(&info.tile_width.to_le_bytes());
+    out.extend_from_slice(&info.tile_height.to_le_bytes());
+
+    let tileset_bytes = info.tileset_path.as_bytes();
+    out.extend_from_slice(&(tileset_bytes.len() as u16).to_le_bytes());
+    out.extend_from_slice(tileset_bytes);
+
+    // Layers
+    out.extend_from_slice(&(info.layers.len() as u32).to_le_bytes());
+    for l in &info.layers {
+        let name_bytes = l.name.as_bytes();
+        out.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+        out.extend_from_slice(name_bytes);
+        out.extend_from_slice(&l.width.to_le_bytes());
+        out.extend_from_slice(&l.height.to_le_bytes());
+        out.push(if l.visible { 1 } else { 0 });
+        out.extend_from_slice(&l.opacity.to_le_bytes());
+        out.extend_from_slice(&l.offset[0].to_le_bytes());
+        out.extend_from_slice(&l.offset[1].to_le_bytes());
+        out.extend_from_slice(&(l.tiles.len() as u32).to_le_bytes());
+        for &t in &l.tiles {
+            out.extend_from_slice(&t.to_le_bytes());
+        }
+    }
+
+    // Objects
+    out.extend_from_slice(&(info.objects.len() as u32).to_le_bytes());
+    for o in &info.objects {
+        out.extend_from_slice(&o.id.to_le_bytes());
+        let name_bytes = o.name.as_bytes();
+        out.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+        out.extend_from_slice(name_bytes);
+        let class_bytes = o.class_name.as_bytes();
+        out.extend_from_slice(&(class_bytes.len() as u16).to_le_bytes());
+        out.extend_from_slice(class_bytes);
+        out.extend_from_slice(&o.x.to_le_bytes());
+        out.extend_from_slice(&o.y.to_le_bytes());
+        out.extend_from_slice(&o.width.to_le_bytes());
+        out.extend_from_slice(&o.height.to_le_bytes());
+        out.extend_from_slice(&o.rotation.to_le_bytes());
+        out.push(if o.visible { 1 } else { 0 });
+    }
+
+    // Collision boxes
+    out.extend_from_slice(&(info.collision_boxes.len() as u32).to_le_bytes());
+    for c in &info.collision_boxes {
+        for &val in &c.rect {
+            out.extend_from_slice(&val.to_le_bytes());
+        }
+    }
+
+    out
+}
+
+/// Decode binary `.rtilemap` bytes into [`RtilemapInfo`].
+pub fn decode_rtilemap(data: &[u8]) -> Option<RtilemapInfo> {
+    if data.len() < 23 || &data[..4] != RTILEMAP_MAGIC || data[4] != RTILEMAP_VERSION {
+        return None;
+    }
+    let mut pos = 5;
+    let width = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+    pos += 4;
+    let height = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+    pos += 4;
+    let tile_width = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+    pos += 4;
+    let tile_height = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+    pos += 4;
+
+    let tileset_len = u16::from_le_bytes(data.get(pos..pos + 2)?.try_into().ok()?) as usize;
+    pos += 2;
+    let tileset_bytes = data.get(pos..pos + tileset_len)?;
+    pos += tileset_len;
+    let tileset_path = std::str::from_utf8(tileset_bytes).ok()?.to_string();
+
+    // Layers
+    let layers_count = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?) as usize;
+    pos += 4;
+    let mut layers = Vec::with_capacity(layers_count);
+    for _ in 0..layers_count {
+        let name_len = u16::from_le_bytes(data.get(pos..pos + 2)?.try_into().ok()?) as usize;
+        pos += 2;
+        let name_bytes = data.get(pos..pos + name_len)?;
+        pos += name_len;
+        let name = std::str::from_utf8(name_bytes).ok()?.to_string();
+
+        let l_w = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+        pos += 4;
+        let l_h = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+        pos += 4;
+        let visible = *data.get(pos)? == 1;
+        pos += 1;
+        let opacity = f32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+        pos += 4;
+        let off_x = f32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+        pos += 4;
+        let off_y = f32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+        pos += 4;
+
+        let tiles_count = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?) as usize;
+        pos += 4;
+        let mut tiles = Vec::with_capacity(tiles_count);
+        for _ in 0..tiles_count {
+            let t = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+            pos += 4;
+            tiles.push(t);
+        }
+
+        layers.push(TilemapLayer {
+            name,
+            width: l_w,
+            height: l_h,
+            visible,
+            opacity,
+            offset: [off_x, off_y],
+            tiles,
+        });
+    }
+
+    // Objects
+    let objects_count = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?) as usize;
+    pos += 4;
+    let mut objects = Vec::with_capacity(objects_count);
+    for _ in 0..objects_count {
+        let id = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+        pos += 4;
+        let name_len = u16::from_le_bytes(data.get(pos..pos + 2)?.try_into().ok()?) as usize;
+        pos += 2;
+        let name_bytes = data.get(pos..pos + name_len)?;
+        pos += name_len;
+        let name = std::str::from_utf8(name_bytes).ok()?.to_string();
+
+        let class_len = u16::from_le_bytes(data.get(pos..pos + 2)?.try_into().ok()?) as usize;
+        pos += 2;
+        let class_bytes = data.get(pos..pos + class_len)?;
+        pos += class_len;
+        let class_name = std::str::from_utf8(class_bytes).ok()?.to_string();
+
+        let x = f32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+        pos += 4;
+        let y = f32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+        pos += 4;
+        let width = f32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+        pos += 4;
+        let height = f32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+        pos += 4;
+        let rotation = f32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+        pos += 4;
+        let visible = *data.get(pos)? == 1;
+        pos += 1;
+
+        objects.push(TilemapObject {
+            id,
+            name,
+            class_name,
+            x,
+            y,
+            width,
+            height,
+            rotation,
+            visible,
+        });
+    }
+
+    // Collision boxes
+    let boxes_count = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?) as usize;
+    pos += 4;
+    let mut collision_boxes = Vec::with_capacity(boxes_count);
+    for _ in 0..boxes_count {
+        let mut rect = [0.0f32; 4];
+        for v in &mut rect {
+            *v = f32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?);
+            pos += 4;
+        }
+        collision_boxes.push(MergedCollisionBox { rect });
+    }
+
+    if pos != data.len() {
+        return None;
+    }
+
+    Some(RtilemapInfo {
+        width,
+        height,
+        tile_width,
+        tile_height,
+        tileset_path,
+        layers,
+        objects,
+        collision_boxes,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -471,5 +958,99 @@ mod tests {
         assert!(decode_ratl(b"").is_none());
         assert!(decode_ratl(b"GARBAGE").is_none());
         assert!(decode_ratl(b"RATL\x02").is_none()); // wrong version
+    }
+
+    #[test]
+    fn ranim2d_encode_decode_roundtrip() {
+        let frame1 = Anim2DFrame {
+            sprite_name: "run_0".into(),
+            duration_ms: 100,
+        };
+        let frame2 = Anim2DFrame {
+            sprite_name: "run_1".into(),
+            duration_ms: 120,
+        };
+        let tag = Anim2DTag {
+            name: "run".into(),
+            from_frame: 0,
+            to_frame: 1,
+            direction: Anim2DDirection::Forward,
+            repeat: 0,
+        };
+        let slice = Anim2DSlice {
+            name: "hitbox".into(),
+            bounds: [4, 8, 16, 24],
+            pivot: Some([0.5, 0.5]),
+        };
+        let info = Ranim2DInfo {
+            atlas_path: "atlases/player.ratlas".into(),
+            frames: vec![frame1, frame2],
+            tags: vec![tag],
+            slices: vec![slice],
+        };
+
+        let encoded = encode_ranim2d(&info);
+        assert_eq!(&encoded[..4], RANIM2D_MAGIC);
+        assert_eq!(encoded[4], RANIM2D_VERSION);
+
+        let decoded = decode_ranim2d(&encoded).expect("should decode valid RANIM2D");
+        assert_eq!(decoded.atlas_path, "atlases/player.ratlas");
+        assert_eq!(decoded.frames.len(), 2);
+        assert_eq!(decoded.tags.len(), 1);
+        assert_eq!(decoded.slices.len(), 1);
+        assert_eq!(decoded.total_duration_ms(), 220);
+
+        let tag_found = decoded.find_tag("run").expect("run tag must be found");
+        assert_eq!(tag_found.from_frame, 0);
+        assert_eq!(tag_found.to_frame, 1);
+    }
+
+    #[test]
+    fn rtilemap_encode_decode_roundtrip() {
+        let layer = TilemapLayer {
+            name: "Ground".into(),
+            width: 2,
+            height: 2,
+            visible: true,
+            opacity: 1.0,
+            offset: [0.0, 0.0],
+            tiles: vec![1, 2, 0, 3],
+        };
+        let obj = TilemapObject {
+            id: 10,
+            name: "PlayerSpawn".into(),
+            class_name: "SpawnPoint".into(),
+            x: 16.0,
+            y: 32.0,
+            width: 16.0,
+            height: 16.0,
+            rotation: 0.0,
+            visible: true,
+        };
+        let col = MergedCollisionBox {
+            rect: [0.0, 0.0, 32.0, 16.0],
+        };
+        let info = RtilemapInfo {
+            width: 2,
+            height: 2,
+            tile_width: 16,
+            tile_height: 16,
+            tileset_path: "tilesets/dungeon.rtex".into(),
+            layers: vec![layer],
+            objects: vec![obj],
+            collision_boxes: vec![col],
+        };
+
+        let encoded = encode_rtilemap(&info);
+        assert_eq!(&encoded[..4], RTILEMAP_MAGIC);
+        assert_eq!(encoded[4], RTILEMAP_VERSION);
+
+        let decoded = decode_rtilemap(&encoded).expect("should decode valid RTILEMAP");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.tile_width, 16);
+        assert_eq!(decoded.layers.len(), 1);
+        assert_eq!(decoded.layers[0].tiles, vec![1, 2, 0, 3]);
+        assert_eq!(decoded.objects.len(), 1);
+        assert_eq!(decoded.collision_boxes.len(), 1);
     }
 }
