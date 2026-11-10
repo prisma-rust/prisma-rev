@@ -9,9 +9,7 @@
 use crate::atlas::{pack_atlas, AtlasPackOptions, PackedAtlasResult, RawSpriteInput};
 use crate::cooker::CookError;
 use miniz_oxide::inflate::decompress_to_vec_zlib;
-use prism_asset::formats::{
-    Anim2DDirection, Anim2DFrame, Anim2DSlice, Anim2DTag, Ranim2DInfo,
-};
+use prism_asset::formats::{Anim2DDirection, Anim2DFrame, Anim2DSlice, Anim2DTag, Ranim2DInfo};
 use serde::{Deserialize, Serialize};
 
 /// Parsed frame data extracted from an Aseprite file.
@@ -84,8 +82,7 @@ impl AsepriteDocument {
                 return Err(CookError::CookFailed("Truncated frame header".into()));
             }
 
-            let frame_bytes =
-                u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+            let frame_bytes = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
             let frame_magic = u16::from_le_bytes(data[pos + 4..pos + 6].try_into().unwrap());
             if frame_magic != 0xF1FA {
                 return Err(CookError::CookFailed(format!(
@@ -94,7 +91,8 @@ impl AsepriteDocument {
             }
 
             let chunks_old = u16::from_le_bytes(data[pos + 6..pos + 8].try_into().unwrap());
-            let duration_ms = u16::from_le_bytes(data[pos + 8..pos + 10].try_into().unwrap()) as u32;
+            let duration_ms =
+                u16::from_le_bytes(data[pos + 8..pos + 10].try_into().unwrap()) as u32;
             let chunks_new = u32::from_le_bytes(data[pos + 12..pos + 16].try_into().unwrap());
 
             let chunk_count = if chunks_new > 0 {
@@ -103,11 +101,13 @@ impl AsepriteDocument {
                 chunks_old as usize
             };
 
-            let frame_end = pos.checked_add(frame_bytes).ok_or_else(|| {
-                CookError::CookFailed("Frame bytes size overflow".into())
-            })?;
+            let frame_end = pos
+                .checked_add(frame_bytes)
+                .ok_or_else(|| CookError::CookFailed("Frame bytes size overflow".into()))?;
             if frame_end > data.len() {
-                return Err(CookError::CookFailed("Frame extends past file length".into()));
+                return Err(CookError::CookFailed(
+                    "Frame extends past file length".into(),
+                ));
             }
 
             let mut chunk_pos = pos + 16;
@@ -251,11 +251,15 @@ impl AsepriteDocument {
             if pos + 19 > chunk_data.len() {
                 break;
             }
-            let from_frame = u16::from_le_bytes(chunk_data[pos..pos + 2].try_into().unwrap()) as u32;
-            let to_frame = u16::from_le_bytes(chunk_data[pos + 2..pos + 4].try_into().unwrap()) as u32;
+            let from_frame =
+                u16::from_le_bytes(chunk_data[pos..pos + 2].try_into().unwrap()) as u32;
+            let to_frame =
+                u16::from_le_bytes(chunk_data[pos + 2..pos + 4].try_into().unwrap()) as u32;
             let anim_dir = chunk_data[pos + 4];
-            let repeat = u16::from_le_bytes(chunk_data[pos + 5..pos + 7].try_into().unwrap()) as u32;
-            let name_len = u16::from_le_bytes(chunk_data[pos + 17..pos + 19].try_into().unwrap()) as usize;
+            let repeat =
+                u16::from_le_bytes(chunk_data[pos + 5..pos + 7].try_into().unwrap()) as u32;
+            let name_len =
+                u16::from_le_bytes(chunk_data[pos + 17..pos + 19].try_into().unwrap()) as usize;
             pos += 19;
             if pos + name_len > chunk_data.len() {
                 break;
@@ -311,7 +315,8 @@ impl AsepriteDocument {
 
             let pivot = if has_pivot && pos + 8 <= chunk_data.len() {
                 let px = i32::from_le_bytes(chunk_data[pos..pos + 4].try_into().unwrap()) as f32;
-                let py = i32::from_le_bytes(chunk_data[pos + 4..pos + 8].try_into().unwrap()) as f32;
+                let py =
+                    i32::from_le_bytes(chunk_data[pos + 4..pos + 8].try_into().unwrap()) as f32;
                 pos += 8;
                 Some([px, py])
             } else {
@@ -391,7 +396,9 @@ pub fn cook_aseprite(
     atlas_opts: &AtlasPackOptions,
 ) -> Result<AsepriteCookResult, CookError> {
     if doc.frames.is_empty() {
-        return Err(CookError::CookFailed("Aseprite document has no frames".into()));
+        return Err(CookError::CookFailed(
+            "Aseprite document has no frames".into(),
+        ));
     }
 
     let mut raw_sprites = Vec::with_capacity(doc.frames.len());

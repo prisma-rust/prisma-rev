@@ -214,7 +214,8 @@ impl TiledMap {
             let rest = &cur_search[start..];
             let end = rest.find("</layer>").unwrap_or(rest.len());
             let layer_xml = &rest[..end];
-            let name = extract_attr_str(layer_xml, "layer", "name").unwrap_or_else(|| "Layer".into());
+            let name =
+                extract_attr_str(layer_xml, "layer", "name").unwrap_or_else(|| "Layer".into());
             let lw = extract_attr_u32(layer_xml, "layer", "width").unwrap_or(width);
             let lh = extract_attr_u32(layer_xml, "layer", "height").unwrap_or(height);
 
@@ -364,9 +365,7 @@ pub fn cook_tiled_map(
     tileset_override: Option<&str>,
     collision_layer_name: Option<&str>,
 ) -> Result<RtilemapInfo, CookError> {
-    let tileset_path = tileset_override
-        .unwrap_or(&map.tileset_path)
-        .to_string();
+    let tileset_path = tileset_override.unwrap_or(&map.tileset_path).to_string();
 
     let mut layers = Vec::with_capacity(map.tile_layers.len());
     let mut solid_grid = vec![false; (map.width * map.height) as usize];
@@ -447,10 +446,8 @@ mod tests {
         // 1 1 1 1
         // 0 0 0 0
         let grid = vec![
-            true, true, false, false,
-            true, true, false, false,
-            true, true, true, true,
-            false, false, false, false,
+            true, true, false, false, true, true, false, false, true, true, true, true, false,
+            false, false, false,
         ];
 
         let boxes = merge_tile_collision_boxes(4, 4, 16.0, 16.0, &grid);

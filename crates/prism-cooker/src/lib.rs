@@ -26,10 +26,6 @@ pub use atlas::{
     encode_rtex_rgba8, pack_atlas, trim_transparent_pixels, AtlasPackOptions, PackedAtlasResult,
     RawSpriteInput,
 };
-pub use tiled::{
-    cook_tiled_map, encode_rtilemap_bytes, merge_tile_collision_boxes, TiledMap, TiledObjectLayer,
-    TiledTileLayer,
-};
 pub use cooker::{
     default_cooker_registry, CookContext, CookError, CookPipeline, CookResult, Cooker,
     CookerRegistry,
@@ -40,4 +36,8 @@ pub use importer::{default_importer_registry, ImportError, ImportPipeline, Impor
 pub use pack::{
     pack_directory, pack_directory_split, pack_directory_with_options, OptionalPackSummary,
     PackOptions, PackSummary, SplitPackSummary, OPTIONAL_PAK_DIR,
+};
+pub use tiled::{
+    cook_tiled_map, encode_rtilemap_bytes, merge_tile_collision_boxes, TiledMap, TiledObjectLayer,
+    TiledTileLayer,
 };
