@@ -6258,6 +6258,9 @@ fn render_settings_from_json(
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(base.taa),
         taa_strength: f32_field("taaStrength", base.taa_strength),
+        anf_sr: base.anf_sr,
+        anf_sharpness: base.anf_sharpness,
+        anf_fg: base.anf_fg,
         shadow_distance: f32_field("shadowDistance", base.shadow_distance),
         // #526：贴图边长只在构造渲染器时生效；编辑器 UI 还没暴露滑杆时保持默认。
         shadow_map_size: u32_field("shadowMapSize", base.shadow_map_size),

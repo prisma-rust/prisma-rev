@@ -3022,6 +3022,7 @@ dependencies = [
  "prism-audio",
  "prism-ecs",
  "prism-ini",
+ "prism-physics2d",
  "prism-project-api",
  "prism-reflect",
  "prism-render",
@@ -3041,6 +3042,7 @@ dependencies = [
  "log",
  "prism-ecs",
  "prism-engine",
+ "prism-physics2d",
  "prism-project-api",
  "prism-reflect",
  "prism-runtime-host",
@@ -3071,6 +3073,10 @@ dependencies = [
  "glam 0.33.2",
  "prism-anim",
 ]
+
+[[package]]
+name = "prism-physics2d"
+version = "0.1.0"
 
 [[package]]
 name = "prism-platform"
@@ -3130,9 +3136,11 @@ dependencies = [
 name = "prism-runtime-host"
 version = "0.1.0"
 dependencies = [
+ "glam 0.33.2",
  "libloading",
  "log",
  "prism-ecs",
+ "prism-physics2d",
  "prism-project-api",
  "prism-reflect",
  "prism-scene",
@@ -3148,6 +3156,7 @@ dependencies = [
  "prism-ecs",
  "prism-gfx",
  "prism-ini",
+ "prism-physics2d",
  "prism-reflect",
  "serde",
  "serde_json",

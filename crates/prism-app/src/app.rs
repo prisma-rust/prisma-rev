@@ -454,6 +454,15 @@ impl App {
         self
     }
 
+    /// Register an ECS system that runs once per fixed simulation step.
+    pub fn add_fixed_system<F>(&mut self, label: &str, f: F) -> &mut Self
+    where
+        F: FnMut(&mut prism_engine::ecs::World, f32) + 'static,
+    {
+        self.engine_mut().fixed_schedule_mut().add_system(label, f);
+        self
+    }
+
     /// Register a gameplay system whose project state lives in an ECS resource.
     ///
     /// `tick` gets the same signature the preview module uses, so gameplay code is
@@ -471,6 +480,23 @@ impl App {
             .insert_resource(GameplayState::<S>(None));
         self.engine_mut()
             .schedule_mut()
+            .add_system(label, move |world, dt| {
+                tick_gameplay_state::<S, _>(world, &mut tick, dt);
+            });
+        self
+    }
+
+    /// Register deterministic gameplay on the engine's fixed simulation schedule.
+    pub fn add_fixed_game_system<S, F>(&mut self, label: &str, mut tick: F) -> &mut Self
+    where
+        S: Send + Sync + 'static,
+        F: FnMut(&mut Option<S>, &mut prism_game_api::GameWorld<'_>, f32) + 'static,
+    {
+        self.engine_mut()
+            .world_mut()
+            .insert_resource(GameplayState::<S>(None));
+        self.engine_mut()
+            .fixed_schedule_mut()
             .add_system(label, move |world, dt| {
                 tick_gameplay_state::<S, _>(world, &mut tick, dt);
             });
@@ -1354,6 +1380,7 @@ impl App {
             if simulate {
                 // --- Fixed timestep: integer nanosecond clock, capped catch-up ---
                 const FIXED_STEP: Duration = Duration::from_nanos(16_666_667);
+                engine.begin_frame(&self.input, [surface_w as f32, surface_h as f32]);
                 let mut fixed_steps = 0;
                 while self.fixed_accumulator >= FIXED_STEP && fixed_steps < 8 {
                     // 物理走固定步（#522）：结果在下面的 `engine.update()` 里由
@@ -1366,6 +1393,10 @@ impl App {
                     self.fixed_accumulator -= FIXED_STEP;
                     fixed_steps += 1;
                 }
+
+                engine.set_interpolation_alpha(
+                    self.fixed_accumulator.as_secs_f32() / FIXED_STEP.as_secs_f32(),
+                );
 
                 // --- 可变时间步长更新 ---
                 engine.update(dt, &self.input);

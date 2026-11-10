@@ -93,6 +93,28 @@ fn in_memory_stores_never_touch_the_disk() {
 }
 
 #[test]
+fn global_flags_use_the_engine_namespace_and_round_trip() {
+    let path = temp_path("flags");
+    {
+        let mut store = UserStore::open(&path);
+        assert!(!store.get_flag("gate.open"));
+        store.set_flag("gate.open", true);
+        assert!(store.get_flag("gate.open"));
+        assert_eq!(
+            store.get("__prism.flag.gate.open"),
+            Some("1"),
+            "flags are stored in the reserved engine namespace"
+        );
+        assert!(store.flush().unwrap());
+    }
+    let mut store = UserStore::open(&path);
+    assert!(store.get_flag("gate.open"));
+    store.set_flag("gate.open", false);
+    assert!(store.flush().unwrap());
+    assert!(!UserStore::open(&path).get_flag("gate.open"));
+}
+
+#[test]
 fn save_paths_follow_the_platform_and_the_override() {
     // 覆盖变量优先级最高，其他分支不参与（测试不能依赖本机 APPDATA）。
     let previous = std::env::var_os(ENV_OVERRIDE);

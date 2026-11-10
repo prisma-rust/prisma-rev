@@ -60,6 +60,12 @@ pub struct Engine {
     scene: crate::scene::SceneManager,
     /// Ordered ECS system schedule — runs on every [`update`](Self::update).
     schedule: Schedule,
+    /// Deterministic simulation schedule — runs only from [`fixed_update`](Self::fixed_update).
+    fixed_schedule: Schedule,
+    frame_input: prism_project_api::InputSnapshot,
+    pending_fixed_key_edges: [u64; 8],
+    frame_input_prepared: bool,
+    interpolation_alpha: f32,
     /// 主线程定时器服务（每帧 tick）。
     timer: crate::util::timer::TimerService,
 }
@@ -84,10 +90,16 @@ impl Engine {
         let mut world = World::new();
         // 一次性音效队列（#987）：项目代码排队，宿主每帧取走。
         world.insert_resource(crate::sound::SoundCommands::default());
+        world.insert_resource(crate::physics::TriggerEvents2D::default());
         Self {
             world,
             scene: crate::scene::SceneManager::new(),
             schedule: Schedule::new(),
+            fixed_schedule: Schedule::new(),
+            frame_input: prism_project_api::InputSnapshot::default(),
+            pending_fixed_key_edges: [0; 8],
+            frame_input_prepared: false,
+            interpolation_alpha: 0.0,
             timer: crate::util::timer::TimerService::new(),
         }
     }
@@ -417,19 +429,67 @@ impl Engine {
     // Frame tick phases
     // ======================================================================
 
-    /// Fixed‑timestep update: physics, deterministic simulation.
-    ///
-    /// `FixedUpdate()` · UE sub‑stepped tick.
+    /// Capture render-frame input before running zero or more fixed steps.
+    /// Press/release edges are retained until the next fixed step.
+    pub fn begin_frame(&mut self, input_manager: &InputManager, screen: [f32; 2]) {
+        self.frame_input = crate::input::input_snapshot(input_manager, screen);
+        for (pending, current) in self
+            .pending_fixed_key_edges
+            .iter_mut()
+            .zip(self.frame_input.key_edges)
+        {
+            *pending |= current;
+        }
+        self.frame_input_prepared = true;
+    }
+
+    /// Fixed-timestep update: deterministic gameplay and physics systems.
     pub fn fixed_update(&mut self, fixed_dt: f32, input_manager: &InputManager) {
+        if !self.frame_input_prepared {
+            let screen = self
+                .world
+                .get_resource::<crate::ui::ScreenSize>()
+                .map(|size| [size.width as f32, size.height as f32])
+                .unwrap_or([0.0, 0.0]);
+            self.begin_frame(input_manager, screen);
+        }
+
         let _ = input_manager;
-        // 2D 物理步进模拟（#1160）：默认重力 9.81 m/s² 向下（-Y）
-        crate::physics2d::step_2d(&mut self.world, fixed_dt, [0.0, -9.81]);
+        // Keep the engine's shape-aware rigid-body step ahead of gameplay.
+        crate::physics2d::step_2d(&mut self.world, fixed_dt.max(0.0), [0.0, -9.81]);
+        let mut input = self.frame_input;
+        input.key_edges = self.pending_fixed_key_edges;
+        self.pending_fixed_key_edges = [0; 8];
+        self.world.insert_resource(input);
+        crate::scene::systems::interpolation2d::begin_fixed_step(&mut self.world);
+        self.fixed_schedule.run(&mut self.world, fixed_dt.max(0.0));
+        crate::scene::systems::interpolation2d::end_fixed_step(&mut self.world);
+        crate::scene::systems::hierarchy::hierarchy_system(&mut self.world);
+        crate::scene::systems::hierarchy::active_hierarchy_system(&mut self.world);
+        crate::physics::update_trigger_events2d(&mut self.world);
+    }
+
+    /// Fractional fixed-step remainder used by render-frame interpolation.
+    pub fn set_interpolation_alpha(&mut self, alpha: f32) {
+        self.interpolation_alpha = if alpha.is_finite() {
+            alpha.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
     }
 
     /// Variable‑timestep per‑frame update: game logic, camera, input.
     ///
     /// 更新 · UE `Tick()`.
     pub fn update(&mut self, dt: f32, input_manager: &InputManager) {
+        if !self.frame_input_prepared {
+            let screen = self
+                .world
+                .get_resource::<crate::ui::ScreenSize>()
+                .map(|size| [size.width as f32, size.height as f32])
+                .unwrap_or([0.0, 0.0]);
+            self.begin_frame(input_manager, screen);
+        }
         let look_active = input_manager.pointer_locked;
         crate::scene::systems::camera::camera_controller_system(
             &mut self.world,
@@ -437,8 +497,6 @@ impl Engine {
             dt,
             look_active,
         );
-        crate::scene::systems::camera2d::camera_2d_system(&mut self.world, dt);
-
         // ── 填充 UI 输入状态 ──────────────────────────────────────
         let pos = input_manager.mouse_position();
         // 窗口像素 → UI 布局空间（#988）：UI 画在 PostPass 的目标矩形里，
@@ -466,8 +524,9 @@ impl Engine {
             .get_resource::<crate::ui::ScreenSize>()
             .map(|size| [size.width as f32, size.height as f32])
             .unwrap_or([0.0, 0.0]);
-        self.world
-            .insert_resource(crate::input::input_snapshot(input_manager, screen));
+        self.frame_input.screen = screen;
+        self.frame_input.interpolation_alpha = self.interpolation_alpha;
+        self.world.insert_resource(self.frame_input);
 
         // Run the ECS system schedule (user‑registered + built‑in systems).
         self.schedule.run(&mut self.world, dt);
@@ -488,12 +547,26 @@ impl Engine {
         crate::scene::systems::hierarchy::hierarchy_system(&mut self.world);
         // `Active` 沿父子传播（`activeInHierarchy`），渲染 / 光照读派生值。
         crate::scene::systems::hierarchy::active_hierarchy_system(&mut self.world);
+        crate::scene::systems::interpolation2d::apply_render_interpolation(
+            &mut self.world,
+            self.interpolation_alpha,
+        );
+        // 2D virtual cameras follow the frame-interpolated target before the
+        // render packet is extracted. Recompute the camera world transform
+        // after writing its local position.
+        crate::scene::systems::camera2d::camera_2d_system(&mut self.world, dt);
+        crate::scene::systems::hierarchy::hierarchy_system(&mut self.world);
+        crate::scene::systems::interpolation2d::apply_render_interpolation(
+            &mut self.world,
+            self.interpolation_alpha,
+        );
         // 距离 LOD（#491）：用本帧的世界矩阵选级，写运行时 `LodHidden`。
         // 必须在 `hierarchy_system` 之后，提取阶段才能看到当前帧的距离。
         crate::scene::systems::lod::lod_system(&mut self.world);
 
         // Tick the main‑thread timer (dispatch expired callbacks).
         self.timer.tick();
+        self.frame_input_prepared = false;
     }
 
     /// Late update: audio sync, IK, camera‑relative effects.
@@ -582,6 +655,11 @@ impl Engine {
     /// Mutable access to the ECS system schedule.
     pub fn schedule_mut(&mut self) -> &mut Schedule {
         &mut self.schedule
+    }
+
+    /// Mutable access to the fixed simulation schedule.
+    pub fn fixed_schedule_mut(&mut self) -> &mut Schedule {
+        &mut self.fixed_schedule
     }
 
     // ── default camera spawn ───────────────────────────────────────
@@ -729,3 +807,113 @@ pub fn orbit_camera_demo_system(world: &mut World, dt: f32) {
 #[cfg(test)]
 #[path = "engine_scene_tests.rs"]
 mod scene_tests;
+
+#[cfg(test)]
+mod fixed_update_tests {
+    use super::Engine;
+    use crate::input::{ElementState, InputManager, KeyCode};
+    use prism_project_api::{keys, InputSnapshot, PhysicsEventPhase2D};
+    use prism_scene::components::{Collider2D, LocalTransform};
+
+    #[derive(Default)]
+    struct Probe {
+        runs: u32,
+        pressed_edges: u32,
+    }
+
+    #[test]
+    fn fixed_schedule_runs_each_step_and_consumes_edges_once() {
+        let mut engine = Engine::empty();
+        engine.world_mut().insert_resource(Probe::default());
+        engine
+            .fixed_schedule_mut()
+            .add_system("probe", |world, _dt| {
+                let snapshot = world
+                    .get_resource::<InputSnapshot>()
+                    .copied()
+                    .expect("fixed_update publishes input first");
+                let probe = world
+                    .get_resource_mut::<Probe>()
+                    .expect("probe resource exists");
+                probe.runs += 1;
+                if snapshot.key_pressed(keys::SPACE) {
+                    probe.pressed_edges += 1;
+                }
+            });
+
+        let mut input = InputManager::new();
+        input.handle_keyboard(KeyCode::Space, ElementState::Pressed);
+        engine.begin_frame(&input, [320.0, 180.0]);
+        engine.fixed_update(1.0 / 60.0, &input);
+        engine.fixed_update(1.0 / 60.0, &input);
+
+        let probe = engine
+            .world()
+            .get_resource::<Probe>()
+            .expect("probe resource exists");
+        assert_eq!(probe.runs, 2);
+        assert_eq!(probe.pressed_edges, 1);
+    }
+
+    #[test]
+    fn fixed_update_publishes_trigger_enter_and_exit_snapshots() {
+        let mut engine = Engine::empty();
+        let sensor = engine.world_mut().spawn();
+        engine.world_mut().insert(
+            sensor,
+            LocalTransform {
+                position: glam::Vec3::new(3.0, 0.0, 0.0),
+                ..LocalTransform::default()
+            },
+        );
+        engine.world_mut().insert(
+            sensor,
+            Collider2D {
+                half_extents: [2.0, 2.0],
+                is_trigger: true,
+                ..Collider2D::default()
+            },
+        );
+        let body = engine.world_mut().spawn();
+        engine.world_mut().insert(body, LocalTransform::default());
+        engine.world_mut().insert(
+            body,
+            Collider2D {
+                half_extents: [2.0, 2.0],
+                ..Collider2D::default()
+            },
+        );
+
+        let input = InputManager::new();
+        engine.fixed_update(1.0 / 60.0, &input);
+        let events = engine
+            .world()
+            .get_resource::<crate::physics::TriggerEvents2D>()
+            .expect("trigger event resource")
+            .events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].phase(), Some(PhysicsEventPhase2D::Enter));
+
+        engine.fixed_update(1.0 / 60.0, &input);
+        let events = engine
+            .world()
+            .get_resource::<crate::physics::TriggerEvents2D>()
+            .unwrap()
+            .events();
+        assert_eq!(events[0].phase(), Some(PhysicsEventPhase2D::Stay));
+
+        engine
+            .world_mut()
+            .get_mut::<LocalTransform>(body)
+            .unwrap()
+            .position
+            .x = 20.0;
+        engine.fixed_update(1.0 / 60.0, &input);
+        let events = engine
+            .world()
+            .get_resource::<crate::physics::TriggerEvents2D>()
+            .unwrap()
+            .events();
+        assert_eq!(events[0].phase(), Some(PhysicsEventPhase2D::Exit));
+    }
+}

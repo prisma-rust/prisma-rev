@@ -8,8 +8,125 @@
 //! 支持的形状：盒（OBB，按实体的旋转/缩放求交）、球、胶囊（沿本地 +Y）。
 //! 胶囊按「盒 + 球」两段求交近似（圆柱段当盒，两端当球），足够做角色/子弹查询。
 
+use std::collections::HashSet;
+
 use prism_ecs::{Entity, World};
+use prism_project_api::{EntityHandle, PhysicsEvent2D, PhysicsEventPhase2D};
 use prism_scene::components::{Collider, ColliderShape, LocalToWorld};
+
+/// A canonical pair of scene entities used by the 2D trigger tracker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct TriggerPair {
+    a: Entity,
+    b: Entity,
+}
+
+impl TriggerPair {
+    fn new(left: Entity, right: Entity) -> Self {
+        let left_key = (left.id(), left.generation());
+        let right_key = (right.id(), right.generation());
+        if left_key <= right_key {
+            Self { a: left, b: right }
+        } else {
+            Self { a: right, b: left }
+        }
+    }
+}
+
+/// Latest fixed-step events for overlapping 2D AABB colliders.
+///
+/// The engine refreshes this resource after the fixed schedule and hierarchy
+/// propagation. Events are therefore consumed by gameplay on the next fixed
+/// step, regardless of whether the caller is the static player or a preview
+/// project module.
+#[derive(Debug, Default)]
+pub struct TriggerEvents2D {
+    events: Vec<PhysicsEvent2D>,
+    previous_pairs: HashSet<TriggerPair>,
+}
+
+impl TriggerEvents2D {
+    pub fn events(&self) -> &[PhysicsEvent2D] {
+        &self.events
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+}
+
+/// Rebuilds the 2D trigger pair snapshot from the current scene colliders.
+///
+/// Tilemap collider fragments are deduplicated by entity pair, and solid-solid
+/// contacts are omitted because this API is intended for gameplay trigger
+/// volumes. At least one collider in a reported pair must have `is_trigger`.
+pub fn update_trigger_events2d(world: &mut World) {
+    let colliders = prism_scene::colliders2d(world, u32::MAX);
+    let mut current_pairs = HashSet::new();
+    let mut order: Vec<_> = (0..colliders.len()).collect();
+    order.sort_by(|left, right| {
+        colliders[*left].bounds.min[0].total_cmp(&colliders[*right].bounds.min[0])
+    });
+    let mut active: Vec<usize> = Vec::new();
+    for index in order {
+        let left = &colliders[index];
+        active.retain(|other| colliders[*other].bounds.max[0] > left.bounds.min[0]);
+        for other in &active {
+            let right = &colliders[*other];
+            if !(left.is_trigger || right.is_trigger)
+                || left.entity == right.entity
+                || !left.bounds.overlaps(right.bounds)
+            {
+                continue;
+            }
+            current_pairs.insert(TriggerPair::new(left.entity, right.entity));
+        }
+        active.push(index);
+    }
+
+    let previous_pairs = world
+        .remove_resource::<TriggerEvents2D>()
+        .map(|state| state.previous_pairs)
+        .unwrap_or_default();
+    let mut pairs: Vec<_> = current_pairs.union(&previous_pairs).copied().collect();
+    pairs.sort_by_key(|pair| {
+        (
+            pair.a.id(),
+            pair.a.generation(),
+            pair.b.id(),
+            pair.b.generation(),
+        )
+    });
+
+    let mut events = Vec::with_capacity(pairs.len());
+    for pair in pairs {
+        let phase = match (
+            previous_pairs.contains(&pair),
+            current_pairs.contains(&pair),
+        ) {
+            (false, true) => PhysicsEventPhase2D::Enter,
+            (true, true) => PhysicsEventPhase2D::Stay,
+            (true, false) => PhysicsEventPhase2D::Exit,
+            (false, false) => continue,
+        };
+        events.push(PhysicsEvent2D::new(
+            EntityHandle {
+                id: pair.a.id(),
+                generation: pair.a.generation(),
+            },
+            EntityHandle {
+                id: pair.b.id(),
+                generation: pair.b.generation(),
+            },
+            phase,
+        ));
+    }
+
+    world.insert_resource(TriggerEvents2D {
+        events,
+        previous_pairs: current_pairs,
+    });
+}
 
 /// 一次碰撞 / 触发器事件的方向。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -380,3 +497,7 @@ impl WorldShape {
 #[cfg(test)]
 #[path = "physics_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "trigger2d_tests.rs"]
+mod trigger2d_tests;

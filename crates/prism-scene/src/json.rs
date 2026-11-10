@@ -59,6 +59,7 @@ pub struct EntityJson {
 ///   永远被覆盖的假字段，并且让“漏写就不渲染”的隐式契约继续存在。
 pub const DERIVED_COMPONENTS: &[&str] = &[
     "prism_engine::scene::LocalTransform",
+    "prism_engine::scene::TransformInterpolation2D",
     "prism_engine::scene::ActiveInHierarchy",
     "prism_engine::scene::Persistent",
     "prism_engine::ui::ComputedLayout",

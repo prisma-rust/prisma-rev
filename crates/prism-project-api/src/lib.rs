@@ -43,7 +43,10 @@ pub mod keys {
     pub const OTHER_BASE: usize = 30;
 }
 
-pub const ABI_VERSION: u32 = 11;
+pub const ABI_VERSION: u32 = 17;
+
+/// Reserved player-save namespace for engine-owned global flags.
+pub const GLOBAL_FLAG_STORAGE_PREFIX: &str = "__prism.flag.";
 
 pub const SUCCESS: i32 = 0;
 pub const INVALID_ARGUMENT: i32 = 1;
@@ -99,6 +102,12 @@ pub const HOST_CAP_SAVE: u64 = 1 << 8;
 /// 一次性音效（`play_sound` / `stop_sound`，#987）。宿主注入音频实现后才会
 /// 声明该能力位；没有它时编辑器 Play 是一次性音效的哑巴。
 pub const HOST_CAP_AUDIO: u64 = 1 << 9;
+/// 2D AABB collider queries (`Collider2D` world bounds).
+pub const HOST_CAP_PHYSICS_2D: u64 = 1 << 10;
+/// Engine-managed persistent gameplay flags (get_flag / set_flag).
+pub const HOST_CAP_FLAGS: u64 = 1 << 11;
+/// 2D AABB trigger event snapshots (`query_trigger_events2d`).
+pub const HOST_CAP_PHYSICS_EVENTS_2D: u64 = 1 << 12;
 
 /// An entity handle crossing the ABI.
 ///
@@ -212,6 +221,8 @@ pub struct InputSnapshot {
     pub touch_count: u32,
     /// Touch table; only the first `touch_count` entries are valid.
     pub touches: [TouchSnapshot; 10],
+    /// Remainder of the host fixed-step accumulator, in `0..=1`.
+    pub interpolation_alpha: f32,
 }
 
 impl InputSnapshot {
@@ -235,6 +246,7 @@ impl InputSnapshot {
         key_edges: [0; 8],
         touch_count: 0,
         touches: [TouchSnapshot::EMPTY; Self::MAX_TOUCHES],
+        interpolation_alpha: 0.0,
     };
 
     pub fn set_key(&mut self, index: usize, down: bool) {
@@ -378,6 +390,115 @@ pub type Raycast = unsafe extern "C" fn(
     out_hit: *mut RaycastHit,
 ) -> i32;
 
+/// One active 2D collider in world space.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Collider2DHit {
+    pub entity: EntityHandle,
+    /// World-space AABB `[min_x, min_y, max_x, max_y]`.
+    pub bounds: [f32; 4],
+    pub is_trigger: u8,
+    /// One-way horizontal top platform; lower faces do not block movement.
+    pub one_way_top: u8,
+    pub _reserved: [u8; 2],
+    pub layer: u32,
+}
+
+/// Enumerates active 2D colliders matching a layer mask. A null output pointer
+/// performs a count-only query; the result is valid until the next host call.
+pub type QueryColliders2D = unsafe extern "C" fn(
+    user_data: *mut core::ffi::c_void,
+    layer_mask: u32,
+    out_colliders: *mut Collider2DHit,
+    capacity: usize,
+    out_count: *mut usize,
+) -> i32;
+
+/// POD result of a 2D ray query.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RaycastHit2D {
+    pub entity: EntityHandle,
+    pub distance: f32,
+    pub point: [f32; 2],
+    pub normal: [f32; 2],
+    pub is_trigger: u8,
+    pub _reserved: [u8; 3],
+    pub layer: u32,
+}
+
+/// Phase of a 2D AABB trigger overlap pair.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PhysicsEventPhase2D {
+    Enter = 0,
+    Stay = 1,
+    Exit = 2,
+}
+
+impl PhysicsEventPhase2D {
+    pub const fn from_raw(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Enter),
+            1 => Some(Self::Stay),
+            2 => Some(Self::Exit),
+            _ => None,
+        }
+    }
+}
+
+/// One pair event from the most recently completed fixed step.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PhysicsEvent2D {
+    pub entity_a: EntityHandle,
+    pub entity_b: EntityHandle,
+    pub phase: u8,
+    /// `1` when at least one collider in the pair is a trigger.
+    pub is_trigger: u8,
+    pub _reserved: [u8; 2],
+}
+
+impl PhysicsEvent2D {
+    pub const fn new(
+        entity_a: EntityHandle,
+        entity_b: EntityHandle,
+        phase: PhysicsEventPhase2D,
+    ) -> Self {
+        Self {
+            entity_a,
+            entity_b,
+            phase: phase as u8,
+            is_trigger: 1,
+            _reserved: [0; 2],
+        }
+    }
+
+    pub const fn phase(self) -> Option<PhysicsEventPhase2D> {
+        PhysicsEventPhase2D::from_raw(self.phase)
+    }
+}
+
+/// Enumerates the latest 2D AABB trigger events. A null output pointer performs
+/// a count-only query; the result is valid until the next host call.
+pub type QueryTriggerEvents2D = unsafe extern "C" fn(
+    user_data: *mut core::ffi::c_void,
+    out_events: *mut PhysicsEvent2D,
+    capacity: usize,
+    out_count: *mut usize,
+) -> i32;
+
+/// 2D AABB ray query. Returns `1` for the nearest hit, `0` for a miss, and a
+/// negative status for invalid arguments or an unavailable host capability.
+pub type Raycast2D = unsafe extern "C" fn(
+    user_data: *mut core::ffi::c_void,
+    origin: *const [f32; 2],
+    direction: *const [f32; 2],
+    max_distance: f32,
+    layer_mask: u32,
+    out_hit: *mut RaycastHit2D,
+) -> i32;
+
 /// 写入一条玩家存档（#984）：`0` = 已落盘，负数为错误码（没有能力 / 写失败）。
 ///
 /// `key`/`value` 都是字节串，schema 由工程自己解释；`value_len == 0` 时
@@ -399,6 +520,21 @@ pub type LoadValue = unsafe extern "C" fn(
     key_len: usize,
     out: *mut u8,
     out_cap: usize,
+) -> i32;
+
+/// Reads a global persistent gameplay flag: 1 = true, 0 = false, negative = error.
+pub type GetFlag = unsafe extern "C" fn(
+    user_data: *mut core::ffi::c_void,
+    name: *const u8,
+    name_len: usize,
+) -> i32;
+
+/// Sets a global persistent gameplay flag; value must be 0 or 1.
+pub type SetFlag = unsafe extern "C" fn(
+    user_data: *mut core::ffi::c_void,
+    name: *const u8,
+    name_len: usize,
+    value: u8,
 ) -> i32;
 
 /// 播放一个一次性音效（#987）：`path` 是相对 `assets/` 的 UTF-8 路径，
@@ -544,6 +680,8 @@ pub struct HostApi {
     pub unload_scene: Option<UnloadScene>,
     /// Physics ray query (#522); capability bit [`HOST_CAP_PHYSICS`].
     pub raycast: Option<Raycast>,
+    /// 2D collider query; capability bit [`HOST_CAP_PHYSICS_2D`].
+    pub query_colliders2d: Option<QueryColliders2D>,
     /// 玩家存档（#984）；能力位 [`HOST_CAP_SAVE`]。
     pub save_value: Option<SaveValue>,
     pub load_value: Option<LoadValue>,
@@ -551,6 +689,13 @@ pub struct HostApi {
     /// 一次性音效（#987）；能力位 [`HOST_CAP_AUDIO`]。
     pub play_sound: Option<PlaySound>,
     pub stop_sound: Option<StopSound>,
+    /// 2D AABB ray query; capability bit HOST_CAP_PHYSICS_2D.
+    pub raycast2d: Option<Raycast2D>,
+    /// Global persistent gameplay flags; capability bit HOST_CAP_FLAGS.
+    pub get_flag: Option<GetFlag>,
+    pub set_flag: Option<SetFlag>,
+    /// Latest 2D trigger events; capability bit HOST_CAP_PHYSICS_EVENTS_2D.
+    pub query_trigger_events2d: Option<QueryTriggerEvents2D>,
 }
 
 impl HostApi {
@@ -580,11 +725,16 @@ impl HostApi {
             load_scene: None,
             unload_scene: None,
             raycast: None,
+            query_colliders2d: None,
             save_value: None,
             load_value: None,
 
             play_sound: None,
             stop_sound: None,
+            raycast2d: None,
+            get_flag: None,
+            set_flag: None,
+            query_trigger_events2d: None,
         }
     }
 }
@@ -594,6 +744,10 @@ pub type CreateProject =
 
 /// The host table and its `user_data` are valid only until this call returns.
 pub type TickProject =
+    unsafe extern "C" fn(host: *const HostApi, state: *mut core::ffi::c_void, dt: f32) -> i32;
+
+/// One deterministic gameplay simulation step.
+pub type FixedUpdateProject =
     unsafe extern "C" fn(host: *const HostApi, state: *mut core::ffi::c_void, dt: f32) -> i32;
 
 pub type ShutdownProject = unsafe extern "C" fn(state: *mut core::ffi::c_void);
@@ -609,6 +763,7 @@ pub struct ProjectApi {
     pub schema_fingerprint: u64,
     pub create: Option<CreateProject>,
     pub tick: Option<TickProject>,
+    pub fixed_update: Option<FixedUpdateProject>,
     pub shutdown: Option<ShutdownProject>,
 }
 
@@ -619,6 +774,7 @@ impl ProjectApi {
             schema_fingerprint: 0,
             create: None,
             tick: None,
+            fixed_update: None,
             shutdown: None,
         }
     }
@@ -659,6 +815,31 @@ mod tests {
         assert!(api.query_entities.is_none());
         assert!(api.set_component.is_none());
         assert!(api.raycast.is_none());
+        assert_eq!(api.capabilities & HOST_CAP_FLAGS, 0);
+        assert!(api.get_flag.is_none());
+        assert!(api.set_flag.is_none());
+    }
+
+    #[test]
+    fn physics_event_phases_are_checked_before_use() {
+        let event = PhysicsEvent2D::new(
+            EntityHandle {
+                id: 2,
+                generation: 1,
+            },
+            EntityHandle {
+                id: 7,
+                generation: 3,
+            },
+            PhysicsEventPhase2D::Enter,
+        );
+        assert_eq!(event.phase(), Some(PhysicsEventPhase2D::Enter));
+        assert_eq!(
+            PhysicsEventPhase2D::from_raw(1),
+            Some(PhysicsEventPhase2D::Stay)
+        );
+        assert_eq!(PhysicsEventPhase2D::from_raw(9), None);
+        assert_eq!(event.is_trigger, 1);
     }
 }
 

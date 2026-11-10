@@ -13,6 +13,10 @@ use prism_scene::components::{
     Collider2D, Collider2DShape, LocalToWorld, LocalTransform, RigidBody2D, RigidBody2DType,
 };
 
+fn effective_collision_groups(collider: &Collider2D) -> u32 {
+    collider.effective_layer()
+}
+
 /// 2D 碰撞 / 传感器事件类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Physics2DEventKind {
@@ -380,7 +384,7 @@ pub fn raycast_2d_excluding(
     let mut best: Option<RayHit2D> = None;
 
     for (entity, collider) in world.query::<Collider2D>() {
-        if collider.collision_groups & layer_mask == 0 || Some(entity) == excluded {
+        if effective_collision_groups(collider) & layer_mask == 0 || Some(entity) == excluded {
             continue;
         }
 
@@ -395,7 +399,7 @@ pub fn raycast_2d_excluding(
                     distance: dist,
                     point: [hit_pt.x, hit_pt.y],
                     normal: [normal.x, normal.y],
-                    is_sensor: collider.is_sensor,
+                    is_sensor: collider.is_sensor || collider.is_trigger,
                 });
             }
         }
@@ -423,7 +427,7 @@ pub fn raycast_2d_all(
     let mut hits = Vec::new();
 
     for (entity, collider) in world.query::<Collider2D>() {
-        if collider.collision_groups & layer_mask == 0 {
+        if effective_collision_groups(collider) & layer_mask == 0 {
             continue;
         }
 
@@ -438,7 +442,7 @@ pub fn raycast_2d_all(
                     distance: dist,
                     point: [hit_pt.x, hit_pt.y],
                     normal: [normal.x, normal.y],
-                    is_sensor: collider.is_sensor,
+                    is_sensor: collider.is_sensor || collider.is_trigger,
                 });
             }
         }
@@ -459,7 +463,7 @@ pub fn overlap_circle_2d(
     let mut result = Vec::new();
 
     for (entity, collider) in world.query::<Collider2D>() {
-        if collider.collision_groups & layer_mask == 0 {
+        if effective_collision_groups(collider) & layer_mask == 0 {
             continue;
         }
         let (pos, rot) = extract_2d_transform(world, entity);
@@ -491,7 +495,7 @@ pub fn overlap_box_2d(
 
     let mut result = Vec::new();
     for (entity, collider) in world.query::<Collider2D>() {
-        if collider.collision_groups & layer_mask == 0 {
+        if effective_collision_groups(collider) & layer_mask == 0 {
             continue;
         }
         let (pos, rot) = extract_2d_transform(world, entity);
@@ -529,7 +533,7 @@ pub fn shapecast_2d(
         let shape = WorldShape2D::from_collider(cast_shape, test_pos, 0.0);
 
         for (entity, target_col) in world.query::<Collider2D>() {
-            if target_col.collision_groups & layer_mask == 0 {
+            if effective_collision_groups(target_col) & layer_mask == 0 {
                 continue;
             }
             let (t_pos, t_rot) = extract_2d_transform(world, entity);
@@ -541,7 +545,7 @@ pub fn shapecast_2d(
                     distance: dist,
                     point: [test_pos.x, test_pos.y],
                     normal: [-dir.x, -dir.y],
-                    is_sensor: target_col.is_sensor,
+                    is_sensor: target_col.is_sensor || target_col.is_trigger,
                 });
             }
         }
@@ -770,8 +774,8 @@ pub fn step_2d(world: &mut World, dt: f32, gravity: [f32; 2]) {
             let (e_a, col_a, rb_a, shape_a) = &colliders[i];
             let (e_b, col_b, rb_b, shape_b) = &colliders[j];
 
-            if (col_a.collision_groups & col_b.collision_mask == 0)
-                || (col_b.collision_groups & col_a.collision_mask == 0)
+            if (effective_collision_groups(col_a) & col_b.collision_mask == 0)
+                || (effective_collision_groups(col_b) & col_a.collision_mask == 0)
             {
                 continue;
             }
@@ -784,7 +788,8 @@ pub fn step_2d(world: &mut World, dt: f32, gravity: [f32; 2]) {
                 };
                 current_contacts.insert(pair_key);
 
-                let is_sensor = col_a.is_sensor || col_b.is_sensor;
+                let is_sensor =
+                    col_a.is_sensor || col_a.is_trigger || col_b.is_sensor || col_b.is_trigger;
 
                 if !is_sensor {
                     // 求解刚体冲量
@@ -873,10 +878,10 @@ pub fn step_2d(world: &mut World, dt: f32, gravity: [f32; 2]) {
         if !prev_contacts.pairs.contains(&pair) {
             let is_sensor = world
                 .get::<Collider2D>(pair.0)
-                .map_or(false, |c| c.is_sensor)
+                .map_or(false, |c| c.is_sensor || c.is_trigger)
                 || world
                     .get::<Collider2D>(pair.1)
-                    .map_or(false, |c| c.is_sensor);
+                    .map_or(false, |c| c.is_sensor || c.is_trigger);
             events.push(Physics2DEvent {
                 kind: Physics2DEventKind::Started,
                 entity_a: pair.0,
@@ -890,10 +895,10 @@ pub fn step_2d(world: &mut World, dt: f32, gravity: [f32; 2]) {
         if !current_contacts.contains(&pair) {
             let is_sensor = world
                 .get::<Collider2D>(pair.0)
-                .map_or(false, |c| c.is_sensor)
+                .map_or(false, |c| c.is_sensor || c.is_trigger)
                 || world
                     .get::<Collider2D>(pair.1)
-                    .map_or(false, |c| c.is_sensor);
+                    .map_or(false, |c| c.is_sensor || c.is_trigger);
             events.push(Physics2DEvent {
                 kind: Physics2DEventKind::Stopped,
                 entity_a: pair.0,

@@ -39,6 +39,9 @@ pub const ENV_OVERRIDE: &str = "PRISMREV_USER_DATA";
 /// 落盘的文件名：放在每个工程自己的目录下。
 pub const FILE_NAME: &str = "player_data.json";
 
+/// Reserved namespace used by the engine-owned global flag API.
+pub const FLAG_STORAGE_PREFIX: &str = prism_project_api::GLOBAL_FLAG_STORAGE_PREFIX;
+
 /// 存档文件内容。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserData {
@@ -213,12 +216,23 @@ impl UserStore {
         self.path.as_deref()
     }
 
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
     pub fn data(&self) -> &UserData {
         &self.data
     }
 
     pub fn get(&self, key: &str) -> Option<&str> {
         self.data.get(key)
+    }
+
+    /// Returns an engine-owned persistent flag. Missing flags are `false`.
+    pub fn get_flag(&self, key: &str) -> bool {
+        self.data
+            .get(&format!("{FLAG_STORAGE_PREFIX}{key}"))
+            .is_some_and(|value| value == "1")
     }
 
     pub fn set(&mut self, key: impl Into<String>, value: impl Into<String>) {
@@ -228,6 +242,14 @@ impl UserStore {
         }
         self.data.set(key, value);
         self.dirty = true;
+    }
+
+    /// Sets an engine-owned persistent flag. The caller decides when to flush.
+    pub fn set_flag(&mut self, key: &str, value: bool) {
+        self.set(
+            format!("{FLAG_STORAGE_PREFIX}{key}"),
+            if value { "1" } else { "0" },
+        );
     }
 
     pub fn remove(&mut self, key: &str) -> Option<String> {

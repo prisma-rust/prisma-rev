@@ -13,20 +13,33 @@ pub fn build_app() -> prism_app::App {
     let mut app = prism_app::app()
         .with_subsystem(prism_app::Subsystem::Render)
         .with_subsystem(prism_app::Subsystem::Audio);
-    app.add_system("echowell::platformer", platformer_system);
+    app.add_fixed_game_system::<game::platformer::PlatformerState, _>(
+        "echowell::platformer_fixed",
+        platformer_fixed_system,
+    );
+    app.add_game_system::<game::platformer::PlatformerState, _>(
+        "echowell::platformer_frame",
+        platformer_frame_system,
+    );
     app
 }
 
 #[cfg(feature = "player")]
-fn platformer_system(world: &mut prism_engine::ecs::World, dt: f32) {
-    let mut state = world.remove_resource::<game::platformer::PlatformerState>();
-    {
-        let mut api = prism_game_api::GameWorld::host(world);
-        game::platformer::tick(&mut state, &mut api, dt);
-    }
-    if let Some(state) = state {
-        world.insert_resource(state);
-    }
+fn platformer_fixed_system(
+    state: &mut Option<game::platformer::PlatformerState>,
+    world: &mut prism_game_api::GameWorld<'_>,
+    dt: f32,
+) {
+    game::platformer::fixed_tick(state, world, dt);
+}
+
+#[cfg(feature = "player")]
+fn platformer_frame_system(
+    state: &mut Option<game::platformer::PlatformerState>,
+    world: &mut prism_game_api::GameWorld<'_>,
+    dt: f32,
+) {
+    game::platformer::frame_tick(state, world, dt);
 }
 
 #[cfg(feature = "preview-module")]
@@ -62,6 +75,7 @@ mod preview {
                 schema_fingerprint: registry().schema_fingerprint(),
                 create: Some(create),
                 tick: Some(tick),
+                fixed_update: Some(fixed_update),
                 shutdown: Some(shutdown),
             };
         }
@@ -109,7 +123,38 @@ mod preview {
                 state.scene_generation = Some(host.scene_generation);
             }
             let mut world = GameWorld::plugin(host, registry().type_registry());
-            game::platformer::tick(&mut state.platformer, &mut world, dt);
+            game::platformer::frame_tick(&mut state.platformer, &mut world, dt);
+            SUCCESS
+        })
+    }
+
+    unsafe extern "C" fn fixed_update(
+        host_api: *const HostApi,
+        state: *mut std::ffi::c_void,
+        dt: f32,
+    ) -> i32 {
+        fixed_tick(host_api, state, dt)
+    }
+
+    unsafe extern "C" fn fixed_tick(
+        host_api: *const HostApi,
+        state: *mut std::ffi::c_void,
+        dt: f32,
+    ) -> i32 {
+        guard(|| unsafe {
+            let Some(state) = state.cast::<PreviewState>().as_mut() else {
+                return INVALID_ARGUMENT;
+            };
+            if host_api.is_null() {
+                return INVALID_ARGUMENT;
+            }
+            let host = &*host_api;
+            if state.scene_generation != Some(host.scene_generation) {
+                state.platformer = None;
+                state.scene_generation = Some(host.scene_generation);
+            }
+            let mut world = GameWorld::plugin(host, registry().type_registry());
+            game::platformer::fixed_tick(&mut state.platformer, &mut world, dt);
             SUCCESS
         })
     }

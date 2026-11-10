@@ -11,5 +11,9 @@ prism-ecs = { path = "../prism-ecs" }
 prism-project-api = { path = "../prism-project-api" }
 prism-reflect = { path = "../prism-reflect" }
 prism-scene = { path = "../prism-scene" }
+prism-physics2d = { path = "../prism-physics2d" }
 log.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+glam.workspace = true

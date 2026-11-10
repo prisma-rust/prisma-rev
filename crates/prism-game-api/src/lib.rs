@@ -27,11 +27,28 @@
 
 #[cfg(feature = "host")]
 use prism_ecs::World;
+mod input_actions;
+pub use input_actions::{ActionFrame, ActionState, InputActionMap};
 use prism_ecs::{Component, Entity};
+use prism_physics2d::{Aabb2, MoveOptions2D, MoveResult2, Obstacle2D};
 pub use prism_project_api::keys;
+#[cfg(feature = "plugin")]
+use prism_project_api::PhysicsEvent2D as AbiPhysicsEvent2D;
+pub use prism_project_api::PhysicsEventPhase2D as TriggerPhase2D;
 pub use prism_project_api::{EntityHandle, InputSnapshot};
+/// Shared 2D geometry used by both static Player and preview-module builds.
+pub mod physics2d {
+    pub use prism_physics2d::*;
+}
 use prism_reflect::Reflect;
-use prism_scene::components::Name;
+pub use prism_scene::components::Camera2D;
+use prism_scene::components::{
+    Hitbox2D, Hurtbox2D, Interactable2D, LocalTransform, Name, TransformInterpolation2D,
+};
+
+fn valid_flag_key(key: &str) -> bool {
+    !key.is_empty() && !key.contains(char::from(0))
+}
 
 /// The schema layer, re-exported for the `export_project!` macro so projects do
 /// not have to depend on `prism-project-api` directly.
@@ -58,9 +75,14 @@ pub fn builtin_schema_fingerprint() -> u64 {
 }
 
 #[cfg(feature = "plugin")]
-use prism_project_api::{HostApi, HOST_CAP_PHYSICS, HOST_CAP_SCENE, SUCCESS};
+use prism_project_api::{
+    Collider2DHit, HostApi, RaycastHit2D as AbiRaycastHit2D, HOST_CAP_PHYSICS, HOST_CAP_PHYSICS_2D,
+    HOST_CAP_PHYSICS_EVENTS_2D, HOST_CAP_SCENE, SUCCESS,
+};
 #[cfg(feature = "plugin")]
 use prism_reflect::{rtti_bin, TypeRegistry};
+#[cfg(test)]
+use prism_scene::components::Collider2D;
 
 /// A 2D UI quad (defined in the ABI crate, re-exported here).
 pub use prism_project_api::UiQuad;
@@ -77,6 +99,55 @@ pub struct RaycastHit {
     pub point: [f32; 3],
     pub normal: [f32; 3],
     pub is_trigger: bool,
+}
+
+/// An active 2D collider found in the gameplay world.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ColliderInstance2D {
+    pub entity: EntityHandle,
+    pub bounds: Aabb2,
+    pub is_trigger: bool,
+    pub layer: u32,
+    pub one_way_top: bool,
+}
+
+/// An enabled 2D interaction target within the requested range.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InteractableCandidate2D {
+    pub entity: EntityHandle,
+    pub bounds: Aabb2,
+    pub prompt: String,
+    pub priority: i32,
+    pub distance: f32,
+}
+
+/// One active hitbox-to-hurtbox overlap in the current gameplay snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DamageContact2D {
+    pub hitbox: EntityHandle,
+    pub hurtbox: EntityHandle,
+    pub damage: u32,
+    pub hitbox_team: u32,
+    pub hurtbox_team: u32,
+}
+
+/// One entity-pair event from the most recently completed fixed step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TriggerEvent2D {
+    pub entity_a: EntityHandle,
+    pub entity_b: EntityHandle,
+    pub phase: TriggerPhase2D,
+}
+
+/// The nearest active 2D collider hit by a world-space ray.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RaycastHit2D {
+    pub entity: EntityHandle,
+    pub distance: f32,
+    pub point: [f32; 2],
+    pub normal: [f32; 2],
+    pub is_trigger: bool,
+    pub layer: u32,
 }
 
 /// Buffers keyboard edges from render-frame snapshots until the next gameplay
@@ -184,6 +255,11 @@ impl<'a> GameWorld<'a> {
         }
     }
 
+    /// Samples named gameplay actions from this world's current input snapshot.
+    pub fn input_actions(&self, map: &mut InputActionMap) -> ActionFrame {
+        map.sample(self.input())
+    }
+
     /// Overrides this frame's input (host backend).
     ///
     /// Not needed during normal operation: `Engine::update` writes
@@ -205,6 +281,11 @@ impl<'a> GameWorld<'a> {
 
     pub fn screen_size(&self) -> [f32; 2] {
         self.input().screen
+    }
+
+    /// Interpolation fraction between the previous and current fixed simulation states.
+    pub fn interpolation_alpha(&self) -> f32 {
+        self.input().interpolation_alpha
     }
 
     /// Whether a loose asset exists (level JSON, textures with time-of-day
@@ -294,6 +375,44 @@ impl<'a> GameWorld<'a> {
             Backend::Plugin(backend) => backend
                 .load_value(key)
                 .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
+        }
+    }
+
+    /// Reads a global persistent gameplay flag. Missing flags are false.
+    ///
+    /// Flags use an engine-owned storage namespace so doors, switches and NPCs
+    /// can share state without agreeing on a serialized value format.
+    pub fn get_flag(&self, key: &str) -> bool {
+        if !valid_flag_key(key) {
+            return false;
+        }
+        match &self.backend {
+            #[cfg(feature = "host")]
+            Backend::Host(world) => world
+                .get_resource::<prism_engine::user_data::UserStore>()
+                .is_some_and(|store| store.get_flag(key)),
+            #[cfg(feature = "plugin")]
+            Backend::Plugin(backend) => backend.get_flag(key),
+        }
+    }
+
+    /// Sets a global persistent gameplay flag and flushes it immediately.
+    pub fn set_flag(&mut self, key: &str, value: bool) -> bool {
+        if !valid_flag_key(key) {
+            return false;
+        }
+        match &mut self.backend {
+            #[cfg(feature = "host")]
+            Backend::Host(world) => {
+                let Some(store) = world.get_resource_mut::<prism_engine::user_data::UserStore>()
+                else {
+                    return false;
+                };
+                store.set_flag(key, value);
+                store.flush().is_ok() && !store.is_read_only()
+            }
+            #[cfg(feature = "plugin")]
+            Backend::Plugin(backend) => backend.set_flag(key, value),
         }
     }
 
@@ -455,6 +574,324 @@ impl<'a> GameWorld<'a> {
         }
     }
 
+    /// Returns active 2D colliders whose layers intersect `layer_mask`.
+    /// Colliders use the entity's complete `LocalToWorld` matrix, falling back to
+    /// the local transform for a freshly spawned root before hierarchy propagation.
+    pub fn colliders2d(&self, layer_mask: u32) -> Vec<ColliderInstance2D> {
+        let mut colliders: Vec<_> = match &self.backend {
+            #[cfg(feature = "host")]
+            Backend::Host(world) => prism_scene::colliders2d(world, layer_mask)
+                .into_iter()
+                .map(|collider| ColliderInstance2D {
+                    entity: handle_from_entity(collider.entity),
+                    bounds: collider.bounds,
+                    is_trigger: collider.is_trigger,
+                    layer: collider.layer,
+                    one_way_top: collider.one_way_top,
+                })
+                .collect(),
+            #[cfg(feature = "plugin")]
+            Backend::Plugin(backend) => backend.colliders2d(layer_mask),
+        };
+        colliders.sort_by_key(|collider| (collider.entity.id, collider.entity.generation));
+        colliders
+    }
+
+    /// Returns the latest fixed-step 2D trigger events.
+    ///
+    /// Events are a snapshot, not a queue: the engine replaces it after each
+    /// fixed step, so gameplay should consume the phases once per step.
+    pub fn trigger_events2d(&self) -> Vec<TriggerEvent2D> {
+        match &self.backend {
+            #[cfg(feature = "host")]
+            Backend::Host(world) => world
+                .get_resource::<prism_engine::physics::TriggerEvents2D>()
+                .map(|events| {
+                    events
+                        .events()
+                        .iter()
+                        .filter_map(|event| {
+                            Some(TriggerEvent2D {
+                                entity_a: event.entity_a,
+                                entity_b: event.entity_b,
+                                phase: event.phase()?,
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            #[cfg(feature = "plugin")]
+            Backend::Plugin(backend) => backend.trigger_events2d(),
+        }
+    }
+
+    /// Returns colliders overlapping `bounds`, including triggers.
+    pub fn overlap2d(&self, bounds: Aabb2, layer_mask: u32) -> Vec<ColliderInstance2D> {
+        self.colliders2d(layer_mask)
+            .into_iter()
+            .filter(|collider| bounds.overlaps(collider.bounds))
+            .collect()
+    }
+
+    /// Returns enabled interaction targets within `max_distance` of `origin`.
+    ///
+    /// Candidates require a `Collider2D` or `TilemapCollider2D` on the same
+    /// entity. Results sort by descending priority, then ascending distance,
+    /// then entity handle, so target selection is stable across backends.
+    pub fn interactables2d(
+        &self,
+        origin: [f32; 2],
+        max_distance: f32,
+        layer_mask: u32,
+    ) -> Vec<InteractableCandidate2D> {
+        if !origin.into_iter().all(f32::is_finite)
+            || !max_distance.is_finite()
+            || max_distance < 0.0
+        {
+            return Vec::new();
+        }
+
+        let interactables: std::collections::HashMap<_, _> = self
+            .query::<Interactable2D>()
+            .into_iter()
+            .filter_map(|entity| {
+                self.get::<Interactable2D>(entity)
+                    .filter(|interactable| interactable.enabled)
+                    .map(|interactable| (entity, interactable))
+            })
+            .collect();
+
+        let mut by_entity = std::collections::HashMap::new();
+        for collider in self.colliders2d(layer_mask) {
+            let Some(interactable) = interactables.get(&collider.entity) else {
+                continue;
+            };
+            let nearest = [
+                origin[0].clamp(collider.bounds.min[0], collider.bounds.max[0]),
+                origin[1].clamp(collider.bounds.min[1], collider.bounds.max[1]),
+            ];
+            let dx = origin[0] - nearest[0];
+            let dy = origin[1] - nearest[1];
+            let distance = dx.hypot(dy);
+            if distance > max_distance {
+                continue;
+            }
+            let candidate = InteractableCandidate2D {
+                entity: collider.entity,
+                bounds: collider.bounds,
+                prompt: interactable.prompt.clone(),
+                priority: interactable.priority,
+                distance,
+            };
+            by_entity
+                .entry(collider.entity)
+                .and_modify(|current: &mut InteractableCandidate2D| {
+                    if candidate.distance < current.distance {
+                        *current = candidate.clone();
+                    }
+                })
+                .or_insert(candidate);
+        }
+        let mut candidates: Vec<_> = by_entity.into_values().collect();
+        candidates.sort_by(|left, right| {
+            right
+                .priority
+                .cmp(&left.priority)
+                .then_with(|| left.distance.total_cmp(&right.distance))
+                .then_with(|| {
+                    (left.entity.id, left.entity.generation)
+                        .cmp(&(right.entity.id, right.entity.generation))
+                })
+        });
+        candidates
+    }
+
+    /// Returns enabled hitbox/hurtbox overlaps for the current world state.
+    ///
+    /// Both entities must carry the corresponding metadata component and an
+    /// active 2D collider. Same-team pairs are ignored, and multiple collider
+    /// fragments on either entity produce one stable contact pair. Damage is a
+    /// snapshot; gameplay owns hit cooldowns, invulnerability and responses.
+    pub fn damage_contacts2d(
+        &self,
+        hitbox_layer_mask: u32,
+        hurtbox_layer_mask: u32,
+    ) -> Vec<DamageContact2D> {
+        let hitboxes: std::collections::HashMap<_, _> = self
+            .query::<Hitbox2D>()
+            .into_iter()
+            .filter_map(|entity| {
+                self.get::<Hitbox2D>(entity)
+                    .filter(|hitbox| hitbox.enabled)
+                    .map(|hitbox| (entity, hitbox))
+            })
+            .collect();
+        let hurtboxes: std::collections::HashMap<_, _> = self
+            .query::<Hurtbox2D>()
+            .into_iter()
+            .filter_map(|entity| {
+                self.get::<Hurtbox2D>(entity)
+                    .filter(|hurtbox| hurtbox.enabled)
+                    .map(|hurtbox| (entity, hurtbox))
+            })
+            .collect();
+        if hitboxes.is_empty() || hurtboxes.is_empty() {
+            return Vec::new();
+        }
+
+        let hitbox_colliders: Vec<_> = self
+            .colliders2d(hitbox_layer_mask)
+            .into_iter()
+            .filter(|collider| hitboxes.contains_key(&collider.entity))
+            .collect();
+        let hurtbox_colliders: Vec<_> = self
+            .colliders2d(hurtbox_layer_mask)
+            .into_iter()
+            .filter(|collider| hurtboxes.contains_key(&collider.entity))
+            .collect();
+        let mut contacts = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for hitbox in &hitbox_colliders {
+            let Some(hitbox_data) = hitboxes.get(&hitbox.entity) else {
+                continue;
+            };
+            for hurtbox in &hurtbox_colliders {
+                if hitbox.entity == hurtbox.entity
+                    || !hitbox.bounds.overlaps(hurtbox.bounds)
+                    || !contacts.insert((hitbox.entity, hurtbox.entity))
+                {
+                    continue;
+                }
+                let Some(hurtbox_data) = hurtboxes.get(&hurtbox.entity) else {
+                    continue;
+                };
+                if hitbox_data.team == hurtbox_data.team {
+                    contacts.remove(&(hitbox.entity, hurtbox.entity));
+                    continue;
+                }
+                out.push(DamageContact2D {
+                    hitbox: hitbox.entity,
+                    hurtbox: hurtbox.entity,
+                    damage: hitbox_data.damage,
+                    hitbox_team: hitbox_data.team,
+                    hurtbox_team: hurtbox_data.team,
+                });
+            }
+        }
+        out.sort_by_key(|contact| {
+            (
+                contact.hitbox.id,
+                contact.hitbox.generation,
+                contact.hurtbox.id,
+                contact.hurtbox.generation,
+            )
+        });
+        out
+    }
+
+    /// Casts a world-space ray against active 2D AABB colliders and returns the
+    /// nearest hit. Triggers participate in the query; movement APIs still
+    /// exclude them as obstacles.
+    pub fn raycast2d(
+        &self,
+        origin: [f32; 2],
+        direction: [f32; 2],
+        max_distance: f32,
+        layer_mask: u32,
+    ) -> Option<RaycastHit2D> {
+        match &self.backend {
+            #[cfg(feature = "host")]
+            Backend::Host(_) => self
+                .colliders2d(layer_mask)
+                .into_iter()
+                .filter_map(|collider| {
+                    prism_physics2d::raycast_aabb(origin, direction, max_distance, collider.bounds)
+                        .map(|hit| RaycastHit2D {
+                            entity: collider.entity,
+                            distance: hit.distance,
+                            point: hit.point,
+                            normal: hit.normal,
+                            is_trigger: collider.is_trigger,
+                            layer: collider.layer,
+                        })
+                })
+                .min_by(|left, right| left.distance.total_cmp(&right.distance)),
+            #[cfg(feature = "plugin")]
+            Backend::Plugin(backend) => {
+                if backend.api.capabilities & HOST_CAP_PHYSICS_2D == 0 {
+                    return None;
+                }
+                let raycast = backend.api.raycast2d?;
+                let mut raw = AbiRaycastHit2D::default();
+                let status = unsafe {
+                    raycast(
+                        backend.api.user_data,
+                        &origin,
+                        &direction,
+                        max_distance,
+                        layer_mask,
+                        &mut raw,
+                    )
+                };
+                (status == 1).then_some(RaycastHit2D {
+                    entity: raw.entity,
+                    distance: raw.distance,
+                    point: raw.point,
+                    normal: raw.normal,
+                    is_trigger: raw.is_trigger != 0,
+                    layer: raw.layer,
+                })
+            }
+        }
+    }
+
+    /// Sweeps an AABB against active, non-trigger 2D colliders in the world.
+    pub fn move_and_slide2d(
+        &self,
+        entity: Option<EntityHandle>,
+        center: [f32; 2],
+        half_extents: [f32; 2],
+        delta: [f32; 2],
+        layer_mask: u32,
+    ) -> MoveResult2 {
+        self.move_and_slide2d_with_options(
+            entity,
+            center,
+            half_extents,
+            delta,
+            layer_mask,
+            MoveOptions2D::default(),
+        )
+    }
+
+    /// Sweeps an AABB with platformer-specific one-way platform options.
+    pub fn move_and_slide2d_with_options(
+        &self,
+        entity: Option<EntityHandle>,
+        center: [f32; 2],
+        half_extents: [f32; 2],
+        delta: [f32; 2],
+        layer_mask: u32,
+        options: MoveOptions2D,
+    ) -> MoveResult2 {
+        let obstacles: Vec<_> = self
+            .colliders2d(layer_mask)
+            .into_iter()
+            .filter(|collider| !collider.is_trigger && Some(collider.entity) != entity)
+            .map(|collider| Obstacle2D {
+                bounds: collider.bounds,
+                one_way_top: collider.one_way_top,
+            })
+            .collect();
+        prism_physics2d::move_and_slide_with_options(
+            center,
+            half_extents,
+            delta,
+            &obstacles,
+            options,
+        )
+    }
+
     /// Reads a loose text asset.
     pub fn read_asset_text(&self, relative: &str) -> std::io::Result<String> {
         match &self.backend {
@@ -566,6 +1003,37 @@ impl<'a> GameWorld<'a> {
                 }
             }
         }
+    }
+
+    /// Enable render interpolation for a fixed-step 2D entity.
+    ///
+    /// The component stores the entity's current local XY position. Call this
+    /// after assigning its initial transform and before its first fixed step.
+    pub fn enable_transform_interpolation2d(&mut self, entity: EntityHandle) -> bool {
+        let Some(transform) = self.get::<LocalTransform>(entity) else {
+            return false;
+        };
+        self.set(
+            entity,
+            TransformInterpolation2D {
+                previous: [transform.position.x, transform.position.y],
+                current: [transform.position.x, transform.position.y],
+            },
+        )
+    }
+
+    /// Reset interpolation history after teleporting, respawning, or changing rooms.
+    pub fn snap_transform_interpolation2d(&mut self, entity: EntityHandle) -> bool {
+        let Some(transform) = self.get::<LocalTransform>(entity) else {
+            return false;
+        };
+        let position = [transform.position.x, transform.position.y];
+        let Some(mut history) = self.get::<TransformInterpolation2D>(entity) else {
+            return false;
+        };
+        history.previous = position;
+        history.current = position;
+        self.set(entity, history)
     }
 
     /// Removes a component, returning whether it existed.
@@ -881,6 +1349,113 @@ impl PluginBackend<'_> {
         Some(out)
     }
 
+    fn get_flag(&self, key: &str) -> bool {
+        if self.api.capabilities & prism_project_api::HOST_CAP_FLAGS == 0 {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| log::warn!("host does not expose persistent flags"));
+            return false;
+        }
+        let Some(get) = self.api.get_flag else {
+            return false;
+        };
+        let name = key.as_bytes();
+        unsafe { get(self.api.user_data, name.as_ptr(), name.len()) == 1 }
+    }
+
+    fn set_flag(&self, key: &str, value: bool) -> bool {
+        if self.api.capabilities & prism_project_api::HOST_CAP_FLAGS == 0 {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| log::warn!("host does not expose persistent flags"));
+            return false;
+        }
+        let Some(set) = self.api.set_flag else {
+            return false;
+        };
+        let name = key.as_bytes();
+        unsafe {
+            set(
+                self.api.user_data,
+                name.as_ptr(),
+                name.len(),
+                u8::from(value),
+            ) == SUCCESS
+        }
+    }
+
+    fn colliders2d(&self, layer_mask: u32) -> Vec<ColliderInstance2D> {
+        if self.api.capabilities & HOST_CAP_PHYSICS_2D == 0 {
+            return Vec::new();
+        }
+        let Some(query) = self.api.query_colliders2d else {
+            return Vec::new();
+        };
+        let mut count = 0usize;
+        let status = unsafe {
+            query(
+                self.api.user_data,
+                layer_mask,
+                std::ptr::null_mut(),
+                0,
+                &mut count,
+            )
+        };
+        if status != SUCCESS || count == 0 {
+            return Vec::new();
+        }
+        let mut raw = vec![Collider2DHit::default(); count];
+        let status = unsafe {
+            query(
+                self.api.user_data,
+                layer_mask,
+                raw.as_mut_ptr(),
+                raw.len(),
+                &mut count,
+            )
+        };
+        if status != SUCCESS {
+            return Vec::new();
+        }
+        raw.truncate(count);
+        raw.into_iter()
+            .map(|hit| ColliderInstance2D {
+                entity: hit.entity,
+                bounds: Aabb2::new(hit.bounds[0], hit.bounds[1], hit.bounds[2], hit.bounds[3]),
+                is_trigger: hit.is_trigger != 0,
+                layer: hit.layer,
+                one_way_top: hit.one_way_top != 0,
+            })
+            .collect()
+    }
+
+    fn trigger_events2d(&self) -> Vec<TriggerEvent2D> {
+        if self.api.capabilities & HOST_CAP_PHYSICS_EVENTS_2D == 0 {
+            return Vec::new();
+        }
+        let Some(query) = self.api.query_trigger_events2d else {
+            return Vec::new();
+        };
+        let mut count = 0usize;
+        let status = unsafe { query(self.api.user_data, std::ptr::null_mut(), 0, &mut count) };
+        if status != SUCCESS || count == 0 {
+            return Vec::new();
+        }
+        let mut raw = vec![AbiPhysicsEvent2D::default(); count];
+        let status = unsafe { query(self.api.user_data, raw.as_mut_ptr(), raw.len(), &mut count) };
+        if status != SUCCESS {
+            return Vec::new();
+        }
+        raw.truncate(count);
+        raw.into_iter()
+            .filter_map(|event| {
+                Some(TriggerEvent2D {
+                    entity_a: event.entity_a,
+                    entity_b: event.entity_b,
+                    phase: event.phase()?,
+                })
+            })
+            .collect()
+    }
+
     fn draw(&self, quad: UiQuad) {
         let Some(draw) = self.api.draw_quad else {
             log::debug!("game-api: host does not expose draw_quad");
@@ -1062,6 +1637,103 @@ impl PluginBackend<'_> {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "host")]
+    #[test]
+    fn host_global_flags_are_persistent_user_store_entries() {
+        let mut world = World::new();
+        world.insert_resource(prism_engine::user_data::UserStore::in_memory());
+        {
+            let mut api = GameWorld::host(&mut world);
+            assert!(!api.get_flag("well.gate.open"));
+            assert!(api.set_flag("well.gate.open", true));
+            assert!(api.get_flag("well.gate.open"));
+            assert!(!api.set_flag("", true));
+        }
+        let api = GameWorld::host(&mut world);
+        assert!(api.get_flag("well.gate.open"));
+    }
+
+    #[cfg(feature = "plugin")]
+    #[test]
+    fn plugin_global_flags_use_the_host_capability() {
+        #[derive(Default)]
+        struct FakeSave(std::collections::BTreeMap<String, Vec<u8>>);
+        impl prism_runtime_host::SaveIo for FakeSave {
+            fn save_value(&mut self, key: &str, value: &[u8]) -> bool {
+                self.0.insert(key.to_string(), value.to_vec());
+                true
+            }
+
+            fn load_value(&mut self, key: &str) -> Option<Vec<u8>> {
+                self.0.get(key).cloned()
+            }
+        }
+
+        let mut world = World::new();
+        let registry = prism_scene::builtin_registry();
+        let mut save = FakeSave::default();
+        let mut commands =
+            prism_runtime_host::WorldCommands::new(&mut world, registry, 1).with_save(&mut save);
+        {
+            let host = commands.api();
+            assert_ne!(host.capabilities & prism_project_api::HOST_CAP_FLAGS, 0);
+            let mut api = GameWorld::plugin(&host, registry.type_registry());
+            assert!(!api.get_flag("well.gate.open"));
+            assert!(api.set_flag("well.gate.open", true));
+            assert!(api.get_flag("well.gate.open"));
+        }
+        assert_eq!(
+            save.0.get("__prism.flag.well.gate.open"),
+            Some(&b"1".to_vec())
+        );
+    }
+
+    #[cfg(feature = "plugin")]
+    #[test]
+    fn plugin_backend_reads_trigger_events_through_the_host_api() {
+        fn trigger_reader(
+            _world: &prism_ecs::World,
+            out: &mut Vec<prism_project_api::PhysicsEvent2D>,
+        ) {
+            out.push(prism_project_api::PhysicsEvent2D::new(
+                EntityHandle {
+                    id: 4,
+                    generation: 2,
+                },
+                EntityHandle {
+                    id: 9,
+                    generation: 1,
+                },
+                TriggerPhase2D::Enter,
+            ));
+        }
+
+        let mut world = prism_ecs::World::new();
+        let registry = prism_scene::builtin_registry();
+        let mut commands = prism_runtime_host::WorldCommands::new(&mut world, registry, 1)
+            .with_trigger_events2d(trigger_reader);
+        let host = commands.api();
+        assert_ne!(
+            host.capabilities & prism_project_api::HOST_CAP_PHYSICS_EVENTS_2D,
+            0
+        );
+        let api = GameWorld::plugin(&host, registry.type_registry());
+        assert_eq!(
+            api.trigger_events2d(),
+            vec![TriggerEvent2D {
+                entity_a: EntityHandle {
+                    id: 4,
+                    generation: 2,
+                },
+                entity_b: EntityHandle {
+                    id: 9,
+                    generation: 1,
+                },
+                phase: TriggerPhase2D::Enter,
+            }]
+        );
+    }
+
     #[test]
     fn input_edges_accumulate_until_consumed_without_staling_held_state() {
         let mut edges = InputEdgeBuffer::default();
@@ -1115,6 +1787,28 @@ mod tests {
         assert_eq!(api.screen_size(), [0.0, 0.0]);
     }
 
+    #[cfg(feature = "host")]
+    #[test]
+    fn host_input_actions_sample_the_current_snapshot() {
+        let mut world = World::new();
+        let mut input = InputSnapshot::default();
+        input.set_key(keys::KEY_D, true);
+        input.set_key_edge(keys::KEY_D, true);
+        world.insert_resource(input);
+
+        let mut map = InputActionMap::default();
+        map.bind_keys("move_right", [keys::KEY_D]);
+        let api = GameWorld::host(&mut world);
+        assert_eq!(
+            api.input_actions(&mut map).action("move_right"),
+            ActionState {
+                held: true,
+                pressed: true,
+                released: false,
+            }
+        );
+    }
+
     /// `set_input` must write through to the world: the next `GameWorld` over the
     /// same world can read it too.
     #[cfg(feature = "host")]
@@ -1135,6 +1829,69 @@ mod tests {
                 .expect("set_input writes the resource")
                 .scroll,
             2.5
+        );
+    }
+
+    #[cfg(feature = "host")]
+    #[test]
+    fn host_transform_interpolation_can_be_enabled_and_snapped() {
+        use prism_scene::components::{LocalTransform, TransformInterpolation2D};
+
+        let mut world = World::new();
+        let entity = world.spawn();
+        world.insert(
+            entity,
+            LocalTransform {
+                position: glam::Vec3::new(4.0, 6.0, 0.0),
+                ..LocalTransform::default()
+            },
+        );
+        let mut api = GameWorld::host(&mut world);
+        let handle = handle_from_entity(entity);
+        assert!(api.enable_transform_interpolation2d(handle));
+        assert_eq!(
+            api.get::<TransformInterpolation2D>(handle).unwrap().current,
+            [4.0, 6.0]
+        );
+        let mut transform = api.get::<LocalTransform>(handle).unwrap();
+        transform.position = glam::Vec3::new(10.0, 12.0, 0.0);
+        assert!(api.set(handle, transform));
+        assert!(api.snap_transform_interpolation2d(handle));
+        assert_eq!(
+            api.get::<TransformInterpolation2D>(handle)
+                .unwrap()
+                .previous,
+            [10.0, 12.0]
+        );
+    }
+
+    #[cfg(feature = "plugin")]
+    #[test]
+    fn plugin_transform_interpolation_crosses_the_host_api() {
+        use prism_scene::components::{LocalTransform, TransformInterpolation2D};
+
+        let mut world = World::new();
+        let registry = prism_scene::builtin_registry();
+        let entity = world.spawn();
+        world.insert(
+            entity,
+            LocalTransform {
+                position: glam::Vec3::new(3.0, 5.0, 0.0),
+                ..LocalTransform::default()
+            },
+        );
+        let mut commands = prism_runtime_host::WorldCommands::new(&mut world, registry, 1);
+        let host = commands.api();
+        let mut api = GameWorld::plugin(&host, registry.type_registry());
+        let handle = EntityHandle {
+            id: entity.id(),
+            generation: entity.generation(),
+        };
+        assert!(api.get::<LocalTransform>(handle).is_some());
+        assert!(api.enable_transform_interpolation2d(handle));
+        assert_eq!(
+            api.get::<TransformInterpolation2D>(handle).unwrap().current,
+            [3.0, 5.0]
         );
     }
 
@@ -1259,6 +2016,744 @@ mod tests {
         assert!(api
             .raycast([0.0, 0.0, -5.0], [0.0, 0.0, -1.0], 10.0, u32::MAX)
             .is_none());
+    }
+
+    #[cfg(feature = "host")]
+    #[test]
+    fn host_backend_raycast2d_returns_nearest_world_collider() {
+        use prism_scene::components::{Collider2D, LocalTransform};
+
+        let mut world = World::new();
+        let far = world.spawn();
+        world.insert(
+            far,
+            LocalTransform {
+                position: glam::Vec3::new(20.0, 4.0, 0.0),
+                ..LocalTransform::default()
+            },
+        );
+        world.insert(
+            far,
+            Collider2D {
+                half_extents: [2.0, 2.0],
+                layer: 0b0010,
+                ..Collider2D::default()
+            },
+        );
+        let near = world.spawn();
+        world.insert(
+            near,
+            LocalTransform {
+                position: glam::Vec3::new(8.0, 4.0, 0.0),
+                ..LocalTransform::default()
+            },
+        );
+        world.insert(
+            near,
+            Collider2D {
+                half_extents: [1.0, 1.0],
+                is_trigger: true,
+                layer: 0b0010,
+                ..Collider2D::default()
+            },
+        );
+
+        let api = GameWorld::host(&mut world);
+        let hit = api
+            .raycast2d([0.0, 4.0], [1.0, 0.0], 100.0, 0b0010)
+            .expect("the nearest 2D collider should be hit");
+        assert_eq!(hit.entity, handle_from_entity(near));
+        assert!((hit.distance - 7.0).abs() < 1e-5);
+        assert_eq!(hit.point, [7.0, 4.0]);
+        assert_eq!(hit.normal, [-1.0, 0.0]);
+        assert!(hit.is_trigger);
+        assert!(api
+            .raycast2d([0.0, 4.0], [1.0, 0.0], 100.0, 0b0100)
+            .is_none());
+    }
+
+    #[cfg(feature = "host")]
+    #[test]
+    fn host_backend_exposes_tilemap_colliders_through_the_same_query() {
+        use prism_scene::components::{LocalTransform, Tilemap, TilemapCollider2D};
+
+        let mut world = World::new();
+        let tilemap = world.spawn();
+        world.insert(
+            tilemap,
+            LocalTransform {
+                position: glam::Vec3::new(20.0, 0.0, 0.0),
+                ..LocalTransform::default()
+            },
+        );
+        world.insert(
+            tilemap,
+            Tilemap {
+                columns: 2,
+                cell_size: [4.0, 4.0],
+                tiles: vec![0, 7, 7, 0],
+                ..Tilemap::default()
+            },
+        );
+        world.insert(
+            tilemap,
+            TilemapCollider2D {
+                solid_tile_ids: vec![7],
+                layer: 0b1000,
+                ..TilemapCollider2D::default()
+            },
+        );
+
+        let api = GameWorld::host(&mut world);
+        let hits = api.colliders2d(0b1000);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].bounds, Aabb2::new(20.0, 0.0, 24.0, 4.0));
+        assert_eq!(hits[1].bounds, Aabb2::new(24.0, 4.0, 28.0, 8.0));
+        assert_eq!(hits[0].entity, handle_from_entity(tilemap));
+        let moved = api.move_and_slide2d(None, [0.0, 2.0], [1.0, 1.0], [40.0, 0.0], 0b1000);
+        assert_eq!(moved.position, [19.0, 2.0]);
+        assert!(moved.hit_x);
+    }
+
+    #[cfg(feature = "host")]
+    #[test]
+    fn host_backend_moves_through_and_lands_on_one_way_collider() {
+        use prism_scene::components::{Collider2D, LocalTransform};
+
+        let mut world = World::new();
+        let platform = world.spawn();
+        world.insert(
+            platform,
+            LocalTransform {
+                position: glam::Vec3::new(0.0, 2.0, 0.0),
+                ..LocalTransform::default()
+            },
+        );
+        world.insert(
+            platform,
+            Collider2D {
+                half_extents: [8.0, 1.0],
+                one_way_top: true,
+                layer: 0b1000,
+                ..Collider2D::default()
+            },
+        );
+        let api = GameWorld::host(&mut world);
+        let hits = api.colliders2d(0b1000);
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].one_way_top);
+
+        let upward = api.move_and_slide2d(None, [0.0, -4.0], [1.0, 1.0], [0.0, 10.0], 0b1000);
+        assert_eq!(upward.position, [0.0, 6.0]);
+        let landed = api.move_and_slide2d(None, [0.0, 10.0], [1.0, 1.0], [0.0, -20.0], 0b1000);
+        assert!((landed.position[1] - 4.0).abs() < 1e-5);
+        assert!(landed.grounded);
+    }
+
+    #[cfg(feature = "plugin")]
+    #[test]
+    fn plugin_backend_raycast2d_crosses_the_host_api() {
+        use prism_scene::components::{Collider2D, LocalTransform};
+
+        let mut world = World::new();
+        let wall = world.spawn();
+        world.insert(
+            wall,
+            LocalTransform {
+                position: glam::Vec3::new(12.0, 2.0, 0.0),
+                ..LocalTransform::default()
+            },
+        );
+        world.insert(
+            wall,
+            Collider2D {
+                half_extents: [2.0, 3.0],
+                layer: 0b0100,
+                ..Collider2D::default()
+            },
+        );
+        let registry = prism_scene::builtin_registry();
+        let mut commands = prism_runtime_host::WorldCommands::new(&mut world, registry, 1);
+        let host = commands.api();
+        let api = GameWorld::plugin(&host, registry.type_registry());
+        let hit = api
+            .raycast2d([0.0, 2.0], [1.0, 0.0], 100.0, 0b0100)
+            .expect("plugin raycast should forward to the host");
+        assert_eq!(hit.entity.id, wall.id());
+        assert!((hit.distance - 10.0).abs() < 1e-5);
+        assert_eq!(hit.normal, [-1.0, 0.0]);
+    }
+
+    #[cfg(feature = "plugin")]
+    #[test]
+    fn plugin_backend_raycast2d_hits_tilemap_generated_bounds() {
+        use prism_scene::components::{LocalTransform, Tilemap, TilemapCollider2D};
+
+        let mut world = World::new();
+        let tilemap = world.spawn();
+        world.insert(
+            tilemap,
+            LocalTransform {
+                position: glam::Vec3::new(8.0, 0.0, 0.0),
+                ..LocalTransform::default()
+            },
+        );
+        world.insert(
+            tilemap,
+            Tilemap {
+                columns: 1,
+                cell_size: [2.0, 4.0],
+                tiles: vec![3],
+                ..Tilemap::default()
+            },
+        );
+        world.insert(
+            tilemap,
+            TilemapCollider2D {
+                solid_tile_ids: vec![3],
+                layer: 0b1000,
+                ..TilemapCollider2D::default()
+            },
+        );
+        let registry = prism_scene::builtin_registry();
+        let mut commands = prism_runtime_host::WorldCommands::new(&mut world, registry, 1);
+        let host = commands.api();
+        let api = GameWorld::plugin(&host, registry.type_registry());
+
+        let hit = api
+            .raycast2d([0.0, 2.0], [1.0, 0.0], 20.0, 0b1000)
+            .expect("the plugin raycast should see generated tilemap bounds");
+        assert_eq!(hit.entity.id, tilemap.id());
+        assert_eq!(hit.distance, 8.0);
+        assert_eq!(hit.point, [8.0, 2.0]);
+    }
+
+    #[cfg(feature = "plugin")]
+    #[test]
+    fn plugin_input_actions_sample_the_host_snapshot() {
+        let mut world = World::new();
+        let registry = prism_scene::builtin_registry();
+        let mut commands = prism_runtime_host::WorldCommands::new(&mut world, registry, 1);
+        let mut input = InputSnapshot::default();
+        input.set_key(keys::SPACE, true);
+        input.set_key_edge(keys::SPACE, true);
+        commands.set_input(input);
+        let host = commands.api();
+        let api = GameWorld::plugin(&host, registry.type_registry());
+
+        let mut map = InputActionMap::default();
+        map.bind_keys("jump", [keys::SPACE]);
+        assert_eq!(
+            api.input_actions(&mut map).action("jump"),
+            ActionState {
+                held: true,
+                pressed: true,
+                released: false,
+            }
+        );
+    }
+
+    #[cfg(feature = "host")]
+    #[test]
+    fn host_backend_queries_and_moves_against_2d_colliders() {
+        use prism_scene::components::{Active, Child, LocalTransform, Parent};
+
+        let mut world = World::new();
+        let wall = world.spawn();
+        world.insert(
+            wall,
+            Collider2D {
+                half_extents: [1.0, 5.0],
+                ..Collider2D::default()
+            },
+        );
+        world.insert(
+            wall,
+            LocalTransform {
+                position: glam::Vec3::new(10.0, 0.0, 0.0),
+                ..LocalTransform::default()
+            },
+        );
+        let transformed_parent = world.spawn();
+        world.insert(
+            transformed_parent,
+            LocalTransform {
+                position: glam::Vec3::new(30.0, 40.0, 0.0),
+                scale: glam::Vec3::new(2.0, 1.0, 1.0),
+                rotation: glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+            },
+        );
+        let transformed_child = world.spawn();
+        world.insert(transformed_child, Parent(transformed_parent));
+        world.insert(transformed_parent, Child(vec![transformed_child]));
+        world.insert(
+            transformed_child,
+            LocalTransform {
+                position: glam::Vec3::new(3.0, 4.0, 0.0),
+                ..LocalTransform::default()
+            },
+        );
+        world.insert(
+            transformed_child,
+            Collider2D {
+                offset: [1.0, -2.0],
+                half_extents: [2.0, 1.0],
+                ..Collider2D::default()
+            },
+        );
+        prism_engine::scene::systems::hierarchy::hierarchy_system(&mut world);
+        world
+            .get_mut::<LocalTransform>(transformed_parent)
+            .unwrap()
+            .position
+            .x = 40.0;
+        let inactive_parent = world.spawn();
+        world.insert(inactive_parent, Active(true));
+        let inactive_child = world.spawn();
+        world.insert(inactive_child, Parent(inactive_parent));
+        world.insert(inactive_child, Collider2D::default());
+        world.insert(inactive_child, LocalTransform::default());
+        prism_engine::scene::systems::hierarchy::active_hierarchy_system(&mut world);
+
+        let mut api = GameWorld::host(&mut world);
+        let parent_handle = handle_from_entity(inactive_parent);
+        assert!(api
+            .overlap2d(Aabb2::new(-1.0, -1.0, 1.0, 1.0), u32::MAX)
+            .iter()
+            .any(|hit| hit.entity == handle_from_entity(inactive_child)));
+        assert!(api.set(parent_handle, Active(false)));
+        let hits = api.overlap2d(Aabb2::new(8.0, -1.0, 9.5, 1.0), u32::MAX);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].entity, handle_from_entity(wall));
+        let parented = api
+            .colliders2d(u32::MAX)
+            .into_iter()
+            .find(|hit| hit.entity == handle_from_entity(transformed_child))
+            .expect("parented collider should be present");
+        for (actual, expected) in parented
+            .bounds
+            .min
+            .into_iter()
+            .chain(parented.bounds.max)
+            .zip([37.0, 44.0, 39.0, 52.0])
+        {
+            assert!((actual - expected).abs() < 1e-5);
+        }
+        assert!(api
+            .overlap2d(Aabb2::new(-1.0, -1.0, 1.0, 1.0), u32::MAX)
+            .is_empty());
+
+        let moved = api.move_and_slide2d(None, [0.0, 0.0], [1.0, 1.0], [20.0, 0.0], u32::MAX);
+        assert!((moved.position[0] - 8.0).abs() < 1e-4);
+        assert!(moved.hit_x);
+    }
+
+    #[cfg(feature = "host")]
+    #[test]
+    fn host_backend_sorts_nearby_interactables_by_priority_then_distance() {
+        use prism_scene::components::{Interactable2D, LocalTransform};
+
+        let mut world = World::new();
+        let farther_high_priority = world.spawn();
+        world.insert(
+            farther_high_priority,
+            LocalTransform {
+                position: glam::Vec3::new(6.0, 0.0, 0.0),
+                ..LocalTransform::default()
+            },
+        );
+        world.insert(
+            farther_high_priority,
+            Collider2D {
+                half_extents: [0.5, 0.5],
+                layer: 0b0010,
+                ..Collider2D::default()
+            },
+        );
+        world.insert(
+            farther_high_priority,
+            Interactable2D {
+                prompt: "Open gate".to_string(),
+                priority: 2,
+                ..Interactable2D::default()
+            },
+        );
+
+        let nearer = world.spawn();
+        world.insert(
+            nearer,
+            LocalTransform {
+                position: glam::Vec3::new(2.0, 0.0, 0.0),
+                ..LocalTransform::default()
+            },
+        );
+        world.insert(
+            nearer,
+            Collider2D {
+                half_extents: [0.5, 0.5],
+                layer: 0b0010,
+                ..Collider2D::default()
+            },
+        );
+        world.insert(nearer, Interactable2D::default());
+
+        let filtered_layer = world.spawn();
+        world.insert(
+            filtered_layer,
+            LocalTransform {
+                position: glam::Vec3::new(1.0, 0.0, 0.0),
+                ..LocalTransform::default()
+            },
+        );
+        world.insert(
+            filtered_layer,
+            Collider2D {
+                layer: 0b0100,
+                ..Collider2D::default()
+            },
+        );
+        world.insert(filtered_layer, Interactable2D::default());
+
+        let disabled = world.spawn();
+        world.insert(disabled, LocalTransform::default());
+        world.insert(disabled, Collider2D::default());
+        world.insert(
+            disabled,
+            Interactable2D {
+                enabled: false,
+                ..Interactable2D::default()
+            },
+        );
+
+        let api = GameWorld::host(&mut world);
+        let candidates = api.interactables2d([0.0, 0.0], 10.0, 0b0010);
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(
+            candidates[0].entity,
+            handle_from_entity(farther_high_priority)
+        );
+        assert_eq!(candidates[0].prompt, "Open gate");
+        assert!((candidates[0].distance - 5.5).abs() < 1e-5);
+        assert_eq!(candidates[1].entity, handle_from_entity(nearer));
+        assert!(api.interactables2d([0.0, 0.0], -1.0, u32::MAX).is_empty());
+        assert!(api
+            .interactables2d([f32::NAN, 0.0], 10.0, u32::MAX)
+            .is_empty());
+    }
+
+    #[cfg(feature = "host")]
+    #[test]
+    fn host_backend_reports_hostile_damage_contacts_once_and_in_stable_order() {
+        use prism_scene::components::{
+            Hitbox2D, Hurtbox2D, LocalTransform, Tilemap, TilemapCollider2D,
+        };
+
+        let mut world = World::new();
+        let hitbox = world.spawn();
+        world.insert(hitbox, LocalTransform::default());
+        world.insert(
+            hitbox,
+            Collider2D {
+                half_extents: [2.0, 2.0],
+                is_trigger: true,
+                layer: 0b0001,
+                ..Collider2D::default()
+            },
+        );
+        world.insert(
+            hitbox,
+            Hitbox2D {
+                damage: 3,
+                team: 1,
+                enabled: true,
+            },
+        );
+
+        let hurtbox = world.spawn();
+        world.insert(hurtbox, LocalTransform::default());
+        world.insert(
+            hurtbox,
+            Collider2D {
+                half_extents: [1.0, 1.0],
+                layer: 0b0010,
+                ..Collider2D::default()
+            },
+        );
+        world.insert(
+            hurtbox,
+            Hurtbox2D {
+                team: 2,
+                enabled: true,
+            },
+        );
+        world.insert(
+            hurtbox,
+            Tilemap {
+                columns: 2,
+                cell_size: [1.0, 1.0],
+                tiles: vec![1, 1],
+                ..Tilemap::default()
+            },
+        );
+        world.insert(
+            hurtbox,
+            TilemapCollider2D {
+                solid_tile_ids: vec![1],
+                layer: 0b0010,
+                ..TilemapCollider2D::default()
+            },
+        );
+
+        let friendly = world.spawn();
+        world.insert(friendly, LocalTransform::default());
+        world.insert(
+            friendly,
+            Collider2D {
+                layer: 0b0010,
+                ..Collider2D::default()
+            },
+        );
+        world.insert(
+            friendly,
+            Hurtbox2D {
+                team: 1,
+                enabled: true,
+            },
+        );
+
+        let disabled = world.spawn();
+        world.insert(disabled, LocalTransform::default());
+        world.insert(disabled, Collider2D::default());
+        world.insert(
+            disabled,
+            Hurtbox2D {
+                team: 2,
+                enabled: false,
+            },
+        );
+
+        let api = GameWorld::host(&mut world);
+        let contacts = api.damage_contacts2d(0b0001, 0b0010);
+        assert_eq!(contacts.len(), 1);
+        assert_eq!(contacts[0].hitbox, handle_from_entity(hitbox));
+        assert_eq!(contacts[0].hurtbox, handle_from_entity(hurtbox));
+        assert_eq!(contacts[0].damage, 3);
+        assert_eq!((contacts[0].hitbox_team, contacts[0].hurtbox_team), (1, 2));
+        assert!(api.damage_contacts2d(0, 0b0010).is_empty());
+    }
+
+    #[cfg(feature = "plugin")]
+    #[test]
+    fn plugin_backend_queries_the_same_2d_collider_schema() {
+        use prism_scene::components::{Active, ActiveInHierarchy, Child, LocalTransform, Parent};
+
+        let mut world = World::new();
+        let registry = prism_scene::builtin_registry();
+        let wall = world.spawn();
+        world.insert(
+            wall,
+            Collider2D {
+                half_extents: [1.0, 5.0],
+                ..Collider2D::default()
+            },
+        );
+        world.insert(
+            wall,
+            LocalTransform {
+                position: glam::Vec3::new(10.0, 0.0, 0.0),
+                ..LocalTransform::default()
+            },
+        );
+        let transformed_parent = world.spawn();
+        world.insert(
+            transformed_parent,
+            LocalTransform {
+                position: glam::Vec3::new(30.0, 40.0, 0.0),
+                scale: glam::Vec3::new(2.0, 1.0, 1.0),
+                rotation: glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+            },
+        );
+        let transformed_child = world.spawn();
+        world.insert(transformed_child, Parent(transformed_parent));
+        world.insert(transformed_parent, Child(vec![transformed_child]));
+        world.insert(
+            transformed_child,
+            LocalTransform {
+                position: glam::Vec3::new(3.0, 4.0, 0.0),
+                ..LocalTransform::default()
+            },
+        );
+        world.insert(
+            transformed_child,
+            Collider2D {
+                offset: [1.0, -2.0],
+                half_extents: [2.0, 1.0],
+                ..Collider2D::default()
+            },
+        );
+        prism_engine::scene::systems::hierarchy::hierarchy_system(&mut world);
+        world
+            .get_mut::<LocalTransform>(transformed_parent)
+            .unwrap()
+            .position
+            .x = 40.0;
+        let inactive_parent = world.spawn();
+        world.insert(inactive_parent, Active(true));
+        let inactive_child = world.spawn();
+        world.insert(inactive_child, Parent(inactive_parent));
+        world.insert(inactive_child, Collider2D::default());
+        world.insert(inactive_child, LocalTransform::default());
+        world.insert(inactive_child, ActiveInHierarchy(true));
+        let mut commands = prism_runtime_host::WorldCommands::new(&mut world, registry, 1);
+        let host = commands.api();
+        let mut api = GameWorld::plugin(&host, registry.type_registry());
+
+        let parent_handle = EntityHandle {
+            id: inactive_parent.id(),
+            generation: inactive_parent.generation(),
+        };
+        assert!(api.set(parent_handle, Active(false)));
+        let hits = api.overlap2d(Aabb2::new(8.0, -1.0, 9.5, 1.0), u32::MAX);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].entity.id, wall.id());
+        assert!(api
+            .overlap2d(Aabb2::new(-1.0, -1.0, 1.0, 1.0), u32::MAX)
+            .is_empty());
+        let parented = api
+            .colliders2d(u32::MAX)
+            .into_iter()
+            .find(|hit| hit.entity == handle_from_entity(transformed_child))
+            .expect("plugin query should preserve parented collider world bounds");
+        for (actual, expected) in parented
+            .bounds
+            .min
+            .into_iter()
+            .chain(parented.bounds.max)
+            .zip([37.0, 44.0, 39.0, 52.0])
+        {
+            assert!((actual - expected).abs() < 1e-5);
+        }
+    }
+
+    #[cfg(feature = "plugin")]
+    #[test]
+    fn plugin_backend_reads_and_sorts_interactable_components() {
+        use prism_scene::components::{Interactable2D, LocalTransform};
+
+        let mut world = World::new();
+        let registry = prism_scene::builtin_registry();
+        let second = world.spawn();
+        world.insert(
+            second,
+            LocalTransform {
+                position: glam::Vec3::new(4.0, 0.0, 0.0),
+                ..LocalTransform::default()
+            },
+        );
+        world.insert(
+            second,
+            Collider2D {
+                half_extents: [0.5, 0.5],
+                layer: 0b0010,
+                ..Collider2D::default()
+            },
+        );
+        world.insert(
+            second,
+            Interactable2D {
+                prompt: "Talk".to_string(),
+                priority: 1,
+                ..Interactable2D::default()
+            },
+        );
+        let first = world.spawn();
+        world.insert(
+            first,
+            LocalTransform {
+                position: glam::Vec3::new(2.0, 0.0, 0.0),
+                ..LocalTransform::default()
+            },
+        );
+        world.insert(
+            first,
+            Collider2D {
+                half_extents: [0.5, 0.5],
+                layer: 0b0010,
+                ..Collider2D::default()
+            },
+        );
+        world.insert(
+            first,
+            Interactable2D {
+                prompt: "Open".to_string(),
+                priority: 1,
+                ..Interactable2D::default()
+            },
+        );
+
+        let mut commands = prism_runtime_host::WorldCommands::new(&mut world, registry, 1);
+        let host = commands.api();
+        let api = GameWorld::plugin(&host, registry.type_registry());
+        let candidates = api.interactables2d([0.0, 0.0], 10.0, 0b0010);
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].entity.id, first.id());
+        assert_eq!(candidates[0].prompt, "Open");
+        assert_eq!(candidates[1].entity.id, second.id());
+    }
+
+    #[cfg(feature = "plugin")]
+    #[test]
+    fn plugin_backend_reports_damage_contacts_through_reflected_components() {
+        use prism_scene::components::{Hitbox2D, Hurtbox2D, LocalTransform};
+
+        let mut world = World::new();
+        let registry = prism_scene::builtin_registry();
+        let hitbox = world.spawn();
+        world.insert(hitbox, LocalTransform::default());
+        world.insert(
+            hitbox,
+            Collider2D {
+                half_extents: [2.0, 2.0],
+                is_trigger: true,
+                layer: 0b0001,
+                ..Collider2D::default()
+            },
+        );
+        world.insert(
+            hitbox,
+            Hitbox2D {
+                damage: 2,
+                team: 3,
+                enabled: true,
+            },
+        );
+        let hurtbox = world.spawn();
+        world.insert(hurtbox, LocalTransform::default());
+        world.insert(
+            hurtbox,
+            Collider2D {
+                half_extents: [1.0, 1.0],
+                layer: 0b0010,
+                ..Collider2D::default()
+            },
+        );
+        world.insert(
+            hurtbox,
+            Hurtbox2D {
+                team: 4,
+                enabled: true,
+            },
+        );
+
+        let mut commands = prism_runtime_host::WorldCommands::new(&mut world, registry, 1);
+        let host = commands.api();
+        let api = GameWorld::plugin(&host, registry.type_registry());
+        let contacts = api.damage_contacts2d(0b0001, 0b0010);
+        assert_eq!(contacts.len(), 1);
+        assert_eq!(contacts[0].hitbox.id, hitbox.id());
+        assert_eq!(contacts[0].hurtbox.id, hurtbox.id());
+        assert_eq!(contacts[0].damage, 2);
+        assert_eq!((contacts[0].hitbox_team, contacts[0].hurtbox_team), (3, 4));
     }
 
     /// #522: the plugin backend forwards the query to the host; returns `None` when

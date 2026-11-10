@@ -8,7 +8,7 @@
 //! | 动画     | `SpriteAnimation`（2D 帧）, `KeyframeAnimation`（曲线） |
 //! | 粒子     | `ParticleSystem`（世界空间 3D CPU 粒子）、`ParticleEmitter2D`（世界 XY 平面 2D 粒子）、`UiParticleEmitter`（屏幕空间，画在 UI 图层） |
 //! | 光源 | `Light`（形状）, `DirectionalLight`, `PointLight`, `SpotLight`（旧）, `Light2D`（2D 精灵光照） |
-//! | 相机     | `Camera`, `FlyCameraController` |
+//! | 相机     | `Camera`, `Camera2D`, `FlyCameraController` |
 //! | 天空盒   | `Skybox` |
 //! | 音频     | `AudioSource`（场景内播放）, `AudioListener`（听者） |
 //! | 地形     | `Terrain`（高度场 → 运行时生成网格） |
@@ -26,6 +26,7 @@ use crate::render_enums::{
     correlated_color_temperature_to_rgb, BlendMode, BlendOp, CameraClearFlags, CullMode,
     LightRenderMode, LightShadows, LightType, RenderQueue, ShadowCastingMode,
 };
+use prism_physics2d::Aabb2;
 
 // ---------------------------------------------------------------------------
 // SceneAssetId
@@ -152,6 +153,41 @@ impl LocalToWorld {
 /// Optional dirty marker for subtree-optimised recompute future use).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TransformDirty(pub bool);
+
+/// Runtime-only 2D transform history used to render fixed-step entities smoothly.
+///
+/// The simulation always reads and writes `LocalTransform` / `LocalToWorld`.
+/// This component stores world-space XY samples for render interpolation and is
+/// never authored in a scene document.
+#[derive(Debug, Clone, Copy, PartialEq, Reflect)]
+#[reflect(name = "prism_engine::scene::TransformInterpolation2D")]
+pub struct TransformInterpolation2D {
+    pub previous: [f32; 2],
+    pub current: [f32; 2],
+}
+
+impl Default for TransformInterpolation2D {
+    fn default() -> Self {
+        Self {
+            previous: [0.0; 2],
+            current: [0.0; 2],
+        }
+    }
+}
+
+impl TransformInterpolation2D {
+    pub fn sample(&self, alpha: f32) -> [f32; 2] {
+        let alpha = if alpha.is_finite() {
+            alpha.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        [
+            self.previous[0] + (self.current[0] - self.previous[0]) * alpha,
+            self.previous[1] + (self.current[1] - self.previous[1]) * alpha,
+        ]
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Render references
@@ -568,6 +604,126 @@ impl SpriteRenderer {
         let frame = self.frame_size_or(texture_size);
         [frame[0] as f32 / ppu, frame[1] as f32 / ppu]
     }
+
+    /// World-space AABB of the visible sprite frame, including pivot, scale and rotation.
+    pub fn world_bounds(
+        &self,
+        transform: &LocalTransform,
+        texture_size: [u32; 2],
+    ) -> Option<Aabb2> {
+        let frame = self.frame_size_or(texture_size);
+        if frame[0] == 0 || frame[1] == 0 || !self.pixels_per_unit.is_finite() {
+            return None;
+        }
+        let ppu = if self.pixels_per_unit > 0.0 {
+            self.pixels_per_unit
+        } else {
+            100.0
+        };
+        let size = [frame[0] as f32 / ppu, frame[1] as f32 / ppu];
+        transformed_aabb2(
+            [-self.pivot[0] * size[0], -self.pivot[1] * size[1]],
+            [
+                (1.0 - self.pivot[0]) * size[0],
+                (1.0 - self.pivot[1]) * size[1],
+            ],
+            transform.to_model_matrix(),
+        )
+    }
+}
+
+/// Marks an entity as a target for nearby 2D gameplay interaction.
+///
+/// Interaction candidates use the entity's `Collider2D` or `TilemapCollider2D`
+/// bounds for range checks. The component only describes authoring metadata;
+/// the game decides what activation does.
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
+#[reflect(name = "prism_engine::scene::Interactable2D")]
+#[serde(default)]
+pub struct Interactable2D {
+    pub prompt: String,
+    pub priority: i32,
+    pub enabled: bool,
+}
+
+impl Default for Interactable2D {
+    fn default() -> Self {
+        Self {
+            prompt: String::new(),
+            priority: 0,
+            enabled: true,
+        }
+    }
+}
+
+/// Marks an entity collider as an active damage source.
+///
+/// Damage resolution is owned by gameplay code. The component only carries
+/// the authored team and damage metadata used by the generic 2D query API.
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
+#[reflect(name = "prism_engine::scene::Hitbox2D")]
+#[serde(default)]
+pub struct Hitbox2D {
+    pub damage: u32,
+    pub team: u32,
+    pub enabled: bool,
+}
+
+impl Default for Hitbox2D {
+    fn default() -> Self {
+        Self {
+            damage: 1,
+            team: 0,
+            enabled: false,
+        }
+    }
+}
+
+/// Marks an entity collider as a damage receiver.
+///
+/// Health, invulnerability frames and knockback remain game-owned state so a
+/// project can choose the appropriate response for each contact.
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
+#[reflect(name = "prism_engine::scene::Hurtbox2D")]
+#[serde(default)]
+pub struct Hurtbox2D {
+    pub team: u32,
+    pub enabled: bool,
+}
+
+impl Default for Hurtbox2D {
+    fn default() -> Self {
+        Self {
+            team: 0,
+            enabled: true,
+        }
+    }
+}
+
+fn transformed_aabb2(
+    local_min: [f32; 2],
+    local_max: [f32; 2],
+    matrix: glam::Mat4,
+) -> Option<Aabb2> {
+    let corners = [
+        [local_min[0], local_min[1]],
+        [local_max[0], local_min[1]],
+        [local_min[0], local_max[1]],
+        [local_max[0], local_max[1]],
+    ];
+    let mut min = [f32::INFINITY; 2];
+    let mut max = [f32::NEG_INFINITY; 2];
+    for [x, y] in corners {
+        let point = matrix.transform_point3(glam::Vec3::new(x, y, 0.0));
+        if !point.x.is_finite() || !point.y.is_finite() {
+            return None;
+        }
+        min[0] = min[0].min(point.x);
+        min[1] = min[1].min(point.y);
+        max[0] = max[0].max(point.x);
+        max[1] = max[1].max(point.y);
+    }
+    Some(Aabb2 { min, max })
 }
 
 /// 2D 瓦片地图 = `Tilemap`（#529）。
@@ -688,6 +844,141 @@ impl Tilemap {
             (column as f32 + 0.5) * cell_w,
             (rows as f32 - row as f32 - 0.5) * cell_h,
         ]
+    }
+}
+
+/// Static AABB collision generated from selected non-empty Tilemap cells.
+///
+/// `solid_tile_ids` uses the same one-based tile ids as [`Tilemap::tiles`].
+/// Empty means no cells are solid; this makes an authored component explicit
+/// and avoids turning decorative tilemaps into invisible walls by accident.
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
+#[reflect(name = "prism_engine::scene::TilemapCollider2D")]
+#[serde(default)]
+pub struct TilemapCollider2D {
+    /// One-based tile ids that should produce static colliders.
+    pub solid_tile_ids: Vec<u32>,
+    /// One-based tile ids that block only from above; this list takes priority over `solid_tile_ids`.
+    pub one_way_tile_ids: Vec<u32>,
+    /// Local offset shared by all generated tile bounds.
+    pub offset: [f32; 2],
+    /// Physics layer exposed by the generated colliders.
+    pub layer: u32,
+    /// Whether generated bounds should be query-only triggers.
+    pub is_trigger: bool,
+}
+
+impl Default for TilemapCollider2D {
+    fn default() -> Self {
+        Self {
+            solid_tile_ids: Vec::new(),
+            one_way_tile_ids: Vec::new(),
+            offset: [0.0; 2],
+            layer: 1,
+            is_trigger: false,
+        }
+    }
+}
+
+impl TilemapCollider2D {
+    fn accepts(&self, tile: u32) -> bool {
+        tile != 0 && self.solid_tile_ids.contains(&tile)
+    }
+}
+
+/// A world-space bound generated from a Tilemap cell, including its collision mode.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TilemapColliderBounds2D {
+    pub bounds: Aabb2,
+    pub one_way_top: bool,
+}
+
+/// Generate world-space AABBs for a Tilemap collider.
+///
+/// Adjacent solid cells in one row are merged before the local rectangle is
+/// transformed. This keeps the query list small while preserving the exact
+/// tilemap origin, row direction, parent transform, rotation, and scale used
+/// by the renderer.
+pub fn tilemap_collider_bounds(
+    tilemap: &Tilemap,
+    collider: &TilemapCollider2D,
+    matrix: glam::Mat4,
+) -> Vec<Aabb2> {
+    tilemap_collider_shapes(tilemap, collider, matrix)
+        .into_iter()
+        .map(|shape| shape.bounds)
+        .collect()
+}
+
+/// Generate world-space bounds and collision modes for a Tilemap collider.
+pub fn tilemap_collider_shapes(
+    tilemap: &Tilemap,
+    collider: &TilemapCollider2D,
+    matrix: glam::Mat4,
+) -> Vec<TilemapColliderBounds2D> {
+    let (columns, rows) = tilemap.grid();
+    if columns == 0 || rows == 0 || tilemap.cell_size[0] <= 0.0 || tilemap.cell_size[1] <= 0.0 {
+        return Vec::new();
+    }
+    let mut bounds = Vec::new();
+    let cell_w = tilemap.cell_size[0];
+    let cell_h = tilemap.cell_size[1];
+    for row in 0..rows {
+        let mut column = 0;
+        while column < columns {
+            let index = row as usize * columns as usize + column as usize;
+            let mode = tilemap
+                .tiles
+                .get(index)
+                .copied()
+                .and_then(|tile| collider_mode(collider, tile));
+            let Some(one_way_top) = mode else {
+                column += 1;
+                continue;
+            };
+            let start = column;
+            column += 1;
+            while column < columns {
+                let index = row as usize * columns as usize + column as usize;
+                if tilemap
+                    .tiles
+                    .get(index)
+                    .copied()
+                    .and_then(|tile| collider_mode(collider, tile))
+                    != Some(one_way_top)
+                {
+                    break;
+                }
+                column += 1;
+            }
+            let local_min = [
+                collider.offset[0] + start as f32 * cell_w,
+                collider.offset[1] + (rows - row - 1) as f32 * cell_h,
+            ];
+            let local_max = [
+                collider.offset[0] + column as f32 * cell_w,
+                collider.offset[1] + (rows - row) as f32 * cell_h,
+            ];
+            if let Some(world_bounds) = transformed_aabb2(local_min, local_max, matrix) {
+                bounds.push(TilemapColliderBounds2D {
+                    bounds: world_bounds,
+                    one_way_top,
+                });
+            }
+        }
+    }
+    bounds
+}
+
+fn collider_mode(collider: &TilemapCollider2D, tile: u32) -> Option<bool> {
+    if tile == 0 {
+        None
+    } else if collider.one_way_tile_ids.contains(&tile) {
+        Some(true)
+    } else if collider.accepts(tile) {
+        Some(false)
+    } else {
+        None
     }
 }
 
@@ -2743,6 +3034,8 @@ pub struct Collider2D {
     pub segment_b: [f32; 2],
     /// 传感器触发器（只产生进入/离开事件，不阻挡物体移动）。
     pub is_sensor: bool,
+    /// Compatibility alias used by the platformer gameplay API.
+    pub is_trigger: bool,
     /// 摩擦系数 [0, 1]。
     pub friction: f32,
     /// 弹性恢复系数 [0, 1]（0 = 完全非弹性，1 = 完全弹性）。
@@ -2751,8 +3044,12 @@ pub struct Collider2D {
     pub density: f32,
     /// 碰撞分组层掩码位。
     pub collision_groups: u32,
+    /// Compatibility alias for the gameplay layer mask.
+    pub layer: u32,
     /// 发生碰撞的过滤层掩码位。
     pub collision_mask: u32,
+    /// Only block platformer movement when approached from above.
+    pub one_way_top: bool,
 }
 
 impl Default for Collider2D {
@@ -2766,16 +3063,30 @@ impl Default for Collider2D {
             vertices: Vec::new(),
             segment_b: [1.0, 0.0],
             is_sensor: false,
+            is_trigger: false,
             friction: 0.2,
             restitution: 0.0,
             density: 1.0,
             collision_groups: 1,
+            layer: 1,
             collision_mask: 0xFFFFFFFF,
+            one_way_top: false,
         }
     }
 }
 
 impl Collider2D {
+    /// Resolve the collision layer shared by shape physics and gameplay queries.
+    pub fn effective_layer(&self) -> u32 {
+        if self.layer == 1 {
+            self.collision_groups
+        } else if self.collision_groups == 1 {
+            self.layer
+        } else {
+            self.collision_groups
+        }
+    }
+
     pub fn new_box(half_w: f32, half_h: f32) -> Self {
         Self {
             shape: Collider2DShape::Box,
@@ -2817,6 +3128,71 @@ impl Collider2D {
             ..Default::default()
         }
     }
+
+    /// Return this collider's world-space AABB using an entity-local transform.
+    pub fn world_bounds(&self, transform: &LocalTransform) -> Option<Aabb2> {
+        self.world_bounds_with_matrix(transform.to_model_matrix())
+    }
+
+    /// Return a world-space AABB for broad-phase gameplay queries.
+    pub fn world_bounds_with_matrix(&self, matrix: glam::Mat4) -> Option<Aabb2> {
+        let offset = self.offset;
+        let half = match self.shape {
+            Collider2DShape::Box => [self.half_extents[0].abs(), self.half_extents[1].abs()],
+            Collider2DShape::Circle => [self.radius.abs(), self.radius.abs()],
+            Collider2DShape::Capsule => [
+                self.radius.abs(),
+                self.half_height.max(0.0) + self.radius.abs(),
+            ],
+            Collider2DShape::Polygon if self.vertices.len() >= 3 => {
+                return transformed_points_aabb2(
+                    self.vertices
+                        .iter()
+                        .map(|point| [point[0] + offset[0], point[1] + offset[1]]),
+                    matrix,
+                );
+            }
+            Collider2DShape::Segment => {
+                let a = matrix.transform_point3(glam::Vec3::new(offset[0], offset[1], 0.0));
+                let b = matrix.transform_point3(glam::Vec3::new(
+                    self.segment_b[0],
+                    self.segment_b[1],
+                    0.0,
+                ));
+                if !a.is_finite() || !b.is_finite() {
+                    return None;
+                }
+                return Some(Aabb2::new(a.x, a.y, b.x, b.y));
+            }
+            Collider2DShape::Polygon => [self.half_extents[0].abs(), self.half_extents[1].abs()],
+        };
+        transformed_aabb2(
+            [offset[0] - half[0], offset[1] - half[1]],
+            [offset[0] + half[0], offset[1] + half[1]],
+            matrix,
+        )
+    }
+}
+
+fn transformed_points_aabb2(
+    points: impl IntoIterator<Item = [f32; 2]>,
+    matrix: glam::Mat4,
+) -> Option<Aabb2> {
+    let mut min = [f32::INFINITY; 2];
+    let mut max = [f32::NEG_INFINITY; 2];
+    let mut any = false;
+    for [x, y] in points {
+        let point = matrix.transform_point3(glam::Vec3::new(x, y, 0.0));
+        if !point.x.is_finite() || !point.y.is_finite() {
+            return None;
+        }
+        min[0] = min[0].min(point.x);
+        min[1] = min[1].min(point.y);
+        max[0] = max[0].max(point.x);
+        max[1] = max[1].max(point.y);
+        any = true;
+    }
+    any.then_some(Aabb2 { min, max })
 }
 
 pub type BoxCollider2D = Collider2D;

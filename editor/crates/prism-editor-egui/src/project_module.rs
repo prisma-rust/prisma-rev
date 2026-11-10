@@ -24,8 +24,8 @@ use prism_engine::input::InputManager;
 
 use crate::diagnostics::{diagnostics_from_cargo, Diagnostic};
 use prism_runtime_host::{
-    AssetIo, InputSnapshot, ProjectModule, ProjectSession, RaycastResult, SceneRequest,
-    UiQuad as HostUiQuad, WorldCommands,
+    AssetIo, InputSnapshot, PhysicsEvent2D, ProjectModule, ProjectSession, RaycastResult,
+    SceneRequest, UiQuad as HostUiQuad, WorldCommands,
 };
 use prism_scene::ComponentRegistry;
 
@@ -142,7 +142,7 @@ impl prism_runtime_host::SaveIo for ProjectSave {
         };
         self.store.set(key, value);
         match self.store.flush() {
-            Ok(_) => true,
+            Ok(_) => !self.store.is_read_only(),
             Err(error) => {
                 log::warn!("project save '{key}': {error}");
                 false
@@ -300,6 +300,9 @@ pub struct ProjectModuleDriver {
     pending_scene: Option<SceneRequest>,
     /// 工程存档（#984）：Play 存档放 `<project>/target/play-data/`。
     save: Option<ProjectSave>,
+    /// Key edges captured once per render frame and consumed by the next fixed step.
+    pending_fixed_key_edges: [u64; 8],
+    interpolation_alpha: f32,
 }
 
 impl ProjectModuleDriver {
@@ -347,6 +350,8 @@ impl ProjectModuleDriver {
             last_tick_error: None,
             pending_scene: None,
             save: ProjectSave::new(root),
+            pending_fixed_key_edges: [0; 8],
+            interpolation_alpha: 0.0,
         };
 
         if driver.prebuilt.is_some() {
@@ -389,6 +394,32 @@ impl ProjectModuleDriver {
     /// Problems 面板读这里（不随 `status()` 每帧克隆）。
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
+    }
+
+    /// Captures frame input before the host runs zero or more fixed steps.
+    /// Held keys remain in every step; edge bits are consumed by the first one.
+    pub fn begin_frame(&mut self, input: &InputManager, screen: [f32; 2], alpha: f32) {
+        let snapshot = input_snapshot(input, screen);
+        for (pending, current) in self
+            .pending_fixed_key_edges
+            .iter_mut()
+            .zip(snapshot.key_edges)
+        {
+            *pending |= current;
+        }
+        self.interpolation_alpha = if alpha.is_finite() {
+            alpha.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+    }
+
+    pub fn set_interpolation_alpha(&mut self, alpha: f32) {
+        self.interpolation_alpha = if alpha.is_finite() {
+            alpha.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
     }
 
     fn state(&self) -> ModuleState {
@@ -494,7 +525,8 @@ impl ProjectModuleDriver {
         let mut commands = WorldCommands::new(world, &self.components, scene_generation)
             .with_assets(&self.assets)
             .with_scene_switch()
-            .with_raycast(engine_raycast);
+            .with_raycast(engine_raycast)
+            .with_trigger_events2d(engine_trigger_events2d);
         // 工程存档（#984）：Play 存档写在 `<project>/target/play-data/`，
         // 与玩家的真实存档分开；没有可写目录时不声明能力位。
         if let Some(save) = self.save.as_mut() {
@@ -513,7 +545,9 @@ impl ProjectModuleDriver {
             prism_engine::scene_state::save_scene_state,
             prism_engine::scene_state::load_scene_state,
         );
-        commands.set_input(input_snapshot(input, screen));
+        let mut snapshot = input_snapshot(input, screen);
+        snapshot.interpolation_alpha = self.interpolation_alpha;
+        commands.set_input(snapshot);
         let host = commands.api();
         let result = session.tick(&host, dt.max(0.000_5));
         let quads = commands.take_quads();
@@ -529,6 +563,66 @@ impl ProjectModuleDriver {
             match &error {
                 Some(error) => self.push(LogLevel::Error, format!("project tick failed: {error}")),
                 None => self.push(LogLevel::Info, "project tick recovered".to_string()),
+            }
+            self.last_tick_error = error;
+        }
+    }
+
+    /// Runs the optional project fixed-step callback with the same host world
+    /// capabilities as the render-frame callback.
+    pub fn fixed_update(
+        &mut self,
+        world: &mut prism_engine::ecs::World,
+        input: &InputManager,
+        dt: f32,
+        scene_generation: u64,
+        screen: [f32; 2],
+    ) {
+        if self.faulted {
+            return;
+        }
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+
+        let mut commands = WorldCommands::new(world, &self.components, scene_generation)
+            .with_assets(&self.assets)
+            .with_scene_switch()
+            .with_raycast(engine_raycast)
+            .with_trigger_events2d(engine_trigger_events2d);
+        if let Some(save) = self.save.as_mut() {
+            commands = commands.with_save(save);
+        }
+        if let Some(audio) = self.audio.as_mut() {
+            audio.update();
+            commands = commands.with_audio(audio);
+        }
+        commands = commands.with_scene_state(
+            prism_engine::scene_state::save_scene_state,
+            prism_engine::scene_state::load_scene_state,
+        );
+        let mut snapshot = input_snapshot(input, screen);
+        snapshot.key_edges = self.pending_fixed_key_edges;
+        snapshot.interpolation_alpha = self.interpolation_alpha;
+        self.pending_fixed_key_edges = [0; 8];
+        commands.set_input(snapshot);
+        let host = commands.api();
+        let result = session.fixed_update(&host, dt.max(0.000_5));
+        let quads = commands.take_quads();
+        if let Some(request) = commands.take_scene_request() {
+            self.pending_scene = Some(request);
+        }
+        queue_project_quads(world, quads);
+
+        let error = result.err().map(|error| error.to_string());
+        self.faulted = error.is_some();
+        if error != self.last_tick_error {
+            match &error {
+                Some(error) => self.push(
+                    LogLevel::Error,
+                    format!("project fixed_update failed: {error}"),
+                ),
+                None => self.push(LogLevel::Info, "project fixed_update recovered".to_string()),
             }
             self.last_tick_error = error;
         }
@@ -751,6 +845,13 @@ fn engine_raycast(
             is_trigger: hit.is_trigger,
         }
     })
+}
+
+/// Exposes the engine's latest fixed-step trigger snapshot to preview modules.
+fn engine_trigger_events2d(world: &prism_engine::ecs::World, out: &mut Vec<PhysicsEvent2D>) {
+    if let Some(events) = world.get_resource::<prism_engine::physics::TriggerEvents2D>() {
+        out.extend_from_slice(events.events());
+    }
 }
 
 /// 项目模块提交的四边形 → 引擎的 `ExternalUiQuads`。

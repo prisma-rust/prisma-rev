@@ -137,6 +137,28 @@ fn older_json_without_new_fields_uses_defaults() {
     assert!(!cam.orthographic);
 }
 
+#[test]
+fn camera_2d_json_round_trips_and_fills_defaults() {
+    let camera = Camera2D {
+        target_entity: (3u64 << 32) | 7,
+        damping: 8.0,
+        deadzone: [2.0, 1.0],
+        confiner_enabled: true,
+        confiner_bounds: [0.0, 0.0, 320.0, 180.0],
+        pixel_snapping: true,
+        pixels_per_unit: 16.0,
+        ..Camera2D::default()
+    };
+    let json = serde_json::to_string(&camera).unwrap();
+    let back: Camera2D = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.target_entity, (3u64 << 32) | 7);
+    assert_eq!(back.confiner_bounds, [0.0, 0.0, 320.0, 180.0]);
+    assert!(back.pixel_snapping);
+    let old: Camera2D = serde_json::from_str("{}").unwrap();
+    assert_eq!(old.target_entity, u64::MAX);
+    assert_eq!(old.damping, 5.0);
+}
+
 // ---------------------------------------------------------------------------
 // Light
 // ---------------------------------------------------------------------------
@@ -506,6 +528,197 @@ fn sprite_world_size_uses_frame_or_texture_and_ppu() {
         ..SpriteRenderer::default()
     };
     assert_eq!(broken.world_size([100, 100]), [1.0, 1.0]);
+}
+
+#[test]
+fn sprite_and_collider_bounds_share_pivot_and_transform_scale() {
+    let transform = LocalTransform {
+        position: glam::Vec3::new(3.0, 4.0, 0.0),
+        scale: glam::Vec3::new(2.0, 3.0, 1.0),
+        ..LocalTransform::default()
+    };
+    let sprite = SpriteRenderer {
+        frame_size: [10, 20],
+        pixels_per_unit: 1.0,
+        pivot: [0.0, 0.0],
+        ..SpriteRenderer::default()
+    };
+    assert_eq!(
+        sprite.world_bounds(&transform, [10, 20]).unwrap(),
+        prism_physics2d::Aabb2::new(3.0, 4.0, 23.0, 64.0)
+    );
+
+    let collider = Collider2D {
+        offset: [1.0, -2.0],
+        half_extents: [2.0, 3.0],
+        ..Collider2D::default()
+    };
+    assert_eq!(
+        collider.world_bounds(&transform).unwrap(),
+        prism_physics2d::Aabb2::new(1.0, -11.0, 9.0, 7.0)
+    );
+}
+
+#[test]
+fn collider_bounds_accept_a_composed_parent_world_matrix() {
+    let parent = glam::Mat4::from_scale_rotation_translation(
+        glam::Vec3::new(2.0, 1.0, 1.0),
+        glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+        glam::Vec3::new(10.0, 20.0, 0.0),
+    );
+    let child = LocalTransform {
+        position: glam::Vec3::new(3.0, 4.0, 0.0),
+        ..LocalTransform::default()
+    };
+    let collider = Collider2D {
+        offset: [1.0, -2.0],
+        half_extents: [2.0, 1.0],
+        ..Collider2D::default()
+    };
+
+    let bounds = collider
+        .world_bounds_with_matrix(parent * child.to_model_matrix())
+        .unwrap();
+    for (actual, expected) in bounds
+        .min
+        .into_iter()
+        .chain(bounds.max)
+        .zip([7.0, 24.0, 9.0, 32.0])
+    {
+        assert!((actual - expected).abs() < 1e-5);
+    }
+}
+
+#[test]
+fn shaped_collider_bounds_apply_shape_offset_and_effective_layer() {
+    let polygon = Collider2D {
+        shape: Collider2DShape::Polygon,
+        vertices: vec![[-1.0, -2.0], [2.0, -2.0], [0.0, 3.0]],
+        offset: [4.0, 5.0],
+        collision_groups: 0b1000,
+        ..Collider2D::default()
+    };
+    assert_eq!(polygon.effective_layer(), 0b1000);
+    assert_eq!(
+        polygon.world_bounds(&LocalTransform::default()).unwrap(),
+        prism_physics2d::Aabb2::new(3.0, 3.0, 6.0, 8.0)
+    );
+
+    let legacy_layer = Collider2D {
+        layer: 0b0100,
+        ..Collider2D::default()
+    };
+    assert_eq!(legacy_layer.effective_layer(), 0b0100);
+}
+
+#[test]
+fn circle_and_segment_collider_bounds_match_their_shapes() {
+    let circle = Collider2D {
+        shape: Collider2DShape::Circle,
+        offset: [2.0, -1.0],
+        radius: 3.0,
+        ..Collider2D::default()
+    };
+    assert_eq!(
+        circle.world_bounds(&LocalTransform::default()).unwrap(),
+        prism_physics2d::Aabb2::new(-1.0, -4.0, 5.0, 2.0)
+    );
+
+    let segment = Collider2D::new_segment([-2.0, 1.0], [4.0, -3.0]);
+    assert_eq!(
+        segment.world_bounds(&LocalTransform::default()).unwrap(),
+        prism_physics2d::Aabb2::new(-2.0, -3.0, 4.0, 1.0)
+    );
+}
+
+#[test]
+fn tilemap_collider_merges_selected_rows_and_uses_render_coordinates() {
+    let tilemap = Tilemap {
+        columns: 4,
+        cell_size: [2.0, 3.0],
+        tiles: vec![1, 1, 0, 2, 0, 1, 1, 0],
+        ..Tilemap::default()
+    };
+    let collider = TilemapCollider2D {
+        solid_tile_ids: vec![1],
+        ..TilemapCollider2D::default()
+    };
+    let bounds = tilemap_collider_bounds(&tilemap, &collider, glam::Mat4::IDENTITY);
+    assert_eq!(
+        bounds,
+        vec![
+            prism_physics2d::Aabb2::new(0.0, 3.0, 4.0, 6.0),
+            prism_physics2d::Aabb2::new(2.0, 0.0, 6.0, 3.0),
+        ]
+    );
+}
+
+#[test]
+fn tilemap_collider_applies_offset_and_world_transform() {
+    let tilemap = Tilemap {
+        columns: 1,
+        cell_size: [4.0, 6.0],
+        tiles: vec![7],
+        ..Tilemap::default()
+    };
+    let collider = TilemapCollider2D {
+        solid_tile_ids: vec![7],
+        offset: [1.0, -2.0],
+        ..TilemapCollider2D::default()
+    };
+    let matrix = glam::Mat4::from_translation(glam::Vec3::new(10.0, 20.0, 0.0));
+    assert_eq!(
+        tilemap_collider_bounds(&tilemap, &collider, matrix),
+        vec![prism_physics2d::Aabb2::new(11.0, 18.0, 15.0, 24.0)]
+    );
+}
+
+#[test]
+fn tilemap_collider_keeps_solid_and_one_way_runs_separate() {
+    let tilemap = Tilemap {
+        columns: 4,
+        cell_size: [2.0, 2.0],
+        tiles: vec![1, 4, 4, 1],
+        ..Tilemap::default()
+    };
+    let collider = TilemapCollider2D {
+        solid_tile_ids: vec![1],
+        one_way_tile_ids: vec![4],
+        ..TilemapCollider2D::default()
+    };
+
+    let shapes = tilemap_collider_shapes(&tilemap, &collider, glam::Mat4::IDENTITY);
+    assert_eq!(shapes.len(), 3);
+    assert!(!shapes[0].one_way_top);
+    assert!(shapes[1].one_way_top);
+    assert_eq!(
+        shapes[1].bounds,
+        prism_physics2d::Aabb2::new(2.0, 0.0, 6.0, 2.0)
+    );
+    assert!(!shapes[2].one_way_top);
+}
+
+#[test]
+fn damage_components_round_trip_and_default_safely() {
+    let hitbox: Hitbox2D = serde_json::from_str(r#"{}"#).expect("hitbox defaults should decode");
+    assert_eq!(hitbox.damage, 1);
+    assert_eq!(hitbox.team, 0);
+    assert!(!hitbox.enabled);
+
+    let hurtbox: Hurtbox2D = serde_json::from_str(r#"{}"#).expect("hurtbox defaults should decode");
+    assert_eq!(hurtbox.team, 0);
+    assert!(hurtbox.enabled);
+
+    let encoded = serde_json::to_value(Hitbox2D {
+        damage: 3,
+        team: 2,
+        enabled: true,
+    })
+    .expect("hitbox should serialize");
+    let decoded: Hitbox2D = serde_json::from_value(encoded).expect("hitbox should round-trip");
+    assert_eq!(decoded.damage, 3);
+    assert_eq!(decoded.team, 2);
+    assert!(decoded.enabled);
 }
 
 #[test]

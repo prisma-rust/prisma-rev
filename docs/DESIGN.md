@@ -1568,3 +1568,82 @@ powershell -File scripts/build-dist.ps1 -Pack projects/prisma   # Windows 主机
 一个实现细节：UPX **就地覆盖** `target/<target>/<profile>/<pkg>` 下的产物，
 所以同一个 target 里再跑一次不带 `--pack` 的构建不会把它「解压」回来
 （cargo 认为产物是最新的）；需要干净产物就改一行代码触发重新链接，或直接删掉文件。
+
+## 13. 2D 物理几何内核
+
+`prism-physics2d` 提供不依赖 ECS、渲染或刚体后端的确定性 2D 碰撞几何，
+`prism-engine::physics2d` 与 `prism-game-api::physics2d` re-export 同一实现。
+这让静态 Player 与编辑器动态项目模块可以共用游戏移动代码，不需要跨 ABI 发送房间几何，
+也不会让插件链接第二份 `prism-engine`。
+
+`prism-scene::Collider2D` 是场景组件层的 AABB 碰撞体，支持局部偏移、触发器和 layer mask；
+其世界边界与 `SpriteRenderer::world_bounds` 共用 XY 变换规则，包含局部缩放、旋转和 pivot。
+`GameWorld::colliders2d`、`overlap2d` 与 `move_and_slide2d` 在静态 Player 和项目模块中使用
+同一套接口。碰撞查询按当前 `Parent` 链即时合成局部变换，确保同一玩法步内刚修改的父子位置
+也会参与碰撞；无局部变换的运行时实体回退到 `LocalToWorld`。因此父级平移、旋转、缩放下的
+精灵、粒子、门和触发器与碰撞保持一致。
+
+`Engine::fixed_update` 在玩法固定步和层级传播完成后更新 `PhysicsEvents2D`。事件按实体 pair
+跟踪重叠：首次相交产生 `Enter`，持续相交产生 `Stay`，离开或 collider 消失产生 `Exit`；只有
+至少一方 `Collider2D.is_trigger` 为真时才生成事件。Tilemap 合并出的多个 AABB 按实体 pair 去重，
+事件按实体句柄稳定排序。事件资源保存最近一个固定步的快照，项目逻辑在下一固定步读取，
+因此静态玩法系统和编辑器项目模块共享相同的时序。`GameWorld::trigger_events2d` 在两个后端
+返回一致的事件列表；插件通过独立 ABI capability 查询，未注入事件快照的宿主不会宣称支持。
+
+静态瓦片地形使用作者态组件 `TilemapCollider2D`，挂在同一实体的 `Tilemap` 上；组件通过
+`solid_tile_ids` 明确选择实心瓦片，编号与 `Tilemap.tiles` 一致（0 永远为空），空列表表示不产生碰撞。
+场景层按连续横向实心格合并 AABB，并使用 Tilemap 的网格原点、行方向、局部偏移和完整世界变换生成
+世界边界。`prism_scene::colliders2d` 是静态 Player 与 preview host 共用的查询实现，因此瓦片碰撞会
+自动参与 `GameWorld::colliders2d`、`overlap2d`、`raycast2d` 和 `move_and_slide2d`；修改 Tilemap 后
+下一次查询立即反映。门、尖刺、拾取物等独立机关仍使用 `Collider2D`。
+
+引擎把玩法更新分成每帧 `Schedule` 和固定步 `fixed_schedule`。`App::add_fixed_game_system`
+注册固定步玩法；引擎在 `begin_frame` 缓存这一帧输入，固定步只消费一次按键按下/释放边沿，
+各子步都能读取当前按住状态。项目模块通过 ABI 可选的 `fixed_update` 回调加入相同固定步，
+普通 `tick` 仍每个渲染帧执行一次；`InputSnapshot::interpolation_alpha` 提供固定步余量供渲染插值。
+
+固定步驱动的 2D 实体可挂运行时组件 `TransformInterpolation2D`。引擎在固定步前保存其局部
+XY 位置，精灵提取与 `VirtualCamera2D` 目标读取按 `interpolation_alpha` 插值；模拟和碰撞始终
+读取当前 `LocalTransform`，渲染位置不会回写物理状态。项目通过 `GameWorld::enable_transform_interpolation2d`
+启用，并在重生、传送或切房落点后调用 `snap_transform_interpolation2d`，避免跨位置插值。
+组件属于派生运行时状态，不写入 `.scene.json` / RSCN。
+
+玩法共享状态使用 `GameWorld::get_flag` / `set_flag`。flag 是引擎管理的全局、可存档布尔键，
+门、机关、NPC 和项目模块读取同一份状态；设置后立即写入当前玩家存档。静态 Player 直接使用
+`UserStore`，动态项目模块通过 `HostApi` 的 `get_flag` / `set_flag` 回调访问同一个存储，
+因此编辑器 Play 仍写入项目隔离的 play-data。flag 名称由引擎按统一命名空间处理，项目不需要
+自己序列化 `"0"` / `"1"` 字符串；缺失 flag 读取为 `false`。新增 flag 回调时 ABI 版本递增，
+旧模块会被宿主拒绝加载，避免把缺少持久化能力误判为成功。
+
+通用 2D 交互目标使用作者态组件 `Interactable2D`，包含可选提示文本、目标优先级和启用状态；
+目标实体还需带有 `Collider2D` 或 `TilemapCollider2D`。`GameWorld::interactables2d` 按玩家位置、
+最大距离与碰撞层筛选候选，并按优先级、到碰撞边界的距离和实体句柄稳定排序。该查询在静态
+Player 与项目模块中复用已有组件反射 ABI，不引入项目专属动作 schema。输入映射、提示展示和
+激活后的业务效果仍由游戏逻辑处理；后续激活事件可直接携带这里返回的目标实体句柄。
+
+2D 轻战斗使用作者态 `Hitbox2D` / `Hurtbox2D` 元数据组件。两类实体必须分别同时拥有对应组件
+和活动 `Collider2D` 或 `TilemapCollider2D`；`GameWorld::damage_contacts2d` 按调用者提供的两侧
+layer mask 查询当前世界快照，忽略同实体和同 team 的配对，并按实体对去重、稳定排序。命中盒的
+`damage` 随结果返回，但查询不会改写生命值，也不维护命中历史；攻击冷却、无敌帧、击退、死亡和
+命中去重窗口由游戏系统负责。组件通过现有反射组件 API 在 Host 与 Plugin 中读取，不增加 ABI
+回调。该查询提供的是 AABB 重叠快照，不是连续伤害事件或刚体解算系统。
+
+坐标使用 XY 平面，+X 向右、+Y 向上；Z 不参与 2D 几何。单位由调用方决定，
+因此 EchoWell 可以直接使用像素，而场景物理仍可使用米。`Aabb2` 的 `min` / `max`
+是世界空间边界；边界接触不算重叠。2D 射线距离和移动增量都使用同一世界单位。
+
+首个切片提供 AABB 重叠、AABB 射线检测和静态 AABB 障碍上的连续 `move_and_slide`：
+移动扫掠直接求接触时间，不靠逐像素子步；结果包含修正后的位置、实际位移、接触法线、
+墙面/地面/天花板标记。普通移动只把障碍作为不动几何输入，触发器由调用方从 solid 列表排除。
+平台跳跃需要的单向平台使用世界空间水平顶面（法线固定为 +Y）：`Collider2D::one_way_top`
+配置单实体碰撞体，`TilemapCollider2D::one_way_tile_ids` 按瓦片 ID 配置单向格。瓦片碰撞按
+碰撞类型分别合并连续格；同一瓦片同时出现在 `solid_tile_ids` 与 `one_way_tile_ids` 时按单向平台处理。
+物理层提供 `Obstacle2D` 与 `MoveOptions2D::drop_through_one_way`；仅当移动角色从平台上方向下穿过顶面时
+产生接触，从平台下方上跳、水平擦过平台边缘均不阻挡。单向平台不参与穿透修正；下穿选项只作用于当前
+模拟步，令角色继续下落后后续步自然离开平台高度。`GameWorld::move_and_slide2d_with_options` 将该选项
+同时用于静态 Player 与 preview module；碰撞查询 ABI 通过 `Collider2DHit` 的保留字节传递单向标志，ABI
+版本随该语义更新递增。
+圆形/多边形碰撞体与 Rapier2D runtime 仍未实现。当前触发事件只覆盖 AABB `Collider2D` 和
+`TilemapCollider2D`，不提供刚体解算。GitHub issue #1160 提出的 2D 虚拟相机（阻尼、死区、边界限制、像素吸附）
+已由 `VirtualCamera2D` 场景组件和引擎系统提供；纯 2D 模式的渲染 pass 裁剪仍未实现，
+也不由当前 AABB 几何内核覆盖。

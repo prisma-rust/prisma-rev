@@ -1,7 +1,7 @@
 //! ECS system schedule — ordered list of systems dispatched per tick.
 //!
 //! A [`Schedule`] owns a boxed list of system closures, each receiving
-//! `(&mut World, dt)` every frame.  Systems run in registration order.
+//! `(&mut World, dt)`. Systems run in registration order.
 //!
 //! # Example
 //!

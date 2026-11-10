@@ -20,6 +20,15 @@
           "near": 0.1,
           "orthographic": true,
           "orthographic_size": 90.0
+        },
+        "prism_engine::scene::VirtualCamera2D": {
+          "target_name": "player",
+          "damping": [8.0, 8.0],
+          "deadzone": [4.0, 2.0],
+          "confiner": [0.0, 0.0, 320.0, 180.0],
+          "follow_offset": [0.0, 0.0],
+          "pixel_snap": false,
+          "pixels_per_unit": 1.0
         }
       }
     }

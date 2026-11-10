@@ -491,6 +491,8 @@ pub fn register_builtin_components(registry: &mut ComponentRegistry) {
         registry.register_reflect_serde::<LineRenderer>("prism_engine::scene::LineRenderer");
         registry.register_reflect_serde::<SpriteAnimation>("prism_engine::scene::SpriteAnimation");
         registry.register_reflect_serde::<Tilemap>("prism_engine::scene::Tilemap");
+        registry
+            .register_reflect_serde::<TilemapCollider2D>("prism_engine::scene::TilemapCollider2D");
         // #611：2D 精灵光照（与 SpriteRenderer 同组，没有精灵就没有意义）。
         registry.register_reflect_serde::<Light2D>("prism_engine::scene::Light2D");
         // #983：昼夜时钟。它只是往同一实体的环境光里写颜色，2D 场景用得上，
@@ -510,6 +512,7 @@ pub fn register_builtin_components(registry: &mut ComponentRegistry) {
     // 若登记成组件，`registry.apply` 会在 `LocalToWorld` 计算完之后覆盖
     // `LocalTransform`，留下一个按旧变换算出的世界矩阵。
     registry.register_reflect_type::<LocalTransform>();
+    registry.register_reflect_type::<TransformInterpolation2D>();
 
     // ── 关键帧动画 ──
     // 轨道里的是嵌套结构体，先登记类型（RTTIBin 类型表 / 编辑器字段描述），
@@ -536,6 +539,13 @@ pub fn register_builtin_components(registry: &mut ComponentRegistry) {
     registry
         .register_reflect_serde::<SkinnedMeshRenderer>("prism_engine::scene::SkinnedMeshRenderer");
     registry.register_reflect_serde::<Collider>("prism_engine::scene::Collider");
+    #[cfg(feature = "group-2d")]
+    {
+        registry.register_reflect_serde::<Collider2D>("prism_engine::scene::Collider2D");
+        registry.register_reflect_serde::<Interactable2D>("prism_engine::scene::Interactable2D");
+        registry.register_reflect_serde::<Hitbox2D>("prism_engine::scene::Hitbox2D");
+        registry.register_reflect_serde::<Hurtbox2D>("prism_engine::scene::Hurtbox2D");
+    }
     registry.register_reflect_serde::<Rigidbody>("prism_engine::scene::Rigidbody");
     registry
         .register_reflect_serde::<CharacterController>("prism_engine::scene::CharacterController");
@@ -580,7 +590,7 @@ pub fn register_builtin_components(registry: &mut ComponentRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::{Camera, LocalTransform, Name};
+    use crate::components::{Camera, Hitbox2D, Hurtbox2D, Interactable2D, LocalTransform, Name};
     use prism_reflect::rtti_bin;
 
     fn test_registry() -> ComponentRegistry {
@@ -590,6 +600,9 @@ mod tests {
         registry.register_reflect::<Camera>();
         registry.register_reflect::<Name>();
         registry.register_reflect::<LocalTransform>();
+        registry.register_reflect::<Interactable2D>();
+        registry.register_reflect::<Hitbox2D>();
+        registry.register_reflect::<Hurtbox2D>();
         registry
     }
 
@@ -605,8 +618,18 @@ mod tests {
             position: glam::Vec3::new(1.0, 2.0, 3.0),
             ..LocalTransform::default()
         };
+        let interactable = Interactable2D {
+            prompt: "Open gate".to_string(),
+            priority: 3,
+            enabled: false,
+        };
 
-        let objects = vec![camera.to_object(), name.to_object(), transform.to_object()];
+        let objects = vec![
+            camera.to_object(),
+            name.to_object(),
+            transform.to_object(),
+            interactable.to_object(),
+        ];
         let bytes = rtti_bin::encode(&objects, registry.type_registry()).unwrap();
         let decoded = rtti_bin::decode(&bytes).unwrap();
 
@@ -622,12 +645,22 @@ mod tests {
             world.get::<LocalTransform>(entity).unwrap().position,
             glam::Vec3::new(1.0, 2.0, 3.0)
         );
+        assert_eq!(
+            world.get::<Interactable2D>(entity).unwrap().prompt,
+            "Open gate"
+        );
+        assert_eq!(world.get::<Interactable2D>(entity).unwrap().priority, 3);
+        assert!(!world.get::<Interactable2D>(entity).unwrap().enabled);
 
         // 导出走同一份 schema。
         let extracted = registry
             .extract_object_by_name(&world, entity, "prism_engine::scene::Camera")
             .unwrap();
         assert_eq!(extracted, camera.to_object());
+        let extracted = registry
+            .extract_object_by_name(&world, entity, "prism_engine::scene::Interactable2D")
+            .unwrap();
+        assert_eq!(extracted, interactable.to_object());
     }
 
     #[test]
