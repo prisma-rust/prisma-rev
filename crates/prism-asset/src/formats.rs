@@ -458,7 +458,9 @@ mod tests {
         assert_eq!(decoded.sprites[0], entry1);
         assert_eq!(decoded.sprites[1], entry2);
 
-        let found = decoded.find_sprite("hero_idle").expect("hero_idle must be found");
+        let found = decoded
+            .find_sprite("hero_idle")
+            .expect("hero_idle must be found");
         assert_eq!(found.name, "hero_idle");
         assert_eq!(found.pixel_rect, [4, 4, 32, 48]);
 

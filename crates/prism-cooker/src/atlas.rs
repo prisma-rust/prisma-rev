@@ -537,12 +537,16 @@ pub fn pack_atlas(
             let start_y = py - extrude;
             for row in 0..total_h {
                 let cur_y = start_y + row;
-                let edge_left = (((cur_y * atlas_w + px) * 4) as usize)..(((cur_y * atlas_w + px) * 4 + 4) as usize);
-                let edge_right = (((cur_y * atlas_w + px + tw - 1) * 4) as usize)..(((cur_y * atlas_w + px + tw - 1) * 4 + 4) as usize);
+                let edge_left = (((cur_y * atlas_w + px) * 4) as usize)
+                    ..(((cur_y * atlas_w + px) * 4 + 4) as usize);
+                let edge_right = (((cur_y * atlas_w + px + tw - 1) * 4) as usize)
+                    ..(((cur_y * atlas_w + px + tw - 1) * 4 + 4) as usize);
 
                 for e in 1..=extrude {
-                    let dst_left = (((cur_y * atlas_w + px - e) * 4) as usize)..(((cur_y * atlas_w + px - e) * 4 + 4) as usize);
-                    let dst_right = (((cur_y * atlas_w + px + tw - 1 + e) * 4) as usize)..(((cur_y * atlas_w + px + tw - 1 + e) * 4 + 4) as usize);
+                    let dst_left = (((cur_y * atlas_w + px - e) * 4) as usize)
+                        ..(((cur_y * atlas_w + px - e) * 4 + 4) as usize);
+                    let dst_right = (((cur_y * atlas_w + px + tw - 1 + e) * 4) as usize)
+                        ..(((cur_y * atlas_w + px + tw - 1 + e) * 4 + 4) as usize);
 
                     atlas_rgba.copy_within(edge_left.clone(), dst_left.start);
                     atlas_rgba.copy_within(edge_right.clone(), dst_right.start);
@@ -655,7 +659,10 @@ mod tests {
         let ax = entry_a.pixel_rect[0] as usize;
         let ay = entry_a.pixel_rect[1] as usize;
         let left_pixel_idx = (ay * (result.width as usize) + (ax - 1)) * 4;
-        assert_eq!(&result.rgba[left_pixel_idx..left_pixel_idx + 4], &[255, 0, 0, 255]);
+        assert_eq!(
+            &result.rgba[left_pixel_idx..left_pixel_idx + 4],
+            &[255, 0, 0, 255]
+        );
 
         let ratlas_bytes = result.encode_ratlas_bytes();
         let decoded = decode_ratl(&ratlas_bytes).expect("should decode .ratlas");

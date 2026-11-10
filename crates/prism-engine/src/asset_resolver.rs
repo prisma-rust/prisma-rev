@@ -387,9 +387,8 @@ impl GpuAssetResolver {
                 || world.get::<Tilemap>(*entity).is_some()
                 || world.get::<crate::ui::components::Style>(*entity).is_some()
         });
-        self.pending_atlas_sprites.retain(|entity, _| {
-            world.get::<SpriteRenderer>(*entity).is_some()
-        });
+        self.pending_atlas_sprites
+            .retain(|entity, _| world.get::<SpriteRenderer>(*entity).is_some());
     }
 
     /// 换场 / 卸载后立刻丢弃已经不存在的实体的缓存（#482）。
