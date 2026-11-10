@@ -139,6 +139,14 @@ struct PendingRequest {
     skinned_path: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct AtlasSpriteMeta {
+    uv_rect: [f32; 4],
+    trimmed_offset: [i32; 2],
+    original_size: [u32; 2],
+    size: [u32; 2],
+}
+
 /// On-demand asset loader + GPU uploader + cache.
 ///
 /// 每帧调用 [`prepare_requests`] 收集待处理实体并产出上传请求（CPU 段）；
@@ -193,6 +201,8 @@ pub struct GpuAssetResolver {
     ///
     /// 相同路径的 submesh 共享一次材质上传，回传的槽位用这张表展开。
     pending_material_map: HashMap<Entity, Vec<Option<usize>>>,
+    /// Staged atlas sub-sprite metadata waiting for texture upload completion (#1158).
+    pending_atlas_sprites: HashMap<Entity, AtlasSpriteMeta>,
     /// 已经按需挂载的 `optional_*.pak`（#509）。
     ///
     /// 重复挂载同一个包只会让 `ResourceManager` 把每个资产 ID 当成重复项 warn
@@ -241,6 +251,7 @@ impl GpuAssetResolver {
             pending_bounds: HashMap::new(),
             pending_submeshes: HashMap::new(),
             pending_material_map: HashMap::new(),
+            pending_atlas_sprites: HashMap::new(),
             mounted_optional: HashSet::new(),
         }
     }
@@ -375,6 +386,9 @@ impl GpuAssetResolver {
                 || world.get::<SpriteRenderer>(*entity).is_some()
                 || world.get::<Tilemap>(*entity).is_some()
                 || world.get::<crate::ui::components::Style>(*entity).is_some()
+        });
+        self.pending_atlas_sprites.retain(|entity, _| {
+            world.get::<SpriteRenderer>(*entity).is_some()
         });
     }
 
@@ -985,7 +999,7 @@ impl GpuAssetResolver {
 
             let texture = match item.sprite_path.as_deref() {
                 Some(path) => {
-                    let loaded = self.load_texture_by_path(path);
+                    let loaded = self.load_texture_by_path(item.entity, path);
                     if loaded.is_none() {
                         let slot = if item.tileset {
                             AssetSlot::Tileset
@@ -1159,10 +1173,23 @@ impl GpuAssetResolver {
                             texture_slot: 0,
                             size: [0, 0],
                             generation: 0,
+                            uv_rect: [0.0, 0.0, 1.0, 1.0],
+                            trimmed_offset: [0, 0],
+                            original_size: [0, 0],
                         });
                 sprite.texture_slot = slot;
-                sprite.size = size;
                 sprite.generation = 1;
+                if let Some(atlas_meta) = self.pending_atlas_sprites.remove(entity) {
+                    sprite.uv_rect = atlas_meta.uv_rect;
+                    sprite.trimmed_offset = atlas_meta.trimmed_offset;
+                    sprite.original_size = atlas_meta.original_size;
+                    sprite.size = atlas_meta.size;
+                } else {
+                    sprite.size = size;
+                    sprite.uv_rect = [0.0, 0.0, 1.0, 1.0];
+                    sprite.trimmed_offset = [0, 0];
+                    sprite.original_size = size;
+                }
                 world.insert(*entity, sprite);
 
                 // 瓦片地图的 tileset 走同一个上传结果（#529）。
@@ -1773,13 +1800,41 @@ impl GpuAssetResolver {
         Some(MaterialResolveData { scalars, textures })
     }
 
-    /// CPU 段：按路径加载单张纹理（精灵贴图）→ `TextureUploadInput`。
-    fn load_texture_by_path(&mut self, path: &str) -> Option<TextureUploadInput> {
-        let id = self.resource_manager.id_by_path(path).or_else(|| {
-            report_missing_reference(path, "texture");
-            None
-        })?;
-        self.load_texture_data(Some(id), true)
+    /// Load texture input by path (standalone texture or .ratlas#sub_sprite) -> `TextureUploadInput`.
+    fn load_texture_by_path(&mut self, entity: Entity, path: &str) -> Option<TextureUploadInput> {
+        if let Some((atlas_path, sprite_name)) = path.split_once('#') {
+            let atlas_id = self.resource_manager.id_by_path(atlas_path).or_else(|| {
+                report_missing_reference(atlas_path, "atlas");
+                None
+            })?;
+            let raw = self
+                .resource_manager
+                .load_with_deps_raw(atlas_id)
+                .map_err(|e| log::warn!("load atlas {atlas_path} failed: {e}"))
+                .ok()?;
+            let info = prism_asset::formats::decode_ratl(&raw)?;
+            let entry = info.find_sprite(sprite_name)?;
+            self.pending_atlas_sprites.insert(
+                entity,
+                AtlasSpriteMeta {
+                    uv_rect: entry.uv_rect,
+                    trimmed_offset: entry.trimmed_offset,
+                    original_size: entry.original_size,
+                    size: [entry.pixel_rect[2], entry.pixel_rect[3]],
+                },
+            );
+            let tex_id = self.resource_manager.id_by_path(&info.texture_path).or_else(|| {
+                report_missing_reference(&info.texture_path, "texture");
+                None
+            })?;
+            self.load_texture_data(Some(tex_id), true)
+        } else {
+            let id = self.resource_manager.id_by_path(path).or_else(|| {
+                report_missing_reference(path, "texture");
+                None
+            })?;
+            self.load_texture_data(Some(id), true)
+        }
     }
 
     /// CPU 段：加载单张纹理依赖 → `TextureUploadInput` 像素（或品红回退）。
@@ -2281,6 +2336,53 @@ mod tests {
 
         // 已解析且路径没变：不再重复投递。
         assert!(resolver.prepare_requests(&world).is_empty());
+    }
+
+    #[test]
+    fn sprite_atlas_subslice_resolves_uv_and_size() {
+        let mut world = World::new();
+        let entity = world.spawn();
+        world.insert(
+            entity,
+            SpriteRenderer {
+                sprite_path: "atlases/chars.ratlas#hero_run".to_string(),
+                ..Default::default()
+            },
+        );
+        let mut resolver = GpuAssetResolver::new();
+        resolver.pending_atlas_sprites.insert(
+            entity,
+            AtlasSpriteMeta {
+                uv_rect: [0.1, 0.2, 0.3, 0.4],
+                trimmed_offset: [2, 4],
+                original_size: [32, 32],
+                size: [28, 24],
+            },
+        );
+
+        resolver.apply_results(
+            &mut world,
+            &[(
+                entity,
+                AssetResolveResult {
+                    material_slots: Vec::new(),
+                    mesh_handle: None,
+                    material_slot: None,
+                    texture_slot: Some(5),
+                    texture_size: Some([512, 512]),
+                },
+            )],
+        );
+
+        let sprite = world
+            .get::<SpriteRef>(entity)
+            .expect("解析后应补上 SpriteRef");
+        assert_eq!(sprite.texture_slot, 5);
+        assert_eq!(sprite.generation, 1);
+        assert_eq!(sprite.uv_rect, [0.1, 0.2, 0.3, 0.4]);
+        assert_eq!(sprite.trimmed_offset, [2, 4]);
+        assert_eq!(sprite.original_size, [32, 32]);
+        assert_eq!(sprite.size, [28, 24]);
     }
 
     #[test]

@@ -10,7 +10,8 @@
 
 use crate::core::{AssetId, AssetType};
 use crate::formats::{
-    decode_rmat, decode_rmes, decode_rtex, RmatInfo, RmesInfo, RtexInfo, MATERIAL_SCALAR_COUNT,
+    decode_ratl, decode_rmat, decode_rmes, decode_rtex, RatlInfo, RmatInfo, RmesInfo, RtexInfo,
+    MATERIAL_SCALAR_COUNT,
 };
 use crate::formats_anim_graph::AnimGraphInfo;
 use crate::formats_skinned::{
@@ -377,6 +378,38 @@ impl Asset for AnimClipAsset {
         let info = decode_ranim(data).ok_or_else(|| RuntimeError::DeserializeFailed {
             asset_type: AssetType::AnimClip,
             reason: "invalid RANI data (bad magic / truncated)".into(),
+        })?;
+        Ok(Self {
+            info,
+            raw: data.to_vec(),
+        })
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        self.raw
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Atlas
+// ---------------------------------------------------------------------------
+
+/// Cooked sprite atlas metadata asset (.ratlas format).
+#[derive(Debug, Clone)]
+pub struct AtlasAsset {
+    pub info: RatlInfo,
+    raw: Vec<u8>,
+}
+
+impl Asset for AtlasAsset {
+    fn asset_type() -> AssetType {
+        AssetType::Atlas
+    }
+
+    fn from_bytes(data: &[u8]) -> Result<Self, RuntimeError> {
+        let info = decode_ratl(data).ok_or_else(|| RuntimeError::DeserializeFailed {
+            asset_type: AssetType::Atlas,
+            reason: "invalid RATL data (bad magic / truncated)".into(),
         })?;
         Ok(Self {
             info,

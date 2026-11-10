@@ -9,6 +9,7 @@
 //! - `db`：资产记录与导入缓存（构建期数据库）
 //! - `pack`：已 cook 目录 → `.pak` + 路径清单（底层打包工具）
 
+pub mod atlas;
 pub mod cooker;
 pub mod db;
 mod fs_atomic;
@@ -16,6 +17,10 @@ pub mod import_settings;
 pub mod importer;
 pub mod pack;
 
+pub use atlas::{
+    encode_rtex_rgba8, pack_atlas, trim_transparent_pixels, AtlasPackOptions, PackedAtlasResult,
+    RawSpriteInput,
+};
 pub use cooker::{
     default_cooker_registry, CookContext, CookError, CookPipeline, CookResult, Cooker,
     CookerRegistry,
