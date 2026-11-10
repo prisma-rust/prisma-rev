@@ -151,6 +151,7 @@ impl ReportSettings {
             render_mode: match render_mode {
                 RenderMode::Raster => "raster",
                 RenderMode::PathTrace => "path_trace",
+                RenderMode::Sprites2D => "sprites_2d",
             },
             debug_flags,
             tonemap_mode,
@@ -453,6 +454,7 @@ fn pass_kind(pass: &PassInfo) -> &'static str {
         PassKind::Post => "post",
         PassKind::Pt => "pt",
         PassKind::Rt => "rt",
+        PassKind::Anf => "anf",
         PassKind::Unknown => "unknown",
     }
 }
@@ -475,6 +477,7 @@ fn resource_name(handle: ResourceHandle) -> String {
         handle if handle == crate::render_graph::FORWARD_DEPTH_H.0 => "forward.depth".into(),
         handle if handle == crate::render_graph::FORWARD_NORMAL_H.0 => "forward.normal".into(),
         handle if handle == crate::render_graph::FORWARD_COLOR_H.0 => "forward.color".into(),
+        handle if handle == crate::render_graph::ANF_COLOR_H.0 => "anf.color".into(),
         handle if handle == crate::render_graph::PT_COLOR_H.0 => "pt.color".into(),
         handle => format!("resource#{handle}"),
     }

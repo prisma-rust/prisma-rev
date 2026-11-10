@@ -79,14 +79,22 @@ impl DebugHud {
         let mode = match settings.render_mode {
             RenderMode::Raster => "Raster",
             RenderMode::PathTrace => "PathTrace",
+            RenderMode::Sprites2D => "Sprites2D",
         };
         let tonemap = match settings.tonemap_mode {
             0 => "Reinhard",
             1 => "ACES",
             _ => "Passthrough",
         };
+        let upscaler = if settings.anf_sr {
+            "ANF-SR"
+        } else if settings.taa {
+            "TAA"
+        } else {
+            "None"
+        };
         lines.push(format!(
-            "{mode}  |  Tonemap: {tonemap}  |  PBR: {}",
+            "{mode}  |  Tonemap: {tonemap}  |  Upscaler: {upscaler}  |  PBR: {}",
             pbr_flag_label(settings.debug_flags)
         ));
 

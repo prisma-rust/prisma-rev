@@ -43,11 +43,14 @@ pub use hot_reload::{HotReloadError, HotReloadEvent, HotReloadWatcher};
 pub mod typed;
 
 pub use typed::{
-    AnimClipAsset, AnimGraphAsset, AtlasAsset, MaterialAsset, MeshAsset, SceneAsset, ShaderAsset,
-    SkeletonAsset, SkinnedMeshAsset, StateMachineAsset, TextureAsset,
+    Anim2DAsset, AnimClipAsset, AnimGraphAsset, AtlasAsset, MaterialAsset, MeshAsset, SceneAsset,
+    ShaderAsset, SkeletonAsset, SkinnedMeshAsset, StateMachineAsset, TextureAsset, TilemapAsset,
 };
 
-pub use crate::formats::{AtlasSpriteEntry, RatlInfo, RmatInfo, RmesInfo};
+pub use crate::formats::{
+    Anim2DFrame, Anim2DTag, AtlasSpriteEntry, MergedCollisionBox, Ranim2DInfo, RatlInfo, RmatInfo,
+    RmesInfo, RtilemapInfo, TilemapLayer, TilemapObject,
+};
 
 // ---------------------------------------------------------------------------
 // Errors

@@ -10,8 +10,8 @@
 
 use crate::core::{AssetId, AssetType};
 use crate::formats::{
-    decode_ratl, decode_rmat, decode_rmes, decode_rtex, RatlInfo, RmatInfo, RmesInfo, RtexInfo,
-    MATERIAL_SCALAR_COUNT,
+    decode_ranim2d, decode_ratl, decode_rmat, decode_rmes, decode_rtex, decode_rtilemap,
+    Ranim2DInfo, RatlInfo, RmatInfo, RmesInfo, RtexInfo, RtilemapInfo, MATERIAL_SCALAR_COUNT,
 };
 use crate::formats_anim_graph::AnimGraphInfo;
 use crate::formats_skinned::{
@@ -410,6 +410,70 @@ impl Asset for AtlasAsset {
         let info = decode_ratl(data).ok_or_else(|| RuntimeError::DeserializeFailed {
             asset_type: AssetType::Atlas,
             reason: "invalid RATL data (bad magic / truncated)".into(),
+        })?;
+        Ok(Self {
+            info,
+            raw: data.to_vec(),
+        })
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        self.raw
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 2D Animation (.ranim2d)
+// ---------------------------------------------------------------------------
+
+/// Cooked 2D sprite animation asset (.ranim2d format).
+#[derive(Debug, Clone)]
+pub struct Anim2DAsset {
+    pub info: Ranim2DInfo,
+    raw: Vec<u8>,
+}
+
+impl Asset for Anim2DAsset {
+    fn asset_type() -> AssetType {
+        AssetType::Anim2D
+    }
+
+    fn from_bytes(data: &[u8]) -> Result<Self, RuntimeError> {
+        let info = decode_ranim2d(data).ok_or_else(|| RuntimeError::DeserializeFailed {
+            asset_type: AssetType::Anim2D,
+            reason: "invalid RA2D data (bad magic / truncated)".into(),
+        })?;
+        Ok(Self {
+            info,
+            raw: data.to_vec(),
+        })
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        self.raw
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tilemap (.rtilemap)
+// ---------------------------------------------------------------------------
+
+/// Cooked tilemap level asset (.rtilemap format).
+#[derive(Debug, Clone)]
+pub struct TilemapAsset {
+    pub info: RtilemapInfo,
+    raw: Vec<u8>,
+}
+
+impl Asset for TilemapAsset {
+    fn asset_type() -> AssetType {
+        AssetType::Tilemap
+    }
+
+    fn from_bytes(data: &[u8]) -> Result<Self, RuntimeError> {
+        let info = decode_rtilemap(data).ok_or_else(|| RuntimeError::DeserializeFailed {
+            asset_type: AssetType::Tilemap,
+            reason: "invalid RTMG data (bad magic / truncated)".into(),
         })?;
         Ok(Self {
             info,

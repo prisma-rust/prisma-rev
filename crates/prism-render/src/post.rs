@@ -34,7 +34,7 @@ use crate::lut::Lut3d;
 use crate::pipeline::{GraphicsPipeline, PipelineDesc};
 use crate::render_graph::{
     GraphResources, PassInfo, PassKind, RenderContext, RenderGraphBuilder, RenderMode,
-    RenderPassNode, RenderSettings, ResourceHandle, ResourceUsage, FORWARD_COLOR_H,
+    RenderPassNode, RenderSettings, ResourceHandle, ResourceUsage, ANF_COLOR_H, FORWARD_COLOR_H,
     FORWARD_DEPTH_H, FORWARD_NORMAL_H, PT_COLOR_H, TAA_COLOR_H,
 };
 use crate::render_pass::find_memory_type;
@@ -844,6 +844,12 @@ impl RenderPassNode for PostPass {
             stage: vk::PipelineStageFlags::FRAGMENT_SHADER,
             layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
         });
+        graph.read_usage(ResourceUsage {
+            handle: ANF_COLOR_H,
+            access: vk::AccessFlags::SHADER_READ,
+            stage: vk::PipelineStageFlags::FRAGMENT_SHADER,
+            layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        });
     }
 
     fn execute(
@@ -862,13 +868,22 @@ impl RenderPassNode for PostPass {
         let is_pt = ctx.frame.render_mode == RenderMode::PathTrace;
         let has_camera = ctx.frame.has_camera;
         let has_pt_view = resources.published_view(PT_COLOR_H).is_some();
-        // TAA output (#883) takes precedence in the raster path when enabled.
-        let taa_view = if ctx.settings.taa && !is_pt && ctx.frame.debug_rt == 0 {
-            resources.published_view(TAA_COLOR_H)
+        // ANF 超分辨率输出在启用时优先级最高（#1161）
+        let anf_view = if ctx.settings.anf_sr && !is_pt && ctx.frame.debug_rt == 0 {
+            resources.published_view(ANF_COLOR_H)
         } else {
             None
         };
-        let (handle, image_layout) = if taa_view.is_some() {
+        // TAA output (#883) takes precedence in the raster path when enabled and ANF is off.
+        let taa_view =
+            if ctx.settings.taa && !is_pt && ctx.frame.debug_rt == 0 && anf_view.is_none() {
+                resources.published_view(TAA_COLOR_H)
+            } else {
+                None
+            };
+        let (handle, image_layout) = if anf_view.is_some() {
+            (ANF_COLOR_H, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+        } else if taa_view.is_some() {
             (TAA_COLOR_H, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
         } else {
             select_input_target(ctx.frame.debug_rt, is_pt, has_camera, has_pt_view)

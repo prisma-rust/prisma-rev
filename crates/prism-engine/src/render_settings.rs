@@ -152,6 +152,12 @@ pub struct RenderSettings {
     pub taa: bool,
     /// TAA history weight (`0.0..=0.95`); ignored when `taa` is off.
     pub taa_strength: f32,
+    /// Qualcomm Adreno Neural Fusion Super Resolution (#1161).
+    pub anf_sr: bool,
+    /// ANF Super Resolution sharpness parameter [0.0..=1.0].
+    pub anf_sharpness: f32,
+    /// Qualcomm Adreno Neural Fusion Frame Generation (#1161).
+    pub anf_fg: bool,
     /// 内部渲染分辨率 `[宽, 高]`（#613）；`[0, 0]` = 关闭。
     ///
     /// 开启后场景按这个尺寸渲染，`PostPass` 再放大到窗口；相机的宽高比也跟着
@@ -249,6 +255,9 @@ impl Default for RenderSettings {
             motion_blur_max_pixels: 16.0,
             taa: false,
             taa_strength: 0.9,
+            anf_sr: false,
+            anf_sharpness: 0.5,
+            anf_fg: false,
             shadow_distance: DEFAULT_SHADOW_DISTANCE,
             shadow_map_size: prism_render::SHADOW_MAP_SIZE,
             shadow_cascade_count: 1,

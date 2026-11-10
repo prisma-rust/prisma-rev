@@ -9,6 +9,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
+pub use prism_render::dirty_dispatch::DirtyDispatchPlan;
 use prism_render::DrawItem;
 
 use crate::render_system::SceneChanges;
@@ -122,6 +123,39 @@ impl DirtyRouter {
         self.prev = Some(Box::new(new.clone()));
         flags
     }
+
+    /// 根据本帧 `SceneChanges`、绘制项签名与待上传资源计数，
+    /// 生成符合 DESIGN §9 静态规则集的统一 [`DirtyDispatchPlan`]。
+    pub fn plan_dispatch(
+        &mut self,
+        changes: &SceneChanges,
+        draw_items_dirty: bool,
+        pt_bounces_dirty: bool,
+        pending_textures: usize,
+        pending_meshes: usize,
+        pending_materials: usize,
+    ) -> DirtyDispatchPlan {
+        let flags = self.update(changes);
+        let instances_dirty = draw_items_dirty;
+        let emissive_table_dirty = pending_meshes > 0 || pending_materials > 0 || instances_dirty;
+        let pt_accum_dirty =
+            flags.directional_light || flags.point_lights || draw_items_dirty || pt_bounces_dirty;
+
+        DirtyDispatchPlan {
+            texture_uploads: pending_textures,
+            texture_releases: 0,
+            mesh_uploads: pending_meshes,
+            mesh_releases: 0,
+            material_updates: pending_materials,
+            material_releases: 0,
+            camera_dirty: flags.camera,
+            lights_dirty: flags.directional_light || flags.point_lights,
+            sky_dirty: false,
+            instances_dirty,
+            emissive_table_dirty,
+            pt_accum_dirty,
+        }
+    }
 }
 
 impl Default for DirtyRouter {
@@ -215,5 +249,19 @@ mod tests {
         assert!(router.pt_bounces_dirty(3));
         assert!(!router.pt_bounces_dirty(3));
         assert!(router.pt_bounces_dirty(5));
+    }
+
+    #[test]
+    fn plan_dispatch_maps_dirty_state_to_plan() {
+        let mut router = DirtyRouter::new();
+        let changes = SceneChanges::default();
+        let plan = router.plan_dispatch(&changes, true, false, 2, 1, 3);
+        assert_eq!(plan.texture_uploads, 2);
+        assert_eq!(plan.mesh_uploads, 1);
+        assert_eq!(plan.material_updates, 3);
+        assert!(plan.instances_dirty);
+        assert!(plan.emissive_table_dirty);
+        assert!(plan.pt_accum_dirty);
+        assert!(plan.has_work());
     }
 }

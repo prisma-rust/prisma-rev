@@ -39,6 +39,10 @@ pub enum AssetType {
     AnimGraph = 13,
     /// 2D 精灵图集元数据（`.ratlas`，#1158）。
     Atlas = 14,
+    /// 2D 骨骼/逐帧动画元数据（`.ranim2d` / Aseprite，#1159）。
+    Anim2D = 15,
+    /// 2D 瓦片地图关卡数据（`.rtilemap` / Tiled，#1159）。
+    Tilemap = 16,
     /// Fallback for unrecognised formats.
     Unknown = 0xFF,
 }
@@ -67,6 +71,8 @@ impl AssetType {
             AssetType::StateMachine => "state-machine",
             AssetType::AnimGraph => "anim-graph",
             AssetType::Atlas => "atlas",
+            AssetType::Anim2D => "anim-2d",
+            AssetType::Tilemap => "tilemap",
             AssetType::Unknown => "unknown",
         }
     }
@@ -89,6 +95,8 @@ impl AssetType {
             12 => AssetType::StateMachine,
             13 => AssetType::AnimGraph,
             14 => AssetType::Atlas,
+            15 => AssetType::Anim2D,
+            16 => AssetType::Tilemap,
             _ => AssetType::Unknown,
         }
     }
@@ -114,6 +122,8 @@ impl AssetType {
             "rasm" => AssetType::StateMachine,
             "rag" => AssetType::AnimGraph,
             "ratlas" => AssetType::Atlas,
+            "ranim2d" | "ase" | "aseprite" => AssetType::Anim2D,
+            "rtilemap" | "tmx" | "tmj" | "tsx" => AssetType::Tilemap,
             // Textures / images
             "png" | "jpg" | "jpeg" | "tga" | "bmp" | "hdr" | "exr" | "ktx" | "ktx2" | "dds" => {
                 AssetType::Texture

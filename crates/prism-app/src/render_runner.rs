@@ -457,21 +457,23 @@ fn render_one_frame(
     let scene = &packet.scene;
     let draw_items = &packet.draw_items;
 
-    let dirty_flags = dirty_router.update(scene);
     let draw_items_dirty = dirty_router.draw_items_dirty(draw_items_signature(draw_items));
-    if dirty_flags.any() || draw_items_dirty {
+    let pt_bounces_dirty = dirty_router.pt_bounces_dirty(settings.pt_max_bounces);
+    let dispatch_plan =
+        dirty_router.plan_dispatch(scene, draw_items_dirty, pt_bounces_dirty, 0, 0, 0);
+    if dispatch_plan.has_work() {
         log::trace!(
-            "dirty_flags: camera={} dir_light={} point_lights={} exposure={} draw_items={}",
-            dirty_flags.camera,
-            dirty_flags.directional_light,
-            dirty_flags.point_lights,
-            dirty_flags.exposure,
-            draw_items_dirty
+            "dirty dispatch: cam={} lights={} inst={} pt_accum={}",
+            dispatch_plan.camera_dirty,
+            dispatch_plan.lights_dirty,
+            dispatch_plan.instances_dirty,
+            dispatch_plan.pt_accum_dirty,
         );
     }
 
     let extent = renderer.extent();
     renderer.set_taa(settings.taa, settings.taa_strength);
+    renderer.set_anf_sr(settings.anf_sr, settings.anf_sharpness);
     let mut frame_data = FrameUBOData {
         view_proj: scene.view_proj.to_cols_array_2d(),
         camera_position: [
@@ -560,13 +562,14 @@ fn render_one_frame(
         pt_max_iterations: settings.pt_max_iterations,
         exposure: scene.exposure,
         pt_lights: &scene.pt_lights,
-        pt_accum_dirty: dirty_flags.directional_light || draw_items_dirty,
+        pt_accum_dirty: dispatch_plan.pt_accum_dirty,
         has_camera: scene.has_camera,
         camera_orthographic: scene.camera_orthographic,
         clear_color: scene.clear_color,
         shadows_enabled: scene.shadows_enabled,
         ui_overlay: Some(&packet.ui_overlay),
         show_grid: settings.show_grid,
+        dispatch_plan: Some(&dispatch_plan),
     };
     if let Some(plan) = screenshot {
         renderer.request_screenshot(plan.path.clone(), plan.size, plan.scale);

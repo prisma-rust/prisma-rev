@@ -46,6 +46,9 @@ pub struct VulkanContext {
     /// All fields are `false` on non-RT hardware; callers can branch freely.
     pub rt_caps: RayTracingCaps,
 
+    /// Probed Qualcomm Adreno Neural Fusion capabilities (#1161).
+    pub anf_caps: crate::anf::AnfCaps,
+
     /// `fillModeNonSolid` 是否可用（Wireframe 管线需要）。
     pub wireframe_supported: bool,
 
@@ -99,6 +102,7 @@ impl VulkanContext {
         // conditionally enable extensions and chain the right feature structs.
         let rt_caps = unsafe { capabilities::probe(&instance, physical_device) };
         log::info!("RT capabilities: {rt_caps}");
+        let anf_caps = crate::anf::AnfCaps::probe(&physical_device_properties);
         let wireframe_supported = unsafe { instance.get_physical_device_features(physical_device) }
             .fill_mode_non_solid
             != 0;
@@ -136,6 +140,7 @@ impl VulkanContext {
             physical_device_properties,
             physical_device_memory_properties,
             rt_caps,
+            anf_caps,
             wireframe_supported,
             acceleration_structure_fn,
             enabled_extensions,
@@ -167,6 +172,7 @@ impl VulkanContext {
 
         let rt_caps = unsafe { capabilities::probe(&instance, physical_device) };
         log::info!("RT capabilities (host device): {rt_caps}");
+        let anf_caps = crate::anf::AnfCaps::probe(&physical_device_properties);
         let wireframe_supported = unsafe { instance.get_physical_device_features(physical_device) }
             .fill_mode_non_solid
             != 0;
@@ -199,6 +205,7 @@ impl VulkanContext {
             physical_device_properties,
             physical_device_memory_properties,
             rt_caps,
+            anf_caps,
             wireframe_supported,
             acceleration_structure_fn,
             enabled_extensions,

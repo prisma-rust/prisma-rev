@@ -50,6 +50,9 @@ pub const TAA_COLOR_H: ResourceHandle = ResourceHandle(1005);
 /// Per-pixel screen-space motion vectors (#883 Phase 2). Written by
 /// `ForwardPass` (SV_Target2) and sampled by `TaaPass` for object motion.
 pub const FORWARD_VELOCITY_H: ResourceHandle = ResourceHandle(1006);
+/// ANF-upscaled full-resolution HDR color (#1161). Written by `AnfPass`,
+/// read by `PostPass` instead of `FORWARD_COLOR_H` / `TAA_COLOR_H` when ANF is active.
+pub const ANF_COLOR_H: ResourceHandle = ResourceHandle(1007);
 
 impl ResourceHandle {
     pub const INVALID: ResourceHandle = ResourceHandle(u32::MAX);
@@ -139,7 +142,7 @@ impl ResourceLifecycle {
 // `RenderPassNode::graph_info`, cloned once per frame, and consumed by the UI.
 // ---------------------------------------------------------------------------
 
-/// Render mode selector — full rasterized PBR vs real-time path tracing.
+/// Render mode selector — full rasterized PBR vs real-time path tracing vs pure 2D sprites.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum RenderMode {
     /// 标准 rasterized PBR 管线 (ForwardPass + ShadowMap + GTAO + Post).
@@ -147,6 +150,8 @@ pub enum RenderMode {
     Raster,
     /// Real-time path tracing (PathTracePass compute + Post).
     PathTrace,
+    /// 纯 2D 精灵管线 (ForwardPass / SpritePass + Post, 裁剪 3D ShadowMap / GTAO 等).
+    Sprites2D,
 }
 
 /// Coarse classification of a pass for visualization (coloring / iconography).
@@ -165,6 +170,8 @@ pub enum PassKind {
     Pt,
     /// 离屏 RenderTexture 渲染 (`RenderToTexturePass`).
     Rt,
+    /// Qualcomm Adreno Neural Fusion compute pass (`AnfPass`).
+    Anf,
     /// Unrecognized pass future / experimental).
     #[default]
     Unknown,
@@ -293,6 +300,13 @@ pub struct RenderSettings {
 
     /// 内部图像放大到窗口的方式（见 [`InternalScaleMode`]）。
     pub internal_scale_mode: InternalScaleMode,
+
+    /// Qualcomm Adreno Neural Fusion Super Resolution (#1161).
+    pub anf_sr: bool,
+    /// ANF Super Resolution sharpness parameter [0.0..=1.0].
+    pub anf_sharpness: f32,
+    /// Qualcomm Adreno Neural Fusion Frame Generation (#1161).
+    pub anf_fg: bool,
 }
 
 impl Default for RenderSettings {
@@ -314,6 +328,9 @@ impl Default for RenderSettings {
             taa_strength: 0.9,
             internal_resolution: [0, 0],
             internal_scale_mode: InternalScaleMode::Stretch,
+            anf_sr: false,
+            anf_sharpness: 0.5,
+            anf_fg: false,
         }
     }
 }
@@ -1134,6 +1151,8 @@ pub struct GraphFrame<'a> {
     pub clear_color: [f32; 4],
     /// 是否在场景渲染中绘制地面参考网格。
     pub show_grid: bool,
+    /// 统一脏分派计划（DESIGN §9 / #1157）。
+    pub dispatch_plan: Option<&'a crate::dirty_dispatch::DirtyDispatchPlan>,
 }
 
 /// Context passed to each pass's `execute`.

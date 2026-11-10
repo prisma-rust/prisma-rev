@@ -1893,6 +1893,46 @@ impl GpuAssetResolver {
                     expected
                 );
                 magenta()
+            } else if tex.info.mip_data.len() > 1 {
+                let mut chain_valid = true;
+                let mut total_len = mip0.len();
+                for (i, mip) in tex.info.mip_data.iter().enumerate().skip(1) {
+                    let w = (tex.info.width >> i).max(1);
+                    let h = (tex.info.height >> i).max(1);
+                    let expected_i = format.compressed_byte_len(w, h);
+                    if mip.len() != expected_i {
+                        log::warn!(
+                            "load_texture_data: texture {tex_id} mip {i} size {} != {w}x{h} {format:?} ({expected_i}); \
+                             falling back to mip 0 only",
+                            mip.len()
+                        );
+                        chain_valid = false;
+                        break;
+                    }
+                    total_len += mip.len();
+                }
+
+                if chain_valid {
+                    let mut pixels = Vec::with_capacity(total_len);
+                    for mip in &tex.info.mip_data {
+                        pixels.extend_from_slice(mip);
+                    }
+                    TextureUploadInput {
+                        width: tex.info.width,
+                        height: tex.info.height,
+                        format,
+                        mip_levels: tex.info.mip_data.len() as u32,
+                        pixels,
+                    }
+                } else {
+                    TextureUploadInput {
+                        width: tex.info.width,
+                        height: tex.info.height,
+                        format,
+                        mip_levels: 0,
+                        pixels: mip0,
+                    }
+                }
             } else {
                 TextureUploadInput {
                     width: tex.info.width,
@@ -2872,6 +2912,113 @@ mod tests {
     fn unsupported_rtex_formats_fall_back() {
         assert_eq!(texture_format_for(99, false), None);
         assert_eq!(texture_format_for(99, true), None);
+    }
+
+    fn make_test_rtex(width: u32, height: u32, format: u8, mips: &[&[u8]]) -> Vec<u8> {
+        let levels = mips.len() as u32;
+        let header_size = 4 + 1 + 4 + 4 + 4 + 1 + (levels as usize * 4);
+        let data_size: usize = mips.iter().map(|m| m.len()).sum();
+        let mut buf = Vec::with_capacity(header_size + data_size);
+
+        buf.extend_from_slice(b"RTEX");
+        buf.push(1);
+        buf.extend_from_slice(&width.to_le_bytes());
+        buf.extend_from_slice(&height.to_le_bytes());
+        buf.extend_from_slice(&levels.to_le_bytes());
+        buf.push(format);
+
+        let offset_pos = buf.len();
+        buf.resize(offset_pos + levels as usize * 4, 0);
+
+        let mut mip_start = header_size as u32;
+        for (i, mip) in mips.iter().enumerate() {
+            let off = &mut buf[offset_pos + i * 4..offset_pos + (i + 1) * 4];
+            off.copy_from_slice(&mip_start.to_le_bytes());
+            buf.extend_from_slice(mip);
+            mip_start += mip.len() as u32;
+        }
+        buf
+    }
+
+    #[test]
+    fn load_texture_data_preserves_prebaked_mip_chain() {
+        let mip0 = vec![10u8; 4 * 4 * 4];
+        let mip1 = vec![20u8; 2 * 2 * 4];
+        let mip2 = vec![30u8; 1 * 1 * 4];
+        let rtex = make_test_rtex(4, 4, RTEX_FORMAT_RGBA8, &[&mip0, &mip1, &mip2]);
+
+        let (pak, manifest) = tiny_pak(&[(
+            "textures/terrain.rtex",
+            prism_asset::core::AssetType::Texture,
+            &rtex,
+        )]);
+        let mut resolver = GpuAssetResolver::new();
+        resolver
+            .load_resource_package_bytes(&pak, Some(&manifest))
+            .expect("load pak");
+
+        let input = resolver
+            .load_texture_by_path(Entity::from_raw(u32::MAX, 0), "textures/terrain.rtex")
+            .expect("load texture");
+
+        assert_eq!(input.width, 4);
+        assert_eq!(input.height, 4);
+        assert_eq!(input.mip_levels, 3);
+        assert_eq!(input.pixels.len(), 64 + 16 + 4);
+        assert_eq!(&input.pixels[0..64], &mip0[..]);
+        assert_eq!(&input.pixels[64..80], &mip1[..]);
+        assert_eq!(&input.pixels[80..84], &mip2[..]);
+    }
+
+    #[test]
+    fn load_texture_data_single_mip_keeps_zero_mip_levels_fallback() {
+        let mip0 = vec![10u8; 4 * 4 * 4];
+        let rtex = make_test_rtex(4, 4, RTEX_FORMAT_RGBA8, &[&mip0]);
+
+        let (pak, manifest) = tiny_pak(&[(
+            "textures/single.rtex",
+            prism_asset::core::AssetType::Texture,
+            &rtex,
+        )]);
+        let mut resolver = GpuAssetResolver::new();
+        resolver
+            .load_resource_package_bytes(&pak, Some(&manifest))
+            .expect("load pak");
+
+        let input = resolver
+            .load_texture_by_path(Entity::from_raw(u32::MAX, 0), "textures/single.rtex")
+            .expect("load texture");
+
+        assert_eq!(input.width, 4);
+        assert_eq!(input.height, 4);
+        assert_eq!(input.mip_levels, 0);
+        assert_eq!(input.pixels, mip0);
+    }
+
+    #[test]
+    fn load_texture_data_corrupt_mip_falls_back_to_mip0() {
+        let mip0 = vec![10u8; 4 * 4 * 4];
+        let bad_mip1 = vec![20u8; 10];
+        let rtex = make_test_rtex(4, 4, RTEX_FORMAT_RGBA8, &[&mip0, &bad_mip1]);
+
+        let (pak, manifest) = tiny_pak(&[(
+            "textures/bad_chain.rtex",
+            prism_asset::core::AssetType::Texture,
+            &rtex,
+        )]);
+        let mut resolver = GpuAssetResolver::new();
+        resolver
+            .load_resource_package_bytes(&pak, Some(&manifest))
+            .expect("load pak");
+
+        let input = resolver
+            .load_texture_by_path(Entity::from_raw(u32::MAX, 0), "textures/bad_chain.rtex")
+            .expect("load texture");
+
+        assert_eq!(input.width, 4);
+        assert_eq!(input.height, 4);
+        assert_eq!(input.mip_levels, 0);
+        assert_eq!(input.pixels, mip0);
     }
 }
 

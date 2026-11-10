@@ -9,6 +9,7 @@
 //! - `db`：资产记录与导入缓存（构建期数据库）
 //! - `pack`：已 cook 目录 → `.pak` + 路径清单（底层打包工具）
 
+pub mod aseprite;
 pub mod atlas;
 pub mod cooker;
 pub mod db;
@@ -16,7 +17,11 @@ mod fs_atomic;
 pub mod import_settings;
 pub mod importer;
 pub mod pack;
+pub mod tiled;
 
+pub use aseprite::{
+    cook_aseprite, AsepriteCookResult, AsepriteDocument, AsepriteFrame, AsepriteJsonExport,
+};
 pub use atlas::{
     encode_rtex_rgba8, pack_atlas, trim_transparent_pixels, AtlasPackOptions, PackedAtlasResult,
     RawSpriteInput,
@@ -31,4 +36,8 @@ pub use importer::{default_importer_registry, ImportError, ImportPipeline, Impor
 pub use pack::{
     pack_directory, pack_directory_split, pack_directory_with_options, OptionalPackSummary,
     PackOptions, PackSummary, SplitPackSummary, OPTIONAL_PAK_DIR,
+};
+pub use tiled::{
+    cook_tiled_map, encode_rtilemap_bytes, merge_tile_collision_boxes, TiledMap, TiledObjectLayer,
+    TiledTileLayer,
 };

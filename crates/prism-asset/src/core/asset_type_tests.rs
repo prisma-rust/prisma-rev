@@ -104,3 +104,24 @@ fn atlas_extension_and_label() {
         AssetType::Atlas
     );
 }
+
+#[test]
+fn anim2d_and_tilemap_extension_and_label() {
+    assert_eq!(AssetType::from_extension("ranim2d"), AssetType::Anim2D);
+    assert_eq!(AssetType::from_extension("ase"), AssetType::Anim2D);
+    assert_eq!(AssetType::from_extension("aseprite"), AssetType::Anim2D);
+    assert_eq!(AssetType::Anim2D.label(), "anim-2d");
+    assert_eq!(
+        AssetType::from_u32(AssetType::Anim2D.to_u32()),
+        AssetType::Anim2D
+    );
+
+    assert_eq!(AssetType::from_extension("rtilemap"), AssetType::Tilemap);
+    assert_eq!(AssetType::from_extension("tmx"), AssetType::Tilemap);
+    assert_eq!(AssetType::from_extension("tmj"), AssetType::Tilemap);
+    assert_eq!(AssetType::Tilemap.label(), "tilemap");
+    assert_eq!(
+        AssetType::from_u32(AssetType::Tilemap.to_u32()),
+        AssetType::Tilemap
+    );
+}

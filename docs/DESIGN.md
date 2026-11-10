@@ -48,6 +48,7 @@
   descriptor-indexing / ray-query / dynamic-rendering 等特性，据此决定启用哪条路径。
 - **能力驱动降级**，不靠 `#[cfg(target_os)]` 平台硬编码：
   - 有 `VK_KHR_ray_query` → 走 RayQuery 软阴影 / 反射；否则退化为 raster 硬阴影。
+  - 支持 Qualcomm Adreno Neural Fusion（ANF）与 Adreno 矩阵核心 → 启用 `AnfPass` 神经超分辨率（SR）与插帧（FG）；桌面 / 非高通 / 未预置 `libanf.so` 的设备自动退化为内置 TAA 或全分辨率渲染，保证跨平台统一二进制不崩溃。
   - 支持 descriptor indexing → 走 bindless SRV 表；否则退化为传统 descriptor set。
   - 高版本 Vulkan 可用 dynamic rendering / transient 附件 → 自动采用以省带宽。
 - 探测逻辑集中、可测试，不被散落到各 pass 里。
@@ -88,8 +89,8 @@
 | 阴影 / RT | 光栅化阴影贴图：`ShadowMapPass`（深度预渲染，见 `shadow_depth.slang`）+ `ForwardPass`（comparison sampler 采样，见 `scene_frag.slang`） |
 | 能力探测 | `prism-render/src/capabilities.rs`（集中探测，扩展中） |
 | 帧生命周期 | `GraphRenderer` 已提供 `begin_frame` → `prepare` → `execute` → `present` → `end_frame` 阶段（2026-08-21 起 `prepare` 已在 `render_system` 与 `render_runner::render_one_frame` 中实际调用，不再空转）；旧 `render()` 仅作为兼容门面。`prepare` 当前实现脏标记日志与输入校验，下一步扩展在此调度批量上传。细粒度 Runtime/Plugin 拆分仍待 PR-L2。 |
-| 场景同步（CPU→GPU） | **阶段性实现（2026-08-21）**。`DirtyRouter` 已扩展 `exposure`/`pt_lights`/`draw_count` 标志并接入 `prepare`，`FramePacket` 抽取与脏检测闭环已打通；但 `RenderTexture/Mesh/Material/Instance` 的统一 `DirtyDispatchPlan` 与 `SceneReadView` 仍待 PR-S2/S3。当前仍由 `GpuAssetResolver` 点对点触发上传，`prepare` 批同步为预留。设计见 §9。 |
-| 只读场景视图 | `prism-engine::scene::SceneReadView` 已覆盖环境资源路径和扁平 `DrawItem` 提取；相机/灯光快照仍在逐步迁移。 |
+| 场景同步（CPU→GPU） | **已完成（2026-11-10 / #1157）**。统一 `DirtyDispatchPlan` 已在 `prepare` 阶段统一消费，收敛纹理/网格/材质/光照/实例的批量调度与暂存上传。`SceneReadView` 已扩展为完整只读快照（相机、环境、光照、绘制项）。设计见 §9。 |
+| 只读场景视图 | `prism-engine::scene::SceneReadView` 已覆盖相机、光照、环境资源路径和扁平 `DrawItem` 提取；Pass 仅依赖只读快照。 |
 
 ## 5. 反目标（明确不做什么）
 
@@ -398,6 +399,8 @@ impl TextureFormat { fn is_compressed()->bool; fn compressed_byte_len()->usize; 
 - **不**在运行时做 BC/ASTC 编码。编码慢（秒级/张），必须在离线工具做。
 - **不**把 KTX2 产物进 git。太大，靠 SHA256 保证一致性。
 - **不**用 Basis Universal UASTC 跨平台单编码。画质略损，且 PrismaRev 桌面/移动都支持 ASTC（桌面现代 GPU 全支持），不需要"一次编码到处转"。多平台产物分别生成更清晰。
+- **不**用神经纹理压缩（NTC / Adreno 神经纹理）。无标准扩展、无跨厂商工具链，留待 Khronos 标准化。
+- **不**为 BC1/BC2/BC3 单独支持。BC2/BC3 是 DX9 时代格式被 BC7 取代；BC1 仅极致体积场景用，移动端 ASTC 12×12 已覆盖该 niche。
 
 ### 7.9 显存子分配与批量暂存 Arena（#1030）
 
@@ -405,8 +408,6 @@ impl TextureFormat { fn is_compressed()->bool; fn compressed_byte_len()->usize; 
 - **StagingArena 分块复用**：`BatchUploader` 内置 `StagingArena`，将数百次逐资源 `vkAllocateMemory` staging 合并为大块暂存缓冲分配（默认 16 MiB Chunk），按需扩容并按 16 字节（buffer）与 256 字节（image）对齐子分配。
 - **llvmpipe 驱动同步保障**：提交命令前通过 `unmap_all` 显式解映射所有暂存 Chunk，解决纯软件栅格化后端持久映射导致的脏缓存与复制竞争，保证跨驱动一致性。
 - **MemorySuballocator 核心**：实现纯 Rust 多内存类型索引的显存子分配器与区间合并（free-list coalescing），并在 `GraphRenderer` 与 `ReportStats` 暴露保留显存 / 活跃分配显存统计。
-- **不**用神经纹理压缩（NTC / Adreno 神经纹理）。无标准扩展、无跨厂商工具链，留待 Khronos 标准化。
-- **不**为 BC1/BC2/BC3 单独支持。BC2/BC3 是 DX9 时代格式被 BC7 取代；BC1 仅极致体积场景用，移动端 ASTC 12×12 已覆盖该 niche。
 
 ---
 
@@ -466,7 +467,7 @@ After Render  = present + end_frame
 
 ## 9. 场景数据同步（CPU→GPU 设计）
 
-> **2026-08-21 部分完成**：`DirtyRouter` 已具备 `camera/dir_light/point_lights/exposure/draw_count` 脏检测并接入 `prepare`，但仍为“点对点手动触发”向“统一 `DirtyDispatchPlan` + `prepare` 批同步”（§9.1）过渡阶段。`app.rs` 的各路 upload 尚未收敛到 `prepare`，`SceneReadView` 仍为扁平 `DrawItem` 提取。
+> **2026-11-10 已完成（#1157）**：统一 `DirtyDispatchPlan` 已正式落地并在 `prepare` 阶段消费，收敛批量上传与释放；`SceneReadView` 已推进为完整只读场景快照。
 
 ### 9.1 同步管道总览
 
@@ -551,8 +552,8 @@ pub struct SceneReadView<'a> {
 ### 9.5 迁移步骤
 
 - **PR-S1：SceneChanges 提取** ✅ **已完成**。`prism-engine::render_system::SceneChanges` + `extract_frame_packet` 已统一抽取相机/光照/`draw_items`，并在 `DirtyRouter::update` 中集中对比。
-- **PR-S2：DirtyRouter 接入 RenderManager** ✅ **部分完成 2026-08-21**。`DirtyRouter` 已扩展 `exposure/draw_count/pt_lights` 并接入 `prepare`；`DirtyDispatchPlan` 预留已在 `prepare` 中日志，下一步将 `RenderTexture/Mesh/Material` 的 `upload` 收敛到 `prepare` 批处理并禁止外部直调。
-- **PR-S3：SceneReadView 替换 pass 中的 manager 直接引用** ⏳ **接口已定义**。`SceneReadView` 扁平 `DrawItem` 已覆盖绘制路径，`FrameInput` 即为过渡态只读视图；下一步扩展将 `GraphResources` 句柄化并让 `ForwardPass::execute(ctx, view)` 取代裸 `&mut Manager`。
+- **PR-S2：DirtyRouter 接入 RenderManager 与 DirtyDispatchPlan** ✅ **已完成（#1157）**。`DirtyRouter` 统一生成 `DirtyDispatchPlan` 并在 `prepare` 阶段消费，批量上传收敛到 `prepare`。
+- **PR-S3：SceneReadView 完整只读快照** ✅ **已完成（#1157）**。`SceneReadView` 已支持相机、光源、环境与绘制项的完整只读提取，Pass 仅依赖视图与 `GraphFrame`。
 - **PR-S4（可选）：后台 AssetHub 异步加载** ✅ **实现 已接线**。`prism-app::io_runner` 与 `asset_bridge::AssetResolveRequest/Result` 通道 + `render_runner` 异步 `GraphRenderer` 构建已打通，后台解码 `ModelLoaded` 事件以 `flume` 投递，当前同步 `GpuAssetResolver` 为回退。
 
 ---
@@ -663,6 +664,8 @@ Cooker 负责消费中间格式生成运行时格式。
 | **RTEX**（cooked 纹理） | `b"RTEX"` | header + mip 偏移表 + 各级 mip 数据（box filter 降采样） |
 | **RMES**（cooked 网格） | `b"RMES"` | header + 属性偏移表 + **平面**顶点块（positions → normals → uv，偏移字段为权威寻址）+ 索引数据；v2 末尾追加同一份 submesh 表 |
 | **RATL**（cooked 精灵图集元数据） | `b"RATL"` | header + `texture_path` + 尺寸 + 切片列表（`name_hash`、`pixel_rect`、`uv_rect`、`original_size`、`trimmed_offset`、`pivot`、`nine_slice`，#1158） |
+| **RA2D**（cooked 2D 动画元数据） | `b"RA2D"` | header + `atlas_path` + 帧列表（`sprite_name`、`duration_ms`）+ Tags（`from`、`to`、`direction`）+ Slices（#1159） |
+| **RTMG**（cooked 瓦片地图关卡） | `b"RTMG"` | header + 尺寸 + `tileset_path` + 多图层 GID 阵列 + 对象层实体 + 贪心合并碰撞盒（#1159） |
 
 > RMES v2 的 submesh 表让一个实体按 `MeshRenderer.material_paths` 拆成多个
 > `DrawItem`（`index_start` / `index_count`），同一网格的不同区间可以使用不同材质。
@@ -858,9 +861,7 @@ prism-scene::rscn::encode_scene
   - `prism-render/src/asset_decoders.rs`（`decode_rtex` / `decode_rmes`）按 Cooker 真实布局
     （RTEX 版本字段 + mip 偏移表、RMES 属性偏移 + 平面顶点块）解析成
     `TextureUploadInput` / `MeshUploadInput`，含格式码映射（RGBA8 / BC5 / BC6H）与越界校验；
-  - **尚未完成**：两个 GPU 解码器目前没有调用点，还没接到 `BatchUploader`；RTEX 预烘焙 mip 链
-    只上传 base level（`TextureUploadInput` 只能承载单级紧密像素），见 #106。
-    因此 `.pak → GPU` 的纹理/网格端到端仍待补。
+  - **进展**：`prism-engine` 的 `load_texture_data` 已支持完整拼接预烘焙 RTEX mip 链（`TextureUploadInput.mip_levels > 1` + 紧密打包所有 mip 级像素），由 `BatchUploader` 直接拷贝至 GPU，避免多余 blit 并保留各向异性过滤质量（#1156）。两处 GPU 解码器（`asset_decoders.rs`）可继续作为独立解析备选。
 
 - **[G2] Cooker 输出格式与引擎对接** ✅ **场景链路已打通**：`SceneCooker` 产出 RSCN v4，`prism-engine` 的 `SceneLoader` 用同一份 `prism-scene` schema 解码；`prism-cooker` 中有真实 `.scene.json` 的 cook/decode 测试。纹理/网格的压缩数据端到端对比仍待补。
 
@@ -1183,7 +1184,7 @@ cp target/release/prisma /tmp/p && strip /tmp/p && ls -l /tmp/p   # strip 后（
 | 文本光栅 A | `prism-render/ui-fontdue`（透传） | on | fontdue + ttf-parser（全平台，约 90 KB）；换成 `ui-directwrite` 可省掉 |
 | 文本光栅 B | `prism-render/ui-directwrite`（透传，**Windows 专属**） | off | 用系统 `dwrite.dll` 光栅，fontdue/ttf-parser 不进二进制 |
 | 组件组 3D | `prism-scene/group-3d`（透传 `prism-app`/`prism-engine`） | on | 灯光/天空盒/网格/相机控制/GI 配置不注册，serde 与反射代码不链接 |
-| 组件组 2D | `prism-scene/group-2d` | on | 精灵/线段/精灵动画不注册 |
+| 组件组 2D | `prism-scene/group-2d` | on | 精灵/线段/瓦片地图/2D相机/2D物理（RigidBody2D/Collider2D）不注册 |
 | 组件组 UI | `prism-scene/group-ui` | on | Node/Style/Text/布局类型不注册 |
 | IBL | `prism-render/ibl`（透传） | on | 环境 cubemap 卷积/irradiance/prefilter/BRDF LUT/HDR 解码不编译；退化为 1x1 中性灰，descriptor 布局不变。3D 档 −64 KB |
 | 天空盒 | `prism-render/skybox`（依赖 `ibl`） | on | `skybox.vert/frag.spv` + 管线；`SkyboxPass` 退化成空实现，调用点不变 |

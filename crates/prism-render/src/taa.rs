@@ -22,8 +22,8 @@ use ash::vk;
 use crate::context::VulkanContext;
 use crate::pipeline::{GraphicsPipeline, PipelineDesc};
 use crate::render_graph::{
-    GraphResources, PassInfo, PassKind, RenderContext, RenderGraphBuilder, RenderPassNode,
-    RenderSettings, ResourceType, ResourceUsage, FORWARD_COLOR_H, FORWARD_DEPTH_H,
+    GraphResources, PassInfo, PassKind, RenderContext, RenderGraphBuilder, RenderMode,
+    RenderPassNode, RenderSettings, ResourceType, ResourceUsage, FORWARD_COLOR_H, FORWARD_DEPTH_H,
     FORWARD_NORMAL_H, FORWARD_VELOCITY_H, TAA_COLOR_H,
 };
 use crate::render_pass::find_memory_type;
@@ -372,7 +372,7 @@ impl RenderPassNode for TaaPass {
             ctx.settings.taa,
             ctx.frame.view_proj_jitter
         );
-        if !ctx.settings.taa {
+        if !ctx.settings.taa || ctx.frame.render_mode == RenderMode::Sprites2D {
             // Drop history while TAA is off so re-enabling does not blend a
             // frame from before the pause.
             self.history_valid = [false; 2];
