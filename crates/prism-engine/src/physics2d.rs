@@ -734,7 +734,7 @@ pub fn step_2d(world: &mut World, dt: f32, gravity: [f32; 2]) {
     let g = Vec2::from_array(gravity);
 
     // 1. 积分动态刚体速度
-    for (_, rb, _) in world.query2_mut::<RigidBody2D, LocalTransform>() {
+    for (_, rb) in world.query_mut::<RigidBody2D>() {
         if rb.body_type != RigidBody2DType::Dynamic {
             continue;
         }
@@ -909,7 +909,7 @@ pub fn step_2d(world: &mut World, dt: f32, gravity: [f32; 2]) {
     world.insert_resource(Physics2DEvents { events });
 
     // 4. 推进动态与运动学刚体的位置与旋转
-    for (_, rb, tf) in world.query2_mut::<RigidBody2D, LocalTransform>() {
+    for (_, tf, rb) in world.query2_mut::<LocalTransform, RigidBody2D>() {
         if rb.body_type == RigidBody2DType::Static {
             continue;
         }
