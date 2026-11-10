@@ -67,16 +67,22 @@ mod tests {
 
     #[test]
     fn plan_detects_individual_work_items() {
-        let mut plan = DirtyDispatchPlan::default();
-        plan.texture_uploads = 1;
+        let plan = DirtyDispatchPlan {
+            texture_uploads: 1,
+            ..Default::default()
+        };
         assert!(plan.has_work());
 
-        let mut plan2 = DirtyDispatchPlan::default();
-        plan2.camera_dirty = true;
+        let plan2 = DirtyDispatchPlan {
+            camera_dirty: true,
+            ..Default::default()
+        };
         assert!(plan2.has_work());
 
-        let mut plan3 = DirtyDispatchPlan::default();
-        plan3.pt_accum_dirty = true;
+        let plan3 = DirtyDispatchPlan {
+            pt_accum_dirty: true,
+            ..Default::default()
+        };
         assert!(plan3.has_work());
     }
 }
