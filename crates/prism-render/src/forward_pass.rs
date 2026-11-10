@@ -23,7 +23,7 @@ use crate::pipeline::{blend_factor, blend_operation, cull_flags, GraphicsPipelin
 #[cfg(feature = "shadows")]
 use crate::render_graph::SHADOW_MAP_H;
 use crate::render_graph::{
-    DrawState, GraphResources, PassInfo, PassKind, RenderContext, RenderGraphBuilder,
+    DrawState, GraphResources, PassInfo, PassKind, RenderContext, RenderGraphBuilder, RenderMode,
     RenderPassNode, RenderSettings, ResourceHandle, ResourceType, ResourceUsage, FORWARD_COLOR_H,
     FORWARD_DEPTH_H, FORWARD_NORMAL_H, FORWARD_VELOCITY_H,
 };
@@ -2407,7 +2407,9 @@ impl RenderPassNode for ForwardPass {
                     }],
                 );
 
-                // 循环开始前刚绑定的是默认（不透明）管线；只有遇到别的状态才重绑
+                // 纯 2D 模式跳过 3D 不透明/透明网格绘制、线框覆层与高亮外轮廓
+                if ctx.frame.render_mode != RenderMode::Sprites2D {
+                    // 循环开始前刚绑定的是默认（不透明）管线；只有遇到别的状态才重绑
                 // （剔除 / 深度写 / 混合都是管线状态）。描述符与推送常量布局在所有
                 // 变体之间一致，所以不需要重新绑定描述符集。
                 // #491: pack static instance matrices after the live bone
@@ -2687,6 +2689,7 @@ impl RenderPassNode for ForwardPass {
                     }
                 }
             }
+                }
 
             // 世界空间粒子：深度测试开启（被前面的几何遮挡），所以画在不透明网格
             // 之后、2D 精灵之前；透明排序由引擎在提交前完成（远到近）。
@@ -2724,7 +2727,7 @@ impl RenderPassNode for ForwardPass {
             }
 
             // 绘制地面参考网格（深度测试开启，被场景实体遮挡）
-            if ctx.frame.show_grid {
+            if ctx.frame.show_grid && ctx.frame.render_mode != RenderMode::Sprites2D {
                 if let Some(grid) = &self.ground_grid {
                     grid.draw(ctx.cmd, &camera.view_proj, ctx.frame.camera_orthographic);
                 }

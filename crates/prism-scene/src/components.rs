@@ -2082,6 +2082,53 @@ impl Camera {
     }
 }
 
+/// 2D 虚拟相机控制器组件（#1160）。
+///
+/// 配合 [`Camera`] 使用，针对 2D 游戏场景提供：
+/// 1. 目标跟随与平滑阻尼（Damping）
+/// 2. 死区矩形窗口（Deadzone）
+/// 3. 关卡边界碰撞围栏（Confiner）
+/// 4. 像素网格吸附防抖（Pixel Snapping）
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
+#[reflect(name = "prism_engine::scene::Camera2D")]
+#[serde(default)]
+pub struct Camera2D {
+    /// 开关状态。
+    pub enabled: bool,
+    /// 跟随目标实体的 ID（u64::MAX 或 0 表示无目标跟随）。
+    pub target_entity: u64,
+    /// 目标相对偏移量 [x, y]（世界坐标单位）。
+    pub offset: [f32; 2],
+    /// 跟随平滑阻尼因子（0.0 表示瞬移紧跟，大于 0 越平滑，如 5.0 ~ 10.0）。
+    pub damping: f32,
+    /// 死区半宽高 [half_width, half_height]。目标在此矩形窗口内移动时相机保持静止。
+    pub deadzone: [f32; 2],
+    /// 是否启用关卡边界约束（Confiner）。
+    pub confiner_enabled: bool,
+    /// 关卡世界边界矩形 [min_x, min_y, max_x, max_y]。
+    pub confiner_bounds: [f32; 4],
+    /// 像素吸附开关（像素艺术游戏防抖，将最终世界坐标取整到像素网格）。
+    pub pixel_snapping: bool,
+    /// 每世界单位的像素数（Pixels Per Unit，默认 16.0）。
+    pub pixels_per_unit: f32,
+}
+
+impl Default for Camera2D {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            target_entity: u64::MAX,
+            offset: [0.0, 0.0],
+            damping: 5.0,
+            deadzone: [0.0, 0.0],
+            confiner_enabled: false,
+            confiner_bounds: [-1000.0, -1000.0, 1000.0, 1000.0],
+            pixel_snapping: false,
+            pixels_per_unit: 16.0,
+        }
+    }
+}
+
 /// 局部后处理体积（#502 Phase 2）。
 ///
 /// 挂在场景实体上，用轴对齐盒（`size` = 半尺寸，米）圈出一块区域；主相机进入
@@ -2539,6 +2586,242 @@ impl Default for Rigidbody {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// 2D 物理
+// ---------------------------------------------------------------------------
+
+/// 2D 刚体类型 = `RigidBody2DType`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum RigidBody2DType {
+    /// 静态物体：不动，只参与碰撞与射线查询（地面、地形边界、不可破坏墙体）。
+    #[default]
+    Static,
+    /// 运动学物体：由代码/动画直接移动，推动动态物体，自身不受重力或外力冲量影响（移动平台、电梯）。
+    Kinematic,
+    /// 动态物体：完全受 2D 物理系统模拟（重力、碰撞冲量、反弹、阻尼）。
+    Dynamic,
+}
+
+impl ReflectType for RigidBody2DType {
+    fn field_type() -> FieldType {
+        FieldType::U8
+    }
+
+    fn enum_variants() -> Option<&'static [&'static str]> {
+        Some(&["Static", "Kinematic", "Dynamic"])
+    }
+
+    fn to_value(&self) -> Value {
+        Value::U64(match self {
+            Self::Static => 0,
+            Self::Kinematic => 1,
+            Self::Dynamic => 2,
+        })
+    }
+
+    fn from_value(value: Value) -> Result<Self, ReflectError> {
+        match value.as_u64()? {
+            0 => Ok(Self::Static),
+            1 => Ok(Self::Kinematic),
+            2 => Ok(Self::Dynamic),
+            other => Err(ReflectError::BadData(format!(
+                "invalid RigidBody2DType discriminant {other}"
+            ))),
+        }
+    }
+}
+
+/// 2D 刚体 = `RigidBody2D`（#1160）。
+///
+/// 拥有 2D 质量、线速度、角速度及重力因子的物理实体。
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
+#[reflect(name = "prism_engine::scene::RigidBody2D")]
+#[serde(default)]
+pub struct RigidBody2D {
+    pub body_type: RigidBody2DType,
+    /// 质量（千克），Dynamic 物体生效。
+    pub mass: f32,
+    /// 2D 线速度 [vx, vy]（米/秒）。
+    pub linear_velocity: [f32; 2],
+    /// 2D 角速度（弧度/秒）。
+    pub angular_velocity: f32,
+    /// 重力加速度倍率（默认 1.0）。
+    pub gravity_scale: f32,
+    /// 线性阻尼系数（减缓平移速度）。
+    pub linear_damping: f32,
+    /// 角阻尼系数（减缓旋转速度）。
+    pub angular_damping: f32,
+    /// 是否固定朝向（禁止旋转，常用于 2D 角色控制器）。
+    pub fixed_rotation: bool,
+    /// 连续碰撞检测开关（防止极高速物体如子弹穿墙）。
+    pub is_bullet: bool,
+}
+
+impl Default for RigidBody2D {
+    fn default() -> Self {
+        Self {
+            body_type: RigidBody2DType::Dynamic,
+            mass: 1.0,
+            linear_velocity: [0.0, 0.0],
+            angular_velocity: 0.0,
+            gravity_scale: 1.0,
+            linear_damping: 0.0,
+            angular_damping: 0.05,
+            fixed_rotation: false,
+            is_bullet: false,
+        }
+    }
+}
+
+/// 2D 碰撞体形状 = `Collider2DShape`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Collider2DShape {
+    /// 2D 矩形盒：`half_extents` [half_w, half_h]。
+    #[default]
+    Box,
+    /// 2D 圆形：`radius` 半径。
+    Circle,
+    /// 2D 胶囊体：`radius` 半径 + `half_height` 半高。
+    Capsule,
+    /// 2D 多边形：`vertices` 顶点列表。
+    Polygon,
+    /// 2D 线段：`offset` 起点到 `segment_b` 终点。
+    Segment,
+}
+
+impl ReflectType for Collider2DShape {
+    fn field_type() -> FieldType {
+        FieldType::U8
+    }
+
+    fn enum_variants() -> Option<&'static [&'static str]> {
+        Some(&["Box", "Circle", "Capsule", "Polygon", "Segment"])
+    }
+
+    fn to_value(&self) -> Value {
+        Value::U64(match self {
+            Self::Box => 0,
+            Self::Circle => 1,
+            Self::Capsule => 2,
+            Self::Polygon => 3,
+            Self::Segment => 4,
+        })
+    }
+
+    fn from_value(value: Value) -> Result<Self, ReflectError> {
+        match value.as_u64()? {
+            0 => Ok(Self::Box),
+            1 => Ok(Self::Circle),
+            2 => Ok(Self::Capsule),
+            3 => Ok(Self::Polygon),
+            4 => Ok(Self::Segment),
+            other => Err(ReflectError::BadData(format!(
+                "invalid Collider2DShape discriminant {other}"
+            ))),
+        }
+    }
+}
+
+/// 2D 碰撞体 = `Collider2D`（#1160）。
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
+#[reflect(name = "prism_engine::scene::Collider2D")]
+#[serde(default)]
+pub struct Collider2D {
+    pub shape: Collider2DShape,
+    /// 形状中心相对实体原点的局部偏移。
+    pub offset: [f32; 2],
+    /// 盒形半尺寸 [half_w, half_h]。
+    pub half_extents: [f32; 2],
+    /// 圆形 / 胶囊体半径。
+    pub radius: f32,
+    /// 胶囊体半高。
+    pub half_height: f32,
+    /// 多边形凸包局部顶点列表。
+    pub vertices: Vec<[f32; 2]>,
+    /// 线段终点。
+    pub segment_b: [f32; 2],
+    /// 传感器触发器（只产生进入/离开事件，不阻挡物体移动）。
+    pub is_sensor: bool,
+    /// 摩擦系数 [0, 1]。
+    pub friction: f32,
+    /// 弹性恢复系数 [0, 1]（0 = 完全非弹性，1 = 完全弹性）。
+    pub restitution: f32,
+    /// 密度（千克/平方米），用于计算碰撞体积质量。
+    pub density: f32,
+    /// 碰撞分组层掩码位。
+    pub collision_groups: u32,
+    /// 发生碰撞的过滤层掩码位。
+    pub collision_mask: u32,
+}
+
+impl Default for Collider2D {
+    fn default() -> Self {
+        Self {
+            shape: Collider2DShape::Box,
+            offset: [0.0, 0.0],
+            half_extents: [0.5, 0.5],
+            radius: 0.5,
+            half_height: 0.5,
+            vertices: Vec::new(),
+            segment_b: [1.0, 0.0],
+            is_sensor: false,
+            friction: 0.2,
+            restitution: 0.0,
+            density: 1.0,
+            collision_groups: 1,
+            collision_mask: 0xFFFFFFFF,
+        }
+    }
+}
+
+impl Collider2D {
+    pub fn new_box(half_w: f32, half_h: f32) -> Self {
+        Self {
+            shape: Collider2DShape::Box,
+            half_extents: [half_w, half_h],
+            ..Default::default()
+        }
+    }
+
+    pub fn new_circle(radius: f32) -> Self {
+        Self {
+            shape: Collider2DShape::Circle,
+            radius,
+            ..Default::default()
+        }
+    }
+
+    pub fn new_capsule(radius: f32, half_height: f32) -> Self {
+        Self {
+            shape: Collider2DShape::Capsule,
+            radius,
+            half_height,
+            ..Default::default()
+        }
+    }
+
+    pub fn new_polygon(vertices: Vec<[f32; 2]>) -> Self {
+        Self {
+            shape: Collider2DShape::Polygon,
+            vertices,
+            ..Default::default()
+        }
+    }
+
+    pub fn new_segment(a: [f32; 2], b: [f32; 2]) -> Self {
+        Self {
+            shape: Collider2DShape::Segment,
+            offset: a,
+            segment_b: b,
+            ..Default::default()
+        }
+    }
+}
+
+pub type BoxCollider2D = Collider2D;
+pub type CircleCollider2D = Collider2D;
+pub type PolygonCollider2D = Collider2D;
 
 // ---------------------------------------------------------------------------
 // 蒙皮

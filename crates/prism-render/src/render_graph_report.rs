@@ -146,6 +146,7 @@ impl ReportSettings {
             render_mode: match render_mode {
                 RenderMode::Raster => "raster",
                 RenderMode::PathTrace => "path_trace",
+                RenderMode::Sprites2D => "sprites_2d",
             },
             debug_flags,
             tonemap_mode,

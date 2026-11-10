@@ -711,10 +711,12 @@ impl RenderPassNode for ShadowMapPass {
     }
 
     fn execute(&mut self, ctx: &RenderContext, resources: &mut GraphResources) -> Result<()> {
-        // Only render when the rasterized shadow path is active. The graph
-        // builder adds this pass only for `ShadowMode::Raster`, but guard
+        // Only render when the rasterized shadow path is active and not in Sprites2D mode.
+        // The graph builder adds this pass only for `ShadowMode::Raster`, but guard
         // anyway so a misconfigured graph can't waste a depth pass.
-        if ctx.frame.shadow_mode != ShadowMode::Raster {
+        if ctx.frame.render_mode == RenderMode::Sprites2D
+            || ctx.frame.shadow_mode != ShadowMode::Raster
+        {
             if !self.layout_initialized {
                 if let Some(shadow_img) = resources.image(self.shadow_map) {
                     let barrier = vk::ImageMemoryBarrier::default()

@@ -13,6 +13,9 @@
 pub mod animation;
 pub mod animator;
 pub mod camera;
+pub mod camera2d;
+#[cfg(test)]
+mod camera2d_tests;
 pub mod foot_ik;
 pub mod hierarchy;
 pub mod lights;

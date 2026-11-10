@@ -139,7 +139,7 @@ impl ResourceLifecycle {
 // `RenderPassNode::graph_info`, cloned once per frame, and consumed by the UI.
 // ---------------------------------------------------------------------------
 
-/// Render mode selector — full rasterized PBR vs real-time path tracing.
+/// Render mode selector — full rasterized PBR vs real-time path tracing vs pure 2D sprites.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum RenderMode {
     /// 标准 rasterized PBR 管线 (ForwardPass + ShadowMap + GTAO + Post).
@@ -147,6 +147,8 @@ pub enum RenderMode {
     Raster,
     /// Real-time path tracing (PathTracePass compute + Post).
     PathTrace,
+    /// 纯 2D 精灵管线 (ForwardPass / SpritePass + Post, 裁剪 3D ShadowMap / GTAO 等).
+    Sprites2D,
 }
 
 /// Coarse classification of a pass for visualization (coloring / iconography).
