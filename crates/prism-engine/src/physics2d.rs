@@ -644,7 +644,7 @@ fn collide_shapes(a: &WorldShape2D, b: &WorldShape2D) -> Option<ContactManifold>
             let cx = lx.clamp(-half_extents.x, half_extents.x);
             let cy = ly.clamp(-half_extents.y, half_extents.y);
 
-            let closest_local = Vec2::new(cx, cy);
+            let _closest_local = Vec2::new(cx, cy);
             let closest_world = *bc + axes[0] * cx + axes[1] * cy;
             let diff = closest_world - *center;
             let dist_sq = diff.length_squared();
@@ -734,7 +734,7 @@ pub fn step_2d(world: &mut World, dt: f32, gravity: [f32; 2]) {
     let g = Vec2::from_array(gravity);
 
     // 1. 积分动态刚体速度
-    for (_, (rb, _)) in world.query2_mut::<RigidBody2D, LocalTransform>() {
+    for (_, rb, _) in world.query2_mut::<RigidBody2D, LocalTransform>() {
         if rb.body_type != RigidBody2DType::Dynamic {
             continue;
         }
@@ -742,10 +742,10 @@ pub fn step_2d(world: &mut World, dt: f32, gravity: [f32; 2]) {
         let mut vel = Vec2::from_array(rb.linear_velocity);
         vel += g * rb.gravity_scale * dt;
 
-        let lin_damping = (1.0 / (1.0 + rb.linear_damping * dt)).clamp(0.0, 1.0);
+        let lin_damping = (1.0f32 / (1.0f32 + rb.linear_damping * dt)).clamp(0.0f32, 1.0f32);
         vel *= lin_damping;
 
-        let ang_damping = (1.0 / (1.0 + rb.angular_damping * dt)).clamp(0.0, 1.0);
+        let ang_damping = (1.0f32 / (1.0f32 + rb.angular_damping * dt)).clamp(0.0f32, 1.0f32);
         rb.angular_velocity *= ang_damping;
 
         rb.linear_velocity = [vel.x, vel.y];
@@ -756,8 +756,8 @@ pub fn step_2d(world: &mut World, dt: f32, gravity: [f32; 2]) {
     for (entity, col) in world.query::<Collider2D>() {
         let (pos, rot) = extract_2d_transform(world, entity);
         let rb = world.get::<RigidBody2D>(entity).cloned();
-        let shape = WorldShape2D::from_collider(collider_cloned(col), pos, rot);
-        colliders.push((entity, collider_cloned(col), rb, shape));
+        let shape = WorldShape2D::from_collider(col, pos, rot);
+        colliders.push((entity, col.clone(), rb, shape));
     }
 
     let mut current_contacts = std::collections::HashSet::new();
@@ -909,7 +909,7 @@ pub fn step_2d(world: &mut World, dt: f32, gravity: [f32; 2]) {
     world.insert_resource(Physics2DEvents { events });
 
     // 4. 推进动态与运动学刚体的位置与旋转
-    for (_, (rb, tf)) in world.query2_mut::<RigidBody2D, LocalTransform>() {
+    for (_, rb, tf) in world.query2_mut::<RigidBody2D, LocalTransform>() {
         if rb.body_type == RigidBody2DType::Static {
             continue;
         }
@@ -923,8 +923,4 @@ pub fn step_2d(world: &mut World, dt: f32, gravity: [f32; 2]) {
             tf.rotation = Quat::from_rotation_z(next_angle);
         }
     }
-}
-
-fn collider_cloned(col: &Collider2D) -> Collider2D {
-    col.clone()
 }
