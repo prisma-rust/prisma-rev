@@ -231,6 +231,9 @@ pub struct App {
     /// Fixed-step accumulator in nanoseconds. Keeping this as an integer
     /// avoids float drift and makes simulation time independent of event rate.
     fixed_accumulator: Duration,
+
+    // ---------- plugins (#1165) ----------
+    pub(crate) plugin_registry: crate::plugin::PluginRegistry,
 }
 
 /// 把场景里写的资产路径归一化成 pak 内的相对路径。
@@ -398,6 +401,7 @@ impl App {
             suspended: false,
             last_frame: None,
             fixed_accumulator: Duration::ZERO,
+            plugin_registry: crate::plugin::PluginRegistry::new(),
         }
     }
 
@@ -502,6 +506,12 @@ impl App {
     ///
     /// 不调用此方法则对应子系统不创建（无窗口、无音频、无物理等）。
     pub fn with_subsystem(mut self, subsystem: Subsystem) -> Self {
+        self.enable_subsystem(subsystem);
+        self
+    }
+
+    /// 显式启用某个引擎子系统。
+    pub fn enable_subsystem(&mut self, subsystem: Subsystem) -> &mut Self {
         let bit = subsystem.bit();
         if self.subsystems & bit != 0 {
             return self; // 已启用，跳过
@@ -547,13 +557,88 @@ impl App {
                 log::warn!(
                     "{:?} subsystem requested — not implemented yet, ignoring",
                     subsystem
-                )
+                );
             }
             Subsystem::Scene | Subsystem::Asset | Subsystem::UI | Subsystem::Animation => {
                 // 场景/资产/UI/动画本来就是常开的引擎能力，没有单独的开关要拨。
-                log::debug!("{:?} subsystem is always on — nothing to start", subsystem)
+                log::debug!("{:?} subsystem is always on — nothing to start", subsystem);
             }
         }
+        self
+    }
+
+    /// 禁用某个引擎子系统并释放其后台运行时（若已存在）。
+    pub fn disable_subsystem(&mut self, subsystem: Subsystem) -> &mut Self {
+        let bit = subsystem.bit();
+        if self.subsystems & bit == 0 {
+            return self;
+        }
+        self.subsystems &= !bit;
+        match subsystem {
+            Subsystem::Physics => {
+                #[cfg(feature = "physics")]
+                {
+                    self.physics = None;
+                }
+            }
+            Subsystem::Audio => {
+                #[cfg(feature = "audio")]
+                {
+                    self.audio = None;
+                    if let Some(handle) = self.audio_decode_thread.take() {
+                        let _ = handle.join();
+                    }
+                    self.audio_decode_tx = None;
+                    self.audio_decode_rx = None;
+                }
+            }
+            _ => {}
+        }
+        self
+    }
+
+    // -----------------------------------------------------------------------
+    // 插件系统（#1165）
+    // -----------------------------------------------------------------------
+
+    /// 注册一个应用插件（可定制/替换子系统、添加资源或注入 ECS 逻辑）。
+    pub fn add_plugin<P: crate::plugin::AppPlugin>(&mut self, plugin: P) -> &mut Self {
+        self.plugin_registry.add(plugin);
+        self
+    }
+
+    /// 以链式调用方式注册一个应用插件。
+    pub fn with_plugin<P: crate::plugin::AppPlugin>(mut self, plugin: P) -> Self {
+        self.add_plugin(plugin);
+        self
+    }
+
+    /// 注册一组插件。
+    pub fn add_plugins<G: crate::plugin::PluginGroup>(&mut self, group: G) -> &mut Self {
+        group.build(self);
+        self
+    }
+
+    /// 以链式调用方式注册一组插件。
+    pub fn with_plugins<G: crate::plugin::PluginGroup>(mut self, group: G) -> Self {
+        group.build(&mut self);
+        self
+    }
+
+    /// 禁用特定类型的插件（其 `build` 方法将被跳过）。
+    pub fn disable_plugin<P: crate::plugin::AppPlugin>(&mut self) -> &mut Self {
+        self.plugin_registry.disable::<P>();
+        self
+    }
+
+    /// 检查指定类型的插件当前是否处于启用状态。
+    pub fn is_plugin_enabled<P: crate::plugin::AppPlugin>(&self) -> bool {
+        self.plugin_registry.is_enabled::<P>()
+    }
+
+    /// 立即构建并应用所有已登记的待处理插件。
+    pub fn build_plugins(&mut self) -> &mut Self {
+        crate::plugin::PluginRegistry::apply_pending(self);
         self
     }
 
@@ -855,6 +940,7 @@ impl App {
     #[cfg(feature = "winit-backend")]
     pub fn run_on(mut self, event_loop: winit::event_loop::EventLoop<()>) -> anyhow::Result<()> {
         crate::logging::init_player_logging();
+        self.build_plugins();
         event_loop.run_app(&mut self)?;
         Ok(())
     }
@@ -864,9 +950,10 @@ impl App {
     /// 与 winit 入口等价——窗口、渲染线程、模拟循环、关闭顺序完全一致，
     /// 只是窗口与消息来自 `prism-platform` 的 `win32-native` 后端。
     #[cfg(all(windows, feature = "win32-native", not(feature = "winit-backend")))]
-    pub fn run(self) {
+    pub fn run(mut self) {
         crate::logging::init_player_logging();
         Self::log_asset_root();
+        self.build_plugins();
         self.run_win32().expect("fatal application error");
     }
 

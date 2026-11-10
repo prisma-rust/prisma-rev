@@ -102,6 +102,7 @@ pub use physics_runner::{
 };
 #[cfg(feature = "audio")]
 pub mod one_shot;
+pub mod plugin;
 mod render_graph_report;
 mod render_runner;
 mod render_shared;
@@ -122,6 +123,10 @@ compile_error!(
 pub use app::{App, Subsystem};
 pub use debug_hud::DebugHud;
 pub use hook::FrameHook;
+pub use plugin::{
+    AppPlugin, DefaultAudioPlugin, DefaultPhysicsPlugin, DefaultPlugins, DefaultRenderPlugin,
+    PluginGroup,
+};
 pub use render_shared::{FrameImage, RenderShared, RenderStats};
 
 /// 用户项目 Android 入口所需的平台句柄；具体窗口库类型由 app 层封装。
