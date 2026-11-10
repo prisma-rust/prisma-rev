@@ -176,6 +176,8 @@ pub struct FrameInput<'a> {
     pub ui_overlay: Option<&'a crate::ui_overlay::UiOverlayInput>,
     /// 是否在场景渲染中绘制地面参考网格。
     pub show_grid: bool,
+    /// 统一脏分派计划（DESIGN §9 / #1157）。
+    pub dispatch_plan: Option<&'a crate::dirty_dispatch::DirtyDispatchPlan>,
 }
 
 /// GPU session that owns the long-lived Vulkan runtime objects (device,
@@ -366,6 +368,10 @@ pub struct GraphRenderer {
     gpu_history: crate::gpu_timer::GpuHistory,
     /// 上一帧深度的粗粒度回读（#1007）。关闭时不分配缓冲、不回读。
     occlusion: OcclusionState,
+    /// 暂存的资产上传请求队列（#1157），在 `prepare` 阶段统一刷新。
+    staged_asset_requests: Vec<crate::asset_bridge::AssetResolveRequest>,
+    /// 暂存的资产释放请求队列（#1157），在 `prepare` 阶段统一刷新。
+    staged_asset_releases: Vec<crate::asset_bridge::AssetRelease>,
 
     // ── last field ──────────────────────────────────────────────────
     /// Long-lived GPU session (device, command pool, descriptors, UBOs).
@@ -731,6 +737,8 @@ impl GraphRenderer {
                 margin_tiles: 1,
                 ..Default::default()
             },
+            staged_asset_requests: Vec::new(),
+            staged_asset_releases: Vec::new(),
         })
     }
     // -------------------------------------------------------------------
@@ -1158,6 +1166,8 @@ impl GraphRenderer {
                 margin_tiles: 1,
                 ..Default::default()
             },
+            staged_asset_requests: Vec::new(),
+            staged_asset_releases: Vec::new(),
             offscreen: Some(offscreen),
             headless_fence,
         })
@@ -1658,6 +1668,32 @@ impl GraphRenderer {
             }
         }
         log::debug!("release_assets: freed {freed} GPU resource(s)");
+    }
+
+    /// 暂存资产上传请求，由下一次 `prepare` 统一批量执行（DESIGN §9 / #1157）。
+    pub fn stage_asset_requests(
+        &mut self,
+        requests: Vec<crate::asset_bridge::AssetResolveRequest>,
+    ) {
+        self.staged_asset_requests.extend(requests);
+    }
+
+    /// 暂存资产释放请求，由下一次 `prepare` 统一批量执行（DESIGN §9 / #1157）。
+    pub fn stage_asset_releases(&mut self, releases: Vec<crate::asset_bridge::AssetRelease>) {
+        self.staged_asset_releases.extend(releases);
+    }
+
+    /// 在 `prepare` 阶段统一收敛并刷新已暂存的批量资产释放与上传（DESIGN §9 / #1157）。
+    pub fn flush_staged_assets(&mut self) -> anyhow::Result<()> {
+        if !self.staged_asset_releases.is_empty() {
+            let releases = std::mem::take(&mut self.staged_asset_releases);
+            self.release_assets(&releases);
+        }
+        if !self.staged_asset_requests.is_empty() {
+            let requests = std::mem::take(&mut self.staged_asset_requests);
+            let _ = self.apply_asset_requests(requests);
+        }
+        Ok(())
     }
 
     pub fn apply_asset_requests(
@@ -2498,19 +2534,38 @@ impl GraphRenderer {
         }
     }
 
-    /// 准备阶段：在命令录制前批量同步 CPU 场景状态和 GPU 资源。
-    /// 当前实现：校验输入 + 日志脏标记，为下一步扩展 DirtyDispatch 预留上传点。
+    /// 准备阶段：在命令录制前批量同步 CPU 场景状态和 GPU 资源（DESIGN §9 / #1157）。
+    /// 统一消费 `DirtyDispatchPlan` 并收敛执行暂存的批量上传与释放。
     pub fn prepare(&mut self, _ctx: &FrameCtx, input: &FrameInput<'_>) -> anyhow::Result<()> {
         // #502：LUT 文件只在路径变化时重新读取/上传，避免每帧 I/O。
         self.ensure_lut(input.lut_path)?;
-        // 未来在此消费 DirtyFlags 并调度 RenderTextureManager / RenderMeshManager 等批量上传
-        // 当前仅做输入校验与同步点预留，保证五阶段调用链完整（DESIGN §8）
-        if input.pt_accum_dirty {
+
+        // #1157 消费统一 DirtyDispatchPlan 并记录分派
+        if let Some(plan) = input.dispatch_plan {
+            if plan.pt_accum_dirty {
+                log::trace!("prepare: pt accum dirty (from dispatch plan)");
+            }
+            if plan.has_work() {
+                log::trace!(
+                    "prepare: dispatch plan tex_up={} mesh_up={} mat_up={} lights={} inst={}",
+                    plan.texture_uploads,
+                    plan.mesh_uploads,
+                    plan.material_updates,
+                    plan.lights_dirty,
+                    plan.instances_dirty,
+                );
+            }
+        } else if input.pt_accum_dirty {
             log::trace!("prepare: pt accum dirty — will reset accumulation");
         }
+
         if input.draw_items.is_empty() && !input.has_camera {
             log::trace!("prepare: no draw_items and no camera — frame will clear only");
         }
+
+        // 统一在 prepare 阶段收敛并批量执行暂存的 GPU 资产操作
+        self.flush_staged_assets()?;
+
         Ok(())
     }
 
@@ -2571,6 +2626,7 @@ impl GraphRenderer {
             shadows_enabled,
             ui_overlay,
             show_grid,
+            dispatch_plan: _,
         } = input;
         #[cfg(not(feature = "ui"))]
         let _ = ui_overlay;
@@ -2734,6 +2790,7 @@ impl GraphRenderer {
                 camera_orthographic: *camera_orthographic,
                 clear_color: *clear_color,
                 show_grid: *show_grid,
+                dispatch_plan: input.dispatch_plan,
             };
             self.prev_camera_view_proj = Some(prev_vp);
             self.prev_models = draw_items
@@ -3201,6 +3258,7 @@ impl GraphRenderer {
             shadows_enabled: true,
             ui_overlay: None,
             show_grid: false,
+            dispatch_plan: None,
         };
         self.prepare(&ctx, &input)?;
         let exec_result = self.execute(&ctx, &input);

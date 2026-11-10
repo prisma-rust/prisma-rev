@@ -1134,6 +1134,8 @@ pub struct GraphFrame<'a> {
     pub clear_color: [f32; 4],
     /// 是否在场景渲染中绘制地面参考网格。
     pub show_grid: bool,
+    /// 统一脏分派计划（DESIGN §9 / #1157）。
+    pub dispatch_plan: Option<&'a crate::dirty_dispatch::DirtyDispatchPlan>,
 }
 
 /// Context passed to each pass's `execute`.

@@ -153,6 +153,7 @@ fn render(renderer: &mut GraphRenderer, items: &mut Vec<DrawItem>, cull: bool) -
         shadows_enabled: false,
         ui_overlay: None,
         show_grid: false,
+        dispatch_plan: None,
     };
     renderer.prepare(&ctx, &input).expect("prepare");
     renderer.execute(&ctx, &input).expect("execute");

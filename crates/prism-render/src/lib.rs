@@ -44,6 +44,7 @@ pub mod compute;
 pub mod context;
 pub mod culling;
 pub mod descriptor;
+pub mod dirty_dispatch;
 /// pass 级 feature（`shadows` / `gtao`）关闭时的 1×1 占位资源。
 #[cfg(any(not(feature = "shadows"), not(feature = "gtao")))]
 pub(crate) mod dummy;
@@ -122,6 +123,7 @@ pub use descriptor::{
     PtEmissiveTri, ReSTIRReservoir, GPU_LIGHT_KIND_POINT, GPU_LIGHT_KIND_SPOT, GPU_LIGHT_SIZE,
     LIGHT_MAX, PT_EMISSIVE_MAX, PT_LIGHT_MAX,
 };
+pub use dirty_dispatch::DirtyDispatchPlan;
 pub use external_overlay::{OverlayMessage, OverlayRecordCtx, SwapchainOverlay};
 pub use forward_pass::ForwardPass;
 pub use gi::{
