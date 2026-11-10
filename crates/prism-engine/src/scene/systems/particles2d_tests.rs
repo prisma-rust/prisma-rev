@@ -294,12 +294,12 @@ fn particles_sort_against_sprites_by_layer() {
     world.insert(sprite, crate::scene::components::SpriteRenderer::default());
     world.insert(
         sprite,
-        crate::scene::runtime_components::SpriteRef {
-            asset_id: crate::scene::components::SceneAssetId::generate(),
-            texture_slot: 1,
-            size: [16, 16],
-            generation: 1,
-        },
+        crate::scene::runtime_components::SpriteRef::new(
+            crate::scene::components::SceneAssetId::generate(),
+            1,
+            [16, 16],
+            1,
+        ),
     );
     world.insert(sprite, LocalToWorld(glam::Mat4::IDENTITY));
     world

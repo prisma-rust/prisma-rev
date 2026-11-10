@@ -37,6 +37,8 @@ pub enum AssetType {
     StateMachine = 12,
     /// 动画图（`.rag`，#560 P1）。
     AnimGraph = 13,
+    /// 2D 精灵图集元数据（`.ratlas`，#1158）。
+    Atlas = 14,
     /// Fallback for unrecognised formats.
     Unknown = 0xFF,
 }
@@ -64,6 +66,7 @@ impl AssetType {
             AssetType::AnimClip => "anim-clip",
             AssetType::StateMachine => "state-machine",
             AssetType::AnimGraph => "anim-graph",
+            AssetType::Atlas => "atlas",
             AssetType::Unknown => "unknown",
         }
     }
@@ -85,6 +88,7 @@ impl AssetType {
             11 => AssetType::AnimClip,
             12 => AssetType::StateMachine,
             13 => AssetType::AnimGraph,
+            14 => AssetType::Atlas,
             _ => AssetType::Unknown,
         }
     }
@@ -109,6 +113,7 @@ impl AssetType {
             "ranim" => AssetType::AnimClip,
             "rasm" => AssetType::StateMachine,
             "rag" => AssetType::AnimGraph,
+            "ratlas" => AssetType::Atlas,
             // Textures / images
             "png" | "jpg" | "jpeg" | "tga" | "bmp" | "hdr" | "exr" | "ktx" | "ktx2" | "dds" => {
                 AssetType::Texture

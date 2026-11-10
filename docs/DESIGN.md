@@ -654,6 +654,7 @@ Cooker 负责消费中间格式生成运行时格式。
 |------|------|------|
 | **RTEX**（cooked 纹理） | `b"RTEX"` | header + mip 偏移表 + 各级 mip 数据（box filter 降采样） |
 | **RMES**（cooked 网格） | `b"RMES"` | header + 属性偏移表 + **平面**顶点块（positions → normals → uv，偏移字段为权威寻址）+ 索引数据；v2 末尾追加同一份 submesh 表 |
+| **RATL**（cooked 精灵图集元数据） | `b"RATL"` | header + `texture_path` + 尺寸 + 切片列表（`name_hash`、`pixel_rect`、`uv_rect`、`original_size`、`trimmed_offset`、`pivot`、`nine_slice`，#1158） |
 
 > RMES v2 的 submesh 表让一个实体按 `MeshRenderer.material_paths` 拆成多个
 > `DrawItem`（`index_start` / `index_count`），同一网格的不同区间可以使用不同材质。

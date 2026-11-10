@@ -93,3 +93,14 @@ fn animation_graph_extension_and_label() {
         AssetType::AnimGraph
     );
 }
+
+#[test]
+fn atlas_extension_and_label() {
+    assert_eq!(AssetType::from_extension("ratlas"), AssetType::Atlas);
+    assert_eq!(AssetType::from_extension("RATLAS"), AssetType::Atlas);
+    assert_eq!(AssetType::Atlas.label(), "atlas");
+    assert_eq!(
+        AssetType::from_u32(AssetType::Atlas.to_u32()),
+        AssetType::Atlas
+    );
+}
