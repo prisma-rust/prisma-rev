@@ -2382,6 +2382,7 @@ dependencies = [
  "ash-window",
  "bytemuck",
  "fontdue",
+ "glam 0.33.12",
  "image",
  "log",
  "prism-gfx",
