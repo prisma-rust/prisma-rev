@@ -2958,7 +2958,7 @@ mod tests {
             .expect("load pak");
 
         let input = resolver
-            .load_texture_by_path("textures/terrain.rtex")
+            .load_texture_by_path(Entity::from_raw(u32::MAX, 0), "textures/terrain.rtex")
             .expect("load texture");
 
         assert_eq!(input.width, 4);
@@ -2986,7 +2986,7 @@ mod tests {
             .expect("load pak");
 
         let input = resolver
-            .load_texture_by_path("textures/single.rtex")
+            .load_texture_by_path(Entity::from_raw(u32::MAX, 0), "textures/single.rtex")
             .expect("load texture");
 
         assert_eq!(input.width, 4);
@@ -3012,7 +3012,7 @@ mod tests {
             .expect("load pak");
 
         let input = resolver
-            .load_texture_by_path("textures/bad_chain.rtex")
+            .load_texture_by_path(Entity::from_raw(u32::MAX, 0), "textures/bad_chain.rtex")
             .expect("load texture");
 
         assert_eq!(input.width, 4);
