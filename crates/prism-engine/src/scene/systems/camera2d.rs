@@ -52,7 +52,9 @@ pub fn camera_2d_system(world: &mut World, dt: f32) {
         };
 
         let current_pos = glam::vec2(tf.position.x, tf.position.y);
-        let cam_info = world.get::<Camera>(entity).map(|c| (c.orthographic, c.orthographic_size, c.aspect));
+        let cam_info = world
+            .get::<Camera>(entity)
+            .map(|c| (c.orthographic, c.orthographic_size, c.aspect));
 
         updates.push((entity, cam2d.clone(), current_pos, cam_info));
     }

@@ -1,9 +1,7 @@
 //! 2D 物理系统单元测试（#1160）。
 
 use prism_ecs::World;
-use prism_scene::components::{
-    Collider2D, LocalTransform, RigidBody2D, RigidBody2DType,
-};
+use prism_scene::components::{Collider2D, LocalTransform, RigidBody2D, RigidBody2DType};
 
 use super::physics2d::{
     overlap_box_2d, overlap_circle_2d, raycast_2d, step_2d, Physics2DEventKind, Physics2DEvents,
@@ -181,13 +179,19 @@ fn test_physics2d_sensor_events() {
     // 第 1 步：重叠，触发 Started 事件
     step_2d(&mut world, 0.1, [0.0, 0.0]);
     let events = world.get_resource::<Physics2DEvents>().unwrap();
-    assert!(events.events.iter().any(|e| e.kind == Physics2DEventKind::Started && e.is_sensor));
+    assert!(events
+        .events
+        .iter()
+        .any(|e| e.kind == Physics2DEventKind::Started && e.is_sensor));
 
     // 第 2 步：移出传感器范围 (x = 1.0 + 10 * 0.5 = 6.0 > 2.5)
     world.get_mut::<LocalTransform>(walker).unwrap().position = glam::vec3(10.0, 0.0, 0.0);
     step_2d(&mut world, 0.1, [0.0, 0.0]);
     let events2 = world.get_resource::<Physics2DEvents>().unwrap();
-    assert!(events2.events.iter().any(|e| e.kind == Physics2DEventKind::Stopped && e.is_sensor));
+    assert!(events2
+        .events
+        .iter()
+        .any(|e| e.kind == Physics2DEventKind::Stopped && e.is_sensor));
 }
 
 #[test]
@@ -205,7 +209,8 @@ fn test_physics2d_raycast_circle() {
     world.insert(circle, Collider2D::new_circle(1.0));
 
     // 从原点向 +X 发射射线
-    let hit = raycast_2d(&world, [0.0, 0.0], [1.0, 0.0], 10.0, 0xFFFF_FFFF).expect("should hit circle");
+    let hit =
+        raycast_2d(&world, [0.0, 0.0], [1.0, 0.0], 10.0, 0xFFFF_FFFF).expect("should hit circle");
     assert_eq!(hit.entity, circle);
     assert!((hit.distance - 4.0).abs() < 1e-4);
     assert!((hit.normal[0] - (-1.0)).abs() < 1e-4);
@@ -226,7 +231,8 @@ fn test_physics2d_raycast_box() {
     world.insert(box_e, Collider2D::new_box(2.0, 1.0));
 
     // 从下方往 +Y 发射射线
-    let hit = raycast_2d(&world, [0.0, 0.0], [0.0, 1.0], 10.0, 0xFFFF_FFFF).expect("should hit box bottom");
+    let hit = raycast_2d(&world, [0.0, 0.0], [0.0, 1.0], 10.0, 0xFFFF_FFFF)
+        .expect("should hit box bottom");
     assert_eq!(hit.entity, box_e);
     // 盒中心 y=5, 半高=1，底面 y=4
     assert!((hit.distance - 4.0).abs() < 1e-4);

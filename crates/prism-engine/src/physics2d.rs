@@ -96,10 +96,7 @@ impl WorldShape2D {
         let rot_cos = rot_angle.cos();
         let rot_sin = rot_angle.sin();
         let rot_mat = |v: Vec2| -> Vec2 {
-            Vec2::new(
-                v.x * rot_cos - v.y * rot_sin,
-                v.x * rot_sin + v.y * rot_cos,
-            )
+            Vec2::new(v.x * rot_cos - v.y * rot_sin, v.x * rot_sin + v.y * rot_cos)
         };
 
         let local_offset = Vec2::from_array(collider.offset);
@@ -111,7 +108,9 @@ impl WorldShape2D {
                 radius: collider.radius.max(1e-4),
             },
             Collider2DShape::Box => {
-                let half_extents = Vec2::from_array(collider.half_extents).abs().max(Vec2::splat(1e-4));
+                let half_extents = Vec2::from_array(collider.half_extents)
+                    .abs()
+                    .max(Vec2::splat(1e-4));
                 let u = rot_mat(Vec2::X);
                 let v = rot_mat(Vec2::Y);
                 WorldShape2D::Box {
@@ -136,7 +135,9 @@ impl WorldShape2D {
                 }
                 if verts.len() < 3 {
                     // 退化为盒
-                    let half = Vec2::from_array(collider.half_extents).abs().max(Vec2::splat(1e-4));
+                    let half = Vec2::from_array(collider.half_extents)
+                        .abs()
+                        .max(Vec2::splat(1e-4));
                     let u = rot_mat(Vec2::X);
                     let v = rot_mat(Vec2::Y);
                     WorldShape2D::Box {
@@ -187,7 +188,12 @@ impl WorldShape2D {
                     None
                 }
             }
-            WorldShape2D::Box { center, half_extents, axes, .. } => {
+            WorldShape2D::Box {
+                center,
+                half_extents,
+                axes,
+                ..
+            } => {
                 let d = origin - *center;
                 let mut t_min = 0.0f32;
                 let mut t_max = max_dist;
@@ -196,7 +202,11 @@ impl WorldShape2D {
                 for (i, &axis) in axes.iter().enumerate() {
                     let e = axis.dot(d);
                     let f = axis.dot(dir);
-                    let half = if i == 0 { half_extents.x } else { half_extents.y };
+                    let half = if i == 0 {
+                        half_extents.x
+                    } else {
+                        half_extents.y
+                    };
 
                     if f.abs() > 1e-6 {
                         let mut t1 = (-e - half) / f;
@@ -300,11 +310,20 @@ impl WorldShape2D {
                 let seg = *b - *a;
                 let len = seg.length();
                 if len < 1e-6 {
-                    return WorldShape2D::Circle { center: *a, radius: *radius }.intersect_ray(origin, dir, max_dist);
+                    return WorldShape2D::Circle {
+                        center: *a,
+                        radius: *radius,
+                    }
+                    .intersect_ray(origin, dir, max_dist);
                 }
                 let mut best: Option<(f32, Vec2)> = None;
                 for c in &[*a, *b] {
-                    if let Some((d, n)) = (WorldShape2D::Circle { center: *c, radius: *radius }).intersect_ray(origin, dir, max_dist) {
+                    if let Some((d, n)) = (WorldShape2D::Circle {
+                        center: *c,
+                        radius: *radius,
+                    })
+                    .intersect_ray(origin, dir, max_dist)
+                    {
                         if best.map_or(true, |(bd, _)| d < bd) {
                             best = Some((d, n));
                         }
@@ -558,7 +577,12 @@ fn extract_2d_transform(world: &World, entity: Entity) -> (Vec2, f32) {
 fn check_circle_overlap(shape: &WorldShape2D, c: Vec2, radius: f32) -> bool {
     match shape {
         WorldShape2D::Circle { center, radius: r } => c.distance(*center) <= (radius + r),
-        WorldShape2D::Box { center, half_extents, axes, .. } => {
+        WorldShape2D::Box {
+            center,
+            half_extents,
+            axes,
+            ..
+        } => {
             let rel = c - *center;
             let local_x = rel.dot(axes[0]).abs();
             let local_y = rel.dot(axes[1]).abs();
@@ -578,8 +602,14 @@ fn check_shapes_overlap(a: &WorldShape2D, b: &WorldShape2D) -> bool {
 fn collide_shapes(a: &WorldShape2D, b: &WorldShape2D) -> Option<ContactManifold> {
     match (a, b) {
         (
-            WorldShape2D::Circle { center: c1, radius: r1 },
-            WorldShape2D::Circle { center: c2, radius: r2 },
+            WorldShape2D::Circle {
+                center: c1,
+                radius: r1,
+            },
+            WorldShape2D::Circle {
+                center: c2,
+                radius: r2,
+            },
         ) => {
             let diff = *c2 - *c1;
             let dist_sq = diff.length_squared();
@@ -593,11 +623,19 @@ fn collide_shapes(a: &WorldShape2D, b: &WorldShape2D) -> Option<ContactManifold>
             } else {
                 (Vec2::Y, r_sum)
             };
-            Some(ContactManifold { normal, penetration })
+            Some(ContactManifold {
+                normal,
+                penetration,
+            })
         }
         (
             WorldShape2D::Circle { center, radius },
-            WorldShape2D::Box { center: bc, half_extents, axes, .. },
+            WorldShape2D::Box {
+                center: bc,
+                half_extents,
+                axes,
+                ..
+            },
         ) => {
             let rel = *center - *bc;
             let lx = rel.dot(axes[0]);
@@ -621,7 +659,10 @@ fn collide_shapes(a: &WorldShape2D, b: &WorldShape2D) -> Option<ContactManifold>
             } else {
                 (axes[1], *radius)
             };
-            Some(ContactManifold { normal, penetration })
+            Some(ContactManifold {
+                normal,
+                penetration,
+            })
         }
         (b @ WorldShape2D::Box { .. }, c @ WorldShape2D::Circle { .. }) => {
             let mut m = collide_shapes(c, b)?;
@@ -629,8 +670,18 @@ fn collide_shapes(a: &WorldShape2D, b: &WorldShape2D) -> Option<ContactManifold>
             Some(m)
         }
         (
-            WorldShape2D::Box { center: c1, half_extents: h1, axes: a1, .. },
-            WorldShape2D::Box { center: c2, half_extents: h2, axes: a2, .. },
+            WorldShape2D::Box {
+                center: c1,
+                half_extents: h1,
+                axes: a1,
+                ..
+            },
+            WorldShape2D::Box {
+                center: c2,
+                half_extents: h2,
+                axes: a2,
+                ..
+            },
         ) => {
             // SAT 检测盒-盒碰撞
             let d = *c2 - *c1;
@@ -737,8 +788,12 @@ pub fn step_2d(world: &mut World, dt: f32, gravity: [f32; 2]) {
 
                 if !is_sensor {
                     // 求解刚体冲量
-                    let type_a = rb_a.as_ref().map_or(RigidBody2DType::Static, |r| r.body_type);
-                    let type_b = rb_b.as_ref().map_or(RigidBody2DType::Static, |r| r.body_type);
+                    let type_a = rb_a
+                        .as_ref()
+                        .map_or(RigidBody2DType::Static, |r| r.body_type);
+                    let type_b = rb_b
+                        .as_ref()
+                        .map_or(RigidBody2DType::Static, |r| r.body_type);
 
                     let inv_mass_a = if type_a == RigidBody2DType::Dynamic {
                         1.0 / rb_a.as_ref().map_or(1.0, |r| r.mass.max(1e-4))
@@ -753,8 +808,12 @@ pub fn step_2d(world: &mut World, dt: f32, gravity: [f32; 2]) {
 
                     let total_inv_mass = inv_mass_a + inv_mass_b;
                     if total_inv_mass > 0.0 {
-                        let vel_a = rb_a.as_ref().map_or(Vec2::ZERO, |r| Vec2::from_array(r.linear_velocity));
-                        let vel_b = rb_b.as_ref().map_or(Vec2::ZERO, |r| Vec2::from_array(r.linear_velocity));
+                        let vel_a = rb_a
+                            .as_ref()
+                            .map_or(Vec2::ZERO, |r| Vec2::from_array(r.linear_velocity));
+                        let vel_b = rb_b
+                            .as_ref()
+                            .map_or(Vec2::ZERO, |r| Vec2::from_array(r.linear_velocity));
                         let rel_vel = vel_b - vel_a;
 
                         let normal_vel = rel_vel.dot(manifold.normal);
@@ -765,13 +824,15 @@ pub fn step_2d(world: &mut World, dt: f32, gravity: [f32; 2]) {
 
                             if inv_mass_a > 0.0 {
                                 if let Some(rb) = world.get_mut::<RigidBody2D>(*e_a) {
-                                    let v = Vec2::from_array(rb.linear_velocity) - impulse * inv_mass_a;
+                                    let v =
+                                        Vec2::from_array(rb.linear_velocity) - impulse * inv_mass_a;
                                     rb.linear_velocity = [v.x, v.y];
                                 }
                             }
                             if inv_mass_b > 0.0 {
                                 if let Some(rb) = world.get_mut::<RigidBody2D>(*e_b) {
-                                    let v = Vec2::from_array(rb.linear_velocity) + impulse * inv_mass_b;
+                                    let v =
+                                        Vec2::from_array(rb.linear_velocity) + impulse * inv_mass_b;
                                     rb.linear_velocity = [v.x, v.y];
                                 }
                             }
@@ -780,7 +841,8 @@ pub fn step_2d(world: &mut World, dt: f32, gravity: [f32; 2]) {
                         // Baumgarte 穿透修正
                         let slop = 0.005f32;
                         let percent = 0.4f32;
-                        let correction = (manifold.penetration - slop).max(0.0) / total_inv_mass * percent;
+                        let correction =
+                            (manifold.penetration - slop).max(0.0) / total_inv_mass * percent;
                         let corr_vec = manifold.normal * correction;
 
                         if inv_mass_a > 0.0 {
@@ -809,8 +871,12 @@ pub fn step_2d(world: &mut World, dt: f32, gravity: [f32; 2]) {
 
     for &pair in &current_contacts {
         if !prev_contacts.pairs.contains(&pair) {
-            let is_sensor = world.get::<Collider2D>(pair.0).map_or(false, |c| c.is_sensor)
-                || world.get::<Collider2D>(pair.1).map_or(false, |c| c.is_sensor);
+            let is_sensor = world
+                .get::<Collider2D>(pair.0)
+                .map_or(false, |c| c.is_sensor)
+                || world
+                    .get::<Collider2D>(pair.1)
+                    .map_or(false, |c| c.is_sensor);
             events.push(Physics2DEvent {
                 kind: Physics2DEventKind::Started,
                 entity_a: pair.0,
@@ -822,8 +888,12 @@ pub fn step_2d(world: &mut World, dt: f32, gravity: [f32; 2]) {
 
     for &pair in &prev_contacts.pairs {
         if !current_contacts.contains(&pair) {
-            let is_sensor = world.get::<Collider2D>(pair.0).map_or(false, |c| c.is_sensor)
-                || world.get::<Collider2D>(pair.1).map_or(false, |c| c.is_sensor);
+            let is_sensor = world
+                .get::<Collider2D>(pair.0)
+                .map_or(false, |c| c.is_sensor)
+                || world
+                    .get::<Collider2D>(pair.1)
+                    .map_or(false, |c| c.is_sensor);
             events.push(Physics2DEvent {
                 kind: Physics2DEventKind::Stopped,
                 entity_a: pair.0,

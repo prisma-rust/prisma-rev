@@ -714,7 +714,7 @@ impl RenderPassNode for ShadowMapPass {
         // Only render when the rasterized shadow path is active and not in Sprites2D mode.
         // The graph builder adds this pass only for `ShadowMode::Raster`, but guard
         // anyway so a misconfigured graph can't waste a depth pass.
-        if ctx.frame.render_mode == RenderMode::Sprites2D
+        if ctx.frame.render_mode == crate::RenderMode::Sprites2D
             || ctx.frame.shadow_mode != ShadowMode::Raster
         {
             if !self.layout_initialized {

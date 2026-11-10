@@ -2408,139 +2408,154 @@ impl RenderPassNode for ForwardPass {
                 );
 
                 // 纯 2D 模式跳过 3D 不透明/透明网格绘制、线框覆层与高亮外轮廓
-                if ctx.frame.render_mode != RenderMode::Sprites2D {
+                if ctx.frame.render_mode != crate::RenderMode::Sprites2D {
                     // 循环开始前刚绑定的是默认（不透明）管线；只有遇到别的状态才重绑
-                // （剔除 / 深度写 / 混合都是管线状态）。描述符与推送常量布局在所有
-                // 变体之间一致，所以不需要重新绑定描述符集。
-                // #491: pack static instance matrices after the live bone
-                // palette in the same SSBO. Skinned draws keep their existing
-                // offsets; instanced draws start at `bone_count`.
-                let bone_count = ctx
-                    .frame
-                    .bone_matrices
-                    .len()
-                    .min(ForwardPass::BONE_CAPACITY);
-                let capacity = ForwardPass::BONE_CAPACITY.saturating_sub(bone_count);
-                let (batches, instance_matrices) =
-                    prepare_static_batches(ctx.frame.draw_list, ctx.frame.mesh_manager, capacity);
-                if !instance_matrices.is_empty() {
-                    let mut packed = Vec::with_capacity(bone_count + instance_matrices.len());
-                    packed.extend_from_slice(&ctx.frame.bone_matrices[..bone_count]);
-                    packed.extend_from_slice(&instance_matrices);
-                    self.update_bones(ctx.device, ctx.frame_index, &packed)?;
-                }
-
-                let mut bound_state = (DrawState::default(), wireframe, false);
-                for batch in &batches {
-                    let item = &ctx.frame.draw_list[batch.items[0]];
-                    let uploaded_mesh = match ctx.frame.mesh_manager.get(item.mesh) {
-                        Some(m) => m,
-                        None => continue,
-                    };
-                    let uploaded = &uploaded_mesh.mesh;
-                    let skinned = item.bone_offset.is_some();
-                    let skin = if skinned {
-                        uploaded_mesh.skin.as_ref()
-                    } else {
-                        None
-                    };
-                    if skinned && skin.is_none() {
-                        continue;
-                    }
-                    let key = (item.state, wireframe, skinned);
-                    if key != bound_state {
-                        let variant = self.pipelines.get(&key).with_context(|| {
-                            format!("ForwardPass: no pipeline for {:?}", item.state)
-                        })?;
-                        ctx.device.cmd_bind_pipeline(
-                            ctx.cmd,
-                            vk::PipelineBindPoint::GRAPHICS,
-                            variant.pipeline,
-                        );
-                        bound_state = key;
-                    }
-                    drawn += 1;
-
-                    if let Some(skin) = skin {
-                        let vertex_buffers = [uploaded.vertex_buffer, skin.buffer];
-                        let offsets = [0u64, 0u64];
-                        ctx.device
-                            .cmd_bind_vertex_buffers(ctx.cmd, 0, &vertex_buffers, &offsets);
-                    } else {
-                        let vertex_buffers = [uploaded.vertex_buffer];
-                        let offsets = [0u64];
-                        ctx.device
-                            .cmd_bind_vertex_buffers(ctx.cmd, 0, &vertex_buffers, &offsets);
-                    }
-
-                    // #491: multi-item batches read their model matrices from
-                    // the bone SSBO; count 0 keeps the old push-model path.
-                    let instance_count = batch
-                        .instance_offset
-                        .map(|_| batch.items.len() as u32)
-                        .unwrap_or(0);
-                    let instance_offset = batch
-                        .instance_offset
-                        .map(|offset| bone_count as u32 + offset)
-                        .unwrap_or(0);
-                    let pc = crate::shader_bindings::scene_frag::PbrBindlessPush {
-                        model: item.model,
-                        material_slot: item.material.unwrap_or(0),
-                        env_handle: self.brdf_handle,
-                        debug_flags: ctx.frame.debug_flags,
-                        bone_offset: item.bone_offset.unwrap_or(0),
-                        skin_mode: u32::from(item.bone_offset.is_some()),
-                        instance_offset,
-                        instance_count,
-                        // Draw-list index for the previous-model SSBO and the
-                        // TAA reactive mask (transparent draws drop history).
-                        prev_draw_index: batch.items[0] as u32,
-                        reactive_mask: u32::from(item.state.blends()),
-                        splat_slot0: item.splat_slots[0],
-                        splat_slot1: item.splat_slots[1],
-                        splat_slot2: item.splat_slots[2],
-                        splat_slot3: item.splat_slots[3],
-                        splat_tiling: item.splat_tiling,
-                    };
-                    ctx.device.cmd_push_constants(
-                        ctx.cmd,
-                        scene_layout,
-                        vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                        0,
-                        bytemuck::bytes_of(&pc),
+                    // （剔除 / 深度写 / 混合都是管线状态）。描述符与推送常量布局在所有
+                    // 变体之间一致，所以不需要重新绑定描述符集。
+                    // #491: pack static instance matrices after the live bone
+                    // palette in the same SSBO. Skinned draws keep their existing
+                    // offsets; instanced draws start at `bone_count`.
+                    let bone_count = ctx
+                        .frame
+                        .bone_matrices
+                        .len()
+                        .min(ForwardPass::BONE_CAPACITY);
+                    let capacity = ForwardPass::BONE_CAPACITY.saturating_sub(bone_count);
+                    let (batches, instance_matrices) = prepare_static_batches(
+                        ctx.frame.draw_list,
+                        ctx.frame.mesh_manager,
+                        capacity,
                     );
+                    if !instance_matrices.is_empty() {
+                        let mut packed = Vec::with_capacity(bone_count + instance_matrices.len());
+                        packed.extend_from_slice(&ctx.frame.bone_matrices[..bone_count]);
+                        packed.extend_from_slice(&instance_matrices);
+                        self.update_bones(ctx.device, ctx.frame_index, &packed)?;
+                    }
 
-                    let draw_instances = instance_count.max(1);
-                    if let Some(ib) = uploaded.index_buffer {
-                        let index_count = item.index_count.unwrap_or(uploaded.index_count);
-                        if index_count == 0 {
+                    let mut bound_state = (DrawState::default(), wireframe, false);
+                    for batch in &batches {
+                        let item = &ctx.frame.draw_list[batch.items[0]];
+                        let uploaded_mesh = match ctx.frame.mesh_manager.get(item.mesh) {
+                            Some(m) => m,
+                            None => continue,
+                        };
+                        let uploaded = &uploaded_mesh.mesh;
+                        let skinned = item.bone_offset.is_some();
+                        let skin = if skinned {
+                            uploaded_mesh.skin.as_ref()
+                        } else {
+                            None
+                        };
+                        if skinned && skin.is_none() {
                             continue;
                         }
-                        ctx.device
-                            .cmd_bind_index_buffer(ctx.cmd, ib, 0, vk::IndexType::UINT32);
-                        ctx.device.cmd_draw_indexed(
+                        let key = (item.state, wireframe, skinned);
+                        if key != bound_state {
+                            let variant = self.pipelines.get(&key).with_context(|| {
+                                format!("ForwardPass: no pipeline for {:?}", item.state)
+                            })?;
+                            ctx.device.cmd_bind_pipeline(
+                                ctx.cmd,
+                                vk::PipelineBindPoint::GRAPHICS,
+                                variant.pipeline,
+                            );
+                            bound_state = key;
+                        }
+                        drawn += 1;
+
+                        if let Some(skin) = skin {
+                            let vertex_buffers = [uploaded.vertex_buffer, skin.buffer];
+                            let offsets = [0u64, 0u64];
+                            ctx.device.cmd_bind_vertex_buffers(
+                                ctx.cmd,
+                                0,
+                                &vertex_buffers,
+                                &offsets,
+                            );
+                        } else {
+                            let vertex_buffers = [uploaded.vertex_buffer];
+                            let offsets = [0u64];
+                            ctx.device.cmd_bind_vertex_buffers(
+                                ctx.cmd,
+                                0,
+                                &vertex_buffers,
+                                &offsets,
+                            );
+                        }
+
+                        // #491: multi-item batches read their model matrices from
+                        // the bone SSBO; count 0 keeps the old push-model path.
+                        let instance_count = batch
+                            .instance_offset
+                            .map(|_| batch.items.len() as u32)
+                            .unwrap_or(0);
+                        let instance_offset = batch
+                            .instance_offset
+                            .map(|offset| bone_count as u32 + offset)
+                            .unwrap_or(0);
+                        let pc = crate::shader_bindings::scene_frag::PbrBindlessPush {
+                            model: item.model,
+                            material_slot: item.material.unwrap_or(0),
+                            env_handle: self.brdf_handle,
+                            debug_flags: ctx.frame.debug_flags,
+                            bone_offset: item.bone_offset.unwrap_or(0),
+                            skin_mode: u32::from(item.bone_offset.is_some()),
+                            instance_offset,
+                            instance_count,
+                            // Draw-list index for the previous-model SSBO and the
+                            // TAA reactive mask (transparent draws drop history).
+                            prev_draw_index: batch.items[0] as u32,
+                            reactive_mask: u32::from(item.state.blends()),
+                            splat_slot0: item.splat_slots[0],
+                            splat_slot1: item.splat_slots[1],
+                            splat_slot2: item.splat_slots[2],
+                            splat_slot3: item.splat_slots[3],
+                            splat_tiling: item.splat_tiling,
+                        };
+                        ctx.device.cmd_push_constants(
                             ctx.cmd,
-                            index_count,
-                            draw_instances,
-                            item.index_start,
+                            scene_layout,
+                            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                             0,
-                            0,
+                            bytemuck::bytes_of(&pc),
                         );
-                    } else {
-                        ctx.device
-                            .cmd_draw(ctx.cmd, uploaded.vertex_count, draw_instances, 0, 0);
+
+                        let draw_instances = instance_count.max(1);
+                        if let Some(ib) = uploaded.index_buffer {
+                            let index_count = item.index_count.unwrap_or(uploaded.index_count);
+                            if index_count == 0 {
+                                continue;
+                            }
+                            ctx.device
+                                .cmd_bind_index_buffer(ctx.cmd, ib, 0, vk::IndexType::UINT32);
+                            ctx.device.cmd_draw_indexed(
+                                ctx.cmd,
+                                index_count,
+                                draw_instances,
+                                item.index_start,
+                                0,
+                                0,
+                            );
+                        } else {
+                            ctx.device.cmd_draw(
+                                ctx.cmd,
+                                uploaded.vertex_count,
+                                draw_instances,
+                                0,
+                                0,
+                            );
+                        }
                     }
                 }
-            }
 
-            // 填充 + 线框叠加（#431）：填充已经画完，再用 outline 着色器画一遍
-            // `POLYGON_MODE_LINE`；负深度 bias + 不写深度让线稳定压在面上。
-            if shaded_wireframe {
-                let overlay = self
-                    .shaded_wireframe_pipeline
-                    .as_ref()
-                    .context("ForwardPass: shaded wireframe pipeline missing")?;
-                unsafe {
+                // 填充 + 线框叠加（#431）：填充已经画完，再用 outline 着色器画一遍
+                // `POLYGON_MODE_LINE`；负深度 bias + 不写深度让线稳定压在面上。
+                if shaded_wireframe {
+                    let overlay = self
+                        .shaded_wireframe_pipeline
+                        .as_ref()
+                        .context("ForwardPass: shaded wireframe pipeline missing")?;
                     ctx.device.cmd_bind_pipeline(
                         ctx.cmd,
                         vk::PipelineBindPoint::GRAPHICS,
@@ -2554,23 +2569,21 @@ impl RenderPassNode for ForwardPass {
                         std::slice::from_ref(&frame_set),
                         std::slice::from_ref(&dynamic_offset),
                     );
-                }
-                for item in ctx.frame.draw_list {
-                    if !item.visible_in_main_pass {
-                        continue;
-                    }
-                    let Some(uploaded) = ctx.frame.mesh_manager.get(item.mesh) else {
-                        continue;
-                    };
-                    let pc = OutlinePush {
-                        model: item.model,
-                        // 深色线在亮面上可读；不随材质变化，接近 Unity 的
-                        // Shaded Wireframe。
-                        color: [0.02, 0.02, 0.02, 1.0],
-                        thickness: 0.0,
-                        _pad: [0.0; 3],
-                    };
-                    unsafe {
+                    for item in ctx.frame.draw_list {
+                        if !item.visible_in_main_pass {
+                            continue;
+                        }
+                        let Some(uploaded) = ctx.frame.mesh_manager.get(item.mesh) else {
+                            continue;
+                        };
+                        let pc = OutlinePush {
+                            model: item.model,
+                            // 深色线在亮面上可读；不随材质变化，接近 Unity 的
+                            // Shaded Wireframe。
+                            color: [0.02, 0.02, 0.02, 1.0],
+                            thickness: 0.0,
+                            _pad: [0.0; 3],
+                        };
                         let vertex_buffers = [uploaded.mesh.vertex_buffer];
                         let offsets = [0u64];
                         ctx.device
@@ -2603,21 +2616,20 @@ impl RenderPassNode for ForwardPass {
                         }
                     }
                 }
-            }
 
-            // 选中描边（#487）：把选中的网格再画一遍，正面剔除 + 法线外扩。
-            // 放在不透明网格之后、粒子 / 精灵之前：被其它几何挡住的部分会正常
-            // 被深度测试丢弃，不会像屏幕空间线框那样浮在最上面。
-            let outline_requested = ctx.frame.draw_list.iter().any(|item| {
-                item.visible_in_main_pass && ctx.frame.outline_entities.contains(&item.entity_id)
-            });
-            if outline_requested {
-                self.ensure_outline_pipeline(ctx.device)?;
-                let outline = self
-                    .outline_pipeline
-                    .as_ref()
-                    .context("ForwardPass: outline pipeline missing")?;
-                unsafe {
+                // 选中描边（#487）：把选中的网格再画一遍，正面剔除 + 法线外扩。
+                // 放在不透明网格之后、粒子 / 精灵之前：被其它几何挡住的部分会正常
+                // 被深度测试丢弃，不会像屏幕空间线框那样浮在最上面。
+                let outline_requested = ctx.frame.draw_list.iter().any(|item| {
+                    item.visible_in_main_pass
+                        && ctx.frame.outline_entities.contains(&item.entity_id)
+                });
+                if outline_requested {
+                    self.ensure_outline_pipeline(ctx.device)?;
+                    let outline = self
+                        .outline_pipeline
+                        .as_ref()
+                        .context("ForwardPass: outline pipeline missing")?;
                     ctx.device.cmd_bind_pipeline(
                         ctx.cmd,
                         vk::PipelineBindPoint::GRAPHICS,
@@ -2631,31 +2643,29 @@ impl RenderPassNode for ForwardPass {
                         std::slice::from_ref(&frame_set),
                         std::slice::from_ref(&dynamic_offset),
                     );
-                }
 
-                for item in ctx.frame.draw_list {
-                    if !item.visible_in_main_pass
-                        || !ctx.frame.outline_entities.contains(&item.entity_id)
-                    {
-                        continue;
-                    }
-                    let Some(uploaded) = ctx.frame.mesh_manager.get(item.mesh) else {
-                        continue;
-                    };
-                    // 线宽随物体尺度走，缩放很大的物体不会只剩一条细缝。
-                    let scale = (0..3)
-                        .map(|column| {
-                            let c = &item.model[column];
-                            (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt()
-                        })
-                        .fold(0.0f32, f32::max);
-                    let pc = OutlinePush {
-                        model: item.model,
-                        color: [4.0, 0.25, 0.02, 1.0],
-                        thickness: 0.02 * scale.max(1e-4),
-                        _pad: [0.0; 3],
-                    };
-                    unsafe {
+                    for item in ctx.frame.draw_list {
+                        if !item.visible_in_main_pass
+                            || !ctx.frame.outline_entities.contains(&item.entity_id)
+                        {
+                            continue;
+                        }
+                        let Some(uploaded) = ctx.frame.mesh_manager.get(item.mesh) else {
+                            continue;
+                        };
+                        // 线宽随物体尺度走，缩放很大的物体不会只剩一条细缝。
+                        let scale = (0..3)
+                            .map(|column| {
+                                let c = &item.model[column];
+                                (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt()
+                            })
+                            .fold(0.0f32, f32::max);
+                        let pc = OutlinePush {
+                            model: item.model,
+                            color: [4.0, 0.25, 0.02, 1.0],
+                            thickness: 0.02 * scale.max(1e-4),
+                            _pad: [0.0; 3],
+                        };
                         let vertex_buffers = [uploaded.mesh.vertex_buffer];
                         let offsets = [0u64];
                         ctx.device
@@ -2689,7 +2699,6 @@ impl RenderPassNode for ForwardPass {
                     }
                 }
             }
-                }
 
             // 世界空间粒子：深度测试开启（被前面的几何遮挡），所以画在不透明网格
             // 之后、2D 精灵之前；透明排序由引擎在提交前完成（远到近）。
