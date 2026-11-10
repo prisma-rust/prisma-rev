@@ -44,6 +44,11 @@ pub struct ReportStats {
     pub occlusion_tested: usize,
     #[serde(default)]
     pub occlusion_culled: usize,
+    /// 显存子分配统计（#1030）：总保留显存字节数与活跃已使用字节数。
+    #[serde(default)]
+    pub suballoc_reserved_bytes: u64,
+    #[serde(default)]
+    pub suballoc_active_bytes: u64,
 }
 
 impl ReportStats {
@@ -595,6 +600,8 @@ mod tests {
             material_bytes: 384,
             occlusion_tested: 0,
             occlusion_culled: 0,
+            suballoc_reserved_bytes: 0,
+            suballoc_active_bytes: 0,
         };
         assert_eq!(stats.total_bytes(), 3456);
         let report = RenderGraphReport::from_snapshot(&snapshot(), ReportSettings::default(), 1)
