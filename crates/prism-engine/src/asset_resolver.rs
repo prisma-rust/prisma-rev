@@ -1823,10 +1823,13 @@ impl GpuAssetResolver {
                     size: [entry.pixel_rect[2], entry.pixel_rect[3]],
                 },
             );
-            let tex_id = self.resource_manager.id_by_path(&info.texture_path).or_else(|| {
-                report_missing_reference(&info.texture_path, "texture");
-                None
-            })?;
+            let tex_id = self
+                .resource_manager
+                .id_by_path(&info.texture_path)
+                .or_else(|| {
+                    report_missing_reference(&info.texture_path, "texture");
+                    None
+                })?;
             self.load_texture_data(Some(tex_id), true)
         } else {
             let id = self.resource_manager.id_by_path(path).or_else(|| {

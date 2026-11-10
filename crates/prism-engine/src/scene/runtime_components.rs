@@ -81,12 +81,7 @@ pub struct SpriteRef {
 
 impl SpriteRef {
     /// Helper to construct a standard standalone sprite reference.
-    pub fn new(
-        asset_id: SceneAssetId,
-        texture_slot: u32,
-        size: [u32; 2],
-        generation: u32,
-    ) -> Self {
+    pub fn new(asset_id: SceneAssetId, texture_slot: u32, size: [u32; 2], generation: u32) -> Self {
         Self {
             asset_id,
             texture_slot,
