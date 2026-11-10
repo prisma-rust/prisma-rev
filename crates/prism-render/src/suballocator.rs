@@ -4,12 +4,12 @@
 //! 减少直接调用 `vkAllocateMemory` 的次数并防止达到驱动 `maxMemoryAllocationCount` 上限。
 //!
 //! 核心结构：
-//! - [`MemorySuballocator`]: 多内存类型索引的大块 `VkDeviceMemory` 管理器，
+//! - `MemorySuballocator`: 多内存类型索引的大块 `VkDeviceMemory` 管理器，
 //!   执行对齐子分配与释放时相邻区间合并（free-list coalescing）。
-//! - [`StagingArena`]: 批量上传（[`crate::batch::BatchUploader`]）专用的分块暂存区，
+//! - `StagingArena`: 批量上传（`crate::batch::BatchUploader`）专用的分块暂存区，
 //!   将数百次逐资源 staging `vkAllocateMemory` 合并为大块暂存缓冲分配，并在提交前显式 unmap
 //!   以保证跨驱动（包括 llvmpipe）正确同步。
-//! - [`SuballocatorStats`]: 保留显存、活跃显存、Chunk 数量与分配数统计。
+//! - `SuballocatorStats`: 保留显存、活跃显存、Chunk 数量与分配数统计。
 
 use anyhow::{Context as _, Result};
 use ash::vk;
@@ -572,7 +572,7 @@ mod tests {
 
     #[test]
     fn test_suballocator_stats() {
-        let mut suballoc = MemorySuballocator::new(64 * 1024 * 1024);
+        let suballoc = MemorySuballocator::new(64 * 1024 * 1024);
         let s = suballoc.stats();
         assert_eq!(s.total_reserved_bytes, 0);
         assert_eq!(s.active_used_bytes, 0);
