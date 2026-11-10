@@ -27,7 +27,7 @@ win32-native = ["prism-platform/win32-native"]
 # 「只有 winit + X11」这个最小合法组合（`scripts/check_features.py` 依赖这条）。
 x11 = ["winit-backend", "prism-platform/x11"]
 wayland = ["winit-backend", "prism-platform/wayland"]
-# Lego 开关：透传到 prism-render / prism-engine（见 docs/DESIGN.md §12）。
+# Modular building-block toggles: forwarded to prism-render / prism-engine (see docs/DESIGN.md §12).
 pathtrace = ["prism-render/pathtrace", "prism-engine/pathtrace"]
 ui = ["prism-render/ui", "prism-engine/ui"]
 # 文本光栅后端（透传到 prism-render，见 docs/DESIGN.md §12.2）。默认走 fontdue；

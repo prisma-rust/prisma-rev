@@ -1,18 +1,18 @@
-//! 1×1 占位 GPU 资源。
+//! 1×1 placeholder GPU resources.
 //!
-//! 渲染 pass 级的 Lego feature（`shadows` / `gtao`）关闭时，`ForwardPass`
-//! 仍然保留 shader 侧的 descriptor 布局（set 3 = 阴影深度图、set 4 = 上一帧
-//! GTAO），只是绑定一张 1×1 的常量图：
+//! When pass-level building-block features (`shadows` / `gtao`) are disabled,
+//! `ForwardPass` retains the descriptor layout on the shader side (set 3 = shadow depth map,
+//! set 4 = previous-frame GTAO), binding a 1×1 constant image instead:
 //!
-//! * 阴影：`D32_SFLOAT` 清成 1.0（远平面）→ `LESS` 比较恒为「未遮挡」；
-//! * GTAO：`R8_UNORM` 清成 1.0 → 可见性 = 1（无遮蔽）。
+//! * Shadow: `D32_SFLOAT` cleared to 1.0 (far plane) -> `LESS` compare always passes ("unoccluded");
+//! * GTAO: `R8_UNORM` cleared to 1.0 -> visibility = 1 (no occlusion).
 //!
-//! 这样 forward pass 里**不需要任何运行时分支**，也不会出现「描述符未写完 /
-//! 布局不匹配」这类验证层错误——和 [`crate::ibl`] 关闭时退化到 1×1 中性灰
-//! 是同一套思路。
+//! This avoids runtime branching in the forward pass and prevents validation layer errors
+//! (such as incomplete descriptors or layout mismatches) — matching the design of [`crate::ibl`],
+//! which falls back to a 1×1 neutral grey image when disabled.
 //!
-//! 只有对应的 feature 关闭时才编译，所以全量构建里这个模块完全不存在
-//! （Lego 的另一半：关闭的能力不该为「支持的构建」付代价）。
+//! Only compiled when the corresponding features are disabled; absent from full builds
+//! (the other half of building blocks: disabled capabilities incur zero overhead).
 
 use anyhow::Context as _;
 use ash::vk;

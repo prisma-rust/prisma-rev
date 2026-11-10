@@ -1145,7 +1145,7 @@ cp target/release/prisma /tmp/p && strip /tmp/p && ls -l /tmp/p   # strip 后（
 
 ---
 
-## 12. Lego：项目模板决定编译哪些子系统
+## 12. 积木：项目模板决定编译哪些子系统
 
 引擎不替项目做取舍。**能力 = 砖块，`Cargo.toml` = 图纸**：项目模板挑哪些 feature，
 就只编译、只链接哪些子系统。引擎自身的 `default` 保持「全量」，这样库和示例不会被
