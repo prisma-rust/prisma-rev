@@ -398,6 +398,13 @@ impl TextureFormat { fn is_compressed()->bool; fn compressed_byte_len()->usize; 
 - **不**在运行时做 BC/ASTC 编码。编码慢（秒级/张），必须在离线工具做。
 - **不**把 KTX2 产物进 git。太大，靠 SHA256 保证一致性。
 - **不**用 Basis Universal UASTC 跨平台单编码。画质略损，且 PrismaRev 桌面/移动都支持 ASTC（桌面现代 GPU 全支持），不需要"一次编码到处转"。多平台产物分别生成更清晰。
+
+### 7.9 显存子分配与批量暂存 Arena（#1030）
+
+**已实现（2026-11-10）**：
+- **StagingArena 分块复用**：`BatchUploader` 内置 `StagingArena`，将数百次逐资源 `vkAllocateMemory` staging 合并为大块暂存缓冲分配（默认 16 MiB Chunk），按需扩容并按 16 字节（buffer）与 256 字节（image）对齐子分配。
+- **llvmpipe 驱动同步保障**：提交命令前通过 `unmap_all` 显式解映射所有暂存 Chunk，解决纯软件栅格化后端持久映射导致的脏缓存与复制竞争，保证跨驱动一致性。
+- **MemorySuballocator 核心**：实现纯 Rust 多内存类型索引的显存子分配器与区间合并（free-list coalescing），并在 `GraphRenderer` 与 `ReportStats` 暴露保留显存 / 活跃分配显存统计。
 - **不**用神经纹理压缩（NTC / Adreno 神经纹理）。无标准扩展、无跨厂商工具链，留待 Khronos 标准化。
 - **不**为 BC1/BC2/BC3 单独支持。BC2/BC3 是 DX9 时代格式被 BC7 取代；BC1 仅极致体积场景用，移动端 ASTC 12×12 已覆盖该 niche。
 

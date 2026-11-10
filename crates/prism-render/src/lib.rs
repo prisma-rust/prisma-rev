@@ -106,6 +106,7 @@ pub const MAX_SHADOW_MAP_SIZE: u32 = 8192;
 pub mod shadow_map_pass;
 pub mod skybox_pass;
 pub mod sprite_pass;
+pub mod suballocator;
 pub mod swapchain;
 pub mod tangents;
 pub mod ui_overlay;
@@ -154,6 +155,7 @@ pub use shader::load_shader_module;
 pub use shadow_map_pass::ShadowMapPass;
 pub use skybox_pass::SkyboxSettings;
 pub use sprite_pass::SpritePass;
+pub use suballocator::{MemorySuballocator, StagingArena, Suballocation, SuballocatorStats};
 pub use swapchain::Swapchain;
 #[cfg(feature = "ui")]
 pub use ui_overlay::UiOverlay;

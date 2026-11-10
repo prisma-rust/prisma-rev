@@ -366,6 +366,8 @@ pub struct GraphRenderer {
     gpu_history: crate::gpu_timer::GpuHistory,
     /// 上一帧深度的粗粒度回读（#1007）。关闭时不分配缓冲、不回读。
     occlusion: OcclusionState,
+    /// 显存子分配器（#1030）。
+    suballocator: crate::suballocator::MemorySuballocator,
 
     // ── last field ──────────────────────────────────────────────────
     /// Long-lived GPU session (device, command pool, descriptors, UBOs).
@@ -731,6 +733,9 @@ impl GraphRenderer {
                 margin_tiles: 1,
                 ..Default::default()
             },
+            suballocator: crate::suballocator::MemorySuballocator::new(
+                crate::suballocator::MemorySuballocator::DEFAULT_CHUNK_SIZE,
+            ),
         })
     }
     // -------------------------------------------------------------------
@@ -1160,6 +1165,9 @@ impl GraphRenderer {
             },
             offscreen: Some(offscreen),
             headless_fence,
+            suballocator: crate::suballocator::MemorySuballocator::new(
+                crate::suballocator::MemorySuballocator::DEFAULT_CHUNK_SIZE,
+            ),
         })
     }
 
@@ -2481,11 +2489,12 @@ impl GraphRenderer {
         calls
     }
 
-    /// 纹理 / 网格 / 材质的实时驻留统计（#518 Phase 2）。
+    /// 纹理 / 网格 / 材质与显存子分配的实时驻留统计（#518 Phase 2, #1030）。
     pub fn render_stats(&self) -> crate::render_graph_report::ReportStats {
         let (textures, texture_bytes) = self.texture_manager.stats();
         let (meshes, mesh_bytes) = self.mesh_manager.stats();
         let (materials, material_bytes) = self.material_manager.stats();
+        let suballoc = self.suballocator.stats();
         crate::render_graph_report::ReportStats {
             textures,
             texture_bytes,
@@ -2495,7 +2504,24 @@ impl GraphRenderer {
             material_bytes,
             occlusion_tested: self.occlusion.counts.tested,
             occlusion_culled: self.occlusion.counts.culled,
+            suballoc_reserved_bytes: suballoc.total_reserved_bytes,
+            suballoc_active_bytes: suballoc.active_used_bytes,
         }
+    }
+
+    /// 获取显存子分配器引用（#1030）。
+    pub fn suballocator(&self) -> &crate::suballocator::MemorySuballocator {
+        &self.suballocator
+    }
+
+    /// 获取显存子分配器可变引用（#1030）。
+    pub fn suballocator_mut(&mut self) -> &mut crate::suballocator::MemorySuballocator {
+        &mut self.suballocator
+    }
+
+    /// 获取显存子分配器状态统计（#1030）。
+    pub fn suballocator_stats(&self) -> crate::suballocator::SuballocatorStats {
+        self.suballocator.stats()
     }
 
     /// 准备阶段：在命令录制前批量同步 CPU 场景状态和 GPU 资源。
@@ -3280,6 +3306,7 @@ impl GraphRenderer {
         self.material_manager.destroy(device);
         self.texture_manager.destroy();
         self.mesh_manager.destroy(device);
+        self.suballocator.destroy(device);
 
         // 销毁 ForwardPass (framebuffers, 深度 images, 渲染 pass
         // pipeline, shadow descriptor set). Without this, vkDestroyDevice

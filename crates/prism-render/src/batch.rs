@@ -21,23 +21,12 @@
 use anyhow::{Context as _, Result};
 use ash::vk;
 
-use crate::buffer::{
-    create_buffer, find_memory_type, mip_chain_byte_size, mip_level_byte_size, BufferUsage,
-    MemoryProperties,
-};
+use crate::buffer::{find_memory_type, mip_chain_byte_size, mip_level_byte_size, MemoryProperties};
 use crate::context::VulkanContext;
+use crate::suballocator::{StagingArena, SuballocatorStats};
 use crate::vulkan_compat::{LegacyCopy2, LegacySync2};
 
-/// A staging resource that must outlive the submitted command buffer and is
-/// destroyed together in [`BatchUploader::finish`].
-enum Deferred {
-    Buffer {
-        buffer: vk::Buffer,
-        memory: vk::DeviceMemory,
-    },
-}
-
-/// Records buffer/image staging copies into one command buffer, flusheded
+/// Records buffer/image staging copies into one command buffer, flushed
 /// with a single submit + fence wait.
 pub struct BatchUploader<'a> {
     context: &'a VulkanContext,
@@ -45,7 +34,7 @@ pub struct BatchUploader<'a> {
     cmd: vk::CommandBuffer,
     sync2: LegacySync2<'a>,
     copy2: LegacyCopy2<'a>,
-    deferred: Vec<Deferred>,
+    staging_arena: StagingArena,
     started: bool,
 }
 
@@ -78,41 +67,37 @@ impl<'a> BatchUploader<'a> {
             device: &context.device,
         };
 
+        let staging_arena = StagingArena::new(StagingArena::DEFAULT_CHUNK_SIZE);
+
         Ok(Self {
             context,
             command_pool,
             cmd,
             sync2,
             copy2,
-            deferred: Vec::new(),
+            staging_arena,
             started: true,
         })
     }
 
-    /// Copy `data` into the device-local `destination_buffer` via a fresh
-    /// staging buffer. The staging buffer is kept alive until [`finish`].
+    /// Return memory statistics for all staging chunks currently held.
+    pub fn staging_stats(&self) -> SuballocatorStats {
+        self.staging_arena.stats()
+    }
+
+    /// Copy `data` into the device-local `destination_buffer` via a staging
+    /// arena suballocation. The staging buffer is kept alive until [`finish`].
     pub fn upload_buffer(
         &mut self,
         destination_buffer: vk::Buffer,
         size: vk::DeviceSize,
         data: &[u8],
     ) -> Result<()> {
-        let device = &self.context.device;
-        let (staging, staging_memory) = create_buffer(
-            self.context,
-            size,
-            BufferUsage::TRANSFER_SRC,
-            MemoryProperties::HOST_VISIBLE | MemoryProperties::HOST_COHERENT,
-        )
-        .context("BatchUploader: create staging buffer")?;
-        unsafe {
-            let ptr = device
-                .map_memory(staging_memory, 0, size, vk::MemoryMapFlags::empty())
-                .context("BatchUploader: map staging memory")?;
-            std::ptr::copy_nonoverlapping(data.as_ptr(), ptr as *mut u8, data.len());
-            device.unmap_memory(staging_memory);
-        }
-        let copy_region = vk::BufferCopy2::default().size(size);
+        let (staging, offset) = self.staging_arena.stage(self.context, data, 16)?;
+        let copy_region = vk::BufferCopy2::default()
+            .src_offset(offset)
+            .dst_offset(0)
+            .size(size);
         unsafe {
             self.copy2.cmd_copy_buffer2(
                 self.cmd,
@@ -122,10 +107,6 @@ impl<'a> BatchUploader<'a> {
                     .regions(std::slice::from_ref(&copy_region)),
             );
         }
-        self.deferred.push(Deferred::Buffer {
-            buffer: staging,
-            memory: staging_memory,
-        });
         Ok(())
     }
 
@@ -191,27 +172,9 @@ impl<'a> BatchUploader<'a> {
         unsafe { device.bind_image_memory(image, memory, 0) }
             .context("BatchUploader: bind image memory")?;
 
-        // Staging 缓冲区 for the base mip — sized by what the caller provided,
-        // since `pixels` may hold a whole baked mip chain (KTX2).
-        let size = pixels.len() as vk::DeviceSize;
-        let (staging, staging_memory) = create_buffer(
-            self.context,
-            size,
-            BufferUsage::TRANSFER_SRC,
-            MemoryProperties::HOST_VISIBLE | MemoryProperties::HOST_COHERENT,
-        )
-        .context("BatchUploader: create image staging buffer")?;
-        unsafe {
-            let ptr = device
-                .map_memory(staging_memory, 0, size, vk::MemoryMapFlags::empty())
-                .context("BatchUploader: map image staging")?;
-            std::ptr::copy_nonoverlapping(pixels.as_ptr(), ptr as *mut u8, pixels.len());
-            device.unmap_memory(staging_memory);
-        }
-        self.deferred.push(Deferred::Buffer {
-            buffer: staging,
-            memory: staging_memory,
-        });
+        // Staging buffer for the base mip — suballocated from the staging arena
+        // using 256-byte alignment (matching optimalBufferCopyOffsetAlignment).
+        let (staging, staging_offset) = self.staging_arena.stage(self.context, pixels, 256)?;
 
         // UNDEFINED -> TRANSFER_DST_OPTIMAL (all mip levels).
         barrier2(
@@ -231,6 +194,7 @@ impl<'a> BatchUploader<'a> {
 
         // Copy staging -> mip 0.
         let copy = vk::BufferImageCopy::default()
+            .buffer_offset(staging_offset)
             .image_subresource(
                 vk::ImageSubresourceLayers::default()
                     .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -263,7 +227,7 @@ impl<'a> BatchUploader<'a> {
                 as u64;
             for level in 1..mip_levels {
                 let copy = vk::BufferImageCopy::default()
-                    .buffer_offset(offset)
+                    .buffer_offset(staging_offset + offset)
                     .image_subresource(
                         vk::ImageSubresourceLayers::default()
                             .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -454,14 +418,19 @@ impl<'a> BatchUploader<'a> {
         Ok((image, memory, view))
     }
 
-    /// End the command buffer, submit it once with a dedicated fence, wait
-    /// for completion, then destroy every staging resource. After this the
-    /// uploader is consumed and cannot record more copies.
+    /// End the command buffer, unmap all staging memory, submit it once with a
+    /// dedicated fence, wait for completion, then destroy all staging chunks.
+    /// After this the uploader is consumed and cannot record more copies.
     pub fn finish(mut self, graphics_queue: vk::Queue) -> Result<()> {
         let device = &self.context.device;
         unsafe { device.end_command_buffer(self.cmd) }
             .context("BatchUploader: end command buffer")?;
         self.started = false;
+
+        // Unmap all staging chunks BEFORE queue submission.
+        // Critical for software rasterizers (llvmpipe) to ensure host writes
+        // are properly synchronized before vkCmdCopyBuffer / vkCmdCopyBufferToImage execute.
+        self.staging_arena.unmap_all(device);
 
         let fence = unsafe { device.create_fence(&vk::FenceCreateInfo::default(), None) }
             .context("BatchUploader: create fence")?;
@@ -474,15 +443,8 @@ impl<'a> BatchUploader<'a> {
         unsafe { device.destroy_fence(fence, None) };
         unsafe { device.free_command_buffers(self.command_pool, &[self.cmd]) };
 
-        // Now that the GPU is done, all staging buffers can be released.
-        for d in self.deferred.drain(..) {
-            match d {
-                Deferred::Buffer { buffer, memory } => unsafe {
-                    device.destroy_buffer(buffer, None);
-                    device.free_memory(memory, None);
-                },
-            }
-        }
+        // Clean up all staging chunks now that GPU transfer is complete.
+        self.staging_arena.destroy(device);
         Ok(())
     }
 }
@@ -493,22 +455,14 @@ impl<'a> Drop for BatchUploader<'a> {
         // buffer has already been freed. If the uploader was dropped without
         // finishing (early return on error), we must release the command
         // buffer + staging resources ourselves so nothing leaks.
+        let device = &self.context.device;
         if self.started {
-            let device = &self.context.device;
             unsafe {
                 let _ = device.end_command_buffer(self.cmd);
                 device.free_command_buffers(self.command_pool, &[self.cmd]);
             }
         }
-        let device = &self.context.device;
-        for d in self.deferred.drain(..) {
-            match d {
-                Deferred::Buffer { buffer, memory } => unsafe {
-                    device.destroy_buffer(buffer, None);
-                    device.free_memory(memory, None);
-                },
-            }
-        }
+        self.staging_arena.destroy(device);
     }
 }
 
