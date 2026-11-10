@@ -195,7 +195,10 @@ mod tests {
         app.build_plugins();
 
         let world = app.engine_mut().world_mut();
-        assert_eq!(world.get_resource::<TestResource>(), Some(&TestResource(42)));
+        assert_eq!(
+            world.get_resource::<TestResource>(),
+            Some(&TestResource(42))
+        );
     }
 
     struct GroupA;
@@ -212,6 +215,9 @@ mod tests {
         app.build_plugins();
 
         let world = app.engine_mut().world_mut();
-        assert_eq!(world.get_resource::<TestResource>(), Some(&TestResource(42)));
+        assert_eq!(
+            world.get_resource::<TestResource>(),
+            Some(&TestResource(42))
+        );
     }
 }

@@ -233,7 +233,7 @@ pub struct App {
     fixed_accumulator: Duration,
 
     // ---------- plugins (#1165) ----------
-    plugin_registry: crate::plugin::PluginRegistry,
+    pub(crate) plugin_registry: crate::plugin::PluginRegistry,
 }
 
 /// 把场景里写的资产路径归一化成 pak 内的相对路径。
