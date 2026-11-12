@@ -352,14 +352,24 @@ fn create_instance(
 ) -> anyhow::Result<ash::Instance> {
     use anyhow::Context as _;
 
+    // Query loader instance version; request Vulkan 1.2 if supported (required
+    // for core 1.2 entry points like vkGetBufferDeviceAddress without KHR suffix).
+    let instance_version = unsafe { entry.try_enumerate_instance_version() }
+        .ok()
+        .flatten()
+        .unwrap_or(vk::API_VERSION_1_1);
+    let api_version = if instance_version >= vk::API_VERSION_1_2 {
+        vk::API_VERSION_1_2
+    } else {
+        vk::API_VERSION_1_1
+    };
+
     let app_info = vk::ApplicationInfo::default()
         .application_name(c"PrismaRev")
         .application_version(vk::make_api_version(0, 0, 1, 0))
         .engine_name(c"PrismaRev")
         .engine_version(vk::make_api_version(0, 0, 1, 0))
-        // Keep the instance contract at Vulkan 1.1. Optional 1.2/1.3
-        // capabilities are queried per-device and enabled only when present.
-        .api_version(vk::API_VERSION_1_1);
+        .api_version(api_version);
 
     // Instance extensions: surface + platform. Debug utils only in debug builds
     // (it's a debugging aid; the validation layer warns if enabled in release).

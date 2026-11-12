@@ -948,3 +948,37 @@ delta 光源没有面积，也就不存在这个 Jacobian——正确做法是�
   混用会静默压暗/提亮，编译器不会报错哪。
 - 这类错误只在「有解析光源 + 开 NEE」时才出现，视觉上像「灯不够亮」，
   很容易被误当成 tonemap 或曝光问题。
+
+## VkApplicationInfo.api_version 限制 Vulkan 1.2+ Core 函数符号导出
+
+**问题**：无头模式或离屏渲染启用光追时，`PathTracePass::set_geometry` -> `build_pt_scene` 触发 ash panic：
+`Unable to load get_buffer_device_address`（在 `ash::tables::DeviceFnV1_2::load_erased` 处崩溃）。
+
+**根本原因**：
+创建 Vulkan 实例时，`VkApplicationInfo.apiVersion` 硬编码为 `vk::API_VERSION_1_1`。
+依据 Vulkan 规范，当实例 API 版本声明为 1.1 时，严格遵守规范的驱动（如 NVIDIA Windows 驱动）在通过 `vkGetDeviceProcAddr` 解析未带 `KHR` 后缀的 Vulkan 1.2 核心入口点（如 `vkGetBufferDeviceAddress`）时返回 `NULL`。
+`ash::Device` 的 `get_buffer_device_address` 直接调用 `self.device_fn_1_2.get_buffer_device_address`（1.2 表），遇到空指针直接进入 ash 生成的 panic stub。
+
+**解决与教训**：
+- 使用 `entry.try_enumerate_instance_version()` 探测加载器支持的最大实例版本。
+- 当加载器版本支持时，请求 `vk::API_VERSION_1_2`（或者不低于 1.2），以便驱动安全导出 Vulkan 1.2 核心函数指针。
+- 绝不能一边在注释中写「目标是 Vulkan 1.2」，一边在 `ApplicationInfo` 传递 `API_VERSION_1_1`。
+
+## include_bytes! 嵌入 SPIR-V 字节的对齐风险
+
+**问题**：调用 `bytemuck::cast_slice::<u8, u32>(SPV)` 转换 `include_bytes!` 宏嵌入的 SPIR-V 字节时，在部分构建配置下触发运行时 panic：
+`bytemuck: TargetAlignmentGreaterAndInputNotAligned`。
+
+**根本原因**：
+Rust 的 `include_bytes!` 宏将二进制数据嵌入到只读数据段（`.rodata`），其指针仅保证 1 字节对齐。如果嵌入的起始地址刚好不是 4 字节对齐，`bytemuck::cast_slice` 执行强转检查时会直接 panic。
+
+**解决与教训**：
+- 渲染管线加载 SPIR-V 统一调用 `crate::shader::load_shader_module`。
+- `load_shader_module` 内部显式检测指针地址对齐；若未对齐则通过 `as_chunks::<4>` 安全重组为 `u32`，避免未定义行为和对齐 panic。
+
+## RTXGI SHARC 显存屏障与 64 位缓冲原子操作
+
+**经验**：
+- SHARC 哈希表基于 64 位空间哈希键（`uint64`），物理设备必须在逻辑设备创建时开启 `PhysicalDeviceVulkan12Features.shader_buffer_int64_atomics`。
+- SHARC 分配显存时，首帧必须通过 `cmd_fill_buffer` 零初始化，随后必须通过 `TRANSFER -> COMPUTE_SHADER` 显存屏障（`TRANSFER_WRITE -> SHADER_READ | SHADER_WRITE`）同步，防止未初始化脏数据被识别为有效空间体素。
+- `SharcResolvePass::execute` 计算写出后，必须在执行后续光线追踪或降噪 pass 之前发出 `COMPUTE_SHADER -> COMPUTE_SHADER | FRAGMENT_SHADER` 内存屏障，保证空间哈希辐射度跨帧解析正确可见。

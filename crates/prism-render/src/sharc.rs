@@ -202,8 +202,7 @@ impl SharcResolvePass {
 
         // Pipeline
         const SPV: &[u8] = include_bytes!("../../../assets/shaders/sharc_resolve.comp.spv");
-        let shader_info = vk::ShaderModuleCreateInfo::default().code(bytemuck::cast_slice(SPV));
-        let shader_module = unsafe { device.create_shader_module(&shader_info, None) }
+        let shader_module = crate::shader::load_shader_module(device, SPV)
             .context("SharcResolvePass: create shader module")?;
 
         let entry = CString::new("resolveMain").unwrap();

@@ -1250,6 +1250,16 @@ impl GraphRenderer {
         &mut self.graph
     }
 
+    /// Current render settings.
+    pub fn settings(&self) -> &RenderSettings {
+        &self.settings
+    }
+
+    /// Mutable reference to current render settings.
+    pub fn settings_mut(&mut self) -> &mut RenderSettings {
+        &mut self.settings
+    }
+
     /// 设置本帧要画选中描边的 ECS 实体 id（#487）。
     ///
     /// 编辑器把 `workspace.selection` 映射成 `prism_ecs::Entity::id()` 后调用；

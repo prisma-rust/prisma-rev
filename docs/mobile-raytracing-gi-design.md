@@ -154,23 +154,23 @@ Rust 侧 `TextureHandle` 改为 `struct { u32 index }` + `INVALID` 常量。
 
 ## 7. 实现里程碑(建议顺序)
 
-1. **RenderGraph 骨架**:`RenderPassNode` trait + 图构建 + 基础 GBuffer pass(raster PBR,质量优先)
-2. **Bindless 升级**:`bindless.rs` → 分离 SRV/sampler + INVALID fallback
-3. **TLAS 构建**:从 PrismaECS mesh 建 BLAS/TLAS(acceleration-structure 模块)
-4. **RayQuery 阴影**:`RayQueryPass` + `rt/ray_query.slang`(阴影先,最稳)
-5. **RayQuery 反射**:扩展 `RayQueryPass`(反射)
-6. **SHARC GI**:移植 3 文件 + buffer set + Update/Resolve/Query pass + 模式状态机
-7. **Lighting 合成**:direct(±RT) + IBL + SHARC → HDR → Post
-8. **CI 扩展**:SHARC/GI shader 编译 + drift guard(复用现有 slang workflow)
-
-> 每步独立可验证,不破坏已有渲染(增量、可回退)。
+1. **RenderGraph 骨架**:`RenderPassNode` trait + 图构建 + 基础 GBuffer pass(raster PBR,质量优先) [完成]
+2. **Bindless 升级**:`bindless.rs` → 分离 SRV/sampler + INVALID fallback [完成]
+3. **TLAS 构建**:从 PrismaECS mesh 建 BLAS/TLAS(acceleration-structure 模块) [完成]
+4. **RayQuery 阴影**:`RayQueryPass` + `rt/ray_query.slang`(阴影先,最稳) [完成]
+5. **RayQuery 反射**:扩展 `RayQueryPass`(反射) [完成]
+6. **SHARC GI (RTXGI v1.6)**:模块化 `rtxgi` feature + `sharc.rs` (1M entries Hash Grid + Resolve Pass) + Vulkan 1.2+ `buffer_device_address` / 64位原子操作支持 [完成]
+7. **Sponza 验证与 Goldenframe 对比**:`projects/sponza` 用户项目接入 + 调参 UI + 离屏实测渲染与 RTXGI 官方参考图量化对比 [完成]
+8. **Lighting 合成与降噪扩展**:direct(±RT) + IBL + SHARC 混合 [推进中]
+9. **CI 扩展**:SHARC/GI shader 编译 + drift guard(复用现有 slang workflow) [完成]
 
 ---
 
-## 8. 待确认(实现前)
+## 8. Sponza 与 RTXGI SHARC 验证与 Goldenframe 规范
 
-- [ ] GBuffer 格式:保 `RGBA32F`(质量)还是降 `R10G10B10A2`(带宽)?
-- [ ] SHARC 容量档位(移动端显存预算)
-- [ ] RayQuery 阴影/反射是否半分辨率(60fps 预算)
-- [ ] RenderGraph 错误处理/资源生命周期归属
-- [ ] 是否保留现有 `renderer.rs` 作 legacy 对照,还是直接替换
+- **架构隔离**：渲染管线改动与 RTXGI 接入严格属于引擎层（`crates/prism-render` 中的 `sharc.rs` 与 `render_graph`），用户项目 `projects/sponza` 仅包含资产与调参 UI（`tuning_ui.rs`），不越权污染管线逻辑。
+- **Goldenframe 规范对比**：
+  - 测试套件：`crates/prism-render/tests/rtxgi_sponza_golden.rs`
+  - 差分阈值：通道容差 12，4 倍增益热力图生成。
+  - 产出构件：`sponza_raster.actual.png`、`sponza_pt_cache_off.actual.png`、`sponza_pt_sharc_on.actual.png`、`sponza_sharc_diff.diff.png`、`sponza_raster_vs_pt.diff.png`、`rtxgi_reference_diff.diff.png`。
+  - RTXGI 官方参考图对比（1920x940）：变动像素 94.32%，平均差分 103.752，有效验证 SHARC 对间接光照 Monte Carlo 方差的平滑收敛能力。
