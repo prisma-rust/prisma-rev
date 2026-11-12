@@ -10,10 +10,10 @@
       },
       "components": {
         "prism_engine::scene::Skybox": {
-          "enabled": true,
+          "enabled": false,
           "env_asset": 0,
           "hdr_path": "../env/sky.hdr",
-          "intensity": 1.0,
+          "intensity": 0.0,
           "rotation_degrees": 0.0
         }
       }

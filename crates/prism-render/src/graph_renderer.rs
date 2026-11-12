@@ -3432,7 +3432,7 @@ impl GraphRenderer {
             pt_max_iterations,
             exposure,
             pt_lights,
-            pt_accum_dirty: true,
+            pt_accum_dirty: false,
             has_camera: true,
             // The convenience wrapper has no camera entity to inspect and
             // always drove a perspective projection before, so keep that.

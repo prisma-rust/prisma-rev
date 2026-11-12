@@ -72,3 +72,4 @@ windows = { workspace = true, optional = true, features = [
 
 [dev-dependencies]
 bytemuck = { workspace = true }
+gltf = { workspace = true }

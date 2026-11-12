@@ -90,3 +90,15 @@ pub(crate) fn transform_vector_normalized(m: &[[f32; 4]; 4], v: [f32; 3]) -> [f3
         [0.0, 0.0, 0.0]
     }
 }
+
+/// Transpose a 4x4 matrix (swaps rows and columns).
+#[allow(dead_code)]
+pub(crate) fn mat_transpose(m: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
+    let mut out = [[0.0f32; 4]; 4];
+    for col in 0..4 {
+        for row in 0..4 {
+            out[row][col] = m[col][row];
+        }
+    }
+    out
+}
