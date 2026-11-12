@@ -229,6 +229,30 @@ pub enum ShadowMode {
     Auto,
 }
 
+/// Global Illumination technique selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum GiMode {
+    /// Pure path-traced reference (no radiance cache).
+    #[default]
+    Off,
+    /// NVIDIA RTXGI SHARC (Spatially Hashed Radiance Cache).
+    Sharc,
+    /// NVIDIA Neural Radiance Cache.
+    Nrc,
+}
+
+/// DLSS upscaling mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum DlssMode {
+    #[default]
+    Off,
+    Quality,
+    Balanced,
+    Performance,
+    UltraPerformance,
+    Dlaa,
+}
+
 /// Quality / feature settings that passes consult at execution time.
 /// These are the runtime-switchable knobs described in
 /// `docs/mobile-raytracing-gi-design.md`.
@@ -245,12 +269,35 @@ pub struct RenderSettings {
     /// Setting to 1.0 disables half-resolution (user wants full quality).
     pub ray_query_resolution_scale: f32,
 
+    /// Global Illumination technique mode (Off / SHARC / NRC).
+    pub gi_mode: GiMode,
+
     /// SHARC hash-map capacity (number of voxel slots).
     /// Mobile default: 2^20 (1M). Desktop: 2^23 (8M).
     pub sharc_capacity: u32,
 
     /// SHARC scene scale — controls voxel physical size.
     pub sharc_scene_scale: f32,
+
+    /// SHARC cache clear toggle.
+    pub sharc_enable_clear: bool,
+    /// SHARC cache update toggle.
+    pub sharc_enable_update: bool,
+    /// SHARC cache resolve toggle.
+    pub sharc_enable_resolve: bool,
+    /// SHARC anti-firefly filter toggle.
+    pub sharc_enable_anti_firefly: bool,
+    /// SHARC roughness threshold below which rays keep tracing.
+    pub sharc_roughness_threshold: f32,
+    /// SHARC downscale factor for sparse updates.
+    pub sharc_downscale_factor: u32,
+    /// SHARC temporal accumulation frame window size.
+    pub sharc_accumulation_frame_num: u32,
+    /// SHARC stale frames before eviction.
+    pub sharc_stale_frame_num: u32,
+
+    /// DLSS upscaling mode.
+    pub dlss_mode: DlssMode,
 
     /// Shadow strategy. `Auto` (default) picks RayQuery when RT is enabled and
     /// `VK_KHR_ray_query` is supported, otherwise falls back to the rasterized
@@ -301,8 +348,18 @@ impl Default for RenderSettings {
             gbuffer_high_precision: true,
             ray_tracing_enabled: false,
             ray_query_resolution_scale: 0.5,
+            gi_mode: GiMode::Off,
             sharc_capacity: 1 << 20,
-            sharc_scene_scale: 1.0,
+            sharc_scene_scale: 50.0,
+            sharc_enable_clear: false,
+            sharc_enable_update: true,
+            sharc_enable_resolve: true,
+            sharc_enable_anti_firefly: true,
+            sharc_roughness_threshold: 0.4,
+            sharc_downscale_factor: 5,
+            sharc_accumulation_frame_num: 20,
+            sharc_stale_frame_num: 60,
+            dlss_mode: DlssMode::Off,
             shadow_mode: ShadowMode::Auto,
             shadow_map_size: crate::SHADOW_MAP_SIZE,
             shadow_cascade_count: 1,

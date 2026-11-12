@@ -332,6 +332,10 @@ pub struct GraphRenderer {
     /// 实现 is injected by the app 层 (eg 编辑器 host) — this 渲染器
     /// knows nothing about the concrete UI framework.
     external_overlay: Option<Box<dyn SwapchainOverlay>>,
+    #[cfg(feature = "rtxgi")]
+    sharc_targets: Option<crate::sharc::SharcTargets>,
+    #[cfg(feature = "rtxgi")]
+    sharc_resolve: Option<crate::sharc::SharcResolvePass>,
     /// ECS UI 叠加 (GPU-only) — quads + fontdue glyph text, rendered on 顶部
     /// of the ForwardPass 输出 (below the external overlay). Created lazily
     /// on the 渲染 线程 when the 引擎 sends UI 命令
@@ -717,6 +721,10 @@ impl GraphRenderer {
             dummy_ao,
             color_format,
             external_overlay: None,
+            #[cfg(feature = "rtxgi")]
+            sharc_targets: None,
+            #[cfg(feature = "rtxgi")]
+            sharc_resolve: None,
             #[cfg(feature = "ui")]
             ui_overlay: None,
             #[cfg(feature = "ui")]
@@ -1147,6 +1155,10 @@ impl GraphRenderer {
             dummy_ao,
             color_format,
             external_overlay: None,
+            #[cfg(feature = "rtxgi")]
+            sharc_targets: None,
+            #[cfg(feature = "rtxgi")]
+            sharc_resolve: None,
             #[cfg(feature = "ui")]
             ui_overlay: None,
             #[cfg(feature = "ui")]
@@ -2551,7 +2563,86 @@ impl GraphRenderer {
         if input.draw_items.is_empty() && !input.has_camera {
             log::trace!("prepare: no draw_items and no camera — frame will clear only");
         }
+        #[cfg(feature = "pathtrace")]
+        if input.render_mode == crate::render_graph::RenderMode::PathTrace {
+            let needs_geom = self
+                .graph
+                .pass_ref::<PathTracePass>()
+                .map(|pt| !pt.has_geometry())
+                .unwrap_or(false);
+            if needs_geom && !input.draw_items.is_empty() {
+                self.sync_pt_geometry(input.draw_items)?;
+            }
+        }
         Ok(())
+    }
+
+    /// Upload world-space geometry from draw_items into PathTracePass.
+    #[cfg(feature = "pathtrace")]
+    pub fn sync_pt_geometry(
+        &mut self,
+        draw_items: &[crate::render_graph::DrawItem],
+    ) -> anyhow::Result<()> {
+        let mut instances = Vec::new();
+        for item in draw_items {
+            if let Some((verts, indices)) = self.mesh_manager.get_cpu_geometry(item.mesh) {
+                let model = &item.model;
+                let world_vertices: Vec<crate::mesh::Vertex> = verts
+                    .iter()
+                    .map(|v| {
+                        let p = crate::math::transform_point(model, v.position);
+                        let n = crate::math::transform_vector_normalized(model, v.normal);
+                        let t = crate::math::transform_vector_normalized(
+                            model,
+                            [v.tangent[0], v.tangent[1], v.tangent[2]],
+                        );
+                        crate::mesh::Vertex {
+                            position: p,
+                            normal: n,
+                            color: v.color,
+                            uv: v.uv,
+                            tangent: [t[0], t[1], t[2], v.tangent[3]],
+                        }
+                    })
+                    .collect();
+
+                let sub_indices: Vec<u32> = if let Some(count) = item.index_count {
+                    let start = item.index_start as usize;
+                    let count = count as usize;
+                    if start + count <= indices.len() {
+                        indices[start..start + count].to_vec()
+                    } else {
+                        indices.to_vec()
+                    }
+                } else {
+                    indices.to_vec()
+                };
+
+                instances.push(crate::bake_common::PtGeometryInstance {
+                    vertices: world_vertices,
+                    indices: sub_indices,
+                    material_slot: item.material.unwrap_or(0),
+                });
+            }
+        }
+
+        if instances.is_empty() {
+            log::debug!("sync_pt_geometry: no CPU geometry found in draw_items");
+            return Ok(());
+        }
+
+        if let Some(pt) = self.graph.pass_mut::<PathTracePass>() {
+            pt.set_geometry(&self.runtime.context, self.runtime.command_pool, &instances)?;
+        }
+        Ok(())
+    }
+
+    /// Invalidate path-tracing geometry, forcing a rebuild on next frame.
+    pub fn invalidate_pt_geometry(&mut self) {
+        #[cfg(feature = "pathtrace")]
+        if let Some(pt) = self.graph.pass_mut::<PathTracePass>() {
+            pt.invalidate_geometry();
+        }
     }
 
     /// Phase 2/3: record all render commands into the frame's command buffer.
@@ -2792,6 +2883,65 @@ impl GraphRenderer {
                 render_extent,
                 frame: &graph_frame,
             };
+
+            #[cfg(feature = "rtxgi")]
+            if self.settings.gi_mode == crate::render_graph::GiMode::Sharc
+                && *render_mode == RenderMode::PathTrace
+            {
+                if self.sharc_targets.is_none() {
+                    match crate::sharc::SharcTargets::new(
+                        &self.runtime.context,
+                        crate::sharc::DEFAULT_SHARC_CAPACITY,
+                    ) {
+                        Ok(targets) => match crate::sharc::SharcResolvePass::new(
+                            &self.runtime.context,
+                            &targets,
+                        ) {
+                            Ok(resolve) => {
+                                self.sharc_targets = Some(targets);
+                                self.sharc_resolve = Some(resolve);
+                                log::info!("RTXGI SHARC initialized (1M entries)");
+                            }
+                            Err(e) => log::warn!("Failed to create SharcResolvePass: {e:#}"),
+                        },
+                        Err(e) => log::warn!("Failed to create SharcTargets: {e:#}"),
+                    }
+                }
+
+                if self.settings.sharc_enable_clear {
+                    if let Some(targets) = &self.sharc_targets {
+                        targets.clear(device, cmd);
+                    }
+                }
+
+                if self.settings.sharc_enable_resolve {
+                    if let (Some(targets), Some(resolve)) =
+                        (&self.sharc_targets, &self.sharc_resolve)
+                    {
+                        let push = crate::sharc::SharcResolvePush {
+                            camera_pos: frame_data.camera_position,
+                            camera_pos_prev: self
+                                .prev_camera_view_proj
+                                .map(|_| frame_data.camera_position)
+                                .unwrap_or(frame_data.camera_position),
+                            scene_scale: self.settings.sharc_scene_scale,
+                            capacity: targets.capacity,
+                            accumulation_frame_num: self.settings.sharc_accumulation_frame_num,
+                            stale_frame_num_max: self.settings.sharc_stale_frame_num,
+                            frame_index: frame as u32,
+                            radiance_scale: 1000.0,
+                            enable_anti_firefly: if self.settings.sharc_enable_anti_firefly {
+                                1
+                            } else {
+                                0
+                            },
+                            pad: 0,
+                        };
+                        resolve.execute(device, cmd, &push);
+                    }
+                }
+            }
+
             record = self
                 .graph
                 .execute_with_timer(&render_ctx, self.gpu_timer.as_mut())
@@ -3352,6 +3502,16 @@ impl GraphRenderer {
         #[cfg(feature = "pathtrace")]
         if let Some(pt) = self.graph.pass_mut::<PathTracePass>() {
             pt.destroy(device);
+        }
+
+        #[cfg(feature = "rtxgi")]
+        {
+            if let Some(mut resolve) = self.sharc_resolve.take() {
+                resolve.destroy(device);
+            }
+            if let Some(mut targets) = self.sharc_targets.take() {
+                targets.destroy(&self.runtime.context);
+            }
         }
 
         // Destroy ShadowMapPass (framebuffer, render pass, pipeline/layout).

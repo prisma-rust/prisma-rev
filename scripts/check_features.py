@@ -37,6 +37,10 @@ MATRIX: list[tuple[str, list[str]]] = [
         "prism-render ui + fontdue",
         ["check", "-p", "prism-render", "--no-default-features", "--features", "ui,ui-fontdue"],
     ),
+    (
+        "prism-render rtxgi",
+        ["check", "-p", "prism-render", "--no-default-features", "--features", "rtxgi"],
+    ),
     # Linux 上 winit 必须至少有一个窗口后端，所以「全关」不是合法组合；
     # 最小可用组合是 x11-only（或 wayland-only）。
     ("prism-app 最小 (x11)", ["check", "-p", "prism-app", "--no-default-features", "--features", "x11"]),
