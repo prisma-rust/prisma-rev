@@ -102,3 +102,76 @@ pub(crate) fn mat_transpose(m: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
     }
     out
 }
+
+#[cfg(test)]
+#[allow(clippy::needless_range_loop, clippy::excessive_precision)]
+mod inverse_tests {
+    use super::*;
+
+    /// Reference inverse via Gauss-Jordan on the row-major expansion, so the
+    /// test does not depend on `mat_inverse`'s own formula.
+    fn reference_inverse(m: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
+        // rows[r][c]
+        let mut a = [[0.0f64; 8]; 4];
+        for r in 0..4 {
+            for c in 0..4 {
+                a[r][c] = m[c][r] as f64;
+            }
+            a[r][4 + r] = 1.0;
+        }
+        for col in 0..4 {
+            let mut pivot = col;
+            for r in col + 1..4 {
+                if a[r][col].abs() > a[pivot][col].abs() {
+                    pivot = r;
+                }
+            }
+            a.swap(col, pivot);
+            let p = a[col][col];
+            assert!(p.abs() > 1e-12, "matrix is singular at column {col}");
+            for c in 0..8 {
+                a[col][c] /= p;
+            }
+            for r in 0..4 {
+                if r != col {
+                    let f = a[r][col];
+                    for c in 0..8 {
+                        a[r][c] -= f * a[col][c];
+                    }
+                }
+            }
+        }
+        let mut out = [[0.0f32; 4]; 4];
+        for r in 0..4 {
+            for c in 0..4 {
+                out[c][r] = a[r][4 + c] as f32;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn mat_inverse_matches_gauss_jordan() {
+        // Vulkan-style y-flipped perspective (fov 65 deg, aspect 16:9, near
+        // 0.05, far 1000) times a view looking down +X from eye (-10, 2, 0),
+        // column-major [col][row] exactly as the engine stores it.
+        let vp = [
+            [0.0, 0.0, 1.00005, 1.0],
+            [0.0, -1.5696856, 0.0, 0.0],
+            [0.8829481, 0.0, 0.0, 0.0],
+            [0.0, 3.1393712, 9.9504975, 10.0],
+        ];
+        let ours = mat_inverse(&vp);
+        let theirs = reference_inverse(&vp);
+        for c in 0..4 {
+            for r in 0..4 {
+                assert!(
+                    (ours[c][r] - theirs[c][r]).abs() < 1e-3,
+                    "mismatch [{c}][{r}]: ours={} ref={}",
+                    ours[c][r],
+                    theirs[c][r]
+                );
+            }
+        }
+    }
+}

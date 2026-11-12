@@ -68,6 +68,8 @@ mod math;
 pub mod mesh;
 pub mod offscreen;
 pub mod particle_pass;
+/// `PRISMREV_PASS_DUMP`：headless 下把各个 pass 的附件写成 PNG。
+pub(crate) mod pass_dump;
 pub mod pipeline;
 pub mod plugin;
 pub mod post;

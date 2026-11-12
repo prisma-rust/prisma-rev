@@ -1326,6 +1326,7 @@ fn make_pt_output_image(
         vk::Format::R32G32B32A32_SFLOAT,
         vk::ImageUsageFlags::STORAGE
             | vk::ImageUsageFlags::TRANSFER_DST
+            | vk::ImageUsageFlags::TRANSFER_SRC
             | vk::ImageUsageFlags::SAMPLED,
     )
 }

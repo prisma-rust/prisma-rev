@@ -1702,6 +1702,7 @@ impl RenderGraphBuilder {
             state_tracker: ResourceStateTracker::new(),
             lifecycles,
             last_barrier_probe: Instant::now(),
+            pass_dump: crate::pass_dump::PassDump::from_env(),
         };
         g.validate_edges();
         g
@@ -1750,6 +1751,8 @@ pub struct RenderGraph {
     /// Last time the `BARRIER_PROBE` trace lines were emitted; throttled to
     /// once per second so the log isn't flooded at frame rate.
     last_barrier_probe: Instant,
+    /// `PRISMREV_PASS_DUMP` state; a no-op unless the env var is set.
+    pass_dump: crate::pass_dump::PassDump,
 }
 
 impl RenderGraph {
@@ -1973,6 +1976,10 @@ impl RenderGraph {
     ) -> Result<()> {
         self.graph_resources.clear_frame();
 
+        // `PRISMREV_PASS_DUMP`: decide once per frame whether to snapshot the
+        // published attachments at the end. A no-op unless the env var is set.
+        let capture = self.pass_dump.should_capture();
+
         // Throttle the BARRIER_PROBE trace lines to once per second so the log
         // isn't flooded at frame rate. The probe is a debugging aid for the
         // automatic barrier pipeline; gating it here avoids passing `Instant`
@@ -2049,7 +2056,204 @@ impl RenderGraph {
                 .apply_writes(&self.pass_edges[pass_idx], ctx.image_index);
         }
 
+        if capture {
+            self.dump_published_images(ctx);
+            self.pass_dump.mark_captured();
+        }
+
         Ok(())
+    }
+
+    /// Copy the graph's published color attachments into host-visible buffers
+    /// for `PRISMREV_PASS_DUMP` (see [`crate::pass_dump`]).
+    ///
+    /// Runs after every pass has executed, so each image is in the layout the
+    /// state tracker recorded for its last write.
+    fn dump_published_images(&mut self, ctx: &RenderContext) {
+        // (handle, name, format, kind)
+        let targets = [
+            (
+                FORWARD_COLOR_H,
+                "forward_color",
+                vk::Format::R16G16B16A16_SFLOAT,
+                crate::pass_dump::DumpKind::Radiance,
+            ),
+            (
+                FORWARD_NORMAL_H,
+                "forward_normal",
+                vk::Format::R16G16B16A16_SFLOAT,
+                crate::pass_dump::DumpKind::Normal,
+            ),
+            (
+                FORWARD_DEPTH_H,
+                "forward_depth",
+                vk::Format::D32_SFLOAT,
+                crate::pass_dump::DumpKind::Depth,
+            ),
+            (
+                PT_COLOR_H,
+                "pt_color",
+                vk::Format::R32G32B32A32_SFLOAT,
+                crate::pass_dump::DumpKind::Radiance,
+            ),
+        ];
+
+        for (handle, name, format, kind) in targets {
+            let Some(image) = self.graph_resources.published_image(handle) else {
+                log::warn!("pass dump: {name} was not published this frame");
+                continue;
+            };
+            let Some(path) = self.pass_dump.path_for(name) else {
+                continue;
+            };
+            let state = self.state_tracker.get(handle, ctx.image_index);
+            let layout = if state.layout == vk::ImageLayout::UNDEFINED {
+                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+            } else {
+                state.layout
+            };
+
+            if let Err(err) = self.record_dump(
+                ctx,
+                name,
+                image,
+                ctx.render_extent,
+                format,
+                kind,
+                layout,
+                state.access,
+                path,
+            ) {
+                log::warn!("pass dump: {name} failed: {err}");
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_dump(
+        &mut self,
+        ctx: &RenderContext,
+        name: &str,
+        image: vk::Image,
+        extent: vk::Extent2D,
+        format: vk::Format,
+        kind: crate::pass_dump::DumpKind,
+        old_layout: vk::ImageLayout,
+        old_access: vk::AccessFlags,
+        path: std::path::PathBuf,
+    ) -> anyhow::Result<()> {
+        use crate::pass_dump::image_bytes;
+
+        let (buffer, memory) = crate::buffer::create_buffer(
+            ctx.context,
+            image_bytes(extent, format),
+            vk::BufferUsageFlags::TRANSFER_DST,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        )?;
+
+        let aspect = if format == vk::Format::D32_SFLOAT {
+            vk::ImageAspectFlags::DEPTH
+        } else {
+            vk::ImageAspectFlags::COLOR
+        };
+        let range = vk::ImageSubresourceRange::default()
+            .aspect_mask(aspect)
+            .base_mip_level(0)
+            .level_count(1)
+            .base_array_layer(0)
+            .layer_count(1);
+
+        let to_transfer = vk::ImageMemoryBarrier::default()
+            .old_layout(old_layout)
+            .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(image)
+            .subresource_range(range)
+            .src_access_mask(old_access)
+            .dst_access_mask(vk::AccessFlags::TRANSFER_READ);
+
+        // Put the image back so the recorded layout still matches reality.
+        let restore = vk::ImageMemoryBarrier::default()
+            .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+            .new_layout(old_layout)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(image)
+            .subresource_range(range)
+            .src_access_mask(vk::AccessFlags::TRANSFER_READ)
+            .dst_access_mask(old_access);
+
+        let region = vk::BufferImageCopy::default()
+            .buffer_offset(0)
+            .buffer_row_length(0)
+            .buffer_image_height(0)
+            .image_subresource(
+                vk::ImageSubresourceLayers::default()
+                    .aspect_mask(aspect)
+                    .mip_level(0)
+                    .base_array_layer(0)
+                    .layer_count(1),
+            )
+            .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+            .image_extent(vk::Extent3D {
+                width: extent.width,
+                height: extent.height,
+                depth: 1,
+            });
+
+        unsafe {
+            ctx.device.cmd_pipeline_barrier(
+                ctx.cmd,
+                vk::PipelineStageFlags::ALL_COMMANDS,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[to_transfer],
+            );
+            ctx.device.cmd_copy_image_to_buffer(
+                ctx.cmd,
+                image,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                buffer,
+                &[region],
+            );
+            ctx.device.cmd_pipeline_barrier(
+                ctx.cmd,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::ALL_COMMANDS,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[restore],
+            );
+        }
+
+        self.pass_dump.push(crate::pass_dump::PendingDump {
+            buffer,
+            memory,
+            extent,
+            format,
+            kind,
+            path,
+        });
+        log::info!(
+            "pass dump: captured {name} ({}x{})",
+            extent.width,
+            extent.height
+        );
+        Ok(())
+    }
+
+    /// Decode pending dumps into PNGs. Call after the frame fence signalled.
+    pub fn flush_pass_dump(&mut self, device: &ash::Device) -> anyhow::Result<()> {
+        self.pass_dump.flush(device)
+    }
+
+    /// Release pending dump buffers without writing them.
+    pub fn discard_pass_dump(&mut self, device: &ash::Device) {
+        self.pass_dump.discard(device);
     }
 
     /// Allocate (or re-use) Vulkan resources for all declared graph resources.

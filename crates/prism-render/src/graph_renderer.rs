@@ -2641,6 +2641,36 @@ impl GraphRenderer {
             return Ok(());
         }
 
+        {
+            let mut lo = [f32::INFINITY; 3];
+            let mut hi = [f32::NEG_INFINITY; 3];
+            let mut slots = Vec::new();
+            for inst in &instances {
+                slots.push(inst.material_slot);
+                for v in &inst.vertices {
+                    for axis in 0..3 {
+                        lo[axis] = lo[axis].min(v.position[axis]);
+                        hi[axis] = hi[axis].max(v.position[axis]);
+                    }
+                }
+            }
+            slots.sort_unstable();
+            slots.dedup();
+            log::info!(
+                "sync_pt_geometry: {} instances, world bounds {:?}..{:?}, material slots {:?} ({} unique)",
+                instances.len(),
+                lo,
+                hi,
+                slots,
+                slots.len()
+            );
+            log::info!(
+                "sync_pt_geometry: material_manager len={} slot0={:?}",
+                self.material_manager.len(),
+                self.material_manager.debug_slot(0)
+            );
+        }
+
         if let Some(pt) = self.graph.pass_mut::<PathTracePass>() {
             pt.set_geometry(&self.runtime.context, self.runtime.command_pool, &instances)?;
         }
@@ -3353,6 +3383,9 @@ impl GraphRenderer {
 
     /// 帧结束阶段：推进帧级状态并执行延迟回收。
     pub fn end_frame(&mut self, _ctx: &FrameCtx, _presented: bool) -> anyhow::Result<()> {
+        // `PRISMREV_PASS_DUMP`: the previous `present` waited on the frame
+        // fence, so the readback buffers are safe to map and encode here.
+        self.graph.flush_pass_dump(&self.runtime.context.device)?;
         Ok(())
     }
 
@@ -3502,6 +3535,8 @@ impl GraphRenderer {
         if let Some(mut capture) = self.screenshot.take() {
             unsafe { capture.destroy(device) };
         }
+
+        self.graph.discard_pass_dump(device);
 
         if let Some(timer) = self.gpu_timer.as_mut() {
             timer.destroy(device);
