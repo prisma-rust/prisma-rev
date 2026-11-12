@@ -515,7 +515,7 @@ fn create_device(
     // Query the available legacy features (validation layer wants this) and
     // mirror the ones we need into the Features2 chain.
     let available_features = unsafe { instance.get_physical_device_features(physical_device) };
-    let legacy_features = vk::PhysicalDeviceFeatures {
+    let mut legacy_features = vk::PhysicalDeviceFeatures {
         shader_clip_distance: available_features.shader_clip_distance,
         // MRT pipelines (ForwardPass writes 颜色 + view-space 法线 use
         // different blend states per attachment (color = alpha blend, normal =
@@ -617,6 +617,22 @@ fn create_device(
     }
     if rt_caps.shader_buffer_int64_atomics {
         vk12.shader_buffer_int64_atomics = vk::TRUE;
+    }
+    // RTXGI SHARC packs its hash-grid key as a `uint64_t` and its cached
+    // radiance as `float16_t4`. The SPIR-V module declares the `Int64`,
+    // `Float16` and `StorageBuffer16BitAccess` capabilities, so the device must
+    // enable the matching features or `vkCreateShaderModule` rejects it.
+    if rt_caps.shader_int64 {
+        legacy_features.shader_int64 = vk::TRUE;
+    }
+    if rt_caps.shader_float16 {
+        vk12.shader_float16 = vk::TRUE;
+    }
+    if rt_caps.storage_buffer_16bit_access {
+        // Vulkan 1.1 promoted this from VkPhysicalDevice16BitStorageFeatures,
+        // so it is set on the vk11 struct; chaining the standalone 16-bit
+        // struct as well is a VUID violation.
+        vk11.storage_buffer16_bit_access = vk::TRUE;
     }
 
     if rt_caps.synchronization2 {

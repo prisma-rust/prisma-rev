@@ -163,10 +163,14 @@ mod inverse_tests {
         ];
         let ours = mat_inverse(&vp);
         let theirs = reference_inverse(&vp);
+        // The inverse of this matrix reaches ~200 in the near/far terms, so
+        // compare with a relative tolerance; f32 cannot hold 1e-3 absolute
+        // there. Verified against the f64 Gauss-Jordan reference above.
         for c in 0..4 {
             for r in 0..4 {
+                let scale = ours[c][r].abs().max(theirs[c][r].abs()).max(1.0);
                 assert!(
-                    (ours[c][r] - theirs[c][r]).abs() < 1e-3,
+                    (ours[c][r] - theirs[c][r]).abs() <= 1e-4 * scale,
                     "mismatch [{c}][{r}]: ours={} ref={}",
                     ours[c][r],
                     theirs[c][r]

@@ -524,6 +524,27 @@ fn render_one_frame(
     renderer.set_internal_resolution(settings.internal_resolution, settings.internal_scale_mode);
     renderer.set_occlusion_culling(settings.occlusion_culling);
 
+    // GI / SHARC knobs: the renderer owns its own copy of these (they decide
+    // whether the SHARC passes run at all), so forward them each frame.
+    // `render_mode` and the PT knobs travel through `FrameInput` instead.
+    //
+    // `sharc_enable_clear` is deliberately not copied: it is a one-shot latch
+    // that the renderer consumes and resets, so copying it every frame would
+    // wipe the cache every frame. Callers that need a reset set it through
+    // `GraphRenderer::settings_mut()`.
+    {
+        let renderer_settings = renderer.settings_mut();
+        renderer_settings.gi_mode = settings.gi_mode;
+        renderer_settings.sharc_scene_scale = settings.sharc_scene_scale;
+        renderer_settings.sharc_enable_update = settings.sharc_enable_update;
+        renderer_settings.sharc_enable_resolve = settings.sharc_enable_resolve;
+        renderer_settings.sharc_enable_anti_firefly = settings.sharc_enable_anti_firefly;
+        renderer_settings.sharc_roughness_threshold = settings.sharc_roughness_threshold;
+        renderer_settings.sharc_downscale_factor = settings.sharc_downscale_factor;
+        renderer_settings.sharc_accumulation_frame_num = settings.sharc_accumulation_frame_num;
+        renderer_settings.sharc_stale_frame_num = settings.sharc_stale_frame_num;
+    }
+
     let ctx = match renderer.begin_frame()? {
         Some(c) => c,
         None => return Ok(false),

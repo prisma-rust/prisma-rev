@@ -10,10 +10,10 @@
       },
       "components": {
         "prism_engine::scene::Skybox": {
-          "enabled": false,
+          "enabled": true,
           "env_asset": 0,
           "hdr_path": "../env/sky.hdr",
-          "intensity": 0.0,
+          "intensity": 1.0,
           "rotation_degrees": 0.0
         }
       }
@@ -59,7 +59,7 @@
       "parent": null,
       "transform": {
         "rotation": [0.0, 0.0, 0.0, 1.0],
-        "scale": [0.01, 0.01, 0.01],
+        "scale": [1.0, 1.0, 1.0],
         "translation": [0.0, 0.0, 0.0]
       },
       "components": {

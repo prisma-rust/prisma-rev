@@ -2656,7 +2656,7 @@ impl GraphRenderer {
             }
             slots.sort_unstable();
             slots.dedup();
-            log::info!(
+            log::debug!(
                 "sync_pt_geometry: {} instances, world bounds {:?}..{:?}, material slots {:?} ({} unique)",
                 instances.len(),
                 lo,
@@ -2664,7 +2664,7 @@ impl GraphRenderer {
                 slots,
                 slots.len()
             );
-            log::info!(
+            log::debug!(
                 "sync_pt_geometry: material_manager len={} slot0={:?}",
                 self.material_manager.len(),
                 self.material_manager.debug_slot(0)
