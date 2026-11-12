@@ -38,6 +38,7 @@ pub struct SponzaTuningHook {
     pub selected_index: usize,
 
     // Parameters matching RTXGI Pathtracer UI
+    pub render_mode: RenderMode,
     pub gi_mode: GiMode,
     pub bounces: u32,
     pub ray_max_distance: f32,
@@ -64,10 +65,17 @@ pub struct SponzaTuningHook {
 
 impl Default for SponzaTuningHook {
     fn default() -> Self {
+        let (render_mode, gi_mode) = match std::env::var("SPONZA_RENDER_MODE").as_deref() {
+            Ok("raster") => (RenderMode::Raster, GiMode::Off),
+            Ok("pt_off") => (RenderMode::PathTrace, GiMode::Off),
+            _ => (RenderMode::PathTrace, GiMode::Sharc),
+        };
+
         Self {
             show: true,
             selected_index: 0,
-            gi_mode: GiMode::Sharc,
+            render_mode,
+            gi_mode,
             bounces: 4,
             ray_max_distance: 1000.0,
             tonemap_mode: 1, // ACES
@@ -345,7 +353,7 @@ impl FrameHook for SponzaTuningHook {
         _shared: &RenderShared,
     ) {
         // Sync runtime settings to engine
-        settings.render_mode = RenderMode::PathTrace;
+        settings.render_mode = self.render_mode;
         settings.gi_mode = self.gi_mode;
         settings.pt_max_bounces = self.bounces;
         settings.pt_ray_max_distance = self.ray_max_distance;

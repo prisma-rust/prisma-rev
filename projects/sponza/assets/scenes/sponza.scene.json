@@ -22,9 +22,9 @@
       "name": "Camera",
       "parent": null,
       "transform": {
-        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "rotation": [0.0, -0.7071068, 0.0, 0.7071068],
         "scale": [1.0, 1.0, 1.0],
-        "translation": [0.0, 2.0, 0.0]
+        "translation": [-10.0, 2.0, 0.0]
       },
       "components": {
         "prism_engine::scene::Camera": {
@@ -43,14 +43,14 @@
       "transform": {
         "rotation": [0.0, 0.0, 0.0, 1.0],
         "scale": [1.0, 1.0, 1.0],
-        "translation": [0.0, 20.0, 0.0]
+        "translation": [0.0, 30.0, 0.0]
       },
       "components": {
         "prism_engine::scene::DirectionalLight": {
-          "ambient": 0.05,
+          "ambient": 0.1,
           "color": [1.0, 0.98, 0.92],
           "euler_xyz": [55.0, 35.0, 0.0],
-          "intensity": 80000.0
+          "intensity": 100000.0
         }
       }
     },
@@ -59,7 +59,7 @@
       "parent": null,
       "transform": {
         "rotation": [0.0, 0.0, 0.0, 1.0],
-        "scale": [1.0, 1.0, 1.0],
+        "scale": [0.01, 0.01, 0.01],
         "translation": [0.0, 0.0, 0.0]
       },
       "components": {

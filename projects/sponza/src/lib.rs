@@ -16,8 +16,21 @@ pub fn build_app() -> prism_app::App {
     prism_app::app()
         .with_subsystem(prism_app::Subsystem::Render)
         .with_render_settings(|settings: &mut RenderSettings| {
-            settings.render_mode = RenderMode::PathTrace;
-            settings.gi_mode = GiMode::Sharc;
+            if let Ok(mode) = std::env::var("SPONZA_RENDER_MODE") {
+                if mode.eq_ignore_ascii_case("raster") {
+                    settings.render_mode = RenderMode::Raster;
+                    settings.gi_mode = GiMode::Off;
+                } else if mode.eq_ignore_ascii_case("pt_off") {
+                    settings.render_mode = RenderMode::PathTrace;
+                    settings.gi_mode = GiMode::Off;
+                } else {
+                    settings.render_mode = RenderMode::PathTrace;
+                    settings.gi_mode = GiMode::Sharc;
+                }
+            } else {
+                settings.render_mode = RenderMode::PathTrace;
+                settings.gi_mode = GiMode::Sharc;
+            }
             settings.pt_max_bounces = 4;
             settings.pt_max_iterations = 0;
             settings.pt_ray_max_distance = 1000.0;

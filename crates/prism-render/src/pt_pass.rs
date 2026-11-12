@@ -807,7 +807,7 @@ impl PathTracePass {
             .offset(0)
             .range(vk::WHOLE_SIZE);
         let ebi = vk::DescriptorBufferInfo::default()
-            .buffer(self.emissive_buffer.unwrap_or(vk::Buffer::null()))
+            .buffer(self.emissive_buffer.unwrap_or(self.lights_buffer))
             .offset(0)
             .range(vk::WHOLE_SIZE);
         // ReSTIR reservoir buffers (ping-pong, b10/b11).

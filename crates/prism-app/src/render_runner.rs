@@ -336,6 +336,10 @@ pub fn render_thread_main(
 
         if frame_plan.is_some() {
             screenshot_done = true;
+            if std::env::var("PRISMREV_EXIT_ON_SCREENSHOT").is_ok() {
+                log::info!("PRISMREV_EXIT_ON_SCREENSHOT: screenshot finished, exiting process");
+                std::process::exit(0);
+            }
         }
 
         // Compute render stats.

@@ -24,7 +24,12 @@ pub struct ScreenshotPlan {
 impl ScreenshotPlan {
     /// 从环境变量读取；没有 `PRISMREV_SCREENSHOT` 时返回 `None`。
     pub fn from_env() -> Option<Self> {
-        let path = std::env::var_os("PRISMREV_SCREENSHOT")?;
+        let raw_path = std::env::var("PRISMREV_SCREENSHOT").ok()?;
+        let trimmed = raw_path.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let path = PathBuf::from(trimmed);
         let frame = std::env::var("PRISMREV_SCREENSHOT_FRAME")
             .ok()
             .and_then(|value| value.trim().parse::<u64>().ok())
@@ -41,7 +46,7 @@ impl ScreenshotPlan {
             log::debug!("screenshot: no size/scale requested, using the window resolution");
         }
         Some(Self {
-            path: PathBuf::from(path),
+            path,
             frame,
             size,
             scale,
