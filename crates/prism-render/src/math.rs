@@ -65,3 +65,28 @@ pub(crate) fn mat_inverse(m: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
         ],
     ]
 }
+
+/// Transform a 3D point by a 4x4 column-major affine model matrix (w = 1).
+#[allow(dead_code)]
+pub(crate) fn transform_point(m: &[[f32; 4]; 4], p: [f32; 3]) -> [f32; 3] {
+    [
+        m[0][0] * p[0] + m[1][0] * p[1] + m[2][0] * p[2] + m[3][0],
+        m[0][1] * p[0] + m[1][1] * p[1] + m[2][1] * p[2] + m[3][1],
+        m[0][2] * p[0] + m[1][2] * p[1] + m[2][2] * p[2] + m[3][2],
+    ]
+}
+
+/// Transform a 3D vector by a 4x4 column-major affine model matrix (w = 0) and normalize.
+#[allow(dead_code)]
+pub(crate) fn transform_vector_normalized(m: &[[f32; 4]; 4], v: [f32; 3]) -> [f32; 3] {
+    let x = m[0][0] * v[0] + m[1][0] * v[1] + m[2][0] * v[2];
+    let y = m[0][1] * v[0] + m[1][1] * v[1] + m[2][1] * v[2];
+    let z = m[0][2] * v[0] + m[1][2] * v[1] + m[2][2] * v[2];
+    let len_sq = x * x + y * y + z * z;
+    if len_sq > 1e-12 {
+        let inv = 1.0 / len_sq.sqrt();
+        [x * inv, y * inv, z * inv]
+    } else {
+        [0.0, 0.0, 0.0]
+    }
+}

@@ -40,6 +40,8 @@ pub struct RayTracingCaps {
     pub timeline_semaphore: bool,
     pub synchronization2: bool,
     pub copy_commands2: bool,
+    /// `shaderBufferInt64Atomics` available (64-bit atomics, used by RTXGI SHARC).
+    pub shader_buffer_int64_atomics: bool,
 
     // -- Layer 2: acceleration structures (prerequisite for any RT) --
     /// `VK_KHR_acceleration_structure` extension + feature available.
@@ -244,6 +246,7 @@ pub unsafe fn probe(
     let buffer_device_address = vk12.buffer_device_address == vk::TRUE;
     let descriptor_indexing = vk12.descriptor_indexing == vk::TRUE;
     let timeline_semaphore = vk12.timeline_semaphore == vk::TRUE;
+    let shader_buffer_int64_atomics = vk12.shader_buffer_int64_atomics == vk::TRUE;
 
     // Layer 2: acceleration structure (real only when ext + feature agree).
     let acceleration_structure = has_accel_ext
@@ -279,6 +282,7 @@ pub unsafe fn probe(
             || has_extension(&available, vk::KHR_SYNCHRONIZATION2_NAME.to_str().unwrap()),
         copy_commands2: vulkan_1_3
             || has_extension(&available, vk::KHR_COPY_COMMANDS2_NAME.to_str().unwrap()),
+        shader_buffer_int64_atomics,
         acceleration_structure,
         deferred_host_operations,
         ray_tracing_pipeline,

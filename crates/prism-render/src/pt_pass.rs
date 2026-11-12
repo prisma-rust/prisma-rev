@@ -427,6 +427,17 @@ impl PathTracePass {
         Ok(())
     }
 
+    /// Returns true if geometry has been uploaded and TLAS/BLAS built.
+    pub fn has_geometry(&self) -> bool {
+        self.pt_scene.is_some()
+    }
+
+    /// Invalidate existing geometry, forcing a rebuild on next frame.
+    pub fn invalidate_geometry(&mut self) {
+        self.pt_scene = None;
+        self.accum_dirty = true;
+    }
+
     /// Wire the shared bindless texture table (set 1) + materials SSBO (set 0
     /// binding 7). Must be called before the first frame so the pipeline layout
     /// can include the bindless set and `update_ds` can write the materials

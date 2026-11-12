@@ -605,6 +605,9 @@ fn create_device(
     if rt_caps.timeline_semaphore {
         vk12.timeline_semaphore = vk::TRUE;
     }
+    if rt_caps.shader_buffer_int64_atomics {
+        vk12.shader_buffer_int64_atomics = vk::TRUE;
+    }
 
     if rt_caps.synchronization2 {
         sync2_features.synchronization2 = vk::TRUE;
