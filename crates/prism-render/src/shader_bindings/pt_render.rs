@@ -10,7 +10,7 @@
 pub const ENTRY_PT_MAIN: &str = "ptMain"; // stage: COMPUTE
 
 /// Push-constant block size in bytes (reflected).
-pub const PUSH_CONSTANT_SIZE: u32 = 144;
+pub const PUSH_CONSTANT_SIZE: u32 = 176;
 
 // --- descriptor set 0 ---
 pub const ACCUM_IMAGE_SET: u32 = 0;
@@ -37,6 +37,12 @@ pub const PREV_RESERVOIR_SET: u32 = 0;
 pub const PREV_RESERVOIR_BINDING: u32 = 10; // UNIFORM_BUFFER
 pub const CURR_RESERVOIR_SET: u32 = 0;
 pub const CURR_RESERVOIR_BINDING: u32 = 11; // UNIFORM_BUFFER
+pub const SHARC_HASH_ENTRIES_SET: u32 = 0;
+pub const SHARC_HASH_ENTRIES_BINDING: u32 = 12; // UNIFORM_BUFFER
+pub const SHARC_ACCUMULATION_SET: u32 = 0;
+pub const SHARC_ACCUMULATION_BINDING: u32 = 13; // UNIFORM_BUFFER
+pub const SHARC_RESOLVED_SET: u32 = 0;
+pub const SHARC_RESOLVED_BINDING: u32 = 14; // UNIFORM_BUFFER
 
 // --- descriptor set 1 ---
 pub const GLOBAL_SAMPLERS_SET: u32 = 1;
@@ -51,7 +57,7 @@ pub const ENV_CUBE_BINDING: u32 = 0; // COMBINED_IMAGE_SAMPLER
 /// Push-constant struct (auto-generated from Slang `PtPush`).
 ///
 /// Field offsets are the reflected std140 ones — alignment holes are emitted as
-/// explicit `_pad_*` fillers, so `size_of` is 144 bytes and every field sits
+/// explicit `_pad_*` fillers, so `size_of` is 176 bytes and every field sits
 /// where the shader expects it.
 #[repr(C)]
 #[derive(Clone, Copy, Default, ::bytemuck::Pod, ::bytemuck::Zeroable)]
@@ -74,4 +80,14 @@ pub struct PtPush {
     pub num_lights: u32,
     /// offset 140, size 4
     pub num_emissive: u32,
+    /// offset 144, size 4
+    pub sharc_scene_scale: f32,
+    /// offset 148, size 4
+    pub sharc_capacity: u32,
+    /// offset 152, size 4
+    pub sharc_enabled: u32,
+    /// offset 156, size 4
+    pub sharc_roughness_threshold: f32,
+    /// offset 160, size 16
+    pub sharc_camera_pos: [f32; 4],
 }

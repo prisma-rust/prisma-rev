@@ -299,7 +299,7 @@ pub fn create_host_instance(
 
 /// 选择一块能向 `surface` 呈现、且有图形队列的物理设备。
 ///
-/// 渲染器要求 `maxPushConstantsSize >= 144`（PathTracePass），这里一并校验，
+/// 渲染器要求 `maxPushConstantsSize >= 176`（PathTracePass），这里一并校验，
 /// 避免宿主先建好设备、渲染器初始化时才失败。
 pub fn pick_host_physical_device(
     instance: &ash::Instance,
@@ -464,7 +464,7 @@ fn pick_physical_device_impl(
         }
     }
     let device = best.ok_or_else(|| anyhow::anyhow!("no GPU with a graphics queue found"))?;
-    // The path-trace pass uses a 144-byte push-constant block (PtPushConstants,
+    // The path-trace pass uses a 176-byte push-constant block (PtPushConstants,
     // padded per std140: the trailing `ray_max_distance` float rounds the struct
     // up to a 16-byte multiple). Vulkan only guarantees 128 bytes, so verify
     // the device actually supports more before we write past the guaranteed
@@ -474,8 +474,8 @@ fn pick_physical_device_impl(
     let props = unsafe { instance.get_physical_device_properties(device) };
     let max_pc = props.limits.max_push_constants_size;
     anyhow::ensure!(
-        max_pc >= 144,
-        "selected GPU only supports {} bytes of push constants; PT pass needs 144",
+        max_pc >= 176,
+        "selected GPU only supports {} bytes of push constants; PT pass needs 176",
         max_pc
     );
     Ok(device)
@@ -627,6 +627,9 @@ fn create_device(
     }
     if rt_caps.shader_float16 {
         vk12.shader_float16 = vk::TRUE;
+    }
+    if rt_caps.uniform_and_storage_buffer_16bit_access {
+        vk11.uniform_and_storage_buffer16_bit_access = vk::TRUE;
     }
     if rt_caps.storage_buffer_16bit_access {
         // Vulkan 1.1 promoted this from VkPhysicalDevice16BitStorageFeatures,

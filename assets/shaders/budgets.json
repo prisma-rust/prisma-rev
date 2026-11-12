@@ -56,10 +56,10 @@
       "sampled_image_arrays": 1,
       "samplers": 1,
       "uniform_buffers": 0,
-      "storage_buffers": 8,
+      "storage_buffers": 11,
       "acceleration_structures": 1,
-      "descriptors": 15,
-      "push_constant_bytes": 144
+      "descriptors": 18,
+      "push_constant_bytes": 176
     },
     "rt_preview": {
       "sampled_images": 0,

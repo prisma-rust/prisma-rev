@@ -52,6 +52,10 @@ pub struct RayTracingCaps {
     /// storage buffer holds 16-bit components, which needs this feature in
     /// addition to `shaderFloat16`.
     pub storage_buffer_16bit_access: bool,
+    /// `uniformAndStorageBuffer16BitAccess` available. Slang emits this
+    /// capability (alongside `StorageBuffer16BitAccess`) for the SHARC cache
+    /// buffers, and Vulkan 1.1 wants both feature bits enabled to match.
+    pub uniform_and_storage_buffer_16bit_access: bool,
 
     // -- Layer 2: acceleration structures (prerequisite for any RT) --
     /// `VK_KHR_acceleration_structure` extension + feature available.
@@ -263,6 +267,8 @@ pub unsafe fn probe(
     let shader_buffer_int64_atomics = vk12.shader_buffer_int64_atomics == vk::TRUE;
     let shader_float16 = vk12.shader_float16 == vk::TRUE;
     let storage_buffer_16bit_access = vk11.storage_buffer16_bit_access == vk::TRUE;
+    let uniform_and_storage_buffer_16bit_access =
+        vk11.uniform_and_storage_buffer16_bit_access == vk::TRUE;
     // `shaderInt64` lives in the legacy `VkPhysicalDeviceFeatures`, not in the
     // Vulkan12 struct, so it needs its own query.
     let legacy_features = unsafe { instance.get_physical_device_features(physical_device) };
@@ -306,6 +312,7 @@ pub unsafe fn probe(
         shader_int64,
         shader_float16,
         storage_buffer_16bit_access,
+        uniform_and_storage_buffer_16bit_access,
         acceleration_structure,
         deferred_host_operations,
         ray_tracing_pipeline,

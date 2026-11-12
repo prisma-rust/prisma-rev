@@ -2967,6 +2967,26 @@ impl GraphRenderer {
                     if let (Some(targets), Some(resolve)) =
                         (&self.sharc_targets, &self.sharc_resolve)
                     {
+                        // The previous frame's path-trace dispatch wrote this
+                        // frame's inputs (hash entries + accumulation). Frame
+                        // boundaries do not order shader writes, so the
+                        // dependency has to be declared here explicitly.
+                        let prior_writes = vk::MemoryBarrier::default()
+                            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                            .dst_access_mask(
+                                vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
+                            );
+                        unsafe {
+                            device.cmd_pipeline_barrier(
+                                cmd,
+                                vk::PipelineStageFlags::COMPUTE_SHADER,
+                                vk::PipelineStageFlags::COMPUTE_SHADER,
+                                vk::DependencyFlags::empty(),
+                                &[prior_writes],
+                                &[],
+                                &[],
+                            );
+                        }
                         let push = crate::sharc::SharcResolvePush {
                             camera_pos: frame_data.camera_position,
                             camera_pos_prev: self
@@ -3008,6 +3028,30 @@ impl GraphRenderer {
                         }
                     }
                 }
+            }
+
+            // Hand the cache buffers to the path tracer, or clear the handles
+            // when the cache is inactive so the shader never dereferences an
+            // unbound descriptor (it gates on `push.sharc_enabled`).
+            #[cfg(feature = "rtxgi")]
+            {
+                let (hash_entries, accumulation, resolved, capacity) =
+                    match (&self.sharc_targets, self.settings.gi_mode) {
+                        (Some(targets), crate::render_graph::GiMode::Sharc) => (
+                            Some(targets.hash_entries_buffer),
+                            Some(targets.accumulation_buffer),
+                            Some(targets.resolved_buffer),
+                            targets.capacity,
+                        ),
+                        _ => (None, None, None, 0),
+                    };
+                if let Some(pt) = self.graph.pass_mut::<PathTracePass>() {
+                    pt.set_sharc_buffers(hash_entries, accumulation, resolved, capacity);
+                }
+            }
+            #[cfg(all(feature = "pathtrace", not(feature = "rtxgi")))]
+            if let Some(pt) = self.graph.pass_mut::<PathTracePass>() {
+                pt.set_sharc_buffers(None, None, None, 0);
             }
 
             let render_ctx = crate::render_graph::RenderContext {
