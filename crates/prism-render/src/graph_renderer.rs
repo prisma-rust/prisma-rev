@@ -2872,22 +2872,12 @@ impl GraphRenderer {
                 .filter(|item| item.entity_id != u32::MAX)
                 .map(|item| (item.entity_id, item.model))
                 .collect();
-            let render_ctx = crate::render_graph::RenderContext {
-                device,
-                context: &self.runtime.context,
-                settings: &self.settings,
-                cmd,
-                frame_index: frame as u32,
-                image_index,
-                extent,
-                render_extent,
-                frame: &graph_frame,
-            };
 
             #[cfg(feature = "rtxgi")]
             if self.settings.gi_mode == crate::render_graph::GiMode::Sharc
                 && *render_mode == RenderMode::PathTrace
             {
+                let mut needs_init_clear = false;
                 if self.sharc_targets.is_none() {
                     match crate::sharc::SharcTargets::new(
                         &self.runtime.context,
@@ -2900,6 +2890,7 @@ impl GraphRenderer {
                             Ok(resolve) => {
                                 self.sharc_targets = Some(targets);
                                 self.sharc_resolve = Some(resolve);
+                                needs_init_clear = true;
                                 log::info!("RTXGI SHARC initialized (1M entries)");
                             }
                             Err(e) => log::warn!("Failed to create SharcResolvePass: {e:#}"),
@@ -2908,10 +2899,28 @@ impl GraphRenderer {
                     }
                 }
 
-                if self.settings.sharc_enable_clear {
+                if needs_init_clear || self.settings.sharc_enable_clear {
                     if let Some(targets) = &self.sharc_targets {
                         targets.clear(device, cmd);
+                        // Pipeline barrier: TRANSFER_WRITE -> SHADER_READ | SHADER_WRITE
+                        let barrier = vk::MemoryBarrier::default()
+                            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                            .dst_access_mask(
+                                vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
+                            );
+                        unsafe {
+                            device.cmd_pipeline_barrier(
+                                cmd,
+                                vk::PipelineStageFlags::TRANSFER,
+                                vk::PipelineStageFlags::COMPUTE_SHADER,
+                                vk::DependencyFlags::empty(),
+                                &[barrier],
+                                &[],
+                                &[],
+                            );
+                        }
                     }
+                    self.settings.sharc_enable_clear = false;
                 }
 
                 if self.settings.sharc_enable_resolve {
@@ -2938,9 +2947,40 @@ impl GraphRenderer {
                             pad: 0,
                         };
                         resolve.execute(device, cmd, &push);
+
+                        // Pipeline barrier: COMPUTE_SHADER write -> subsequent read
+                        let barrier = vk::MemoryBarrier::default()
+                            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                            .dst_access_mask(
+                                vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
+                            );
+                        unsafe {
+                            device.cmd_pipeline_barrier(
+                                cmd,
+                                vk::PipelineStageFlags::COMPUTE_SHADER,
+                                vk::PipelineStageFlags::COMPUTE_SHADER
+                                    | vk::PipelineStageFlags::FRAGMENT_SHADER,
+                                vk::DependencyFlags::empty(),
+                                &[barrier],
+                                &[],
+                                &[],
+                            );
+                        }
                     }
                 }
             }
+
+            let render_ctx = crate::render_graph::RenderContext {
+                device,
+                context: &self.runtime.context,
+                settings: &self.settings,
+                cmd,
+                frame_index: frame as u32,
+                image_index,
+                extent,
+                render_extent,
+                frame: &graph_frame,
+            };
 
             record = self
                 .graph

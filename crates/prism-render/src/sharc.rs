@@ -264,3 +264,43 @@ impl SharcResolvePass {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sharc_resolve_push_layout() {
+        assert_eq!(std::mem::size_of::<SharcResolvePush>(), 64);
+        assert_eq!(std::mem::offset_of!(SharcResolvePush, camera_pos), 0);
+        assert_eq!(std::mem::offset_of!(SharcResolvePush, camera_pos_prev), 16);
+        assert_eq!(std::mem::offset_of!(SharcResolvePush, scene_scale), 32);
+        assert_eq!(std::mem::offset_of!(SharcResolvePush, capacity), 36);
+        assert_eq!(
+            std::mem::offset_of!(SharcResolvePush, accumulation_frame_num),
+            40
+        );
+        assert_eq!(
+            std::mem::offset_of!(SharcResolvePush, stale_frame_num_max),
+            44
+        );
+        assert_eq!(std::mem::offset_of!(SharcResolvePush, frame_index), 48);
+        assert_eq!(std::mem::offset_of!(SharcResolvePush, radiance_scale), 52);
+        assert_eq!(
+            std::mem::offset_of!(SharcResolvePush, enable_anti_firefly),
+            56
+        );
+        assert_eq!(std::mem::offset_of!(SharcResolvePush, pad), 60);
+    }
+
+    #[test]
+    fn test_sharc_buffer_sizes() {
+        let capacity = DEFAULT_SHARC_CAPACITY;
+        let hash_size = (capacity as u64) * 8;
+        let accum_size = (capacity as u64) * 16;
+        let resolved_size = (capacity as u64) * 16;
+        let total = hash_size + accum_size + resolved_size;
+        // 1M entries is exactly 40 MB
+        assert_eq!(total, 40 * 1024 * 1024);
+    }
+}
