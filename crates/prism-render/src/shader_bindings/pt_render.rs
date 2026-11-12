@@ -85,7 +85,7 @@ pub struct PtPush {
     /// offset 148, size 4
     pub sharc_capacity: u32,
     /// offset 152, size 4
-    pub sharc_enabled: u32,
+    pub sharc_flags: u32,
     /// offset 156, size 4
     pub sharc_roughness_threshold: f32,
     /// offset 160, size 16

@@ -48,12 +48,14 @@ struct PtPush
     uint     max_iterations;   // 132: 0 = accumulate forever
     uint     num_lights;       // 136: analytic lights in ptLights
     uint     num_emissive;     // 140: emissive triangles in ptEmissive
-    // SHARC (RTXGI spatial hash radiance cache). sharc_enabled is 0 whenever
-    // gi_mode is not Sharc; the cache buffers are then left unbound and must
-    // not be touched.
+    // SHARC (RTXGI spatial hash radiance cache). sharc_flags packs both
+    // switches and the deposit stride in one word: bit 0 = query the cache,
+    // bit 1 = deposit into it, bits 8..15 = deposit stride (1 = every pixel).
+    // Bit 0 is clear whenever gi_mode is not Sharc, in which case the cache
+    // buffers are unbound and must not be touched.
     float    sharc_scene_scale;        // 144: hash-grid scene scale
     uint     sharc_capacity;           // 148: hash-grid entry count
-    uint     sharc_enabled;            // 152: 1 = update and query the cache
+    uint     sharc_flags;              // 152: bit 0 = query, bit 1 = update
     float    sharc_roughness_threshold;// 156: roughness clamped before caching
     float4   sharc_camera_pos;         // 160: .xyz = cache camera position
 };
@@ -111,6 +113,10 @@ static const uint PT_PARAMS_RESET = 1u << 31u;        // bit 31: clear accumulat
 // SharcResolvePass). Material demodulation is disabled in sharc_common.slang,
 // so the cache stores radiance directly and the sample weights stay 1.
 static const float SHARC_RADIANCE_SCALE = 1000.0;
+static const uint SHARC_FLAG_QUERY = 1u << 0u;
+static const uint SHARC_FLAG_UPDATE = 1u << 1u;
+static const uint SHARC_FLAG_STRIDE_SHIFT = 8u;
+static const uint SHARC_FLAG_STRIDE_MASK = 0xFFu;
 
 SharcParameters make_sharc_parameters()
 {
@@ -270,7 +276,17 @@ void ptMain(uint3 tid : SV_DispatchThreadID)
 
     // SHARC state for this path. Declared unconditionally so the bounce loop
     // reads one flag, but only bound to the cache buffers when enabled.
-    bool sharc_on = push.sharc_enabled != 0u;
+    bool sharc_on = (push.sharc_flags & SHARC_FLAG_QUERY) != 0u;
+    // RTXGI's update pass renders at 1/downscale resolution, so only 1/N of
+    // the pixels' worth of samples reach the cache per frame. The unified
+    // pipeline has one dispatch, so the same density is obtained by letting
+    // one pixel in every N-by-N block deposit.
+    bool sharc_update = (push.sharc_flags & SHARC_FLAG_UPDATE) != 0u;
+    uint sharc_stride = max((push.sharc_flags >> SHARC_FLAG_STRIDE_SHIFT) & SHARC_FLAG_STRIDE_MASK, 1u);
+    if (sharc_update && sharc_stride > 1u && (tid.x % sharc_stride) != 0u)
+        sharc_update = false;
+    if (sharc_update && sharc_stride > 1u && (tid.y % sharc_stride) != 0u)
+        sharc_update = false;
     SharcParameters sharc_params = make_sharc_parameters();
     SharcState sharc_state;
     SharcInit(sharc_state);
@@ -693,8 +709,11 @@ void ptMain(uint3 tid : SV_DispatchThreadID)
 
                     // Not in the cache yet: deposit this segment's direct
                     // lighting so a later frame can terminate here.
-                    SharcUpdateHit(sharc_params, sharc_state, sharc_hit, seg_direct, rand_float(seed));
-                    sharc_roughness_prev += hit_surf.metallic < 0.5 ? 1.0 : hit_surf.roughness;
+                    if (sharc_update)
+                    {
+                        SharcUpdateHit(sharc_params, sharc_state, sharc_hit, seg_direct, rand_float(seed));
+                        sharc_roughness_prev += hit_surf.metallic < 0.5 ? 1.0 : hit_surf.roughness;
+                    }
                 }
 
                 // Russian roulette
@@ -764,7 +783,7 @@ void ptMain(uint3 tid : SV_DispatchThreadID)
                 // Miss: env map. The sky is the far-field terminator that lets
                 // the cache propagate radiance back along the whole path.
                 float3 sky_radiance = envCube.SampleLevel(dir, 0.0).rgb;
-                if (sharc_on)
+                if (sharc_on && sharc_update)
                     SharcUpdateMiss(sharc_params, sharc_state, sky_radiance);
                 total_radiance += throughput * sky_radiance;
                 break;

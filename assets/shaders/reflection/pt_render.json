@@ -960,7 +960,7 @@
                             "binding": {"kind": "uniform", "offset": 148, "size": 4, "elementStride": 0}
                         },
                         {
-                            "name": "sharc_enabled",
+                            "name": "sharc_flags",
                             "type": {
                                 "kind": "scalar",
                                 "scalarType": "uint32",
@@ -1152,7 +1152,7 @@
                                 "binding": {"kind": "uniform", "offset": 148, "size": 4, "elementStride": 0}
                             },
                             {
-                                "name": "sharc_enabled",
+                                "name": "sharc_flags",
                                 "type": {
                                     "kind": "scalar",
                                     "scalarType": "uint32",
@@ -2163,7 +2163,7 @@
                                 "binding": {"kind": "uniform", "offset": 148, "size": 4, "elementStride": 0}
                             },
                             {
-                                "name": "sharc_enabled",
+                                "name": "sharc_flags",
                                 "type": {
                                     "kind": "scalar",
                                     "scalarType": "uint32",
@@ -2355,7 +2355,7 @@
                                     "binding": {"kind": "uniform", "offset": 148, "size": 4, "elementStride": 0}
                                 },
                                 {
-                                    "name": "sharc_enabled",
+                                    "name": "sharc_flags",
                                     "type": {
                                         "kind": "scalar",
                                         "scalarType": "uint32",

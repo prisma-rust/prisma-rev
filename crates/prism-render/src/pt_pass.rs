@@ -43,6 +43,27 @@ const PT_PARAMS_FRAME_MASK: u32 = 0x3FFF_FFFF;
 const PT_PARAMS_ORTHOGRAPHIC: u32 = 1 << 30;
 const PT_PARAMS_RESET: u32 = 1 << 31;
 
+/// `sharc_flags` bit layout, mirroring the `SHARC_FLAG_*` constants in
+/// `pt_render.slang`: bit 0 queries the cache, bit 1 deposits into it and
+/// bits 8..=15 carry the deposit stride.
+const SHARC_FLAG_QUERY: u32 = 1 << 0;
+const SHARC_FLAG_UPDATE: u32 = 1 << 1;
+const SHARC_FLAG_STRIDE_SHIFT: u32 = 8;
+
+/// Pack the SHARC switches and deposit stride the path tracer reads out of
+/// `sharc_flags`. The stride reproduces RTXGI's `sharcDownscaleFactor`, which
+/// shrinks the update pass instead of the whole dispatch: only one pixel in
+/// every stride-by-stride block deposits a sample.
+fn pack_sharc_flags(query: bool, update: bool, downscale_factor: u32) -> u32 {
+    let stride = downscale_factor.clamp(1, 0xFF);
+    // Deposits are meaningless without queries: the shader reads the buffers
+    // from both paths, so a clear query bit must also clear the update bit.
+    let update = query && update;
+    (if query { SHARC_FLAG_QUERY } else { 0 })
+        | (if update { SHARC_FLAG_UPDATE } else { 0 })
+        | (stride << SHARC_FLAG_STRIDE_SHIFT)
+}
+
 /// Pack the per-frame flags the path tracer reads out of `params.w`.
 fn pack_pt_params(frame_count: u32, reset: bool, orthographic: bool) -> u32 {
     (frame_count & PT_PARAMS_FRAME_MASK)
@@ -1272,12 +1293,15 @@ impl RenderPassNode for PathTracePass {
             num_emissive: self.emissive_count,
             sharc_scene_scale: ctx.settings.sharc_scene_scale,
             sharc_capacity: self.sharc_capacity,
-            sharc_enabled: if self.sharc_hash_entries.is_some()
-                && ctx.settings.gi_mode == crate::render_graph::GiMode::Sharc
-            {
-                1
-            } else {
-                0
+            sharc_flags: {
+                // Querying requires the cache buffers to be bound; updating is
+                // the UI switch that turns deposits off to watch the cache
+                // drain. The downscale factor only thins the deposits — it
+                // must never reach 0, which would disable them silently.
+                let query = self.sharc_hash_entries.is_some()
+                    && ctx.settings.gi_mode == crate::render_graph::GiMode::Sharc;
+                let update = query && ctx.settings.sharc_enable_update;
+                pack_sharc_flags(query, update, ctx.settings.sharc_downscale_factor)
             },
             sharc_roughness_threshold: ctx.settings.sharc_roughness_threshold,
             sharc_camera_pos: ctx.frame.camera_pos,

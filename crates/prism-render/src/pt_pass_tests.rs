@@ -41,3 +41,27 @@ fn pt_params_packing_matches_shader_bits() {
     // unpacks with the same mask.
     assert_eq!(pack_pt_params(u32::MAX, false, false), PT_PARAMS_FRAME_MASK);
 }
+
+/// `sharc_flags` bit layout must match `pt_render.slang`: bit 0 queries the
+/// cache, bit 1 deposits, bits 8..=15 carry the deposit stride. A stride of
+/// zero would silently stop every deposit.
+#[test]
+fn sharc_flags_pack_query_update_and_stride() {
+    assert_eq!(SHARC_FLAG_QUERY, 1);
+    assert_eq!(SHARC_FLAG_UPDATE, 1 << 1);
+    assert_eq!(SHARC_FLAG_STRIDE_SHIFT, 8);
+
+    assert_eq!(pack_sharc_flags(false, false, 1), 1 << 8);
+    assert_eq!(pack_sharc_flags(true, false, 1), 0x101);
+    assert_eq!(pack_sharc_flags(true, true, 1), 0x103);
+    assert_eq!(pack_sharc_flags(true, true, 5), 0x503);
+
+    // A disabled update must not set bit 1 even when the caller asks for it,
+    // which is how a disabled cache avoids writes to unbound buffers.
+    assert_eq!(pack_sharc_flags(false, true, 5), 5 << 8);
+
+    // The stride lives in its own byte and must never overflow into bit 0/1.
+    assert_eq!(pack_sharc_flags(false, false, 0) >> 8, 1);
+    assert_eq!(pack_sharc_flags(false, false, u32::MAX) >> 8, 0xFF);
+    assert_eq!(pack_sharc_flags(true, true, u32::MAX), 0xFF03);
+}
