@@ -542,9 +542,16 @@ void ptMain(uint3 tid : SV_DispatchThreadID)
         // The query rejects cache hits whose roughness footprint is smaller
         // than a voxel, so it needs the accumulated roughness of the path so
         // far. The primary hit counts as one diffuse bounce.
+        // Roughness accumulated over the path so far; the cache lookup needs it
+        // to size the cone the remaining bounces would cover. RTXGI clamps the
+        // per-hit roughness to the threshold before it feeds this accumulator,
+        // which is what keeps very rough paths from querying voxels far smaller
+        // than their footprint.
         float sharc_roughness_prev = 0.0;
         if (sharc_on)
-            sharc_roughness_prev += surf.metallic < 0.5 ? 1.0 : surf.roughness;
+            sharc_roughness_prev += surf.metallic < 0.5
+                ? 1.0
+                : max(push.sharc_roughness_threshold, surf.roughness);
 
         // ---- Bounces 1+ (indirect, no NEE) ----
         for (uint bounce = 1u; bounce < push.params.z; bounce++)
@@ -712,7 +719,9 @@ void ptMain(uint3 tid : SV_DispatchThreadID)
                     if (sharc_update)
                     {
                         SharcUpdateHit(sharc_params, sharc_state, sharc_hit, seg_direct, rand_float(seed));
-                        sharc_roughness_prev += hit_surf.metallic < 0.5 ? 1.0 : hit_surf.roughness;
+                        sharc_roughness_prev += hit_surf.metallic < 0.5
+                            ? 1.0
+                            : max(push.sharc_roughness_threshold, hit_surf.roughness);
                     }
                 }
 
