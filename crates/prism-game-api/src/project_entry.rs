@@ -40,6 +40,7 @@ macro_rules! export_project {
         state = $state:ty,
         init = $init:path,
         tick = $tick:path,
+        $(fixed_update = $fixed_update:path,)?
         log_name = $log_name:literal
         $(, shutdown = $shutdown:path)?
         $(,)?
@@ -71,13 +72,29 @@ macro_rules! export_project {
         pub unsafe extern "C" fn prism_project_get_api(
             out: *mut $crate::__project_api::ProjectApi,
         ) -> i32 {
-            // SAFETY: the host hands us a valid, writable `ProjectApi`.
-            $crate::export_project!(@get_api out)
+            if out.is_null() {
+                return $crate::__project_api::INVALID_ARGUMENT;
+            }
+            #[allow(unused_mut)]
+            let mut api = $crate::__project_api::ProjectApi {
+                abi_version: $crate::__project_api::ABI_VERSION,
+                schema_fingerprint: $crate::builtin_schema_fingerprint(),
+                create: Some(create),
+                tick: Some(tick),
+                fixed_update: None,
+                shutdown: Some(shutdown),
+            };
+            $(
+                api.fixed_update = Some($fixed_update);
+            )?
+            // SAFETY: the host provides a valid writable table pointer.
+            unsafe { *out = api };
+            $crate::__project_api::SUCCESS
         }
 
         /// Internal: writes the function table; kept callable for tests.
         pub unsafe extern "C" fn get_api(out: *mut $crate::__project_api::ProjectApi) -> i32 {
-            $crate::export_project!(@get_api out)
+            unsafe { prism_project_get_api(out) }
         }
 
         #[allow(clippy::macro_metavars_in_unsafe)]
@@ -131,6 +148,34 @@ macro_rules! export_project {
             })
         }
 
+        $(
+            #[allow(clippy::macro_metavars_in_unsafe)]
+            unsafe extern "C" fn fixed_update(
+                host_api: *const $crate::__project_api::HostApi,
+                state: *mut core::ffi::c_void,
+                dt: f32,
+            ) -> i32 {
+                $crate::__project_api::guard(|| unsafe {
+                    let Some(runtime) = state.cast::<__PrismProjectRuntime>().as_mut() else {
+                        return $crate::__project_api::INVALID_ARGUMENT;
+                    };
+                    if host_api.is_null() {
+                        return $crate::__project_api::INVALID_ARGUMENT;
+                    }
+                    let host = &*host_api;
+                    runtime.sync_scene(host.scene_generation);
+                    let mut world =
+                        $crate::GameWorld::plugin(host, $crate::builtin_registry().type_registry());
+                    let state = runtime
+                        .state
+                        .as_mut()
+                        .expect("sync_scene always fills the project state");
+                    $fixed_update(state, &mut world, dt);
+                    $crate::__project_api::SUCCESS
+                })
+            }
+        )?
+
         unsafe extern "C" fn shutdown(state: *mut core::ffi::c_void) {
             if state.is_null() {
                 return;
@@ -146,22 +191,6 @@ macro_rules! export_project {
         }
     };
 
-    (@get_api $out:expr) => {{
-        let out = $out;
-        if out.is_null() {
-            return $crate::__project_api::INVALID_ARGUMENT;
-        }
-        unsafe {
-            *out = $crate::__project_api::ProjectApi {
-                abi_version: $crate::__project_api::ABI_VERSION,
-                schema_fingerprint: $crate::builtin_schema_fingerprint(),
-                create: Some(create),
-                tick: Some(tick),
-                shutdown: Some(shutdown),
-            };
-        }
-        $crate::__project_api::SUCCESS
-    }};
 }
 
 #[cfg(all(test, feature = "plugin"))]

@@ -13,3 +13,6 @@ prism-reflect = { path = "../prism-reflect" }
 prism-scene = { path = "../prism-scene" }
 log.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+glam.workspace = true

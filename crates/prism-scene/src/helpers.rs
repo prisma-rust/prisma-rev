@@ -5,7 +5,85 @@
 
 use prism_ecs::{Entity, World};
 
-use crate::components::{Child, Parent};
+use crate::components::{Active, Child, LocalToWorld, LocalTransform, Parent};
+
+/// Resolve an entity's current world matrix from its local hierarchy.
+///
+/// This reads `LocalTransform` values directly so a collision query made during
+/// a gameplay step sees writes made before the hierarchy propagation pass.
+/// Transform-less hierarchy nodes inherit the accumulated parent matrix. A
+/// cached `LocalToWorld` is used only when the entire chain has no local
+/// transform; malformed cycles return `None` rather than a stale cache.
+pub fn world_matrix(world: &World, entity: Entity) -> Option<glam::Mat4> {
+    if !world.is_alive(entity) {
+        return None;
+    }
+    let mut chain = Vec::new();
+    let mut cursor = entity;
+    let mut visited = std::collections::HashSet::new();
+    loop {
+        if !visited.insert(cursor) {
+            return None;
+        }
+        chain.push(cursor);
+        let Some(parent) = world.get::<Parent>(cursor).map(|parent| parent.0) else {
+            break;
+        };
+        if !world.is_alive(parent)
+            || !world
+                .get::<Child>(parent)
+                .is_some_and(|children| children.0.contains(&cursor))
+        {
+            break;
+        }
+        cursor = parent;
+    }
+
+    let mut matrix = glam::Mat4::IDENTITY;
+    let mut has_world_matrix = false;
+    for ancestor in chain.into_iter().rev() {
+        if let Some(local) = world.get::<LocalTransform>(ancestor) {
+            matrix *= local.to_model_matrix();
+            has_world_matrix = true;
+        } else if !has_world_matrix {
+            if let Some(cached) = world.get::<LocalToWorld>(ancestor) {
+                matrix = cached.0;
+                has_world_matrix = true;
+            }
+        }
+    }
+    has_world_matrix.then_some(matrix)
+}
+
+/// Resolve the current active state from an entity through its live parent chain.
+///
+/// Unlike the derived `ActiveInHierarchy` component, this reads the latest
+/// `Active` values, so gameplay queries remain correct before the next hierarchy
+/// propagation pass. A dead parent is treated as a detached root; malformed
+/// cycles terminate once every visited entity has been checked.
+pub fn is_active_in_hierarchy(world: &World, entity: Entity) -> bool {
+    if !world.is_alive(entity) {
+        return false;
+    }
+
+    let mut cursor = entity;
+    let mut visited = std::collections::HashSet::new();
+    loop {
+        if !visited.insert(cursor) {
+            return true;
+        }
+        if world.get::<Active>(cursor).is_some_and(|active| !active.0) {
+            return false;
+        }
+        let Some(parent) = world.get::<Parent>(cursor).map(|parent| parent.0) else {
+            return true;
+        };
+        if !world.is_alive(parent) {
+            return true;
+        }
+        cursor = parent;
+    }
+}
 
 /// Safe API for managing the entity hierarchy.
 pub struct HierarchyHelper;

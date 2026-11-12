@@ -467,6 +467,8 @@ pub fn register_builtin_components(registry: &mut ComponentRegistry) {
 
     // ── 相机 ──
     registry.register_reflect_serde::<Camera>("prism_engine::scene::Camera");
+    #[cfg(feature = "group-2d")]
+    registry.register_reflect_serde::<VirtualCamera2D>("prism_engine::scene::VirtualCamera2D");
     #[cfg(feature = "group-3d")]
     {
         registry.register_reflect_serde::<FlyCameraController>(
@@ -506,6 +508,7 @@ pub fn register_builtin_components(registry: &mut ComponentRegistry) {
     // 若登记成组件，`registry.apply` 会在 `LocalToWorld` 计算完之后覆盖
     // `LocalTransform`，留下一个按旧变换算出的世界矩阵。
     registry.register_reflect_type::<LocalTransform>();
+    registry.register_reflect_type::<TransformInterpolation2D>();
 
     // ── 关键帧动画 ──
     // 轨道里的是嵌套结构体，先登记类型（RTTIBin 类型表 / 编辑器字段描述），
@@ -532,6 +535,8 @@ pub fn register_builtin_components(registry: &mut ComponentRegistry) {
     registry
         .register_reflect_serde::<SkinnedMeshRenderer>("prism_engine::scene::SkinnedMeshRenderer");
     registry.register_reflect_serde::<Collider>("prism_engine::scene::Collider");
+    #[cfg(feature = "group-2d")]
+    registry.register_reflect_serde::<Collider2D>("prism_engine::scene::Collider2D");
     registry.register_reflect_serde::<Rigidbody>("prism_engine::scene::Rigidbody");
     registry
         .register_reflect_serde::<CharacterController>("prism_engine::scene::CharacterController");

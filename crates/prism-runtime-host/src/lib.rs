@@ -16,10 +16,10 @@ use std::path::{Path, PathBuf};
 
 use libloading::{Library, Symbol};
 use prism_project_api::{
-    GetProjectApi, HostApi, ProjectApi, RaycastHit, ABI_VERSION, BUFFER_TOO_SMALL, HOST_CAP_ASSET,
-    HOST_CAP_AUDIO, HOST_CAP_COMPONENTS, HOST_CAP_DRAW, HOST_CAP_LOGGING, HOST_CAP_PHYSICS,
-    HOST_CAP_SAVE, HOST_CAP_SCENE, HOST_CAP_STATE, HOST_CAP_WORLD_COMMANDS, INVALID_ARGUMENT,
-    SUCCESS, UNKNOWN_TYPE,
+    Collider2DHit, GetProjectApi, HostApi, ProjectApi, RaycastHit, ABI_VERSION, BUFFER_TOO_SMALL,
+    HOST_CAP_ASSET, HOST_CAP_AUDIO, HOST_CAP_COMPONENTS, HOST_CAP_DRAW, HOST_CAP_LOGGING,
+    HOST_CAP_PHYSICS, HOST_CAP_PHYSICS_2D, HOST_CAP_SAVE, HOST_CAP_SCENE, HOST_CAP_STATE,
+    HOST_CAP_WORLD_COMMANDS, INVALID_ARGUMENT, SUCCESS, UNKNOWN_TYPE,
 };
 use prism_reflect::rtti_bin;
 use thiserror::Error;
@@ -319,7 +319,8 @@ impl<'a> WorldCommands<'a> {
                     HOST_CAP_AUDIO
                 } else {
                     0
-                },
+                }
+                | HOST_CAP_PHYSICS_2D,
             scene_generation: self.context.scene_generation,
             user_data: (&mut self.context as *mut CommandContext).cast(),
             input: self.context.input,
@@ -345,6 +346,7 @@ impl<'a> WorldCommands<'a> {
             } else {
                 None
             },
+            query_colliders2d: Some(host_query_colliders2d),
             play_sound: if self.context.audio.is_some() {
                 Some(host_play_sound)
             } else {
@@ -511,13 +513,28 @@ unsafe extern "C" fn host_get_component(
     let Some(name) = (unsafe { type_name(type_name_ptr, type_name_len) }) else {
         return INVALID_ARGUMENT;
     };
-    let Some(type_id) = context.registry.type_id(name) else {
-        return UNKNOWN_TYPE;
-    };
     let entity = handle_to_entity(entity);
     if !context.world.is_alive(entity) {
         return INVALID_ARGUMENT;
     }
+    if let Some(object) = extract_runtime_component(context.world, entity, name) {
+        let bytes = match rtti_bin::encode_one(&object, context.registry.type_registry()) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                log::warn!("project host: encode `{name}` failed: {error}");
+                return INVALID_ARGUMENT;
+            }
+        };
+        context.scratch = bytes;
+        unsafe {
+            *out_bytes = context.scratch.as_ptr();
+            *out_len = context.scratch.len();
+        }
+        return SUCCESS;
+    }
+    let Some(type_id) = context.registry.type_id(name) else {
+        return UNKNOWN_TYPE;
+    };
     let Some(object) = context
         .registry
         .extract_object(context.world, entity, type_id)
@@ -598,16 +615,42 @@ fn apply_runtime_component(
 ) -> bool {
     // The type name is pinned to the `#[reflect(name = ...)]` value.
     const LOCAL_TRANSFORM: &str = "prism_engine::scene::LocalTransform";
-    if object.type_name != LOCAL_TRANSFORM {
-        return false;
+    if object.type_name == LOCAL_TRANSFORM {
+        let Ok(transform) =
+            <prism_scene::components::LocalTransform as prism_reflect::Reflect>::from_object(
+                object,
+            )
+        else {
+            return false;
+        };
+        world.insert(entity, transform);
+        return true;
     }
-    let Ok(transform) =
-        <prism_scene::components::LocalTransform as prism_reflect::Reflect>::from_object(object)
-    else {
-        return false;
-    };
-    world.insert(entity, transform);
-    true
+    const TRANSFORM_INTERPOLATION_2D: &str = "prism_engine::scene::TransformInterpolation2D";
+    if object.type_name == TRANSFORM_INTERPOLATION_2D {
+        let Ok(history) = <prism_scene::components::TransformInterpolation2D as prism_reflect::Reflect>::from_object(object) else {
+            return false;
+        };
+        world.insert(entity, history);
+        return true;
+    }
+    false
+}
+
+fn extract_runtime_component(
+    world: &prism_ecs::World,
+    entity: prism_ecs::Entity,
+    type_name: &str,
+) -> Option<prism_reflect::Object> {
+    match type_name {
+        "prism_engine::scene::LocalTransform" => world
+            .get::<prism_scene::components::LocalTransform>(entity)
+            .map(prism_reflect::Reflect::to_object),
+        "prism_engine::scene::TransformInterpolation2D" => world
+            .get::<prism_scene::components::TransformInterpolation2D>(entity)
+            .map(prism_reflect::Reflect::to_object),
+        _ => None,
+    }
 }
 
 unsafe extern "C" fn host_remove_component(
@@ -828,6 +871,58 @@ unsafe extern "C" fn host_raycast(
     1
 }
 
+/// Enumerates ECS `Collider2D` components as world-space AABBs for project modules.
+unsafe extern "C" fn host_query_colliders2d(
+    user_data: *mut std::ffi::c_void,
+    layer_mask: u32,
+    out_colliders: *mut Collider2DHit,
+    capacity: usize,
+    out_count: *mut usize,
+) -> i32 {
+    let Some(context) = (unsafe { context(user_data) }) else {
+        return INVALID_ARGUMENT;
+    };
+    if out_count.is_null() {
+        return INVALID_ARGUMENT;
+    }
+    let mut hits = Vec::new();
+    for (entity, collider) in context.world.query::<prism_scene::components::Collider2D>() {
+        if collider.layer & layer_mask == 0 {
+            continue;
+        }
+        if !prism_scene::is_active_in_hierarchy(context.world, entity) {
+            continue;
+        }
+        let Some(matrix) = prism_scene::world_matrix(context.world, entity) else {
+            continue;
+        };
+        let Some(bounds) = collider.world_bounds_with_matrix(matrix) else {
+            continue;
+        };
+        hits.push(Collider2DHit {
+            entity: EntityHandle {
+                id: entity.id(),
+                generation: entity.generation(),
+            },
+            bounds: [bounds.min[0], bounds.min[1], bounds.max[0], bounds.max[1]],
+            is_trigger: u8::from(collider.is_trigger),
+            _reserved: [0; 3],
+            layer: collider.layer,
+        });
+    }
+    unsafe { *out_count = hits.len() };
+    if out_colliders.is_null() {
+        return SUCCESS;
+    }
+    if capacity < hits.len() {
+        return BUFFER_TOO_SMALL;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(hits.as_ptr(), out_colliders, hits.len());
+    }
+    SUCCESS
+}
+
 /// Records the scene switch requested by project code (#482). The host performs it after the tick.
 unsafe extern "C" fn host_load_scene(
     user_data: *mut std::ffi::c_void,
@@ -1044,11 +1139,13 @@ impl ProjectModule {
                 status,
             });
         }
+        let fixed_update = self.api.fixed_update;
         Ok(ProjectSession {
             module: self,
             host,
             state,
             tick,
+            fixed_update,
             shutdown,
         })
     }
@@ -1059,6 +1156,7 @@ pub struct ProjectSession {
     host: Box<HostApi>,
     state: *mut std::ffi::c_void,
     tick: prism_project_api::TickProject,
+    fixed_update: Option<prism_project_api::FixedUpdateProject>,
     shutdown: prism_project_api::ShutdownProject,
 }
 
@@ -1072,7 +1170,17 @@ impl ProjectSession {
     }
 
     pub fn tick(&mut self, host: &HostApi, dt: f32) -> Result<(), ProjectModuleError> {
-        let status = unsafe { (self.tick)(host, self.state, dt) };
+        self.invoke(unsafe { (self.tick)(host, self.state, dt) })
+    }
+
+    pub fn fixed_update(&mut self, host: &HostApi, dt: f32) -> Result<(), ProjectModuleError> {
+        let Some(fixed_update) = self.fixed_update else {
+            return Ok(());
+        };
+        self.invoke(unsafe { fixed_update(host, self.state, dt) })
+    }
+
+    fn invoke(&self, status: i32) -> Result<(), ProjectModuleError> {
         if status == SUCCESS {
             Ok(())
         } else {
@@ -1410,6 +1518,168 @@ mod tests {
         );
     }
 
+    #[test]
+    fn physics_2d_callback_returns_filtered_world_space_colliders() {
+        use prism_scene::components::{
+            Active, ActiveInHierarchy, Collider2D, LocalTransform, Parent,
+        };
+
+        let mut world = prism_ecs::World::new();
+        let registry = registry();
+
+        let entity = world.spawn();
+        let mut transform = LocalTransform::default();
+        transform.position.x = 4.0;
+        transform.position.y = 3.0;
+        transform.scale.x = 2.0;
+        transform.scale.y = 1.0;
+        world.insert(entity, transform);
+        world.insert(
+            entity,
+            Collider2D {
+                offset: [0.5, -1.0],
+                half_extents: [1.0, 2.0],
+                is_trigger: true,
+                layer: 0b0010,
+            },
+        );
+
+        let inactive_parent = world.spawn();
+        world.insert(inactive_parent, Active(true));
+        let inactive = world.spawn();
+        world.insert(inactive, Parent(inactive_parent));
+        world.insert(inactive, LocalTransform::default());
+        world.insert(
+            inactive,
+            Collider2D {
+                layer: 0b0010,
+                ..Collider2D::default()
+            },
+        );
+        world.insert(inactive, Active(true));
+        world.insert(inactive, ActiveInHierarchy(true));
+
+        let directly_inactive = world.spawn();
+        world.insert(directly_inactive, LocalTransform::default());
+        world.insert(
+            directly_inactive,
+            Collider2D {
+                layer: 0b0010,
+                ..Collider2D::default()
+            },
+        );
+        world.insert(directly_inactive, Active(false));
+
+        let wrong_layer = world.spawn();
+        world.insert(wrong_layer, LocalTransform::default());
+        world.insert(
+            wrong_layer,
+            Collider2D {
+                layer: 0b0100,
+                ..Collider2D::default()
+            },
+        );
+
+        let mut commands = WorldCommands::new(&mut world, &registry, 1);
+        let api = commands.api();
+        assert_ne!(api.capabilities & HOST_CAP_PHYSICS_2D, 0);
+        let query = api.query_colliders2d.expect("2D collider query callback");
+        let active = Active(false);
+        let bytes = prism_reflect::rtti_bin::encode_one(
+            &Reflect::to_object(&active),
+            registry.type_registry(),
+        )
+        .expect("encode Active");
+        let set = api.set_component.expect("component callback");
+        assert_eq!(
+            unsafe {
+                set(
+                    api.user_data,
+                    EntityHandle {
+                        id: inactive_parent.id(),
+                        generation: inactive_parent.generation(),
+                    },
+                    bytes.as_ptr(),
+                    bytes.len(),
+                )
+            },
+            SUCCESS
+        );
+        let mut count = 0;
+        assert_eq!(
+            unsafe { query(api.user_data, 0b0010, std::ptr::null_mut(), 0, &mut count) },
+            SUCCESS
+        );
+        assert_eq!(count, 1);
+
+        let mut hits = vec![Collider2DHit::default(); count];
+        assert_eq!(
+            unsafe {
+                query(
+                    api.user_data,
+                    0b0010,
+                    hits.as_mut_ptr(),
+                    hits.len(),
+                    &mut count,
+                )
+            },
+            SUCCESS
+        );
+        let hit = hits[0];
+        assert_eq!(hit.entity.id, entity.id());
+        assert_eq!(hit.entity.generation, entity.generation());
+        assert_eq!(hit.bounds, [3.0, 0.0, 7.0, 4.0]);
+        assert_eq!(hit.is_trigger, 1);
+        assert_eq!(hit.layer, 0b0010);
+    }
+
+    #[test]
+    fn physics_2d_callback_uses_parented_local_to_world() {
+        use prism_scene::components::{Collider2D, LocalToWorld};
+
+        let mut world = prism_ecs::World::new();
+        let registry = registry();
+        let entity = world.spawn();
+        world.insert(
+            entity,
+            Collider2D {
+                offset: [1.0, -2.0],
+                half_extents: [2.0, 1.0],
+                ..Collider2D::default()
+            },
+        );
+        world.insert(
+            entity,
+            LocalToWorld(glam::Mat4::from_cols_array(&[
+                0.0, 2.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 6.0, 26.0, 0.0, 1.0,
+            ])),
+        );
+
+        let mut commands = WorldCommands::new(&mut world, &registry, 1);
+        let api = commands.api();
+        let query = api.query_colliders2d.expect("2D collider query callback");
+        let mut count = 0;
+        assert_eq!(
+            unsafe { query(api.user_data, u32::MAX, std::ptr::null_mut(), 0, &mut count) },
+            SUCCESS
+        );
+        assert_eq!(count, 1);
+        let mut hits = vec![Collider2DHit::default(); count];
+        assert_eq!(
+            unsafe {
+                query(
+                    api.user_data,
+                    u32::MAX,
+                    hits.as_mut_ptr(),
+                    hits.len(),
+                    &mut count,
+                )
+            },
+            SUCCESS
+        );
+        assert_eq!(hits[0].bounds, [7.0, 24.0, 9.0, 32.0]);
+    }
+
     /// The loose asset access the project module gets uses the same host implementation
     /// (through `HOST_CAP_ASSET`).
     /// #984: player saves are injected optionally too; reads return the full length so the
@@ -1559,6 +1829,7 @@ mod tests {
             schema_fingerprint: fp,
             create: None,
             tick: None,
+            fixed_update: None,
             shutdown: None,
         };
         assert!(ProjectModule::validate_api(&api, fp, path).is_ok());
@@ -1573,6 +1844,7 @@ mod tests {
             schema_fingerprint: fp,
             create: None,
             tick: None,
+            fixed_update: None,
             shutdown: None,
         };
         let err =
@@ -1591,6 +1863,7 @@ mod tests {
             schema_fingerprint: fp ^ 0xdeadbeef,
             create: None,
             tick: None,
+            fixed_update: None,
             shutdown: None,
         };
         let err = ProjectModule::validate_api(&api, fp, path)

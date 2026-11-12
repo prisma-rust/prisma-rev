@@ -26,6 +26,10 @@ pub mod input;
 pub mod input_facade;
 pub mod launch_config;
 pub mod physics;
+/// Deterministic 2D AABB geometry shared with project gameplay code.
+pub mod physics2d {
+    pub use prism_physics2d::*;
+}
 pub mod render_settings;
 pub mod render_system;
 pub mod scene;
