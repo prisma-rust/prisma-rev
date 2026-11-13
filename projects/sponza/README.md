@@ -30,14 +30,22 @@ cargo run -q --manifest-path ../../Cargo.toml -p prism-build-pipeline -- build-s
 在项目目录下启动：
 
 ```powershell
-cargo run --manifest-path projects/sponza/Cargo.toml
+cargo run
 ```
 
 可通过环境变量切换 feature 组合，例如仅使用基础路径追踪（关闭 RTXGI）：
 
 ```powershell
-cargo run --manifest-path projects/sponza/Cargo.toml --no-default-features --features player
+cargo run --no-default-features --features player
 ```
+
+### 3. 渲染模式
+
+启动时可以用 `SPONZA_RENDER_MODE` 选默认模式：`raster` = 光栅（GI 关闭）、
+`pt_off` = 路径追踪但不做全局光照、其它值或未设置 = 路径追踪 + SHaRC。
+
+运行中不再需要重启：按 `M`，或选中面板里的 `Render Mode` 行用 `Left` / `Right`
+即可在光栅与路径追踪之间切换（切换会重置路径追踪累积）。
 
 ## 测试调参 UI (参考 RTXGI ImGui)
 
@@ -53,11 +61,16 @@ cargo run --manifest-path projects/sponza/Cargo.toml --no-default-features --fea
 | `Space` / `Enter` | 切换布尔开关或执行动作 |
 | `1` / `2` / `3` | 快速切换 GI 模式：`1` = Reference (纯 PT), `2` = SHaRC (RTXGI), `3` = NRC（占位，暂无实现） |
 | `T` | 循环切换色调映射算子（Reinhard → ACES → Passthrough） |
+| `M` | 在光栅与路径追踪之间切换（会重置路径追踪累积） |
 | `R` | 手动触发路径追踪累积缓存重置 |
 | `V` | 切换垂直同步 (VSync) |
 
 ### 2. 核心调参参数
 
+- **Render**:
+  - `Render Mode`: 光栅 / 路径追踪切换（`Raster` / `Path Trace`）。
+  - `Auto Exposure`: 直方图自动曝光开关（默认开；关闭后色调映射使用固定曝光，
+    与引擎默认行为一致）。
 - **Path Tracing**:
   - `GI Mode`: 全局光照算法选择（`Reference` 纯蒙特卡洛积分 / `SHaRC` 空间哈希辐射缓存 / `NRC` 神经网络缓存，占位未接）。实际生效的只有 `Reference` 与 `SHaRC`。
   - `Max Bounces`: 路径最大弹射次数（1..24，默认 4）。

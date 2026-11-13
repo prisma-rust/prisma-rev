@@ -3,6 +3,7 @@
 //! Replicates the sections and controls of the NVIDIA RTXGI SDK
 //! (`Samples/Pathtracer/UI.cpp`):
 //! - **Generic**: Camera coordinates, VSync, Frame time / FPS.
+//! - **Render**: Raster / Path Trace mode, Post (DLSS, Auto Exposure).
 //! - **Path Tracing**: Mode (Reference, SHaRC, NRC), Bounces, Ray Max Distance, Exposure.
 //! - **SHaRC (RTXGI)**: Enable Clear, Update, Resolve, Anti-firefly, Roughness threshold,
 //!   Downscale factor, Scene scale, Accumulation frame count, Stale frame count.
@@ -30,7 +31,7 @@ use prism_scene::ui::{
 };
 use prism_scene::Active;
 
-const NUM_ITEMS: usize = 14;
+const NUM_ITEMS: usize = 16;
 
 #[derive(Debug)]
 pub struct SponzaTuningHook {
@@ -39,6 +40,7 @@ pub struct SponzaTuningHook {
 
     // Parameters matching RTXGI Pathtracer UI
     pub render_mode: RenderMode,
+    pub auto_exposure: bool,
     pub gi_mode: GiMode,
     pub bounces: u32,
     pub ray_max_distance: f32,
@@ -66,12 +68,8 @@ pub struct SponzaTuningHook {
 impl Default for SponzaTuningHook {
     fn default() -> Self {
         let (render_mode, gi_mode) = match std::env::var("SPONZA_RENDER_MODE") {
-            Ok(mode) if mode.eq_ignore_ascii_case("raster") => {
-                (RenderMode::Raster, GiMode::Off)
-            }
-            Ok(mode) if mode.eq_ignore_ascii_case("pt_off") => {
-                (RenderMode::PathTrace, GiMode::Off)
-            }
+            Ok(mode) if mode.eq_ignore_ascii_case("raster") => (RenderMode::Raster, GiMode::Off),
+            Ok(mode) if mode.eq_ignore_ascii_case("pt_off") => (RenderMode::PathTrace, GiMode::Off),
             _ => (RenderMode::PathTrace, GiMode::Sharc),
         };
 
@@ -79,6 +77,7 @@ impl Default for SponzaTuningHook {
             show: true,
             selected_index: 0,
             render_mode,
+            auto_exposure: true,
             gi_mode,
             bounces: 4,
             ray_max_distance: 1000.0,
@@ -104,9 +103,20 @@ impl Default for SponzaTuningHook {
 }
 
 impl SponzaTuningHook {
+    fn cycle_render_mode(&mut self) {
+        // Raster <-> Path Trace. Either direction invalidates the path tracing
+        // accumulation.
+        self.render_mode = match self.render_mode {
+            RenderMode::PathTrace => RenderMode::Raster,
+            _ => RenderMode::PathTrace,
+        };
+        self.request_reset = true;
+    }
+
     fn adjust_parameter(&mut self, increase: bool) {
         match self.selected_index {
-            0 => {
+            0 => self.cycle_render_mode(),
+            1 => {
                 // GI Mode: Off <-> Sharc <-> Nrc
                 self.gi_mode = match self.gi_mode {
                     GiMode::Off => {
@@ -131,9 +141,12 @@ impl SponzaTuningHook {
                         }
                     }
                 };
+                // GI modes only exist in path tracing, so selecting one also
+                // leaves raster mode.
+                self.render_mode = RenderMode::PathTrace;
                 self.request_reset = true;
             }
-            1 => {
+            2 => {
                 // Bounces: 1 .. 24
                 if increase {
                     self.bounces = (self.bounces + 1).min(24);
@@ -142,7 +155,7 @@ impl SponzaTuningHook {
                 }
                 self.request_reset = true;
             }
-            2 => {
+            3 => {
                 // Ray max distance: 100.0 .. 5000.0
                 if increase {
                     self.ray_max_distance = (self.ray_max_distance + 100.0).min(5000.0);
@@ -151,7 +164,7 @@ impl SponzaTuningHook {
                 }
                 self.request_reset = true;
             }
-            3 => {
+            4 => {
                 // Tonemapper: 0=Reinhard, 1=ACES, 2=Passthrough
                 if increase {
                     self.tonemap_mode = (self.tonemap_mode + 1) % 3;
@@ -163,11 +176,11 @@ impl SponzaTuningHook {
                     };
                 }
             }
-            4 => self.sharc_enable_clear = !self.sharc_enable_clear,
-            5 => self.sharc_enable_update = !self.sharc_enable_update,
-            6 => self.sharc_enable_resolve = !self.sharc_enable_resolve,
-            7 => self.sharc_enable_anti_firefly = !self.sharc_enable_anti_firefly,
-            8 => {
+            5 => self.sharc_enable_clear = !self.sharc_enable_clear,
+            6 => self.sharc_enable_update = !self.sharc_enable_update,
+            7 => self.sharc_enable_resolve = !self.sharc_enable_resolve,
+            8 => self.sharc_enable_anti_firefly = !self.sharc_enable_anti_firefly,
+            9 => {
                 // Scene scale: 5.0 .. 100.0
                 if increase {
                     self.sharc_scene_scale = (self.sharc_scene_scale + 5.0).min(100.0);
@@ -176,7 +189,7 @@ impl SponzaTuningHook {
                 }
                 self.request_reset = true;
             }
-            9 => {
+            10 => {
                 // Roughness threshold: 0.0 .. 1.0
                 if increase {
                     self.sharc_roughness_threshold =
@@ -187,7 +200,7 @@ impl SponzaTuningHook {
                 }
                 self.request_reset = true;
             }
-            10 => {
+            11 => {
                 // Downscale factor: 1 .. 10
                 if increase {
                     self.sharc_downscale_factor = (self.sharc_downscale_factor + 1).min(10);
@@ -196,7 +209,7 @@ impl SponzaTuningHook {
                         self.sharc_downscale_factor.saturating_sub(1).max(1);
                 }
             }
-            11 => {
+            12 => {
                 // Accumulation frames: 1 .. 120
                 if increase {
                     self.sharc_accumulation_frame_num =
@@ -206,7 +219,7 @@ impl SponzaTuningHook {
                         self.sharc_accumulation_frame_num.saturating_sub(5).max(1);
                 }
             }
-            12 => {
+            13 => {
                 // Stale frames: 1 .. 120
                 if increase {
                     self.sharc_stale_frame_num = (self.sharc_stale_frame_num + 5).min(120);
@@ -215,7 +228,7 @@ impl SponzaTuningHook {
                         self.sharc_stale_frame_num.saturating_sub(5).max(1);
                 }
             }
-            13 => {
+            14 => {
                 // DLSS Mode
                 self.dlss_mode = match self.dlss_mode {
                     DlssMode::Off => {
@@ -263,18 +276,19 @@ impl SponzaTuningHook {
                 };
                 self.request_reset = true;
             }
+            15 => self.auto_exposure = !self.auto_exposure,
             _ => {}
         }
     }
 
     fn toggle_parameter(&mut self) {
         match self.selected_index {
-            0 => self.adjust_parameter(true),
-            4 => self.sharc_enable_clear = !self.sharc_enable_clear,
-            5 => self.sharc_enable_update = !self.sharc_enable_update,
-            6 => self.sharc_enable_resolve = !self.sharc_enable_resolve,
-            7 => self.sharc_enable_anti_firefly = !self.sharc_enable_anti_firefly,
-            13 => self.adjust_parameter(true),
+            0 | 1 | 14 => self.adjust_parameter(true),
+            5 => self.sharc_enable_clear = !self.sharc_enable_clear,
+            6 => self.sharc_enable_update = !self.sharc_enable_update,
+            7 => self.sharc_enable_resolve = !self.sharc_enable_resolve,
+            8 => self.sharc_enable_anti_firefly = !self.sharc_enable_anti_firefly,
+            15 => self.auto_exposure = !self.auto_exposure,
             _ => {}
         }
     }
@@ -308,6 +322,11 @@ impl FrameHook for SponzaTuningHook {
             }
             Key::KeyT => {
                 self.tonemap_mode = (self.tonemap_mode + 1) % 3;
+                return true;
+            }
+            // Key 'M' (0x4D in Win32 VK): Raster <-> Path Trace
+            Key::Other(0x4D) => {
+                self.cycle_render_mode();
                 return true;
             }
             // Key 'R' (0x52 in Win32 VK)
@@ -358,6 +377,7 @@ impl FrameHook for SponzaTuningHook {
     ) {
         // Sync runtime settings to engine
         settings.render_mode = self.render_mode;
+        settings.auto_exposure = self.auto_exposure;
         settings.gi_mode = self.gi_mode;
         settings.pt_max_bounces = self.bounces;
         settings.pt_ray_max_distance = self.ray_max_distance;
@@ -401,7 +421,7 @@ impl FrameHook for SponzaTuningHook {
                 bg,
                 Style {
                     width: Some(450.0),
-                    height: Some(480.0),
+                    height: Some(520.0),
                     anchors: Anchors::TOP_LEFT,
                     pivot: Pivot::TOP_LEFT,
                     margin: Margin {
@@ -425,7 +445,7 @@ impl FrameHook for SponzaTuningHook {
                 ptext,
                 Style {
                     width: Some(430.0),
-                    height: Some(460.0),
+                    height: Some(500.0),
                     anchors: Anchors::TOP_LEFT,
                     pivot: Pivot::TOP_LEFT,
                     margin: Margin {
@@ -533,6 +553,12 @@ impl FrameHook for SponzaTuningHook {
                     DlssMode::Dlaa => "DLAA",
                 };
 
+                let mode_str = match self.render_mode {
+                    RenderMode::PathTrace => "Path Trace",
+                    RenderMode::Raster => "Raster",
+                    _ => "Sprites 2D",
+                };
+
                 let on_off = |v: bool| if v { "ON" } else { "OFF" };
 
                 let content = format!(
@@ -540,6 +566,7 @@ impl FrameHook for SponzaTuningHook {
                      Frame: {:.2} ms ({:.0} FPS) | GPU: {}\n\
                      Accum Samples: {} | [F1] Hide | [R] Reset\n\
                      ----------------------------------------\n\
+                     {}Render Mode:        [ {} ] (Key: M)\n\
                      {}GI Mode:            [ {} ] (Keys: 1, 2, 3)\n\
                      {}Max Bounces:        [ {} ]\n\
                      {}Ray Max Dist:       [ {:.0} ]\n\
@@ -556,6 +583,7 @@ impl FrameHook for SponzaTuningHook {
                      {}Stale Frame Num:    [ {} ]\n\
                      --- Post / Upscaling -------------------\n\
                      {}DLSS Mode:          [ {} ]\n\
+                     {}Auto Exposure:      [ {} ]\n\
                      ----------------------------------------\n\
                      [Up/Down] Select   [Left/Right] Adjust\n\
                      [Space/Enter] Toggle   [V] VSync: {}",
@@ -564,33 +592,37 @@ impl FrameHook for SponzaTuningHook {
                     gpu_str,
                     samples,
                     marker(0),
-                    gi_str,
+                    mode_str,
                     marker(1),
-                    self.bounces,
+                    gi_str,
                     marker(2),
-                    self.ray_max_distance,
+                    self.bounces,
                     marker(3),
-                    tonemap_str,
+                    self.ray_max_distance,
                     marker(4),
-                    on_off(self.sharc_enable_clear),
+                    tonemap_str,
                     marker(5),
-                    on_off(self.sharc_enable_update),
+                    on_off(self.sharc_enable_clear),
                     marker(6),
-                    on_off(self.sharc_enable_resolve),
+                    on_off(self.sharc_enable_update),
                     marker(7),
-                    on_off(self.sharc_enable_anti_firefly),
+                    on_off(self.sharc_enable_resolve),
                     marker(8),
-                    self.sharc_scene_scale,
+                    on_off(self.sharc_enable_anti_firefly),
                     marker(9),
-                    self.sharc_roughness_threshold,
+                    self.sharc_scene_scale,
                     marker(10),
-                    self.sharc_downscale_factor,
+                    self.sharc_roughness_threshold,
                     marker(11),
-                    self.sharc_accumulation_frame_num,
+                    self.sharc_downscale_factor,
                     marker(12),
-                    self.sharc_stale_frame_num,
+                    self.sharc_accumulation_frame_num,
                     marker(13),
+                    self.sharc_stale_frame_num,
+                    marker(14),
                     dlss_str,
+                    marker(15),
+                    on_off(self.auto_exposure),
                     on_off(self.vsync),
                 );
 
@@ -613,8 +645,13 @@ impl FrameHook for SponzaTuningHook {
                     GiMode::Sharc => "SHaRC",
                     GiMode::Nrc => "NRC",
                 };
+                let mode_short = match self.render_mode {
+                    RenderMode::PathTrace => "PT",
+                    RenderMode::Raster => "Raster",
+                    _ => "Sprites2D",
+                };
                 let status = format!(
-                    "[F1/Tab] Tuning Panel | GI: {gi_short} | Bounces: {} | {:.0} FPS ({:.1} ms) | Samples: {} | [1] Ref [2] SHaRC [3] NRC",
+                    "[F1/Tab] Tuning Panel | Mode: {mode_short} [M] | GI: {gi_short} | Bounces: {} | {:.0} FPS ({:.1} ms) | Samples: {} | [1] Ref [2] SHaRC [3] NRC",
                     self.bounces, fps, ms, samples
                 );
                 if let Some(t) = world.get_mut::<Text>(stext) {
