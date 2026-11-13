@@ -34,6 +34,14 @@ pub fn build_app() -> prism_app::App {
             settings.pt_max_bounces = 4;
             settings.pt_max_iterations = 0;
             settings.pt_ray_max_distance = 1000.0;
+            // PBR component isolator, same masks the Digit1..0 / Shift+Digit
+            // shortcuts set. Bit order matches `PBR_FLAG_NAMES`.
+            if let Ok(flags) = std::env::var("SPONZA_DEBUG_FLAGS") {
+                match flags.parse::<u32>() {
+                    Ok(flags) => settings.debug_flags = flags,
+                    Err(_) => log::warn!("SPONZA_DEBUG_FLAGS is not a u32: {flags}"),
+                }
+            }
         })
         .with_frame_hook(SponzaTuningHook::default())
 }

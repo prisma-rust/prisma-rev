@@ -879,10 +879,10 @@ SceneOutput fragmentMain(MeshVaryings in)
 
     // ---- Minimum ambient floor ----
     // After all IBL modifications (AO, occlusion, GI), ensure shadowed /
-    // occluded areas never go to pure black. 8 % of albedo at default exposure
-    // (1.0) gives dark stone ~6 sRGB (barely visible), and at max exposure
-    // (5.0) gives ~28 sRGB (dark but clearly non-black).
-    diffuse_ibl = max(diffuse_ibl, 0.08 * albedo);
+    // occluded areas never go to pure black. The floor must use the same
+    // ibl_intensity as the real indirect terms: an unscaled constant would
+    // outvote them whenever ambient < 1 and erase normal-dependent shading.
+    diffuse_ibl = max(diffuse_ibl, 0.08 * ibl_intensity * albedo);
 
     // ---- Emissive (gated). Neutral = 0. ----
     float3 emissive = float3(0.0);

@@ -2127,6 +2127,43 @@ impl RenderGraph {
                 log::warn!("pass dump: {name} failed: {err}");
             }
         }
+
+        // The shadow atlas is graph-owned (ShadowMapPass does not publish it)
+        // and its extent is the atlas size, not the render extent.
+        if let Some(image) = self.graph_resources.image(SHADOW_MAP_H) {
+            let atlas_extent = self
+                .graph_resources
+                .resources
+                .get(&SHADOW_MAP_H)
+                .and_then(|r| match r.res_type {
+                    ResourceType::DepthAttachment { extent, .. } => Some(extent),
+                    _ => None,
+                });
+            if let (Some(extent), Some(path)) =
+                (atlas_extent, self.pass_dump.path_for("shadow_map"))
+            {
+                let name = "shadow_map";
+                let layout = vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+                let access = vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
+                if let Err(err) = self.record_dump(
+                    ctx,
+                    name,
+                    image,
+                    extent,
+                    vk::Format::D32_SFLOAT,
+                    crate::pass_dump::DumpKind::Depth,
+                    layout,
+                    access,
+                    path,
+                ) {
+                    log::warn!("pass dump: {name} failed: {err}");
+                }
+            } else {
+                log::warn!("pass dump: shadow_map has no atlas extent");
+            }
+        } else {
+            log::warn!("pass dump: shadow_map was not allocated this frame");
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2299,7 +2336,8 @@ impl RenderGraph {
                         *sample_count,
                         vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
                             | vk::ImageUsageFlags::INPUT_ATTACHMENT
-                            | vk::ImageUsageFlags::SAMPLED,
+                            | vk::ImageUsageFlags::SAMPLED
+                            | vk::ImageUsageFlags::TRANSFER_SRC,
                     )?;
                     res.image = Some(image);
                     res.image_view = Some(view);
