@@ -7,6 +7,9 @@ pub enum KeyCode {
     KeyD,
     KeyQ,
     KeyE,
+    /// `T`：没有移动语义，但宿主/项目的快捷键需要它有独立身份
+    /// （以前退化成 `Other(0x54)`，和 Win32 `VK_T` 字面量混在一起）。
+    KeyT,
     Space,
     ShiftLeft,
     ShiftRight,
@@ -31,6 +34,19 @@ pub enum KeyCode {
     Digit7,
     Digit8,
     Digit9,
+    /// 功能键。宿主调试层 / 编辑器用；项目可以用也可以不用。
+    F1,
+    F2,
+    F3,
+    F4,
+    F5,
+    F6,
+    F7,
+    F8,
+    F9,
+    F10,
+    F11,
+    F12,
     Other(u32),
 }
 
@@ -72,11 +88,24 @@ impl KeyCode {
             Self::Digit7 => 27,
             Self::Digit8 => 28,
             Self::Digit9 => 29,
-            // 位图 30..=255 一共 226 个槽位，只放得下 vk < 226 的原始键码。
+            Self::KeyT => 30,
+            Self::F1 => 31,
+            Self::F2 => 32,
+            Self::F3 => 33,
+            Self::F4 => 34,
+            Self::F5 => 35,
+            Self::F6 => 36,
+            Self::F7 => 37,
+            Self::F8 => 38,
+            Self::F9 => 39,
+            Self::F10 => 40,
+            Self::F11 => 41,
+            Self::F12 => 42,
+            // 位图 43..=255 一共 213 个槽位，只放得下 vk <= 212 的原始键码。
             //
             // 超出的键码必须**丢弃**，不能取模：取模会让 vk 226 和 vk 452 落在
             // 同一个位上，玩家按一个冷门键却看到另一个键被按住，比丢键难查得多。
-            Self::Other(code) if (code as usize) < 226 => 30 + code as usize,
+            Self::Other(code) if code <= 212 => 43 + code as usize,
             Self::Other(_) => return None,
         })
     }
@@ -354,18 +383,23 @@ mod abi_key_tests {
         assert_eq!(KeyCode::ArrowLeft.bit_index(), Some(keys::ARROW_LEFT));
         assert_eq!(KeyCode::ArrowRight.bit_index(), Some(keys::ARROW_RIGHT));
         assert_eq!(KeyCode::Digit0.bit_index(), Some(keys::DIGIT_0));
+        // `KeyT` / `F1..=F12` 追加在 `Other` 之前：旧键位编号一个没变，
+        // `Other` 的基址从 30 移到 43（跨 ABI 的位移，已在 `keys` 文档注明）。
+        assert_eq!(KeyCode::KeyT.bit_index(), Some(keys::KEY_T));
+        assert_eq!(KeyCode::F1.bit_index(), Some(keys::F1));
+        assert_eq!(KeyCode::F12.bit_index(), Some(keys::F12));
         assert_eq!(KeyCode::Other(5).bit_index(), Some(keys::OTHER_BASE + 5));
     }
 
-    /// 不同键码不能共用一个位：#986 之前 `Other(code)` 取模 226，
-    /// vk 226 和 vk 452 都落到 30，按一个冷门键会报出另一个键。
+    /// 不同键码不能共用一个位：#986 之前 `Other(code)` 取模，
+    /// vk 与另一个 vk 落到同一位，按一个冷门键会报出另一个键。
     #[test]
     fn other_key_codes_never_alias_each_other() {
         let mut seen = [None; 256];
-        for code in 0u32..226 {
+        for code in 0u32..=212 {
             let index = KeyCode::Other(code)
                 .bit_index()
-                .expect("code < 226 必须放得进位图");
+                .expect("code <= 212 必须放得进位图");
             assert!(index < 256, "code {code} → {index} 越界");
             assert!(
                 seen[index].is_none(),
@@ -376,10 +410,11 @@ mod abi_key_tests {
         }
     }
 
-    /// 位图只有 226 个剩余槽位：超出范围必须**丢弃**（`None`），不能折叠。
+    /// 位图只剩 213 个槽位（`KeyT` + `F1..=F12` 占掉 13 个）：超出必须**丢弃**
+    /// （`None`），不能折叠。
     #[test]
     fn other_key_codes_above_the_table_are_dropped() {
-        for code in [226u32, 227, 255, 452, 1000, u32::MAX] {
+        for code in [213u32, 226, 255, 452, 1000, u32::MAX] {
             assert_eq!(
                 KeyCode::Other(code).bit_index(),
                 None,
@@ -391,7 +426,7 @@ mod abi_key_tests {
     /// 位图边界：最大可表示键码正好落在最后一个 bit 上。
     #[test]
     fn the_last_representable_key_fills_the_last_bit() {
-        assert_eq!(KeyCode::Other(225).bit_index(), Some(255));
+        assert_eq!(KeyCode::Other(212).bit_index(), Some(255));
         let mut snapshot = prism_project_api::InputSnapshot::default();
         snapshot.set_key(255, true);
         assert_eq!(

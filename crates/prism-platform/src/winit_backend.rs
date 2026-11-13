@@ -96,11 +96,25 @@ const LETTER_KEYS: &[(winit::keyboard::KeyCode, u8)] = &[
 /// \`Key::Other\` 的载荷在 \`Win32\` 后端是 \`VK_*\`、在 winit 后端是 winit 自己的
 /// 判别值；项目代码里却按 \`Key::Other(0x52)\`（\`'R'\`）这种 Win32 字面量写快捷键。
 /// 统一在事件产出前换算，两个后端才认同一串键。
+///
+/// 两条规则缺一条，就会有一个后端和另一个后端不认同一串键：
+///
+/// 1. Key 里有专用变体的字母（W/A/S/D/Q/E/T）必须保留变体。这些键进
+///    InputManager 时是 KeyCode::KeyW 这类枚举值，相机系统按枚举查表；
+///    若在这里压成 Key::Other(0x57)，事件链就变成
+///    Other(0x57) -> KeyCode::Other(0x57)，key_held(KeyCode::KeyW) 永远为假
+///    ——这就是「Sponza 里 WASD 完全不动相机」的根因（Win32 后端走
+///    Key::from_vk，字母本来就是专用变体，所以只有 winit 后端坏）。
+/// 2. 没有专用变体的字母（R/V/M 等）换成 Win32 VK_* 载荷，见上面的说明。
 fn winit_to_vk(code: winit::keyboard::KeyCode) -> Key {
+    let key = Key::from_winit(code);
+    if !matches!(key, Key::Other(_)) {
+        return key;
+    }
     LETTER_KEYS
         .iter()
         .find_map(|(winit_code, byte)| (*winit_code == code).then_some(Key::Other(*byte as u32)))
-        .unwrap_or(Key::from_winit(code))
+        .unwrap_or(key)
 }
 
 impl Key {
@@ -368,15 +382,28 @@ mod tests {
         assert_eq!(Key::from_winit(Wk::KeyZ), Key::Other(Wk::KeyZ as u32));
     }
 
-    /// 事件层用的是 `winit_to_vk`：字母键必须换成 Win32 `VK_*`，否则项目里
-    /// `Key::Other(0x52)`（`'R'`）这类快捷键在 winit 后端永远不触发。
+    /// 事件层用的是 `winit_to_vk`，它对字母键有两条规则：
+    ///
+    /// - 有专用 `Key` 变体的字母（W/A/S/D/Q/E/T）必须保留变体，否则
+    ///   `InputManager` 里存的是 `KeyCode::Other(0x57)`，相机系统的
+    ///   `key_held(KeyCode::KeyW)` 永远为假，WASD 不动。
+    /// - 没有专用变体的字母换成 Win32 `VK_*`，否则项目里 `Key::Other(0x52)`
+    ///   （`'R'`）这类快捷键在 winit 后端永远不触发。
     #[test]
     fn winit_letters_map_to_win32_codes() {
         use winit::keyboard::KeyCode as Wk;
+        // 专用变体：和 Win32 后端的 `Key::from_vk` 结果一致。
+        assert_eq!(winit_to_vk(Wk::KeyW), Key::KeyW);
+        assert_eq!(winit_to_vk(Wk::KeyA), Key::KeyA);
+        assert_eq!(winit_to_vk(Wk::KeyS), Key::KeyS);
+        assert_eq!(winit_to_vk(Wk::KeyD), Key::KeyD);
+        assert_eq!(winit_to_vk(Wk::KeyQ), Key::KeyQ);
+        assert_eq!(winit_to_vk(Wk::KeyE), Key::KeyE);
+        assert_eq!(winit_to_vk(Wk::KeyT), Key::KeyT);
+        // 无专用变体的字母：Win32 `VK_*` 载荷。
         assert_eq!(winit_to_vk(Wk::KeyR), Key::Other(0x52));
         assert_eq!(winit_to_vk(Wk::KeyV), Key::Other(0x56));
         assert_eq!(winit_to_vk(Wk::KeyM), Key::Other(0x4D));
-        assert_eq!(winit_to_vk(Wk::KeyW), Key::Other(0x57));
         // 非字母键保持原样（两张表本来同号）。
         assert_eq!(winit_to_vk(Wk::F3), Key::F3);
         assert_eq!(winit_to_vk(Wk::ArrowUp), Key::ArrowUp);

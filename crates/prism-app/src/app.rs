@@ -87,6 +87,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow};
 #[cfg(feature = "winit-backend")]
 use winit::window::WindowId;
 
+#[cfg(feature = "engine-debug")]
 use crate::debug_hud::DebugHud;
 use crate::hook::FrameHook;
 use crate::render_runner::{render_thread_main, OverlayFactory, RenderTarget};
@@ -161,6 +162,8 @@ pub struct App {
     frame_hook: Option<Box<dyn FrameHook>>,
     render_settings: RenderSettings,
     /// 运行时诊断 HUD（F3；无 UI 框架依赖）。
+    /// 运行时诊断 HUD（F3）。只在编译了引擎调试层时存在。
+    #[cfg(feature = "engine-debug")]
     debug_hud: DebugHud,
 
     // ---------- 每帧状态 ----------
@@ -371,6 +374,7 @@ impl App {
             platform: None,
             frame_hook: None,
             render_settings,
+            #[cfg(feature = "engine-debug")]
             debug_hud: DebugHud::default(),
             display_aspect: 16.0 / 9.0,
             pak_watcher: spawn_pak_watcher(),
@@ -1493,6 +1497,7 @@ impl App {
             );
 
             // 运行时诊断 HUD：追加到 ECS UI 叠加（随后统一由 ui_overlay 绘制）。
+            #[cfg(feature = "engine-debug")]
             if self.debug_hud.show {
                 let (width, height) = self.surface_size();
                 let (width, height) = (width as f32, height as f32);
@@ -1731,10 +1736,27 @@ impl App {
     ///
     /// 只在按键**按下**时调用；返回 `true` 表示这个键已被吃掉。
     fn handle_shortcut(&mut self, key: Key) -> bool {
-        // 修饰键不在 `Key` 事件里，Shift 取最近一次 `Modifiers` 快照。
+        // 宿主钩子**不在这里**调用：两个事件循环入口（平台事件泵与 winit
+        // `window_event`）都在调本函数之前已经把同一个按键事件原样发给过钩子，
+        // 被消费时直接跳过本函数。这里再转一次等于同一个键按了两次——项目那边
+        // 的「按一次切换一次」就会自己抵消（F1 面板永远打不开）。
+        //
+        // 绑定的查找与「数字键 + Shift = 另一个 PBR 分量」都由引擎的
+        // `KeyBindings` 决定；宿主这里只负责把动作落到 `RenderSettings` 上。
+        // 没绑定的键一律返回 false：不消费，项目的输入原样可用。
+        // 调试层没编译进来时表是空的：F3 / Tab / T / 数字键全部原样留给项目。
         let shift = self.modifiers.shift;
+        let key_bindings = if cfg!(feature = "engine-debug") {
+            prism_engine::KeyBindings::engine_debug(shift)
+        } else {
+            prism_engine::KeyBindings::empty()
+        };
+        let Some(action) = key_bindings.action_for(prism_engine::key_code_from_vk(key.to_vk()))
+        else {
+            return false;
+        };
 
-        if let Some(bit) = Self::pbr_debug_key_to_bit(key, shift) {
+        if let prism_engine::EngineAction::IsolatePbrComponent(bit) = action {
             self.render_settings.debug_flags = if self.render_settings.debug_flags == (1u32 << bit)
             {
                 0
@@ -1749,15 +1771,18 @@ impl App {
             return true;
         }
 
-        match key {
-            Key::F3 => {
-                self.debug_hud.show = !self.debug_hud.show;
-                log::info!(
-                    "runtime HUD = {}",
-                    if self.debug_hud.show { "on" } else { "off" }
-                );
+        match action {
+            prism_engine::EngineAction::ToggleHud => {
+                #[cfg(feature = "engine-debug")]
+                {
+                    self.debug_hud.show = !self.debug_hud.show;
+                    log::info!(
+                        "runtime HUD = {}",
+                        if self.debug_hud.show { "on" } else { "off" }
+                    );
+                }
             }
-            Key::Tab => {
+            prism_engine::EngineAction::CycleDebugTarget => {
                 self.render_settings.debug_rt = (self.render_settings.debug_rt + 1) % 3;
                 let name = match self.render_settings.debug_rt {
                     0 => "normal (HDR tonemap)",
@@ -1767,41 +1792,19 @@ impl App {
                 };
                 log::info!("debug RT = {} ({})", self.render_settings.debug_rt, name);
             }
-            Key::KeyT => {
+            prism_engine::EngineAction::CycleTonemap => {
                 // 0 = Reinhard, 1 = ACES, 2 = passthrough（2D / 像素画）。
                 self.render_settings.tonemap_mode = (self.render_settings.tonemap_mode + 1) % 3;
                 log::info!("tonemap mode = {}", self.render_settings.tonemap_mode);
             }
-            _ => return false,
+            // 上面已经处理过，这里只是把分支写全。
+            prism_engine::EngineAction::IsolatePbrComponent(_) => {}
         }
         true
     }
 
     fn pbr_flag_label(&self) -> String {
         prism_engine::render_settings::pbr_flag_label(self.render_settings.debug_flags).to_string()
-    }
-
-    fn pbr_debug_key_to_bit(key: Key, shift: bool) -> Option<u32> {
-        Some(match (key, shift) {
-            (Key::Digit1, false) => 0,
-            (Key::Digit2, false) => 1,
-            (Key::Digit3, false) => 2,
-            (Key::Digit4, false) => 3,
-            (Key::Digit5, false) => 4,
-            (Key::Digit6, false) => 5,
-            (Key::Digit7, false) => 6,
-            (Key::Digit8, false) => 7,
-            (Key::Digit9, false) => 8,
-            (Key::Digit0, false) => 9,
-            (Key::Digit1, true) => 10,
-            (Key::Digit2, true) => 11,
-            (Key::Digit3, true) => 12,
-            (Key::Digit4, true) => 13,
-            (Key::Digit5, true) => 14,
-            // Shift+6 = 蒙皮权重热图（#560）：不是 PBR 分量，是顶点调试。
-            (Key::Digit6, true) => 15,
-            _ => return None,
-        })
     }
 
     #[cfg(feature = "winit-backend")]
@@ -1928,23 +1931,12 @@ impl ApplicationHandler for App {
             return;
         }
 
-        // 键盘快捷键（仅按下时触发）。`KeyboardInput` 不带修饰键，
-        // Shift 取自 `self.modifiers`。
-        if let WindowEvent::KeyboardInput {
-            event:
-                winit::event::KeyEvent {
-                    physical_key,
-                    state,
-                    ..
-                },
-            ..
-        } = &event
-        {
-            if *state == winit::event::ElementState::Pressed {
-                if let winit::keyboard::PhysicalKey::Code(code) = physical_key {
-                    self.handle_shortcut(Key::from_winit(*code));
-                }
-            }
+        // 键盘快捷键（仅按下时触发）。这里直接复用上面已经算好的
+        // `platform_event`，不再从 `WindowEvent` 里二次解析按键：两条路径各算一次
+        // 就会各用一套换算（`Key::from_winit` vs `winit_to_vk`），同一个键在
+        // 「平台事件泵」和「winit 事件」下变成两个不同的 `Key`。
+        if let PlatformEvent::Key { key, pressed: true } = platform_event {
+            self.handle_shortcut(key);
         }
     }
 
@@ -2133,21 +2125,21 @@ fn engine_key_from_native(key: Key) -> prism_engine::input::KeyCode {
         Key::Digit7 => Eng::Digit7,
         Key::Digit8 => Eng::Digit8,
         Key::Digit9 => Eng::Digit9,
-        // 引擎没有字母/T/F1–F12 的专用变体：保留原始虚拟键码，不丢键。
-        Key::KeyT
-        | Key::F1
-        | Key::F2
-        | Key::F3
-        | Key::F4
-        | Key::F5
-        | Key::F6
-        | Key::F7
-        | Key::F8
-        | Key::F9
-        | Key::F10
-        | Key::F11
-        | Key::F12
-        | Key::Other(_) => Eng::Other(key.to_vk()),
+        Key::KeyT => Eng::KeyT,
+        Key::F1 => Eng::F1,
+        Key::F2 => Eng::F2,
+        Key::F3 => Eng::F3,
+        Key::F4 => Eng::F4,
+        Key::F5 => Eng::F5,
+        Key::F6 => Eng::F6,
+        Key::F7 => Eng::F7,
+        Key::F8 => Eng::F8,
+        Key::F9 => Eng::F9,
+        Key::F10 => Eng::F10,
+        Key::F11 => Eng::F11,
+        Key::F12 => Eng::F12,
+        // 未建模的键保留原始虚拟键码，不丢键。
+        Key::Other(_) => Eng::Other(key.to_vk()),
     }
 }
 
@@ -2317,8 +2309,10 @@ mod tests {
     /// 未按 Shift 的 1..9、0 覆盖分量 0..9。
     #[test]
     fn plain_digits_select_the_lower_pbr_components() {
+        use prism_engine::EngineAction;
         use prism_platform::Key as K;
-        for (code, bit) in [
+        let bindings = prism_engine::KeyBindings::engine_debug(false);
+        for (key, bit) in [
             (K::Digit1, 0),
             (K::Digit2, 1),
             (K::Digit3, 2),
@@ -2331,9 +2325,9 @@ mod tests {
             (K::Digit0, 9),
         ] {
             assert_eq!(
-                App::pbr_debug_key_to_bit(code, false),
-                Some(bit),
-                "{code:?} without Shift"
+                bindings.action_for(prism_engine::key_code_from_vk(key.to_vk())),
+                Some(EngineAction::IsolatePbrComponent(bit)),
+                "{key:?} without Shift"
             );
         }
     }
@@ -2341,8 +2335,10 @@ mod tests {
     /// 回归防护：Shift 曾经被硬编码成 `false`，分量 10..14 完全不可达。
     #[test]
     fn shift_digits_select_the_upper_pbr_components() {
+        use prism_engine::EngineAction;
         use prism_platform::Key as K;
-        for (code, bit) in [
+        let bindings = prism_engine::KeyBindings::engine_debug(true);
+        for (key, bit) in [
             (K::Digit1, 10),
             (K::Digit2, 11),
             (K::Digit3, 12),
@@ -2352,14 +2348,18 @@ mod tests {
             (K::Digit6, 15),
         ] {
             assert_eq!(
-                App::pbr_debug_key_to_bit(code, true),
-                Some(bit),
-                "{code:?} with Shift"
+                bindings.action_for(prism_engine::key_code_from_vk(key.to_vk())),
+                Some(EngineAction::IsolatePbrComponent(bit)),
+                "{key:?} with Shift"
             );
         }
         // 15 个 debug 位已经用完；Shift+7..0 与普通字母都不该抢快捷键。
-        for code in [K::Digit7, K::Digit8, K::Digit9, K::Digit0, K::KeyA] {
-            assert_eq!(App::pbr_debug_key_to_bit(code, true), None, "{code:?}");
+        for key in [K::Digit7, K::Digit8, K::Digit9, K::Digit0, K::KeyA] {
+            assert_eq!(
+                bindings.action_for(prism_engine::key_code_from_vk(key.to_vk())),
+                None,
+                "{key:?}"
+            );
         }
     }
 
@@ -2393,13 +2393,15 @@ mod tests {
             (K::Digit0, Eng::Digit0),
             (K::Digit5, Eng::Digit5),
             (K::Digit9, Eng::Digit9),
+            (K::KeyT, Eng::KeyT),
+            (K::F1, Eng::F1),
+            (K::F3, Eng::F3),
+            (K::F12, Eng::F12),
         ] {
             assert_eq!(engine_key_from_native(key), expected, "{key:?}");
         }
         // 未列出的键不能丢：退化为原始码（winit 判别值 / Win32 VK）。
         assert_eq!(engine_key_from_native(K::Other(0x5A)), Eng::Other(0x5A));
-        // 引擎没有 F 键变体，用虚拟键码承载。
-        assert_eq!(engine_key_from_native(K::F3), Eng::Other(0x72));
     }
 }
 

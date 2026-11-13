@@ -44,6 +44,11 @@ gtao = ["prism-render/gtao", "prism-engine/gtao"]
 group-3d = ["prism-engine/group-3d"]
 group-2d = ["prism-engine/group-2d"]
 group-ui = ["prism-engine/group-ui"]
+# 引擎调试层（F3 HUD / Tab 调试图 / T 色调映射 / 数字键 PBR 隔离）。**默认关**：
+# 它是宿主级调试 UI 和几个全局快捷键，属于『谁用谁开』的能力，不该塞进每个游戏。
+# 编辑器与 `projects/template` 打开它；游戏项目（如 Sponza）用自己的面板，保持关闭，
+# 这些键于是全部留给项目自己。
+engine-debug = ["prism-engine/engine-debug"]
 physics = ["dep:rapier3d"]
 # 音频后端（cpal + firewheel + symphonia，约 60 个 crate）。默认关：仓库里没有
 # 任何地方真的在放声音（`Subsystem::Audio` 只是建引擎 + 解码线程）。需要声音的项目

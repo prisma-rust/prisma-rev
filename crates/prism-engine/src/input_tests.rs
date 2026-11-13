@@ -150,13 +150,14 @@ fn begin_frame_clears_all_transient() {
 fn snapshot_drops_key_codes_that_do_not_fit_the_bitmap() {
     let mut input = InputManager::new();
     // 452 以前会被折叠到 30 + 452 % 226 = 30，看起来像另一个键被按住。
+    // 位图基址现在是 43（`KeyT` + `F1..=F12` 占掉 30..=42）。
     input.handle_keyboard(KeyCode::Other(452), ElementState::Pressed);
     // 一个正常的、放得下的键码同时按下，用来确认其它键不受影响。
     input.handle_keyboard(KeyCode::Other(10), ElementState::Pressed);
 
     let snapshot = input_snapshot(&input, [640.0, 360.0]);
-    assert!(snapshot.key(30 + 10), "vk 10 应该正常上报");
-    assert!(!snapshot.key(30), "vk 452 不能被折叠到 30 上");
+    assert!(snapshot.key(43 + 10), "vk 10 应该正常上报");
+    assert!(!snapshot.key(43), "vk 452 不能被折叠到基址上");
     let set_bits: usize = snapshot
         .keys
         .iter()

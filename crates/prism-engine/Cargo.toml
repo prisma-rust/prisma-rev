@@ -13,6 +13,9 @@ pathtrace = ["prism-render/pathtrace"]
 rtxgi = ["prism-render/rtxgi", "pathtrace"]
 nrc = ["prism-render/nrc", "pathtrace"]
 dlss = ["prism-render/dlss"]
+# 调试层标记（透传）：引擎自己只用来给 `RenderSettings` 的调试字段做编译期说明，
+# 真正消费它的是 `prism-app`（F3 HUD / 调试图 / 调试快捷键）。默认关，见 prism-app。
+engine-debug = []
 ui = ["prism-render/ui"]
 # 文本光栅后端（透传）：默认 fontdue；Windows 可选系统 DirectWrite。
 ui-fontdue = ["prism-render/ui-fontdue"]

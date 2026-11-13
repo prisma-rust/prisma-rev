@@ -204,9 +204,10 @@ pub fn compute_camera_output_for(
 /// Apply free-fly input for one frame to the first `FlyCameraController` +
 /// sibling `LocalTransform` found on a `Camera` entity.
 ///
-/// `look_active` controls whether the camera rotates from mouse delta directly
-/// (pointer-lock mode) versus requiring a held right mouse button. Mirrors the
-/// old `FlyCamera::update_with_look` behaviour exactly.
+/// `look_active` is the pointer-lock state and it owns **all** camera input:
+/// while it is false the camera neither rotates from the mouse delta (a held
+/// right mouse button still does) nor moves from WASD/QE. The project UI owns
+/// the keyboard in that state, so a shared key can never drive both at once.
 ///
 /// Returns `true` if a controller was updated (so callers can skip the legacy
 /// demo-spin animation for that entity).
@@ -221,9 +222,6 @@ pub fn camera_controller_system(
     // 输入必须驱动**正在渲染**的那台相机，否则多相机场景里 WASD/鼠标会移动另一台。
     // 先拿到实体 id，让 &self 借用在这里结束，后面才能取 &mut 分量。
     let cam_entity = active_camera(world)?;
-    if input.key_held(KeyCode::KeyW) || input.key_held(KeyCode::KeyA) || input.key_held(KeyCode::KeyS) || input.key_held(KeyCode::KeyD) {
-        log::info!("CAM-WASD held w={} a={} s={} d={} q={} e={} look={look_active}", input.key_held(KeyCode::KeyW), input.key_held(KeyCode::KeyA), input.key_held(KeyCode::KeyS), input.key_held(KeyCode::KeyD), input.key_held(KeyCode::KeyQ), input.key_held(KeyCode::KeyE));
-    }
 
     let ctrl = world.get_mut::<FlyCameraController>(cam_entity)?;
     let move_speed;
@@ -272,22 +270,24 @@ pub fn camera_controller_system(
     let r = right(yaw);
     let up = Vec3::Y;
     let mut movev = Vec3::ZERO;
-    if input.key_held(KeyCode::KeyW) {
+    // 走位键只在指针锁定时归相机：解锁态键盘属于项目的 UI（Sponza 的调参菜单
+    // 也用 WASD 导航），同一次按键绝不能同时翻菜单和移动相机。
+    if look_active && input.key_held(KeyCode::KeyW) {
         movev += f;
     }
-    if input.key_held(KeyCode::KeyS) {
+    if look_active && input.key_held(KeyCode::KeyS) {
         movev -= f;
     }
-    if input.key_held(KeyCode::KeyD) {
+    if look_active && input.key_held(KeyCode::KeyD) {
         movev += r;
     }
-    if input.key_held(KeyCode::KeyA) {
+    if look_active && input.key_held(KeyCode::KeyA) {
         movev -= r;
     }
-    if input.key_held(KeyCode::Space) || input.key_held(KeyCode::KeyE) {
+    if look_active && (input.key_held(KeyCode::Space) || input.key_held(KeyCode::KeyE)) {
         movev += up;
     }
-    if input.key_held(KeyCode::ControlLeft) || input.key_held(KeyCode::KeyQ) {
+    if look_active && (input.key_held(KeyCode::ControlLeft) || input.key_held(KeyCode::KeyQ)) {
         movev -= up;
     }
 

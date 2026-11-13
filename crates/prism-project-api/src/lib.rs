@@ -39,11 +39,36 @@ pub mod keys {
     pub const ARROW_LEFT: usize = 18;
     pub const ARROW_RIGHT: usize = 19;
     pub const DIGIT_0: usize = 20;
-    /// Platform raw key codes start here (`30 + code % 226`).
-    pub const OTHER_BASE: usize = 30;
+    pub const DIGIT_1: usize = 21;
+    pub const DIGIT_2: usize = 22;
+    pub const DIGIT_3: usize = 23;
+    pub const DIGIT_4: usize = 24;
+    pub const DIGIT_5: usize = 25;
+    pub const DIGIT_6: usize = 26;
+    pub const DIGIT_7: usize = 27;
+    pub const DIGIT_8: usize = 28;
+    pub const DIGIT_9: usize = 29;
+    pub const KEY_T: usize = 30;
+    pub const F1: usize = 31;
+    pub const F2: usize = 32;
+    pub const F3: usize = 33;
+    pub const F4: usize = 34;
+    pub const F5: usize = 35;
+    pub const F6: usize = 36;
+    pub const F7: usize = 37;
+    pub const F8: usize = 38;
+    pub const F9: usize = 39;
+    pub const F10: usize = 40;
+    pub const F11: usize = 41;
+    pub const F12: usize = 42;
+    /// Platform raw key codes start here (`43 + code`), for `code < 213`.
+    ///
+    /// 30..=42 以前是 `OTHER_BASE`：`KeyT` 与 `F1..=F12` 占走这 13 个位后基址右移。
+    /// 已经按旧编号编译的动态模块需要重新构建（`ABI_VERSION` 同步 +1）。
+    pub const OTHER_BASE: usize = 43;
 }
 
-pub const ABI_VERSION: u32 = 13;
+pub const ABI_VERSION: u32 = 14;
 
 pub const SUCCESS: i32 = 0;
 pub const INVALID_ARGUMENT: i32 = 1;

@@ -288,7 +288,8 @@ fn fly_input_drives_the_rendered_camera() {
     let mut input = InputManager::new();
     input.handle_keyboard(KeyCode::KeyW, ElementState::Pressed);
 
-    let updated = camera_controller_system(&mut world, &input, 1.0, false);
+    // 走位键只在指针锁定时归相机，所以这里传 `look_active = true`。
+    let updated = camera_controller_system(&mut world, &input, 1.0, true);
     assert_eq!(updated, Some(high), "输入应送给渲染中的相机");
 
     let moved = world
@@ -307,6 +308,30 @@ fn fly_input_drives_the_rendered_camera() {
         untouched < 1e-6,
         "低 depth 相机不应被移动，实际 {untouched}"
     );
+}
+
+/// 未锁定指针时键盘属于项目 UI：WASD 绝不能同时移动相机。
+#[test]
+fn wasd_does_not_move_the_camera_while_unlocked() {
+    let mut world = World::new();
+    let cam = world.spawn();
+    world.insert(cam, Camera::default());
+    world.insert(cam, FlyCameraController::default());
+    world.insert(cam, LocalTransform::default());
+    world.insert(cam, LocalToWorld(Mat4::IDENTITY));
+
+    let mut input = InputManager::new();
+    for key in [KeyCode::KeyW, KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyD] {
+        input.handle_keyboard(key, ElementState::Pressed);
+    }
+
+    camera_controller_system(&mut world, &input, 1.0, false);
+    let moved = world
+        .get::<LocalTransform>(cam)
+        .expect("camera transform")
+        .position
+        .length();
+    assert!(moved < 1e-6, "未锁定时相机不该被 WASD 移动，实际 {moved}");
 }
 
 // ---------------------------------------------------------------------------
@@ -457,7 +482,7 @@ fn parented_camera_keeps_world_orientation_and_movement() {
     let before = cam_pos;
     let mut input = InputManager::new();
     input.handle_keyboard(KeyCode::KeyW, ElementState::Pressed);
-    camera_controller_system(&mut world, &input, 1.0, false);
+    camera_controller_system(&mut world, &input, 1.0, true);
     crate::scene::systems::hierarchy::hierarchy_system(&mut world);
     let after = world.get::<LocalToWorld>(cam).unwrap().0.col(3).truncate();
 

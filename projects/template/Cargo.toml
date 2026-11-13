@@ -41,6 +41,10 @@ player-core = [
     # 特性，必须在这里显式补回，否则模板玩家会少一块引擎默认能力。
     "prism-app/rtxgi",
     "prism-engine/rtxgi",
+    # 引擎调试层（F3 HUD / Tab 调试图 / T 色调映射 / 数字键 PBR 隔离）**默认关**，
+    # 模板显式打开：新建项目就该能看帧时间、切调试图。不需要的项目删掉这两行即可。
+    "prism-app/engine-debug",
+    "prism-engine/engine-debug",
     "prism-app/ui",
     "prism-app/ibl",
     "prism-app/shadows",
