@@ -17,11 +17,13 @@
 
 ### 1. 资源构建
 
-项目自带预打包的 `projects/sponza/assets/scenes.pak`，如需重新打包可运行：
+`scenes.pak` 是生成产物（不入库），首次运行前必须在项目目录里打包一次：
 
 ```powershell
-cargo run -q -p prism-build-pipeline -- build-scenes
+cargo run -q --manifest-path ../../Cargo.toml -p prism-build-pipeline -- build-scenes
 ```
+
+`build-scenes` 按当前目录定位 `assets/`，所以在仓库根执行会打到根目录的 assets 上。
 
 ### 2. 启动应用
 
