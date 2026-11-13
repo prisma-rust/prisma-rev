@@ -32,9 +32,9 @@ pub struct BuildPlan {
     pub required: Vec<PathBuf>,
 }
 
-/// 游戏 crate 的 manifest：仓库布局优先 `projects/prisma`，否则项目根本身。
+/// 游戏 crate 的 manifest：仓库布局优先 `projects/template`，否则项目根本身。
 pub fn game_manifest_path(root: &Path) -> PathBuf {
-    let nested = root.join("projects/prisma/Cargo.toml");
+    let nested = root.join("projects/template/Cargo.toml");
     if nested.is_file() {
         nested
     } else {
@@ -53,15 +53,15 @@ fn target_profile(settings: &ProjectSettings) -> &'static str {
 /// 可执行文件名：Windows 带 `.exe`。
 pub fn exe_name() -> &'static str {
     if cfg!(windows) {
-        "prisma.exe"
+        "template.exe"
     } else {
-        "prisma"
+        "template"
     }
 }
 
-/// 从用户工程的 `Cargo.toml` 里读 `[package] name`（读不到就退回 `prisma`）。
+/// 从用户工程的 `Cargo.toml` 里读 `[package] name`（读不到就退回 `template`）。
 ///
-/// 玩家 crate 的名字不一定叫 `prisma`（`projects/fishing` 就不是），产物路径要跟着它走。
+/// 玩家 crate 的名字不一定叫 `template`（`projects/fishing` 就不是），产物路径要跟着它走。
 pub fn game_binary_name(manifest: &Path) -> String {
     let stem = std::fs::read_to_string(manifest)
         .ok()
@@ -90,7 +90,7 @@ pub fn game_binary_name(manifest: &Path) -> String {
             }
             None
         })
-        .unwrap_or_else(|| "prisma".to_string());
+        .unwrap_or_else(|| "template".to_string());
     if cfg!(windows) {
         format!("{stem}.exe")
     } else {
@@ -294,11 +294,11 @@ mod tests {
     #[test]
     fn manifest_prefers_nested_game_crate() {
         let root = temp_dir("manifest-nested");
-        std::fs::create_dir_all(root.join("projects/prisma")).unwrap();
-        std::fs::write(root.join("projects/prisma/Cargo.toml"), "[package]\n").unwrap();
+        std::fs::create_dir_all(root.join("projects/template")).unwrap();
+        std::fs::write(root.join("projects/template/Cargo.toml"), "[package]\n").unwrap();
         assert_eq!(
             game_manifest_path(&root),
-            root.join("projects/prisma/Cargo.toml")
+            root.join("projects/template/Cargo.toml")
         );
 
         let root = temp_dir("manifest-root");
@@ -427,21 +427,21 @@ version = \"0.1.0\"
         assert_eq!(
             game_binary_name(&root.join("nope/Cargo.toml")),
             exe_name(),
-            "读不到清单就退回 prisma"
+            "读不到清单就退回 template"
         );
     }
 
     #[test]
     fn release_plan_uses_release_target_and_absolute_output() {
         let root = temp_dir("plan-release");
-        std::fs::create_dir_all(root.join("projects/prisma")).unwrap();
-        std::fs::write(root.join("projects/prisma/Cargo.toml"), "[package]\n").unwrap();
+        std::fs::create_dir_all(root.join("projects/template")).unwrap();
+        std::fs::write(root.join("projects/template/Cargo.toml"), "[package]\n").unwrap();
         let out = std::env::temp_dir().join("prism-editor-build-abs-out");
         let plan = plan_build(&root, &settings("release", out.to_str().unwrap()));
         assert!(plan.steps[0].args.iter().any(|arg| arg == "--release"));
         assert_eq!(
             plan.copies[0].from,
-            root.join("projects/prisma/target/release").join(exe_name())
+            root.join("projects/template/target/release").join(exe_name())
         );
         assert_eq!(plan.output_dir, out);
     }

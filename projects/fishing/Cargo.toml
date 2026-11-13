@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Cozy Fishing — 2D 像素钓鱼游戏（用户项目）"
 
-# 独立 workspace（与 projects/prisma 同构），不挂根 PrismaRev workspace。
+# 独立 workspace（与 projects/template 同构），不挂根 PrismaRev workspace。
 [workspace]
 
 [lib]
@@ -17,7 +17,7 @@ path = "src/main.rs"
 # 玩家二进制只在 `player` 形态下构建：`preview-module` 构建不该链引擎。
 required-features = ["player"]
 
-# 两种形态（与 `projects/prisma` 同构）：
+# 两种形态（与 `projects/template` 同构）：
 # - `player`（默认）：静态玩家，链接引擎，产出桌面二进制 + Android cdylib。
 # - `preview-module`：编辑器 Play 加载的动态模块，只依赖跨 ABI 的纯数据层。
 [features]

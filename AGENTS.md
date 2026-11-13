@@ -119,7 +119,7 @@ deviating from those conventions is a bug. (`README.md` is the human-facing over
   桌面 Hub（工程管理 / 编辑器版本管理 / 工程版本识别）已拆到独立仓库
   [`Excurs1ons/prisma-hub`](https://github.com/Excurs1ons/prisma-hub)，本仓库不再包含
   桌面工程管理器。桌面端保留 `launch_game` 只为调试启动页：二进制定位顺序
-  `PRISMREV_GAME_BIN` → 启动壳同目录 → `projects/prisma/target/{debug,release}`，
+  `PRISMREV_GAME_BIN` → 启动壳同目录 → `projects/template/target/{debug,release}`，
   不查 `PATH`。
 - `editor/` — **egui 编辑器（唯一）**，Rust-only、独立 workspace、不挂根成员：
   菜单栏 / 主工具栏 / 状态栏 + split-tree docking（拖 splitter、tab 切换、浮动窗口）+
@@ -156,14 +156,14 @@ deviating from those conventions is a bug. (`README.md` is the human-facing over
     布局，必须在转采样布局之前）。**不要**再把截图做成环境变量触发。
   - 设计说明见 `docs/editor-egui.md`，用法见 `editor/README.md`，
     MCP 工具见 `docs/editor-mcp.md`。
-- `projects/prisma/` — 用户游戏项目（package/crate `prisma`；`prisma` 桌面二进制 + Android
-  cdylib `libprisma.so`；keyframe 开场 intro、`register_scene("intro", ...)` 注册场景、
+- `projects/template/` — 用户游戏项目 / 模板工程（package/crate `template`；`template` 桌面二进制 +
+  Android cdylib `libtemplate_core.so`；keyframe 开场 intro、`register_scene("intro", ...)` 注册场景、
   `lib.rs` 的 `android_main`）；**own standalone workspace**, NOT a root member。
   - `projects/<p>/android/` — **game-only Android 宿主**（独立 Gradle 工程）：只有一个
     `GameActivity` 子类 + `AndroidManifest.xml`，打出的 APK 不含 Tauri / WebView / 启动器 UI。
     宿主由 `scripts/new-android-game.sh <project>` 从 `templates/android-game/` 生成，不要手工
     fork、也不要用 `tauri android init` 覆盖；`scripts/build-android-game.sh [project]` 打
-    任意工程（默认 `prisma`），库名从 `settings.ini [build] lib_name` / Cargo.toml 解析
+    任意工程（默认 `template`），库名从 `settings.ini [build] lib_name` / Cargo.toml 解析
     （`scripts/lib/project-info.sh` 是唯一实现）。流程见
     [`docs/android-apk.md`](docs/android-apk.md)；
     **只有宿主机是 aarch64**（Asahi / 树莓派 / ARM 服务器 / Termux）时还需要
@@ -177,7 +177,7 @@ deviating from those conventions is a bug. (`README.md` is the human-facing over
 
 ## Editor / user-project separation (do not regress)
 The user project's dependency chain must stay **UI-framework-free and editor-free**:
-`prisma → prism-app → prism-engine → {prism-scene, prism-ecs, prism-render, prism-asset, prism-physics2d}`.
+`template → prism-app → prism-engine → {prism-scene, prism-ecs, prism-render, prism-asset, prism-physics2d}`.
 `prism-cooker` / `prism-build-pipeline` are build-host only and must never appear in this chain.
 可选能力**默认关**、按 feature 打开：`prism-app/physics`、`prism-app/audio`（连带
 `prism-engine/audio` 的 `AudioSource`）、`prism-asset/async-io`。玩家树由
@@ -201,7 +201,7 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   concepts (panels, docks, selection) may leak into `prism-app` / `prism-engine` / `prism-render`.
 - Never add a UI framework (egui/egui-winit/egui-ash-renderer) to `prism-app` /
   `prism-engine` / `prism-render`. Verify with
-  `cd projects/prisma && cargo tree | grep -i egui` (must print nothing).
+  `cd projects/template && cargo tree | grep -i egui` (must print nothing).
 - Built-in viewport pipeline (do not re-implement it elsewhere):
   - `prism-app` hosted mode — `App::hosted(config)` (no manifest scene, no winit window),
     `load_scene_json_file`, `start_hosted(w, h)` (offscreen render thread),
@@ -319,17 +319,17 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   Note: the root workspace has no **game/editor entry** binary — the desktop entry is the
   separate [`prisma-hub`](https://github.com/Excurs1ons/prisma-hub) repo (工程管理 / 编辑器版本管理，
   在那里 `pnpm tauri dev`)；`launcher/` 只是 Android 启动壳。游戏二进制
-  （`projects/prisma/`，`cd projects/prisma && cargo run`）由 Hub 或 Android 启动页通过
+  （`projects/template/`，`cd projects/template && cargo run`）由 Hub 或 Android 启动页通过
   `launch_game` 拉起。
-  - 桌面端 `launch_game` **不查 `PATH`**：先看 launcher 可执行文件同目录的 `prisma[.exe]`（打包布局），
-    再按 `projects/prisma/target/{debug,release}/prisma[.exe]`（开发布局，仓库根由 exe 所在目录逐级向上找
-    `projects/prisma/Cargo.toml`）；`PRISMREV_GAME_BIN` 可覆盖（指向不存在的文件直接报错，不回退）。
+  - 桌面端 `launch_game` **不查 `PATH`**：先看 launcher 可执行文件同目录的 `template[.exe]`（打包布局），
+    再按 `projects/template/target/{debug,release}/template[.exe]`（开发布局，仓库根由 exe 所在目录逐级向上找
+    `projects/template/Cargo.toml`）；`PRISMREV_GAME_BIN` 可覆盖（指向不存在的文件直接报错，不回退）。
     已有存活子进程时拒绝再起第二个，避免同时开两个游戏实例。
 - 跑用户项目前**必须先有 `assets/scenes.pak`**：运行时只从 `.pak` 读场景（没有磁盘回退），
   缺包时窗口画的是「无场景」占位画面（滚动棋盘格 + 居中 `NO SCENE LOADED` 提示，
   `ui/no_scene.rs`；clear color 语义不变），日志同时报 `no resolvable scene` 与修法。
   项目自己有 `assets/scenes.json` 时（`projects/sponza`）在**项目目录**里跑 `build-scenes`；
-  没有自己 assets 的（`projects/prisma`）用仓库根的。封装好的入口：
+  没有自己 assets 的（`projects/template`）用仓库根的。封装好的入口：
   `bash scripts/dev.sh [project] [--release] [--skip-scenes] [--shaders]`，
   Windows 用 `scripts/dev.ps1`。
 - Editor: `cd editor && cargo run -p prism-editor-egui` — Rust + egui + ash; needs Vulkan
@@ -364,7 +364,7 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   lists them under `optional_paks`, and the runtime only mounts them when
   `GpuAssetResolver::load_optional_packages()` is called (`assets/optional/` is not part
   of the startup scan). `build-scenes` accepts the same flag against the staged layout.
-- The `projects/prisma/`, `projects/sponza/`, `launcher/` and `editor/` standalone workspaces need their own `cargo build` / `cargo clippy`
+- The `projects/template/`, `projects/sponza/`, `launcher/` and `editor/` standalone workspaces need their own `cargo build` / `cargo clippy`
   runs — a root-workspace build does **not** cover them.
 
 ## Editor MCP server (agent 改场景 / 跑游戏 / 抓图)
@@ -639,7 +639,7 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   **不要**再新增 `std::fs::read_to_string("assets/...")` 这类 cwd 相对路径。
 - 解析顺序：`PRISMREV_ASSET_ROOT`（指向含 `assets/` 的目录）→ cwd 及其各级父目录 →
   可执行文件目录及其各级父目录；只有**确实存在 `assets/` 子目录**的候选才算命中。
-- 覆盖的启动方式：仓库根 `cargo run`、`projects/prisma/` 内启动、双击 exe、
+- 覆盖的启动方式：仓库根 `cargo run`、`projects/template/` 内启动、双击 exe、
   launcher 用绝对路径 spawn、快捷方式改了起始位置。Android 不受影响：`run_on_android`
   先解包到 `<filesDir>/assets` 并 `set_current_dir`，第一个候选即命中。
 - 命中路径用 `log::debug!` 输出；完全找不到时每进程只 warn 一次（避免启动日志刷屏）。
@@ -712,34 +712,34 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   任务栏进度都不会做），只接受「修正确性 bug + 跟上 `PlatformWindow` / `PlatformEvent`
   的新增中立事件」；任何功能扩展先改这条决策。要重新评估的前提只有一个：Windows 发布包里
   winit 的开销降到可以忽略，那时删后端比维护两套更划算。
-- 用户项目侧用 feature 选择：`projects/prisma` 的 `winit-window`（默认）/ `win32-window`，
+- 用户项目侧用 feature 选择：`projects/template` 的 `winit-window`（默认）/ `win32-window`，
   `prism-app` 在项目里必须 `default-features = false`，否则 Cargo 的 feature 只能加不能减，
   选中 win32 也仍会带进 winit。
 
 ## Android packaging chain (game + launcher in one APK)
-- The `android_main` JNI entry lives in the **user project** (`projects/prisma/src/lib.rs`), not in
+- The `android_main` JNI entry lives in the **user project** (`projects/template/src/lib.rs`), not in
   `prism-app`; it calls `prism_app::run_on_android(build_app, android_app)` with a builder closure.
   `run_on_android` stages the APK `game/` asset directory into `<filesDir>/assets`, switches cwd to `<filesDir>`, and
   injects `launch_config.json` **before** constructing the app, so `app()` sees the same
   `assets/...` paths as desktop.
-  `prisma`'s `[lib]` is `crate-type = ["lib", "cdylib"]` (name defaults to `prisma`), and the
-  auto-discovered `src/main.rs` bin is also `prisma` — the `lib` half is required so
-  `src/main.rs` can link it on desktop (a bare `cdylib` cannot be).
+  `template`'s `[lib]` is `crate-type = ["lib", "cdylib"]` with its own name `template_core`
+  (`src/main.rs` links it; a bare `cdylib` cannot be linked), and the bin is `template` —
+  different names keep the two from fighting over `template.pdb`.
 - The APK holds **two** Activities in separate processes: the Tauri launcher WebView
   (`com.example.tauriandroidapp.MainActivity`) and the game
   (`com.prisma.MainActivity` = `GameActivity`, `android:process=":game"`,
-  `android.app.lib_name = prisma` → loads `libprisma.so`).
-- `scripts/build-android.ps1 -Project <name>`: `prisma`（默认）走下面的 launcher APK 路径；
+  `android.app.lib_name = template_core` → loads `libtemplate_core.so`).
+- `scripts/build-android.ps1 -Project <name>`: `template`（默认）走下面的 launcher APK 路径；
   其它工程委托给 `scripts/build-android-game.sh <project> [debug|release]`（launcher 的
-  manifest 固定 `lib_name = prisma`，不能换工程名直接用）。
-- `scripts/build-android.ps1`（`-Project prisma`）: probes the NDK (validating `toolchains\llvm`; tolerates a stale
+  manifest 固定 `lib_name = template_core`，不能换工程名直接用）。
+- `scripts/build-android.ps1`（`-Project template`）: probes the NDK (validating `toolchains\llvm`; tolerates a stale
   `ANDROID_NDK_HOME` by **overwriting** it with the validated path, since cargo-ndk reads that env
   var itself), derives the cargo-ndk API level from the manifest's `minSdk`, compiles shaders if
   `slangc` exists (else requires prebuilt `.spv`), runs `prism-build-pipeline build-scenes`,
   copies **every** `assets/*.pak` + `*.pak.meta.json` (plus `settings.ini` and the
   environment HDR) into
   `launcher/src-tauri/gen/android/app/src/main/assets/game/`, runs
-  `cargo ndk -P <api> -t arm64-v8a -o <jniLibs> build --release --manifest-path projects/prisma/Cargo.toml`,
+  `cargo ndk -P <api> -t arm64-v8a -o <jniLibs> build --release --manifest-path projects/template/Cargo.toml`,
   then assembles the APK via `pnpm tauri android build --debug --target aarch64`.
   - **`-P <api>` must be ≥ 26** — `libaaudio.so` does not exist in older sysroots (cargo-ndk's
     default of 21 → `-laaudio not found`). Use `minSdk`, not the newest sysroot: linking against a

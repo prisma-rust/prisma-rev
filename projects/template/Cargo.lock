@@ -1621,7 +1621,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "prisma"
+name = "template"
 version = "0.1.0"
 dependencies = [
  "keyframe",

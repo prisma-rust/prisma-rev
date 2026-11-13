@@ -192,7 +192,7 @@ class NativePlugin(private val activity: Activity) : Plugin(activity) {
   /**
    * 启动游戏:从启动器(Tauri webview)跳转到 Vulkan 游戏 Activity。
    * 通过显式 Intent 启动 com.prisma.MainActivity(GameActivity),
-   * 由 GameActivity 加载 libprisma.so 运行渲染器。
+   * 由 GameActivity 加载 libtemplate_core.so 运行渲染器。
    * 可选 `config`（LaunchConfig JSON）先落盘到 app files 目录,
    * 游戏 Rust 侧从同一位置读取（android-activity internal_data_path）。
    */

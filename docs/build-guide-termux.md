@@ -94,11 +94,11 @@ cargo test --workspace                 # ~400 测试（含 CRT 状态机单测�
 
 注意：
 
-- 根 workspace **没有可运行的 bin**。桌面入口在 `projects/prisma/`（`prisma` 二进制，
-  独立 workspace：`cd projects/prisma && cargo run`）；编辑器是 `editor/`（Tauri 2 + Vue 3，
+- 根 workspace **没有可运行的 bin**。桌面入口在 `projects/template/`（`template` 二进制，
+  独立 workspace：`cd projects/template && cargo run`）；编辑器是 `editor/`（Tauri 2 + Vue 3，
   需要 `pnpm tauri dev`）；`launcher/` 是 Android 启动壳（独立 workspace），
   桌面 Hub 在独立仓库 [`Excurs1ons/prisma-hub`](https://github.com/Excurs1ons/prisma-hub)。
-- `projects/prisma/`、`projects/sponza/`、`launcher/`、`editor/`、
+- `projects/template/`、`projects/sponza/`、`launcher/`、`editor/`、
   `crates/xtask` 不在根 workspace 的默认覆盖内——
   根 workspace 构建不包含它们，需各自 `cd` 进去单独 build/clippy。
 - 首次全量构建较久（依赖多，磁盘约 2GB+）；`target/` 被外部清理后需重新构建。
@@ -111,7 +111,7 @@ cargo test --workspace                 # ~400 测试（含 CRT 状态机单测�
 
 - **game-only（无 launcher）**：`projects/<p>/android/` + `scripts/build-android-game.sh <project>`
   （宿主用 `scripts/new-android-game.sh <project>` 从 `templates/android-game/` 生成，#598）。
-  打出的 APK 里只有 `GameActivity` + `libprisma.so` + `assets/game/`，不含 Tauri / WebView。
+  打出的 APK 里只有 `GameActivity` + `libtemplate_core.so` + `assets/game/`，不含 Tauri / WebView。
   流程见 [`docs/android-apk.md`](android-apk.md)。
 - **launcher + 游戏（双 Activity）**：Tauri 的 `launcher/src-tauri/gen/android/`，
   `scripts/build-android.ps1`（Windows）。Termux 上也可以直接把新 `.so` 替换进已有 APK

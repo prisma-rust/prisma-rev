@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # PrismaRev dev launcher (Linux / macOS) — the bash counterpart of scripts/dev.ps1.
 #
-#   scripts/dev.sh                  # projects/prisma
+#   scripts/dev.sh                  # projects/template
 #   scripts/dev.sh sponza           # projects/sponza
 #   scripts/dev.sh sponza --release -- --some-game-arg
 #
@@ -21,7 +21,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 
-PROJECT="prisma"
+PROJECT="template"
 RELEASE=0
 BUILD_SCENES=1
 BUILD_SHADERS=0
@@ -49,7 +49,7 @@ fi
 
 # `build-scenes` resolves `assets/` against the current directory, so it has to run
 # where the manifest lives: a project with its own `assets/scenes.json` packages
-# into its own directory, one without (projects/prisma) reuses the repo-root assets.
+# into its own directory, one without (projects/template) reuses the repo-root assets.
 if [ -f "$PROJECT_DIR/assets/scenes.json" ]; then
     ASSET_ROOT="$PROJECT_DIR"
 else

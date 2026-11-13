@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 打 game-only Android APK（无 launcher / 无 Tauri / 无 WebView）。
 #
-#   bash scripts/build-android-game.sh                      # projects/prisma，debug
+#   bash scripts/build-android-game.sh                      # projects/template，debug
 #   bash scripts/build-android-game.sh fishing              # projects/fishing，debug
 #   bash scripts/build-android-game.sh fishing release       # release（未签名，需自行 apksigner）
 #   bash scripts/build-android-game.sh debug --skip-cargo    # 只重打包（.so 已就绪）
@@ -52,7 +52,7 @@ while [ $# -gt 0 ]; do
 done
 MODE="${MODE:-debug}"
 
-PROJECT_DIR=$(prism_project_dir "$ROOT" "${PROJECT:-prisma}")
+PROJECT_DIR=$(prism_project_dir "$ROOT" "${PROJECT:-template}")
 PROJECT_NAME=$(prism_project_name "$PROJECT_DIR")
 LIB_NAME=$(prism_lib_name "$PROJECT_DIR")
 ANDROID_DIR="$PROJECT_DIR/android"

@@ -38,7 +38,7 @@
             android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout"
             android:screenOrientation="sensorLandscape"
             android:resizeableActivity="false">
-            <meta-data android:name="android.app.lib_name" android:value="prisma" />
+            <meta-data android:name="android.app.lib_name" android:value="template_core" />
         </activity>
 
         <provider

@@ -212,18 +212,18 @@ jobs:
         uses: ./.github/actions/setup-slang
 
       - name: Build release player (build-std)
-        run: bash scripts/build-dist.sh projects/prisma
+        run: bash scripts/build-dist.sh projects/template
 
       - name: Record size
         run: |
-          bin="projects/prisma/target/$(rustc -vV | sed -n 's/^host: //p')/dist/prisma"
+          bin="projects/template/target/$(rustc -vV | sed -n 's/^host: //p')/dist/template"
           printf 'dist player: %s bytes\n' "$(stat -c%s "$bin")"
 
       - name: Upload player
         uses: actions/upload-artifact@v4
         with:
-          name: prisma-dist-${{ github.sha }}
-          path: projects/prisma/target/*/dist/prisma
+          name: template-dist-${{ github.sha }}
+          path: projects/template/target/*/dist/template
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------

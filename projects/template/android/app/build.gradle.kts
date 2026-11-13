@@ -1,10 +1,10 @@
-// Game-only Android 宿主：只把 libprisma.so + 场景包打成 APK。
+// Game-only Android 宿主：只把 libtemplate_core.so + 场景包打成 APK。
 //
 // 和 launcher/src-tauri/gen/android 的区别：这里**没有** Tauri / WebView / 启动器 UI，
 // 也没有 Kotlin 编译器；APK 里只有 GameActivity 壳 + 原生 .so + assets/game/。
 //
 // minSdk 31 是硬性下限：libaaudio.so 从 API 26 才有，而引擎的 Android 音频走 AAudio；
-// 同时不要低于 projects/prisma 实际支持的最低设备（当前 31）。
+// 同时不要低于 projects/template 实际支持的最低设备（当前 31）。
 plugins {
     id("com.android.application") version "8.11.0"
 }
@@ -48,7 +48,7 @@ dependencies {
     // kotlin-stdlib-jdk7/jdk8，和 stdlib 1.8.x 有重复类，checkDuplicateClasses 会失败。
     // Kotlin BOM 把 jdk7/jdk8 对齐成空壳模块后并入 stdlib。
     implementation(platform("org.jetbrains.kotlin:kotlin-bom:1.9.25"))
-    // GameActivity：窗口 + 输入 + 调用 libprisma.so 的 android_main。
+    // GameActivity：窗口 + 输入 + 调用 libtemplate_core.so 的 android_main。
     implementation("androidx.games:games-activity:4.4.0")
     // games-activity 4.4.0 的 GameActivity 继承 AppCompatActivity。
     implementation("androidx.appcompat:appcompat:1.7.1")

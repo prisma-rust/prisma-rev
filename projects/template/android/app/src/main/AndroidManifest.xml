@@ -14,7 +14,7 @@
         android:label="PrismaRev"
         android:theme="@style/Theme.PrismaGame">
 
-        <!-- 游戏本体：GameActivity 加载 libprisma.so，再调用 android_main。
+        <!-- 游戏本体：GameActivity 加载 libtemplate_core.so，再调用 android_main。
              run_on_android 会把 APK 里的 assets/game/ 解到 <filesDir>/assets。 -->
         <activity
             android:name=".MainActivity"
@@ -24,7 +24,7 @@
             android:resizeableActivity="false">
             <meta-data
                 android:name="android.app.lib_name"
-                android:value="prisma" />
+                android:value="template_core" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

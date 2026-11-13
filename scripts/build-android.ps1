@@ -4,23 +4,23 @@
     Build PrismaRev for Android arm64-v8a.
 
 .DESCRIPTION
-    `-Project prisma`（默认）：launcher + 游戏的完整 APK——编译 `projects/prisma`
-    的 cdylib（`libprisma.so`）via cargo-ndk，再用 Tauri CLI 组装
+    `-Project template`（默认）：launcher + 游戏的完整 APK——编译 `projects/template`
+    的 cdylib（`libtemplate_core.so`）via cargo-ndk，再用 Tauri CLI 组装
     `launcher/src-tauri/gen/android`（启动器 + GameActivity）。
 
     其他工程：委托给 `scripts/build-android-game.sh <project> [debug|release]`
     打 **game-only** APK（不含 launcher / WebView），宿主由
     `scripts/new-android-game.sh <project>` 生成（#598）。launcher APK 的 manifest
-    固定 `android.app.lib_name = prisma`，所以不能直接换个工程名就打进去。
+    固定 `android.app.lib_name = template_core`，所以不能直接换个工程名就打进去。
 
 .PARAMETER Project
-    `projects/` 下的工程目录名，默认 `prisma`。
+    `projects/` 下的工程目录名，默认 `template`。
 
 .PARAMETER Mode
     只对委托路径生效：`debug`（默认）或 `release`。
 #>
 param(
-    [string]$Project = "prisma",
+    [string]$Project = "template",
     [ValidateSet("debug", "release")]
     [string]$Mode = "debug"
 )
@@ -28,7 +28,7 @@ $ErrorActionPreference = "Stop"
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 
-if ($Project -ne "prisma") {
+if ($Project -ne "template") {
     $delegate = Join-Path $PSScriptRoot "build-android-game.sh"
     if (-not (Test-Path $delegate)) {
         Write-Error "找不到 $delegate（game-only APK 由它负责）"

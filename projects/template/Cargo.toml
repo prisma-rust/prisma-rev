@@ -1,18 +1,21 @@
 [package]
-name = "prisma"
+name = "template"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "PrismaRev 用户游戏项目——桌面二进制 `prisma`，由 launcher/ spawn"
+description = "PrismaRev 用户游戏项目（模板工程）——桌面二进制 `template`，由 launcher/ spawn"
 
 # 独立 workspace（仿 launcher/ 先例），不挂根 PrismaRev workspace。
 [workspace]
 
-# 产物名与 package 名一致：桌面二进制 `prisma` + Android cdylib `libprisma.so`
-# （`android.app.lib_name = prisma` 见 launcher gen/android Manifest）。
+# 桌面二进制是 `template`；Android / 编辑器用的是同一个 cdylib，但**库名单独取**
+# `template_core`——lib 和 bin 同名时两边会抢同一个 `template.pdb`（MSVC 直接报冲突），
+# 共用 target 目录时也会互相覆盖产物。`android.app.lib_name`（launcher gen/android
+# Manifest）必须等于 `[build] lib_name` / 这里的库名。
 # `lib` 类型供桌面 bin 链接 rlib；`cdylib` 另有两个用途：
 # Android 的 GameActivity 入口，以及编辑器加载的 preview 模块。
 [lib]
+name = "template_core"
 crate-type = ["lib", "cdylib"]
 
 # 两种构建形态，互相排斥：
@@ -80,7 +83,7 @@ preview-module = [
 ]
 
 [[bin]]
-name = "prisma"
+name = "template"
 path = "src/main.rs"
 # 没有 `player-core` 时没有 `build_app`，所以 bin 也不应被构建。
 required-features = ["player-core"]

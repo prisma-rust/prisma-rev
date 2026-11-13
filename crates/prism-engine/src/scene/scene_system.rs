@@ -764,7 +764,7 @@ fn manifest_style_path(current: &str, resolved: &str) -> String {
 /// 当前目录及其父目录、可执行文件目录及其父目录），先找
 /// `assets/scenes.json`，再回退旧项目的 `assets/scenes.toml`。
 ///
-/// 这样无论从仓库根还是 `projects/prisma/` 子目录启动，
+/// 这样无论从仓库根还是 `projects/template/` 子目录启动，
 /// 都能正确找到资源清单——之前从用户项目目录启动时，导致
 /// 清单找不到、回退到空场景而黑屏。
 fn find_manifest_path() -> Option<PathBuf> {

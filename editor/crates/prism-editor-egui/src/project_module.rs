@@ -1358,7 +1358,7 @@ mod tests {
         assert!(driver.source_stamp().is_some());
     }
 
-    /// 端到端：用真实 `.scene.json` 驱动 `projects/prisma` 的 preview 模块。
+    /// 端到端：用真实 `.scene.json` 驱动 `projects/template` 的 preview 模块。
     ///
     /// 需要先构建模块并设置 `PRISMREV_TEST_PROJECT_MODULE`；没有设置时跳过，
     /// 和 `prism-runtime-host` 的同名环境测试一致。
@@ -1399,7 +1399,7 @@ mod tests {
             return;
         };
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-        let mut driver = ProjectModuleDriver::new(&repo.join("projects/prisma"));
+        let mut driver = ProjectModuleDriver::new(&repo.join("projects/template"));
         driver.prebuilt = Some(PathBuf::from(module_path));
         assert!(!driver.status().loaded);
         driver.poll(false);
@@ -1415,7 +1415,7 @@ mod tests {
             return;
         };
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-        let mut driver = ProjectModuleDriver::new(&repo.join("projects/prisma"));
+        let mut driver = ProjectModuleDriver::new(&repo.join("projects/template"));
         assert!(driver.available());
         driver
             .install(Path::new(&module_path), Vec::new())

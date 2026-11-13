@@ -1123,13 +1123,13 @@ internal_scale_mode = integer
 
 ### 实测基线
 
-桌面玩家二进制（`projects/prisma` 的 `prisma`，Termux aarch64，`cargo build --release`，
+桌面玩家二进制（`projects/template` 的 `template`，Termux aarch64，`cargo build --release`，
 `lto = "thin"` + `opt-level = 3`）。复现：
 
 ```bash
-cd projects/prisma && cargo build --release
-ls -l target/release/prisma        # 未 strip
-cp target/release/prisma /tmp/p && strip /tmp/p && ls -l /tmp/p   # strip 后（发布形态）
+cd projects/template && cargo build --release
+ls -l target/release/template        # 未 strip
+cp target/release/template /tmp/p && strip /tmp/p && ls -l /tmp/p   # strip 后（发布形态）
 ```
 
 | 版本 | 玩家树 crate | 未 strip | strip 后 |
@@ -1238,7 +1238,7 @@ kerning / ligature。需要这些能力要引入 HarfBuzz / `IDWriteTextLayout` 
 
 ### 12.4 体积账本（每块砖值多少字节）
 
-方法：`scripts/size_report.py` 临时改写 `projects/prisma` 的 feature 列表、按同一
+方法：`scripts/size_report.py` 临时改写 `projects/template` 的 feature 列表、按同一
 `release` profile 构建、记录未 strip 二进制大小。差值只来自 feature。
 
 | 砖块 | Δ 二进制（未 strip） | 说明 |
@@ -1292,7 +1292,7 @@ profile、同一 target、同一条构建命令，差值只来自文本后端。
 `panic = "abort"` **不能**进 `release`：editor 在进程内跑引擎，abort 会让整个编辑器
 崩溃而不是让某个视口失败。用法：`cargo build --profile dist`（Android 打包脚本已切到它）。
 
-实测（`projects/prisma`，默认 feature，Termux aarch64）：
+实测（`projects/template`，默认 feature，Termux aarch64）：
 
 | 配置 | 未 strip | strip 后 |
 |---|---|---|
@@ -1342,9 +1342,9 @@ profile、同一 target、同一条构建命令，差值只来自文本后端。
 winit 计数为 0（`cargo tree --target x86_64-pc-windows-gnu | grep -c winit`），
 不是"编进来再被 LTO 删掉"。
 
-实测（`bash scripts/build-dist.sh projects/prisma x86_64-pc-windows-gnu`，dist + strip）：
+实测（`bash scripts/build-dist.sh projects/template x86_64-pc-windows-gnu`，dist + strip）：
 
-| Windows 窗口后端 | `prisma.exe` | 说明 |
+| Windows 窗口后端 | `template.exe` | 说明 |
 |---|---|---|
 | `winit-window`（默认） | 3,146,240 B（3.00 MB） | winit 0.30 + 系统 DLL |
 | `win32-window`（`win32-native`） | **2,978,816 B（2.84 MB）** | −167,424 B（−163.5 KiB / −5.3%） |
@@ -1363,11 +1363,11 @@ winit 计数为 0（`cargo tree --target x86_64-pc-windows-gnu | grep -c winit`�
 
 | 目标 | 产物 | 大小 | text |
 |---|---|---|---|
-| Linux x86_64 / aarch64（x11 + wayland） | `prisma` | 5.12 MB | 4.97 MB |
-| Linux（仅 x11） | `prisma` | 4.07 MB | — |
-| Windows `x86_64-pc-windows-gnu`（winit） | `prisma.exe` | 4.11 MB | 4.09 MB |
-| Windows `x86_64-pc-windows-gnu`（`win32-native`，无 winit） | `prisma.exe` | 见下方「窗口栈按平台裁剪」 | — |
-| Android `aarch64-linux-android` | `libprisma.so` | **3.26 MB** | 3.15 MB |
+| Linux x86_64 / aarch64（x11 + wayland） | `template` | 5.12 MB | 4.97 MB |
+| Linux（仅 x11） | `template` | 4.07 MB | — |
+| Windows `x86_64-pc-windows-gnu`（winit） | `template.exe` | 4.11 MB | 4.09 MB |
+| Windows `x86_64-pc-windows-gnu`（`win32-native`，无 winit） | `template.exe` | 见下方「窗口栈按平台裁剪」 | — |
+| Android `aarch64-linux-android` | `libtemplate_core.so` | **3.26 MB** | 3.15 MB |
 
 - Windows 与「Linux x11-only」几乎一样（4.11 vs 4.07 MB），差值就是 wayland 栈——**印证了
   0.84 MB 的窗口栈只在 Linux 双后端时存在**。
@@ -1452,7 +1452,7 @@ winit 计数为 0（`cargo tree --target x86_64-pc-windows-gnu | grep -c winit`�
 #### 3D pass 级裁剪：代码 −24 KB，但 strip 后文件不变
 
 `ibl`（#543，−64 KB）之后，`shadow_map` / `gtao` / `skybox` 也做成了 feature
-（`skybox` 依赖 `ibl`）。测法：临时把 `projects/prisma` 的 `prism-app` 改成
+（`skybox` 依赖 `ibl`）。测法：临时把 `projects/template` 的 `prism-app` 改成
 `default-features = false, features = ["x11", "group-3d", ...]`，同一 worktree、
 同一 target、`--profile dist`（fat LTO + cu=1 + panic=abort + strip）。
 
@@ -1504,8 +1504,8 @@ build-std 档绝对值更小，但 64 KB 段对齐的结论不变。
 #### 极限体积档：`--size`（竞赛 / 演示用）
 
 ```bash
-bash scripts/build-dist.sh --size projects/prisma
-powershell -File scripts/build-dist.ps1 -Size projects/prisma   # Windows 主机，等价
+bash scripts/build-dist.sh --size projects/template
+powershell -File scripts/build-dist.ps1 -Size projects/template   # Windows 主机，等价
 ```
 
 = `tiny` profile（`opt-level = "z"` + fat LTO + `cu=1` + `panic=abort` + strip）
@@ -1533,8 +1533,8 @@ opt-level = 3
 #### 压缩壳（`--pack`）
 
 ```bash
-bash scripts/build-dist.sh --size --pack projects/prisma   # Linux / macOS 主机
-powershell -File scripts/build-dist.ps1 -Pack projects/prisma   # Windows 主机
+bash scripts/build-dist.sh --size --pack projects/template   # Linux / macOS 主机
+powershell -File scripts/build-dist.ps1 -Pack projects/template   # Windows 主机
 ```
 
 构建完成后对产物跑一次 `upx --best --lzma <bin>`，再打印压缩前后体积与压缩率。

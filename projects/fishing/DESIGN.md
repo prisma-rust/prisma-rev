@@ -3,7 +3,7 @@
 > 状态：M0 已落地（2026-11），代码在 `projects/fishing/`。
 > 本文保留玩法和引擎契约的设计记录；早期草案里的 API 名称 / 编辑器形态
 > 已被后续实现取代，现行约定以 `docs/DESIGN.md`、仓库根 `AGENTS.md` 和代码为准。
-> 目标项目：`projects/fishing/`（独立 workspace，与 `projects/prisma` 同级）
+> 目标项目：`projects/fishing/`（独立 workspace，与 `projects/template` 同级）
 > 引擎改动遵循 `docs/DESIGN.md` 的架构分层：新 API 先写规格，语义等价优先。
 
 ---

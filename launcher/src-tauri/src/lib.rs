@@ -103,7 +103,7 @@ fn get_device_info() -> Result<serde_json::Value, String> {
 }
 
 /// 启动游戏：移动端通过 Kotlin plugin 启动 GameActivity；桌面端拉起
-/// `prisma` 二进制。`config` 为可选 LaunchConfig JSON（场景 / 日志级别等），
+/// `template` 二进制。`config` 为可选 LaunchConfig JSON（场景 / 日志级别等），
 /// 经 `PRISMREV_LAUNCH_CONFIG` env（桌面）或 files 目录文件（Android）传递。
 #[cfg(mobile)]
 #[tauri::command]

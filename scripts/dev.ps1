@@ -8,7 +8,7 @@
 #   -SkipScenes    不重打 assets/scenes.pak（没改场景/预制体时可用）
 #   -Release       游戏用 --release 构建
 #
-# 说明：根 workspace 没有可运行的 bin，游戏二进制在 projects/prisma（独立 workspace），
+# 说明：根 workspace 没有可运行的 bin，游戏二进制在 projects/template（独立 workspace），
 # 且它按 **当前工作目录** 找 `assets/scenes.pak` / `assets/settings.toml`，
 # 所以本脚本固定在仓库根目录启动。
 param(
@@ -67,7 +67,7 @@ if (-not $SkipScenes) {
     if ($LASTEXITCODE -ne 0) { Write-Error "场景包构建失败"; exit 1 }
 }
 
-$cargoArgs = @("run", "--manifest-path", "projects/prisma/Cargo.toml", "--bin", "prisma")
+$cargoArgs = @("run", "--manifest-path", "projects/template/Cargo.toml", "--bin", "template")
 if ($Release) { $cargoArgs += "--release" }
 
 Write-Host "运行游戏: cargo $($cargoArgs -join ' ')" -ForegroundColor Cyan

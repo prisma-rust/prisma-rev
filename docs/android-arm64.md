@@ -99,5 +99,5 @@ AGP 会打 `option setting 'android.aapt2FromMavenOverride' is experimental` 警
 ## 7. 实测记录
 
 Ubuntu 26.04 aarch64（glibc 2.43 / clang 21 / JDK 21 / NDK r29 / SDK 36）
-→ `libprisma.so` 11.7 MB → release APK 20 MB；debug APK 装到 Android 16 真机启动，
+→ `libtemplate_core.so` 11.7 MB → release APK 20 MB；debug APK 装到 Android 16 真机启动，
 Vulkan 设备 + swapchain 创建、首帧 `present` 成功。

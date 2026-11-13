@@ -2,7 +2,7 @@
 //!
 //! 两种构建形态共用同一份 gameplay 代码：
 //!
-//! - **player**（默认）：桌面二进制 `prisma` + Android `libprisma.so`，
+//! - **player**（默认）：桌面二进制 `template` + Android `libtemplate_core.so`，
 //!   直接链接 `prism-app` / `prism-engine`。
 //! - **preview-module**：编辑器加载的动态模块，只依赖跨 ABI 的
 //!   `prism-game-api` / `prism-project-api`，**不链接引擎**。
@@ -56,7 +56,7 @@ mod preview {
         state = PreviewState,
         init = new_state,
         tick = tick_state,
-        log_name = "prisma",
+        log_name = "template",
     }
 }
 

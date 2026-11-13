@@ -1,7 +1,7 @@
 //! 资源目录定位——不依赖进程当前工作目录。
 //!
-//! 桌面端的启动方式不止一种：仓库根 `cargo run`、在 `projects/prisma/` 里运行、
-//! 双击 `target/release/prisma.exe`、launcher 用绝对路径 spawn、快捷方式改过
+//! 桌面端的启动方式不止一种：仓库根 `cargo run`、在 `projects/template/` 里运行、
+//! 双击 `target/release/template.exe`、launcher 用绝对路径 spawn、快捷方式改过
 //! 「起始位置」……而 `.pak` / `settings.ini` / `scenes.json` / 环境贴图此前
 //! 都按 `assets/...` 直接相对 cwd 打开。cwd 不含 `assets/` 时它们全部静默失败，
 //! 表现为黑屏或「没有任何场景」。

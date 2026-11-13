@@ -128,7 +128,7 @@ Game View 的 Play 执行**用户项目自己的 gameplay 代码**，不是只�
 - 没有 `preview-module` feature 的项目（任何还没改造的用户工程）只跑引擎，并在
   Console 说明原因；`PRISMREV_PROJECT_MODULE=/path/libgame.so` 可直接加载
   预构建模块（测试 / 非 Cargo 项目）。
-- `projects/prisma` 与 `projects/fishing` 的 `preview-module` 必须显式打开
+- `projects/template` 与 `projects/fishing` 的 `preview-module` 必须显式打开
   `prism-scene` 的三组组件（3D / 2D / UI）：模块是独立 workspace，拿不到引擎侧的
   feature 统一，少一组就会在 `ProjectModule::load` 的 schema fingerprint 校验处被
   拒绝。（实测踩过：`default-features = false` 的 `prism-scene` 只注册核心组件，

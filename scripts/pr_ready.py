@@ -49,7 +49,7 @@ WORKSPACE_WIDE = {
 WORKSPACE_PREFIXES = (".cargo/",)
 
 # CI 的 desktop job 不覆盖 prism-app（它只作为用户项目依赖被构建）。
-# 本地默认也跳过，除非它自己改动或 --all；projects/prisma 的 check 会覆盖它。
+# 本地默认也跳过，除非它自己改动或 --all；projects/template 的 check 会覆盖它。
 SKIP_BY_DEFAULT = {"prism-app"}
 
 BAD_SUFFIXES = (
@@ -655,7 +655,7 @@ def main() -> int:
 
     if not args.quick:
         standalone = [
-            ("projects/prisma", "projects/prisma/"),
+            ("projects/template", "projects/template/"),
             ("projects/fishing", "projects/fishing/"),
             ("projects/sponza", "projects/sponza/"),
             ("launcher", "launcher/"),

@@ -130,14 +130,14 @@ def capture_engine_screenshots(scenes: List[str], output_dir: Path) -> List[Path
     
     # 检查项目二进制
     project_root = Path(__file__).parent.parent
-    exe_path = project_root / "projects" / "prisma" / "target" / "release" / "prisma.exe"
+    exe_path = project_root / "projects" / "template" / "target" / "release" / "template.exe"
     
     if not exe_path.exists():
-        exe_path = project_root / "projects" / "prisma" / "target" / "debug" / "prisma.exe"
+        exe_path = project_root / "projects" / "template" / "target" / "debug" / "template.exe"
     
     if not exe_path.exists():
         print(f"Warning: Engine executable not found at {exe_path}")
-        print("Please build the project first: cd projects/prisma && cargo build --release")
+        print("Please build the project first: cd projects/template && cargo build --release")
         return []
     
     # 为每个场景捕获多个角度的截图

@@ -25,7 +25,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             company: "PrismaRev".into(),
-            name: "prisma".into(),
+            name: "template".into(),
             version: "0.1.0".into(),
         }
     }

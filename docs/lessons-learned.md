@@ -97,7 +97,7 @@
 
 **教训**：
 - 用 `std::io::IsTerminal` 检测是否有控制台
-- 无控制台时回退到写文件（`prisma.log`），避免阻塞
+- 无控制台时回退到写文件（`template.log`），避免阻塞
 - 日志 `format` 闭包里加 `buf.flush()` 确保实时落盘，方便诊断崩溃
 
 ## 10. 矩阵乘法与列主序(Column-Major)的陷阱
@@ -388,7 +388,7 @@ GTAO+PostPass 集成时一次性暴露了 5 个验证错误，按修复顺序：
 **教训**：
 - 验证错误按 Vulkan 调用顺序报（创建 -> 记录 -> 提交），**前面的错误可能掩盖后面的**。修一个跑一次，别一次性猜所有错。
 - 错误 4（in-flight descriptor）最初被错误 3（usage 不匹配）的 noise 掩盖 -- 修完 3 才看清 4 是独立问题。每个 VUID 独立排查，别假设"都是 descriptor 引起的"。
-- `RUST_LOG=info,prism_render=trace` + 日志写文件（`target/debug/prisma.log`，main.rs 的 logger 在非终端时自动落盘）是验证渲染管线的标准手段：grep `validation|ERROR|VUID` 计数，grep `ForwardPass:|GtaoPass:|PostPass:` 确认各 pass 都在执行。
+- `RUST_LOG=info,prism_render=trace` + 日志写文件（`target/debug/template.log`，main.rs 的 logger 在非终端时自动落盘）是验证渲染管线的标准手段：grep `validation|ERROR|VUID` 计数，grep `ForwardPass:|GtaoPass:|PostPass:` 确认各 pass 都在执行。
 
 ## 30. CI 漂移 / 工具链类教训（本次修 CI 全绿踩的坑）
 

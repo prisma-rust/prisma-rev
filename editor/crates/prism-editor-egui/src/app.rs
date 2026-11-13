@@ -3218,7 +3218,7 @@ impl EditorApp {
                     self.state.confirm = Some(panels::Confirm::new(
                         panels::ConfirmKind::CleanPlayer,
                         "Clean Build",
-                        "清理玩家工程（projects/prisma）的编译产物，下次 Build 会全量重编。\n\
+                        "清理玩家工程（projects/template）的编译产物，下次 Build 会全量重编。\n\
                          不会动仓库根的引擎 target。",
                         "Clean Player",
                     ));

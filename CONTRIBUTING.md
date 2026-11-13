@@ -27,11 +27,11 @@ PrismaRev 是从零实现的 Rust 游戏引擎：**Vulkan** 渲染，**Android �
 scripts/run.ps1
 
 # 游戏（用户项目，独立 workspace）：先打场景包，再跑
-scripts/dev.sh            # = projects/prisma
+scripts/dev.sh            # = projects/template
 scripts/dev.sh sponza     # = projects/sponza
 
 # 只跑游戏（场景包已经存在时）
-cd projects/prisma && cargo run
+cd projects/template && cargo run
 
 # Android 启动壳（Tauri，独立 workspace）
 cd launcher && pnpm tauri dev

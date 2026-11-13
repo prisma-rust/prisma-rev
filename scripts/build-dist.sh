@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # 发布档构建：nightly `-Z build-std` + immediate-abort，比 stable `dist` 再小 9~10%。
 #
-#   bash scripts/build-dist.sh                        # 默认 projects/prisma，宿主 target
+#   bash scripts/build-dist.sh                        # 默认 projects/template，宿主 target
 #   bash scripts/build-dist.sh projects/fishing       # 指定工程
-#   bash scripts/build-dist.sh projects/prisma aarch64-linux-android
+#   bash scripts/build-dist.sh projects/template aarch64-linux-android
 #   bash scripts/build-dist.sh --size [project] [target]   # 极限体积（tiny profile + 禁内联）
 #   bash scripts/build-dist.sh --size --pack [project]     # 再套 UPX 自解压壳（见下）
 #   PROFILE=dist bash scripts/build-dist.sh           # 换 profile
@@ -37,7 +37,7 @@ for arg in "$@"; do
         *) ARGS+=("$arg") ;;
     esac
 done
-PROJECT="${ARGS[0]:-projects/prisma}"
+PROJECT="${ARGS[0]:-projects/template}"
 TARGET="${ARGS[1]:-}"
 if [ "${SIZE_MODE}" = "1" ]; then
     PROFILE="${PROFILE:-tiny}"

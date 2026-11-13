@@ -2,17 +2,17 @@
 # 与 `scripts/build-dist.sh` 等价，参数/理由见那边的注释。
 #
 #   powershell -File scripts/build-dist.ps1
-#   powershell -File scripts/build-dist.ps1 projects/prisma
-#   powershell -File scripts/build-dist.ps1 projects/prisma x86_64-pc-windows-gnu
-#   powershell -File scripts/build-dist.ps1 -Size projects/prisma    # 极限体积（tiny + 禁内联）
-#   powershell -File scripts/build-dist.ps1 -Pack projects/prisma    # 再套 UPX 压缩壳
+#   powershell -File scripts/build-dist.ps1 projects/template
+#   powershell -File scripts/build-dist.ps1 projects/template x86_64-pc-windows-gnu
+#   powershell -File scripts/build-dist.ps1 -Size projects/template    # 极限体积（tiny + 禁内联）
+#   powershell -File scripts/build-dist.ps1 -Pack projects/template    # 再套 UPX 压缩壳
 #
 # -Size 对 `.sh --size`：切 `tiny` profile（opt-level="z"）并禁内联，比 dist 再小 ~30%，
 # 代价是 CPU 热路径慢 10–30%。-Size 与 -Profile 同时给时以 -Profile 为准。
 # -Pack 只给发布档用，压完必须做代码签名（未签名的自解压壳会被 Windows Defender 等误报）。
 # 找不到 upx 时只提示、不失败。
 param(
-    [string]$Project = "projects/prisma",
+    [string]$Project = "projects/template",
     [string]$Target = "",
     [string]$Profile = "dist",
     [string]$Nightly = "nightly",

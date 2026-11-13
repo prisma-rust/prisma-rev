@@ -69,7 +69,7 @@ pub enum BuildKind {
 }
 
 pub(crate) fn game_manifest_path(root: &Path) -> PathBuf {
-    let nested = root.join("projects/prisma/Cargo.toml");
+    let nested = root.join("projects/template/Cargo.toml");
     if nested.is_file() {
         nested
     } else {
@@ -649,7 +649,7 @@ mod tests {
     fn player_build_targets_project_root_manifest() {
         let repo = repo_root();
         let root = project_root("manifest", "profile = debug");
-        // 没有 `projects/prisma` 的用户工程回落到自己的 manifest。
+        // 没有 `projects/template` 的用户工程回落到自己的 manifest。
         assert_eq!(
             BuildKind::Player.commands(&root).unwrap()[0],
             vec![
@@ -662,7 +662,7 @@ mod tests {
         );
         assert_eq!(
             game_manifest_path(&repo),
-            repo.join("projects/prisma/Cargo.toml")
+            repo.join("projects/template/Cargo.toml")
         );
     }
 
@@ -702,9 +702,9 @@ output_dir = build/win",
             .iter()
             .any(|copy| copy.to.ends_with("assets/scenes.pak")));
         let local = if cfg!(windows) {
-            "prisma.exe"
+            "template.exe"
         } else {
-            "prisma"
+            "template"
         };
         assert_eq!(plan.required[0].file_name().unwrap().to_str(), Some(local));
     }
@@ -726,7 +726,7 @@ output_dir = build/win",
             vec![vec![
                 "clean".to_string(),
                 "--manifest-path".to_string(),
-                repo.join("projects/prisma/Cargo.toml")
+                repo.join("projects/template/Cargo.toml")
                     .display()
                     .to_string()
             ]]

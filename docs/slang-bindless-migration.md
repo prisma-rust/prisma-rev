@@ -99,7 +99,7 @@ Flags：`PARTIALLY_BOUND | UPDATE_AFTER_BIND | VARIABLE_DESCRIPTOR_COUNT`，配�
 - `cargo check -p prism-render` ✅
 - `cargo test -p prism-render --lib` ✅ 25 passed
 - `xtask` 端到端生成绑定 ✅
-- 当时的 `prism-android` crate 在非 Android target 上编不过（android-activity 需要 NDK target），与本次改动无关。该 crate 后来拆成 `prism-app` + 用户项目 `projects/prisma`，同样的限制仍然成立：`prism-app` 不进 desktop CI job。
+- 当时的 `prism-android` crate 在非 Android target 上编不过（android-activity 需要 NDK target），与本次改动无关。该 crate 后来拆成 `prism-app` + 用户项目 `projects/template`，同样的限制仍然成立：`prism-app` 不进 desktop CI job。
 
 ## CI（.github/workflows/ci.yml）
 4 个 job：

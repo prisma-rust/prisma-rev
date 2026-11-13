@@ -71,7 +71,7 @@ editor/src-tauri -> prism-app::App::hosted() -> prism-engine -> scene.json
 
 This is the correct foundation for Scene View, offscreen rendering, pause,
 step, and live document reload. It does not, however, execute user-project
-Rust code such as `projects/prisma/src/lib.rs::build_app` or its registered
+Rust code such as `projects/template/src/lib.rs::build_app` or its registered
 systems.
 
 The project module adds that missing layer. Scene data remains data: unsaved
@@ -286,10 +286,10 @@ first implementation.
 Keep the existing GameActivity contract:
 
 ```text
-GameActivity -> libprisma.so -> project entry -> prism-app / prism-engine
+GameActivity -> libtemplate_core.so -> project entry -> prism-app / prism-engine
 ```
 
-The project adapter can be statically linked into `libprisma.so`. Android
+The project adapter can be statically linked into `libtemplate_core.so`. Android
 should not depend on arbitrary filesystem `.so` discovery unless a later
 plugin marketplace or modding requirement justifies the packaging and
 security cost.
@@ -306,10 +306,10 @@ Add a project manifest section describing the module contract, for example:
 
 ```toml
 [project]
-name = "prisma"
+name = "template"
 
 [preview]
-module = "target/debug/libprisma_project.so"
+module = "target/debug/libtemplate_core_project.so"
 engine = "target/debug/libprism_runtime.so"
 abi = 1
 ```

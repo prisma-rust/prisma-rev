@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "prisma-game"
+rootProject.name = "template-game"
 include(":app")

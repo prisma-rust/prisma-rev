@@ -3,10 +3,10 @@
 把任意用户工程打成只有一个 `GameActivity` 壳 + `lib<工程>.so` + 场景包的最小 APK：
 没有 WebView、没有启动器 UI、不需要 Kotlin 编译器。适用于任何主机（x86_64 最常见）。
 
-脚本第一个参数是**工程名**（`projects/` 下的目录名），默认 `prisma`：
+脚本第一个参数是**工程名**（`projects/` 下的目录名），默认 `template`：
 
 ```bash
-bash scripts/build-android-game.sh                # projects/prisma
+bash scripts/build-android-game.sh                # projects/template
 bash scripts/build-android-game.sh fishing        # projects/fishing
 bash scripts/build-android-game.sh fishing release
 ```
@@ -54,7 +54,7 @@ export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/29.0.14206865"
 export ANDROID_HOME=$HOME/android-sdk
 export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865
 
-bash scripts/build-android-game.sh                     # prisma，debug（可直接装）
+bash scripts/build-android-game.sh                     # template，debug（可直接装）
 bash scripts/build-android-game.sh fishing             # fishing，debug
 bash scripts/build-android-game.sh fishing release     # 未签名 release
 bash scripts/build-android-game.sh fishing debug --skip-cargo   # .so 已就绪，只重打包
@@ -93,8 +93,8 @@ bash scripts/build-android-game.sh fishing debug --skip-cargo   # .so 已就绪�
 
 ```bash
 $ANDROID_HOME/build-tools/36.0.0/apksigner sign \
-  --ks ~/prisma-release.jks --ks-key-alias prisma \
-  --out prisma-release.apk app-release-unsigned.apk
+  --ks ~/template-release.jks --ks-key-alias template \
+  --out template-release.apk app-release-unsigned.apk
 ```
 
 ## 5. 目录与职责
@@ -115,11 +115,11 @@ scripts/build-android-game.sh     一条命令打包任意工程
 ```
 
 引擎侧零改动：`prism_app::run_on_android` 把 APK 的 `assets/game/` 解到
-`<filesDir>/assets`、切 cwd，再调 `projects/prisma/src/lib.rs` 的 `android_main`。
+`<filesDir>/assets`、切 cwd，再调 `projects/template/src/lib.rs` 的 `android_main`。
 
 **和 `launcher/` 的关系**：`launcher/src-tauri/gen/android` 打的是「Tauri 启动器 + 游戏」
 双 Activity APK（`scripts/build-android.ps1`），与本路径互不影响；需要启动器 UI 时用那条，
-只想要游戏本体时用这条。launcher 的 manifest 固定 `android.app.lib_name = prisma`，所以
+只想要游戏本体时用这条。launcher 的 manifest 固定 `android.app.lib_name = template_core`，所以
 `build-android.ps1 -Project fishing` 会转而调用 game-only 脚本（并转发 `-Mode`）。
 
 ## 6. 通用坑
@@ -156,7 +156,7 @@ bash scripts/build-android-game.sh fishing release  # 未签名 release
 - **`packaging.jniLibs.keepDebugSymbols`**：debug `.so` 带符号，缺 `llvm-strip` 时不要整包失败。
 - **不要用 `tauri android init` 或其它脚手架覆盖 `projects/<p>/android/`**：模板里的
   定制（minSdk / abiFilters / 签名注释 / 主题）会被模板版覆盖掉。
-- 打包脚本按**工程名**解析，不再写死 `projects/prisma`；场景包、`.pak`、settings.ini、
+- 打包脚本按**工程名**解析，不再写死 `projects/template`；场景包、`.pak`、settings.ini、
   HDR 都从 `<project>/assets/` 读，`build-scenes` 也写回该工程自己的 `assets/`。
 - 美术资产是 gitignore 的工程要先生成（例如 `python scripts/gen_placeholder_sprites.py`），
   否则 `build-scenes` 会因为缺引用而失败——这是有意的（#530）。

@@ -1,6 +1,6 @@
 //! 桌面端拉起游戏二进制：定位 + 防重复启动。
 //!
-//! 旧实现用 `Command::new("prisma")` 交给 `PATH` 解析，结果取决于机器上装了
+//! 旧实现用 `Command::new("template")` 交给 `PATH` 解析，结果取决于机器上装了
 //! 什么：可能命中别处的同名程序，也可能在已经有一个游戏在跑时再起一个。
 //! 这里改成按确定的布局找二进制，并用子进程句柄挡住重复启动。
 
@@ -13,18 +13,18 @@ use std::sync::Mutex;
 pub const GAME_BIN_ENV: &str = "PRISMREV_GAME_BIN";
 
 /// 游戏 crate 相对仓库根的位置。
-const GAME_CRATE_DIR: &str = "projects/prisma";
+const GAME_CRATE_DIR: &str = "projects/template";
 
 /// 游戏二进制的文件名（带平台后缀）。
 fn binary_name() -> String {
-    format!("prisma{}", std::env::consts::EXE_SUFFIX)
+    format!("template{}", std::env::consts::EXE_SUFFIX)
 }
 
 /// 候选二进制路径，按优先级排列：
 ///
 /// 1. 打包布局——与 launcher 可执行文件同目录；
-/// 2. 开发布局——仓库根下的 `projects/prisma/target/<profile>/prisma[.exe]`，
-///    仓库根由 `exe_dir` 逐级向上找 `projects/prisma/Cargo.toml` 得到。
+/// 2. 开发布局——仓库根下的 `projects/template/target/<profile>/template[.exe]`，
+///    仓库根由 `exe_dir` 逐级向上找 `projects/template/Cargo.toml` 得到。
 pub fn candidates(exe_dir: &Path, profile: &str) -> Vec<PathBuf> {
     let mut out = vec![exe_dir.join(binary_name())];
     if let Some(root) = repo_root_from(exe_dir) {
@@ -48,7 +48,7 @@ pub(crate) fn repo_root_from(start: &Path) -> Option<PathBuf> {
 /// 解析要启动的游戏二进制。
 ///
 /// `env_override` 有值时以它为准——这是用户显式指定，指向不存在的文件属于错误，
-/// 不再回退（否则又会静默跑到别的 `prisma` 上）。没有覆盖值时才走
+/// 不再回退（否则又会静默跑到别的 `template` 上）。没有覆盖值时才走
 /// [`candidates`] 的顺序。
 pub fn resolve(
     exe_dir: &Path,
@@ -79,7 +79,7 @@ pub fn resolve(
                 .join("\n");
             format!(
                 "找不到游戏二进制 `{}`，已尝试：\n{list}\n\
-                 开发时先在 projects/prisma 里 `cargo build`；\
+                 开发时先在 projects/template 里 `cargo build`；\
                  也可以用 {GAME_BIN_ENV} 指定完整路径。",
                 binary_name()
             )
@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn dev_layout_finds_the_game_crate_target() {
         let root = scratch("dev");
-        // 仓库：<root>/repo/{Cargo.toml, projects/prisma/Cargo.toml}
+        // 仓库：<root>/repo/{Cargo.toml, projects/template/Cargo.toml}
         let repo = root.join("repo");
         touch(&repo.join("Cargo.toml"));
         touch(&repo.join(GAME_CRATE_DIR).join("Cargo.toml"));
@@ -182,7 +182,7 @@ mod tests {
             .join("debug");
         std::fs::create_dir_all(&exe_dir).expect("创建 exe 目录");
 
-        let resolved = resolve(&exe_dir, "debug", None).expect("应命中 projects/prisma/target");
+        let resolved = resolve(&exe_dir, "debug", None).expect("应命中 projects/template/target");
         assert_eq!(resolved, game);
     }
 
@@ -211,6 +211,6 @@ mod tests {
 
         let err = resolve(&exe_dir, "release", None).expect_err("找不到二进制应报错");
         assert!(err.contains(&exe_dir.join(binary_name()).display().to_string()));
-        assert!(err.contains("projects/prisma"), "{err}");
+        assert!(err.contains("projects/template"), "{err}");
     }
 }
