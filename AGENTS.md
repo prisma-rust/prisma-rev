@@ -234,7 +234,10 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
     `cargo build --no-default-features --features preview-module --target-dir
     projects/<p>/target/preview-module`. The separate target dir matters: the module and
     the player share the artifact name, so a shared `target/debug` would overwrite them
-    and force full rebuilds.
+    and force full rebuilds. Give the lib target its own `[lib] name` (`sponza` uses
+    `sponza_core`) when it would collide with the bin: on MSVC a lib and a bin with the
+    same name also fight over `<name>.pdb`. `[build] lib_name` in `assets/settings.ini`
+    must match that name — it is the cdylib / Android `.so` name.
   - Compile timing: 350 ms debounce after edits settle, deferred while
     playing, failing builds keep the previous module running, and the built file is
     copied before loading (a loaded dll cannot be overwritten on Windows). Stage into

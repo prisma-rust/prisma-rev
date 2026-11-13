@@ -8,6 +8,10 @@ description = "Sponza path-tracing & RTXGI sample project"
 [workspace]
 
 [lib]
+# The bin is `sponza` too; a matching lib name made both targets write
+# `sponza.pdb` (Windows link error / PDB conflict). The lib crate is
+# `sponza_core`, the executable stays `sponza`.
+name = "sponza_core"
 crate-type = ["lib", "cdylib"]
 
 [[bin]]

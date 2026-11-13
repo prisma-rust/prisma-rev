@@ -1,5 +1,5 @@
 #![deny(warnings)]
 
 fn main() {
-    sponza::build_app().run();
+    sponza_core::build_app().run();
 }
