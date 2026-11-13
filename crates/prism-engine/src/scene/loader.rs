@@ -607,6 +607,8 @@ impl SceneLoader {
                 && !camera_is_orthographic
                 && world.get::<FlyCameraController>(entity).is_none()
             {
+                // 朝向以场景里存的旋转为准。只给平移改了旋转 = 载入后视角不变，
+                // 按 WASD 却沿世界轴滑（Sponza 的场景相机就是这种手写 JSON）。
                 let (yaw, pitch) = quat_to_yaw_pitch(decoded_entity.rotation);
                 world.insert(
                     entity,
@@ -1012,7 +1014,7 @@ mod tests;
 ///
 /// - `instances` — one [`PtGeometryInstance`] per entity that carries
 /// a 网格 + 材质 (world-space 顶点 from `LocalToWorld`).
-/// - `materials_bytes` — a flat `GpuMaterial[96]` array (one entry per
+/// - `materials_bytes` — a flat `GpuMaterial[112]` array (one entry per
 ///   unique material path, indexed by `PtGeometryInstance::material_slot`).
 pub fn collect_bake_instances(
     world: &World,
@@ -1134,6 +1136,9 @@ pub fn collect_bake_instances(
             vertices,
             indices,
             material_slot,
+            // The bake path builds GPU material records above, so the alpha
+            // semantics ride along: mode 0 is Opaque.
+            opaque: gpu_materials[material_slot as usize].alpha_mode == 0,
         });
     }
 
@@ -1187,6 +1192,9 @@ fn rmat_to_gpu(info: &prism_asset::runtime::RmatInfo) -> GpuMaterial {
         occlusion_idx: u32::MAX,
         normal_scale: s[10],
         occlusion_strength: s[11],
+        alpha_cutoff: info.alpha_cutoff,
+        alpha_mode: info.alpha_mode.as_u8() as u32,
+        alpha_pad: [0.0; 2],
     }
 }
 
@@ -1205,5 +1213,10 @@ fn default_gpu_material() -> GpuMaterial {
         occlusion_idx: u32::MAX,
         normal_scale: 1.0,
         occlusion_strength: 1.0,
+        // Conservative: the error material has no alpha data, so never let it
+        // be treated as opaque anywhere.
+        alpha_cutoff: prism_asset::formats::DEFAULT_ALPHA_CUTOFF,
+        alpha_mode: prism_asset::formats::MaterialAlphaMode::Mask.as_u8() as u32,
+        alpha_pad: [0.0; 2],
     }
 }

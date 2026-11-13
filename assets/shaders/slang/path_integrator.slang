@@ -215,7 +215,7 @@ struct PtInstanceMeta
     uint _pad;
 };
 
-// ---- GpuMaterial (mirrors scene_frag.slang / GpuMaterial, 96 bytes) ----
+// ---- GpuMaterial (mirrors scene_frag.slang / GpuMaterial, 112 bytes) ----
 struct GpuMaterial
 {
     float4 base_color;                  // offset 0
@@ -230,6 +230,9 @@ struct GpuMaterial
     uint   occlusion_idx;               // offset 84
     float  normal_scale;                // offset 88
     float  occlusion_strength;          // offset 92
+    float  alpha_cutoff;                // offset 96: MASK threshold
+    uint   alpha_mode;                  // offset 100: 0=Opaque, 1=Mask, 2=Blend
+    float2 alpha_pad;                   // offset 104: keeps the record 16-byte aligned
 };
 
 // ---- Read the three vertices of a hit triangle ----
@@ -304,6 +307,16 @@ float mat_albedo_alpha(GpuMaterial mat, float2 uv)
         a = sampled.a * mat.base_color.a;
     }
     return a;
+}
+
+// Visibility test for a traversal candidate. Opaque materials never depend on
+// alpha (and normally arrive through `CommittedStatus()`, not as candidates);
+// MASK materials compare against their own cutoff instead of a fixed 0.5.
+bool mat_alpha_pass(GpuMaterial mat, float2 uv)
+{
+    if (mat.alpha_mode == 0u)
+        return true;
+    return mat_albedo_alpha(mat, uv) >= mat.alpha_cutoff;
 }
 
 // Resolve the full PBR material at a hit. Mirrors truvis `MaterialAccess` +
@@ -825,7 +838,7 @@ public float3 TraceRadiance(
                         float2 s_uv = sw * suv0 + s_bary.x * suv1 + s_bary.y * suv2;
                         PtInstanceMeta s_meta = instance_meta[s_inst];
                         GpuMaterial s_mat = materials[s_meta.material_slot];
-                        if (mat_albedo_alpha(s_mat, s_uv) >= 0.5)
+                        if (mat_alpha_pass(s_mat, s_uv))
                         {
                             // First opaque-enough blocker ends the shadow query.
                             sq.CommitNonOpaqueTriangleHit();
@@ -938,7 +951,7 @@ public float3 TraceRadiance(
                             float2 suv = sw * suv0 + sb.x * suv1 + sb.y * suv2;
                             PtInstanceMeta sm = instance_meta[si];
                             GpuMaterial smat = materials[sm.material_slot];
-                            if (mat_albedo_alpha(smat, suv) >= 0.5)
+                            if (mat_alpha_pass(smat, suv))
                             {
                                 sq.CommitNonOpaqueTriangleHit();
                                 break;
@@ -1019,7 +1032,7 @@ public float3 TraceRadiance(
                             float2 suv = sw * suv0 + sb.x * suv1 + sb.y * suv2;
                             PtInstanceMeta sm = instance_meta[si];
                             GpuMaterial smat = materials[sm.material_slot];
-                            if (mat_albedo_alpha(smat, suv) >= 0.5)
+                            if (mat_alpha_pass(smat, suv))
                             {
                                 sq.CommitNonOpaqueTriangleHit();
                                 break;

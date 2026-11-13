@@ -199,6 +199,7 @@ pub fn spawn_calibration_spheres(
             clearcoat: 0.0,
             clearcoat_roughness: 0.0,
             emissive_strength: 1.0,
+            ..Default::default()
         };
         let handle = renderer.register_material(input)?;
         let slot = renderer

@@ -41,6 +41,12 @@ MATRIX: list[tuple[str, list[str]]] = [
         "prism-render rtxgi",
         ["check", "-p", "prism-render", "--no-default-features", "--features", "rtxgi"],
     ),
+    # 退化路径：有 pathtrace、没有 rtxgi。`gi_mode = Sharc` 时必须能编过，退化为纯 PT
+    # 并 warn 一次（graph_renderer.rs 里一次性诊断），而不是 `#[cfg]` 漏一处导致编译失败。
+    (
+        "prism-render pathtrace（无 rtxgi）",
+        ["check", "-p", "prism-render", "--no-default-features", "--features", "pathtrace"],
+    ),
     # Linux 上 winit 必须至少有一个窗口后端，所以「全关」不是合法组合；
     # 最小可用组合是 x11-only（或 wayland-only）。
     ("prism-app 最小 (x11)", ["check", "-p", "prism-app", "--no-default-features", "--features", "x11"]),

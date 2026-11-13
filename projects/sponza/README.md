@@ -44,7 +44,11 @@ cargo run -q --manifest-path ../../Cargo.toml -p prism-build-pipeline -- build-s
 cargo run
 ```
 
-可通过环境变量切换 feature 组合，例如仅使用基础路径追踪（关闭 RTXGI）：
+SHaRC 现在**默认编译并启用**（`default = ["player", "rtxgi"]`）。只想在运行时关掉 GI，
+不用改编译选项：`SPONZA_RENDER_MODE=pt_off`（见下节）。
+
+如果连编译都想去掉（`sharc.rs` + resolve 管线 + 3 个 GPU 缓冲不进二进制），用项目
+自己的 `rtxgi` 开关——它是真的开关，会同时关掉 `prism-app/rtxgi` 与 `prism-engine/rtxgi`：
 
 ```powershell
 cargo run --no-default-features --features player
@@ -67,14 +71,18 @@ cargo run --no-default-features --features player
 | 按键 | 功能 |
 | :--- | :--- |
 | `F1` / `Tab` | 显示 / 隐藏完整调参面板（隐藏时显示紧凑状态栏） |
-| `Up` / `Down` 或 `W` / `S` | 上下选择要调节的参数行 |
-| `Left` / `Right` 或 `A` / `D` | 减少 / 增加选中参数的值 |
+| `Up` / `Down` | 上下选择要调节的参数行 |
+| `Left` / `Right` | 减少 / 增加选中参数的值 |
 | `Space` / `Enter` | 切换布尔开关或执行动作 |
 | `1` / `2` / `3` | 快速切换 GI 模式：`1` = Reference (纯 PT), `2` = SHaRC (RTXGI), `3` = NRC（占位，暂无实现） |
 | `T` | 循环切换色调映射算子（Reinhard → ACES → Passthrough） |
-| `M` | 在光栅与路径追踪之间切换（会重置路径追踪累积） |
-| `R` | 手动触发路径追踪累积缓存重置 |
-| `V` | 切换垂直同步 (VSync) |
+| `M` | 在光栅与路径追踪之间切换（会重置路径追踪累积；仅在未锁定鼠标时生效） |
+| `R` | 手动触发路径追踪累积缓存重置（仅在未锁定鼠标时生效） |
+| `V` | 切换垂直同步 (VSync)（仅在未锁定鼠标时生效） |
+
+窗口拿到焦点即锁定鼠标（相机接管键鼠，`Esc` 解锁；点击画面也会锁定，切出去再切回来会自动恢复锁定）。**锁定态下面板自动收起**，`W` / `S` / `A` / `D` 只归相机，不会误翻菜单；想看参数按 `F1` / `Tab` 把面板叫回来——此时 `W` / `S` / `A` / `D` 同时充当方向键，但相机照常移动。
+
+`M` / `R` / `V` 三个功能键只在**未锁定**鼠标时响应（锁定后归相机），`F1` / `Tab` / `1` / `2` / `3` 任何状态都可用。
 
 ### 2. 核心调参参数
 

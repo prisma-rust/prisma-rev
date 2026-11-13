@@ -152,7 +152,7 @@ pub use pipeline::GraphicsPipeline;
 pub use post::PostPass;
 pub use probe_loader::{load_probe_volume, save_probe_volume, ProbeVolumeData};
 #[cfg(feature = "pathtrace")]
-pub use pt_pass::PathTracePass;
+pub use pt_pass::{PathTracePass, PtVariant};
 pub use render_graph::{
     clip_bounds, internal_extent, post_destination, sort_draw_items, trim_sprite_lights, DlssMode,
     DrawItem, DrawState, GiMode, InternalScaleMode, ParticleDrawItem, PassInfo, PassKind,

@@ -61,7 +61,27 @@
       "descriptors": 5,
       "push_constant_bytes": 88
     },
+    "pt_reference": {
+      "sampled_images": 4,
+      "sampled_image_arrays": 1,
+      "samplers": 1,
+      "uniform_buffers": 0,
+      "storage_buffers": 11,
+      "acceleration_structures": 1,
+      "descriptors": 18,
+      "push_constant_bytes": 176
+    },
     "pt_render": {
+      "sampled_images": 4,
+      "sampled_image_arrays": 1,
+      "samplers": 1,
+      "uniform_buffers": 0,
+      "storage_buffers": 11,
+      "acceleration_structures": 1,
+      "descriptors": 18,
+      "push_constant_bytes": 176
+    },
+    "pt_sharc_train": {
       "sampled_images": 4,
       "sampled_image_arrays": 1,
       "samplers": 1,

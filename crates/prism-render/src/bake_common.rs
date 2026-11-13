@@ -33,6 +33,10 @@ pub struct PtGeometryInstance {
     pub indices: Vec<u32>,
     /// Index into the `GpuMaterial[]` SSBO (`RenderMaterialManager`).
     pub material_slot: u32,
+    /// True when the material never depends on sampled alpha, so the BLAS can
+    /// be built with the `OPAQUE` geometry flag and traversal skips the
+    /// per-candidate alpha test.
+    pub opaque: bool,
 }
 
 /// Per-instance metadata mirroring `PtInstanceMeta` in `pt_pass.rs` /
@@ -271,6 +275,7 @@ pub fn build_pt_scene(
                 index_addr: ibase_addr + (m.index_base as vk::DeviceAddress) * index_stride,
                 vertex_count: total_verts,
                 tri_count,
+                opaque: inst.opaque,
             }
         })
         .collect();

@@ -28,7 +28,11 @@ fn settings_default_is_high_precision_gbuffer() {
     assert!(s.gbuffer_high_precision);
     assert!(!s.ray_tracing_enabled);
     assert_eq!(s.ray_query_resolution_scale, 0.5);
-    assert_eq!(s.sharc_capacity, 1 << 20);
+    #[cfg(feature = "rtxgi")]
+    assert_eq!(s.sharc_capacity, crate::DEFAULT_SHARC_CAPACITY);
+    // Without the SHARC feature no cache is ever allocated.
+    #[cfg(not(feature = "rtxgi"))]
+    assert_eq!(s.sharc_capacity, 0);
 }
 
 fn draw_item(queue: i32, eye_distance_x: f32) -> DrawItem {

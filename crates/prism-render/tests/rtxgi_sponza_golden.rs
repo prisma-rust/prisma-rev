@@ -99,6 +99,7 @@ fn simple_material(base_color: [f32; 4], roughness: f32, metallic: f32) -> Mater
         clearcoat: 0.0,
         clearcoat_roughness: 0.0,
         emissive_strength: 1.0,
+        ..Default::default()
     }
 }
 
@@ -421,6 +422,117 @@ fn test_sponza_rtxgi_real_render_and_comparison() {
     let pt_sharc_on_pixels = renderer.readback_pixels().expect("readback pt sharc on");
     let pt_sharc_on_path = out_dir.join("sponza_pt_sharc_on.actual.png");
     save_png(&pt_sharc_on_path, &pt_sharc_on_pixels, SIZE).expect("save pt sharc on png");
+
+    // Training is its own stage: it must show up as a GPU interval of its own,
+    // separate from the consumer pass. The SHaRC graph work is behind the
+    // `rtxgi` feature, so this only applies to builds that enable it.
+    if cfg!(feature = "rtxgi") {
+        let timings = renderer.gpu_timings().clone();
+        if timings.supported {
+            assert!(
+                timings.passes.iter().any(|p| p.name == "SharcTrain"),
+                "training stage missing from GPU timings: {:?}",
+                timings
+                    .passes
+                    .iter()
+                    .map(|p| p.name.as_str())
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Pass 4: cache-free reference variant (no cache, no ReSTIR, no clamp)
+    // -----------------------------------------------------------------------
+    renderer.set_pt_variant(prism_render::PtVariant::Reference);
+    assert_eq!(
+        renderer.pt_variant(),
+        Some(prism_render::PtVariant::Reference)
+    );
+    renderer.settings_mut().gi_mode = GiMode::Off;
+    for _ in 0..4 {
+        renderer
+            .render(
+                &draw_items,
+                &frame_data,
+                frame_data.light_view_proj,
+                [[0.0; 4]; 4],
+                0,
+                1,
+                0,
+                0,
+                view_proj[2][2],
+                view_proj[3][2],
+                &[],
+                RenderMode::PathTrace,
+                3,
+                100.0,
+                0,
+                1.0,
+                &[],
+                PostGrade::default(),
+                false,
+                false,
+                &[],
+            )
+            .expect("pt reference render");
+    }
+    renderer
+        .copy_offscreen_to_readback()
+        .expect("copy pt reference");
+    let pt_reference_pixels = renderer.readback_pixels().expect("readback pt reference");
+    let pt_reference_path = out_dir.join("sponza_pt_reference.actual.png");
+    save_png(&pt_reference_path, &pt_reference_pixels, SIZE).expect("save pt reference png");
+
+    let mean_u8 =
+        |pixels: &[u8]| pixels.iter().map(|&v| v as f64).sum::<f64>() / pixels.len() as f64;
+    let reference_mean = mean_u8(&pt_reference_pixels);
+    let consumer_mean = mean_u8(&pt_cache_off_pixels);
+    assert!(reference_mean > 0.5, "reference render is not black");
+    // The reference only differs by the disabled firefly clamp in this
+    // sun-only scene, so its mean must track the consumer closely.
+    let relative_gap = (reference_mean - consumer_mean).abs() / consumer_mean.max(1e-6);
+    assert!(
+        relative_gap < 0.2,
+        "reference mean {reference_mean:.2} vs consumer {consumer_mean:.2} ({:.1}%)",
+        relative_gap * 100.0
+    );
+
+    // -----------------------------------------------------------------------
+    // Pass 5: standalone SHaRC trainer. It deposits radiance and writes no
+    // screen output, so the only assertion is that the dispatch runs clean.
+    // -----------------------------------------------------------------------
+    renderer.settings_mut().gi_mode = GiMode::Sharc;
+    renderer.set_pt_variant(prism_render::PtVariant::Train);
+    assert_eq!(renderer.pt_variant(), Some(prism_render::PtVariant::Train));
+    for _ in 0..2 {
+        renderer
+            .render(
+                &draw_items,
+                &frame_data,
+                frame_data.light_view_proj,
+                [[0.0; 4]; 4],
+                0,
+                1,
+                0,
+                0,
+                view_proj[2][2],
+                view_proj[3][2],
+                &[],
+                RenderMode::PathTrace,
+                3,
+                100.0,
+                0,
+                1.0,
+                &[],
+                PostGrade::default(),
+                false,
+                false,
+                &[],
+            )
+            .expect("pt trainer render");
+    }
+    renderer.set_pt_variant(prism_render::PtVariant::Consume);
 
     // -----------------------------------------------------------------------
     // Golden Frame Comparison & Metrics

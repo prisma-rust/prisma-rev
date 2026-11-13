@@ -250,6 +250,11 @@ pub struct BlasBuildParams {
     pub index_addr: vk::DeviceAddress,
     pub vertex_count: u32,
     pub tri_count: u32,
+    /// Build with `vk::GeometryFlagsKHR::OPAQUE`. Only set this when the
+    /// material never samples alpha for visibility: opaque geometry is reported
+    /// through `CommittedStatus()` instead of a non-opaque candidate, so the
+    /// shader skips its alpha fetch entirely.
+    pub opaque: bool,
 }
 
 impl BlasEntry {
@@ -444,6 +449,11 @@ impl BlasEntry {
 fn full_geom(p: &BlasBuildParams) -> vk::AccelerationStructureGeometryKHR<'_> {
     vk::AccelerationStructureGeometryKHR::default()
         .geometry_type(vk::GeometryTypeKHR::TRIANGLES)
+        .flags(if p.opaque {
+            vk::GeometryFlagsKHR::OPAQUE
+        } else {
+            vk::GeometryFlagsKHR::empty()
+        })
         .geometry(vk::AccelerationStructureGeometryDataKHR {
             triangles: vk::AccelerationStructureGeometryTrianglesDataKHR {
                 vertex_format: vk::Format::R32G32B32_SFLOAT,

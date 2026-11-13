@@ -1645,6 +1645,13 @@ impl App {
                     prism_platform::release_pointer(window);
                     self.input.set_locked(false);
                 }
+                // 窗口重新拿到焦点：指针锁定是「点一下才算」的，切换出去再切回来
+                // 要重按一次左键，走位键却没反应，读起来就是「键盘坏了」。这里直接
+                // 恢复锁定（Esc 仍是唯一的解锁手势，见 should_release_pointer_lock）。
+                if focused && !self.input.pointer_locked {
+                    prism_platform::grab_pointer(window);
+                    self.input.set_locked(true);
+                }
             }
             PlatformEvent::CursorMoved { x, y } => {
                 apply_window_cursor_move(&mut self.input, x, y);

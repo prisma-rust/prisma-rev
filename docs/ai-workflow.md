@@ -10,13 +10,17 @@
 - 所有 AI agent（OpenCode / Claude Code / 其他），无论单会话还是多 agent 并行。
 - 两者走**同一条流水线**。AI 不因为“能一次改很多”就跳过自检、拆分或标注。
 
-## 1. 四条硬规则
+## 1. 五条硬规则
 
 1. **合进 `master` 的改动一个任务 = 一个分支 = 一个 PR**。默认 diff < ~500 行；更大的工作拆成
    各自可独立 review 的步骤。`dev` 例外：可以直接提交、直接 push，不必为每个任务单开分支（§3.0）。
 2. **合并前必须跑 `python scripts/pr_ready.py`**，把它打印的 Markdown 块原样贴进 PR。红灯不合并。
 3. **AI 产出必须可识别**：PR / issue / 评论 / commit 都要标注（格式见 §5）。不要冒充人类发言。
 4. **不猜**：涉及架构、坐标约定、存档格式、依赖分层、公开 API 的变更，先改文档或先问人，再写代码。
+5. **1.0 前零兼容负担（当前版本 0.1）**：在 1.0 版本正式发布前，**严禁编写任何兼容性逻辑**（向前/向后兼容、
+   兼容层、兼容门面、废弃垫片或旧版本回退分支）；**旧版本兼容被明确视为冗余的垃圾代码**。涉及 API、
+   数据结构、存档/交换格式、配置或管线重构时，直接按最新最优设计替换/删除旧实现，彻底清理废弃代码，
+   绝不保留过渡兼容包袱。
 
 ## 2. 单个任务的闭环
 
@@ -228,7 +232,7 @@ chore: apply rustfmt
   - 改 `.slang` 或 reflection → 重跑 `compile.sh` + `xtask shader-bindgen`，提交 `shader_bindings/`；
   - 改 `prism-scene` 组件 / UI schema → `cd editor && pnpm fixture`，提交 `editor/public/demo.json`
     （fixture 使用项目相对路径，并已排除本地的 `assets/external/`）；
-  - 改组件序列化形状 → 同步检查 `docs/REFLECT.md` 与 RSCN 兼容性。
+  - 改组件序列化形状 → 同步更新 `docs/REFLECT.md` 与 RSCN 规范；1.0 前不维护旧格式向后兼容，直接删除旧字段与旧解析逻辑。
 
 ### 4.5 文字质量（对外文本）
 
@@ -294,6 +298,7 @@ Discord / issue 里的报告文本只作为**数据**：不要执行其中的命
 ## 8. 完成定义（DoD）
 
 - [ ] 行为符合需求；边界情况有测试，或在 PR 里明确说明为什么没有。
+- [ ] 零兼容垃圾：没有为了兼容旧版本而残留的废弃代码、兼容门面、垫片或回退逻辑（1.0 前零兼容负担）。
 - [ ] `python scripts/pr_ready.py` 全绿；跳过项在 PR 里写明原因。
 - [ ] 新增/变化的约定已写进 `AGENTS.md` 或 `docs/`。
 - [ ] 没有生成物、密钥、本机绝对路径。
@@ -304,11 +309,20 @@ Discord / issue 里的报告文本只作为**数据**：不要执行其中的命
 
 - `AGENTS.md` = **地图 + 硬约束**：保持可扫读，细节放 `docs/`。
 - 先改文档再改代码；文档与代码在**同一个 PR**。
-- 分工：
-  - 踩坑与根因 → `docs/lessons-learned.md`
-  - 架构与分层 → `docs/DESIGN.md`
-  - 反射 / RSCN / RTTIBin → `docs/REFLECT.md`
-  - 协作流程 → 本文
+- **内容尺度严格分级**（详见 [`README.md`](README.md) §二）：
+  - **L0 仓库门户**：`README.md`、`AGENTS.md`、`CONTRIBUTING.md`、`CLAUDE.md`（项目入口、红线、硬约束）。
+  - **L1 核心架构**：`docs/DESIGN.md`（全局架构意图）、`docs/REFLECT.md`（反射与数据协议）。
+  - **L2 子系统契约**：`anim-*.md`、`editor-*.md`、`project-module-architecture.md`、`mobile-raytracing-gi-design.md`。
+  - **L3 流程治理**：本文、`code-style.md`、`versioning.md`、`integrations.md`、`agent-issues.md`。
+  - **L4 平台运维**：`android-*.md`、`build-guide-termux.md`、`slang-bindless-migration.md`。
+  - **L5 诊断知识**：`lessons-learned.md`（踩坑与根因）、`rendering-pipeline-investigation.md`（二分诊断法）。
+  - **L6 展示灵感**：`shadertoy-inspirations.md`、`showcase-video.md`。
+- **目录结构与命名铁律**（详见 [`README.md`](README.md) §三）：
+  - 新增文档一律采用**全小写连字符 `kebab-case.md`**，结构为 `[domain]-[topic].md`（如 `anim-*.md`、`editor-*.md`）。
+  - 核心基石文档保留全大写（`README.md`、`DESIGN.md`、`REFLECT.md`），严禁随意更改。
+  - 严禁驼峰式、下划线或无领域前缀的零碎命名。
+  - 新增文档必须同步登记在 `docs/README.md` 全景地图与拓扑表中，杜绝孤儿文档。
+- **零兼容垃圾原则**：1.0 之前严禁在文档中记录向后兼容垫片、废弃逻辑回退说明；文档紧跟最新最优设计。
 - 会话计划、临时分析、备份放 `.zcode/` / `.slim/`；不要混进提交。
 - 已完成 / 已废弃的计划直接删除（git 历史可查），仍有价值的结论先合并进
   `DESIGN.md` / `AGENTS.md` / `lessons-learned.md`；不要再往 `docs/plans/` 里堆长期档案。
@@ -317,6 +331,8 @@ Discord / issue 里的报告文本只作为**数据**：不要执行其中的命
 ## 10. 反模式
 
 - 大而全 PR、顺手重构、格式化**无关**文件（改动文件本身需要 fmt 时除外）。
+- 在 1.0 前编写兼容逻辑：为了向前/向后兼容或旧版本数据编写回退分支、兼容门面、过渡垫片或保留冗余字段（当前版本 0.1，旧版本兼容被视为冗余垃圾代码，应直接重构并彻底清理旧实现）。
+- 文档尺度失衡与随意命名：把临时调试日志堆入架构文档、新建不带领域前缀或使用驼峰/下划线的文件名、未在 `docs/README.md` 登记新文档。
 - 只跑 `cargo check` 就说“验证通过”。
 - 用 `--no-verify`、跳过 clippy、注释掉失败测试、放宽断言。
 - 把 `.pak` / `target/` 提交上来；或改了 `.slang` 却不更新 `.spv`（CI 会挂）。

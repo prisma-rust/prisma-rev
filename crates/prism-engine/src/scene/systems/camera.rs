@@ -221,6 +221,9 @@ pub fn camera_controller_system(
     // 输入必须驱动**正在渲染**的那台相机，否则多相机场景里 WASD/鼠标会移动另一台。
     // 先拿到实体 id，让 &self 借用在这里结束，后面才能取 &mut 分量。
     let cam_entity = active_camera(world)?;
+    if input.key_held(KeyCode::KeyW) || input.key_held(KeyCode::KeyA) || input.key_held(KeyCode::KeyS) || input.key_held(KeyCode::KeyD) {
+        log::info!("CAM-WASD held w={} a={} s={} d={} q={} e={} look={look_active}", input.key_held(KeyCode::KeyW), input.key_held(KeyCode::KeyA), input.key_held(KeyCode::KeyS), input.key_held(KeyCode::KeyD), input.key_held(KeyCode::KeyQ), input.key_held(KeyCode::KeyE));
+    }
 
     let ctrl = world.get_mut::<FlyCameraController>(cam_entity)?;
     let move_speed;

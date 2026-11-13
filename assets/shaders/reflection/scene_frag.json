@@ -656,10 +656,47 @@
                                 ]
                             },
                             "binding": {"kind": "uniform", "offset": 92, "size": 4, "elementStride": 0}
+                        },
+                        {
+                            "name": "alpha_cutoff",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "float32",
+                                "sizes": [
+                                    {"kind": "uniform", "value": 4, "alignment": 4}
+                                ]
+                            },
+                            "binding": {"kind": "uniform", "offset": 96, "size": 4, "elementStride": 0}
+                        },
+                        {
+                            "name": "alpha_mode",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "uint32",
+                                "sizes": [
+                                    {"kind": "uniform", "value": 4, "alignment": 4}
+                                ]
+                            },
+                            "binding": {"kind": "uniform", "offset": 100, "size": 4, "elementStride": 0}
+                        },
+                        {
+                            "name": "alpha_pad",
+                            "type": {
+                                "kind": "vector",
+                                "elementCount": 2,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                },
+                                "sizes": [
+                                    {"kind": "uniform", "value": 8, "alignment": 8}
+                                ]
+                            },
+                            "binding": {"kind": "uniform", "offset": 104, "size": 8, "elementStride": 4}
                         }
                     ],
                     "sizes": [
-                        {"kind": "uniform", "value": 96, "alignment": 16}
+                        {"kind": "uniform", "value": 112, "alignment": 16}
                     ]
                 },
                 "sizes": [
@@ -2071,10 +2108,47 @@
                                     ]
                                 },
                                 "binding": {"kind": "uniform", "offset": 92, "size": 4, "elementStride": 0}
+                            },
+                            {
+                                "name": "alpha_cutoff",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32",
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 4, "alignment": 4}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 96, "size": 4, "elementStride": 0}
+                            },
+                            {
+                                "name": "alpha_mode",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint32",
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 4, "alignment": 4}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 100, "size": 4, "elementStride": 0}
+                            },
+                            {
+                                "name": "alpha_pad",
+                                "type": {
+                                    "kind": "vector",
+                                    "elementCount": 2,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    },
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 8, "alignment": 8}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 104, "size": 8, "elementStride": 4}
                             }
                         ],
                         "sizes": [
-                            {"kind": "uniform", "value": 96, "alignment": 16}
+                            {"kind": "uniform", "value": 112, "alignment": 16}
                         ]
                     },
                     "sizes": [

@@ -37,6 +37,10 @@ player-core = [
     # 第二份引擎。host 只在静态 Player 组合里显式打开。
     "prism-game-api/host",
     "prism-app/pathtrace",
+    # 引擎默认已含 `rtxgi`（SHaRC）；模板关掉了 prism-app / prism-engine 的默认
+    # 特性，必须在这里显式补回，否则模板玩家会少一块引擎默认能力。
+    "prism-app/rtxgi",
+    "prism-engine/rtxgi",
     "prism-app/ui",
     "prism-app/ibl",
     "prism-app/shadows",

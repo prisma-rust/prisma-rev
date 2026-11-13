@@ -98,6 +98,9 @@ pub struct RenderSettings {
     pub pt_max_iterations: u32,
     /// Global Illumination technique mode (Off, Sharc, Nrc).
     pub gi_mode: GiMode,
+    /// RTXGI SHARC: Hash-map capacity (number of voxel slots). Changing it
+    /// rebuilds the cache buffers, which clears all cached radiance.
+    pub sharc_capacity: u32,
     /// RTXGI SHARC: World-space scale of the hash grid voxels.
     pub sharc_scene_scale: f32,
     /// RTXGI SHARC: Cache clear toggle.
@@ -265,6 +268,7 @@ impl Default for RenderSettings {
             pt_ray_max_distance: 1000.0,
             pt_max_iterations: 0,
             gi_mode: GiMode::Off,
+            sharc_capacity: 1 << 20,
             sharc_scene_scale: 50.0,
             sharc_enable_clear: false,
             sharc_enable_update: true,

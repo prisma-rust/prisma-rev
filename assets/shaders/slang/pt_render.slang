@@ -30,6 +30,33 @@
 #include "path_integrator.slang"
 #include "sharc/sharc_common.slang"
 
+// ---- Compile-time variants ----
+// 0 = consumer (the shipped pass), 1 = cache-free reference, 2 = SHaRC training.
+// The variant sources (`pt_reference.slang`, `pt_sharc_train.slang`) only
+// define PT_MODE and include this file, so all three share one transport.
+#ifndef PT_MODE
+#define PT_MODE 0
+#endif
+#define PT_MODE_CONSUME 0
+#define PT_MODE_REFERENCE 1
+#define PT_MODE_TRAIN 2
+
+// The reference must be free of biased accelerators: no radiance cache, no
+// temporal/spatial reuse, no firefly clamp, and uniform light sampling.
+#if PT_MODE == PT_MODE_REFERENCE
+#define PT_QUERY_CACHE 0
+#define PT_UPDATE_CACHE 0
+#define PT_USE_RESTIR 0
+#elif PT_MODE == PT_MODE_TRAIN
+#define PT_QUERY_CACHE 0
+#define PT_UPDATE_CACHE 1
+#define PT_USE_RESTIR 0
+#else
+#define PT_QUERY_CACHE 1
+#define PT_UPDATE_CACHE 1
+#define PT_USE_RESTIR 1
+#endif
+
 // ---- ReSTIR constants ----
 static const uint RESTIR_M = 8u;               // RIS candidates per pixel
 static const uint RESTIR_SPATIAL_SAMPLES = 4u; // spatial reuse neighbors
@@ -187,7 +214,7 @@ bool trace_primary_ray(float3 origin, float3 dir, float ray_max_distance,
             float2 cuv = cw * cuv0 + cb.x * cuv1 + cb.y * cuv2;
             PtInstanceMeta cm = instance_meta[ci];
             GpuMaterial c_mat = materials[cm.material_slot];
-            if (mat_albedo_alpha(c_mat, cuv) >= 0.5)
+            if (mat_alpha_pass(c_mat, cuv))
                 q.CommitNonOpaqueTriangleHit();
         }
     }
@@ -227,6 +254,118 @@ bool trace_primary_ray(float3 origin, float3 dir, float ray_max_distance,
     return true;
 }
 
+// ---- Visibility ----
+// 1.0 when nothing occludes `dir_to_light` (unit length) from `pos` within
+// `tmax`, else 0.0. The acceleration structure marks opaque geometry, so only
+// candidates whose mask texture passes count as occluders.
+float sun_visibility(float3 pos, float3 dir_to_light, float tmax)
+{
+    RayDesc sr;
+    sr.Origin = pos + 0.0001 * dir_to_light;
+    sr.Direction = dir_to_light;
+    sr.TMin = 0.001;
+    sr.TMax = tmax;
+
+    RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> sq;
+    sq.TraceRayInline(tlas,
+        RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH,
+        0xFF, sr);
+    while (sq.Proceed())
+    {
+        if (sq.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
+        {
+            uint si = sq.CandidateInstanceID();
+            uint sp = sq.CandidatePrimitiveIndex();
+            float2 sb = sq.CandidateTriangleBarycentrics();
+            float3 sv0, sv1, sv2;
+            float2 suv0, suv1, suv2;
+            float3 sn0, sn1, sn2;
+            read_hit_triangle(si, sp, vertexData, indices,
+                sv0, sv1, sv2, suv0, suv1, suv2, sn0, sn1, sn2);
+            float sw = 1.0 - sb.x - sb.y;
+            float2 suv = sw * suv0 + sb.x * suv1 + sb.y * suv2;
+            PtInstanceMeta sm = instance_meta[si];
+            GpuMaterial smat = materials[sm.material_slot];
+            if (mat_alpha_pass(smat, suv))
+            {
+                sq.CommitNonOpaqueTriangleHit();
+                break;
+            }
+        }
+    }
+    return sq.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? 0.0 : 1.0;
+}
+
+// ---- ReSTIR DI at the primary hit ----
+// Builds a reservoir over the sun and analytic lights, merges the previous
+// frame's reservoir plus random neighbours, then traces one shadow ray for the
+// selected light. Returns the already-weighted direct radiance.
+float3 restir_primary_direct(SurfaceMaterial surf, float3 hit_normal,
+    float3 view_dir, float3 hit_pos, uint2 pixel, uint frame_count, uint reset,
+    float3 sun_radiance, inout uint seed)
+{
+    ReSTIRReservoir reservoir = restir_ris_init(
+        surf, hit_normal, view_dir, hit_pos,
+        push.light_dir.xyz, sun_radiance,
+        push.num_lights, push.num_emissive,
+        RESTIR_M, seed);
+
+    uint linear_idx = pixel.y * push.params.x + pixel.x;
+
+    // Reuse only completed reservoirs from the previous frame. The old
+    // groupshared path placed a group barrier inside divergent control
+    // flow (sky pixels, edge threads and frozen pixels can return early),
+    // which is undefined and can expose partially written reservoirs.
+    if (reset == 0u && frame_count > 0u)
+    {
+        ReSTIRReservoir prev = prevReservoir[linear_idx];
+        reservoir = restir_combine_at_point(
+            reservoir, prev, surf, hit_normal, view_dir, hit_pos,
+            push.light_dir.xyz, sun_radiance, push.num_lights,
+            RESTIR_TEMPORAL_M_CAP, seed);
+
+        // Spatial reuse from random previous-frame neighbors. Each source
+        // is re-evaluated against the current material, normal and point.
+        [unroll]
+        for (uint si = 0u; si < RESTIR_SPATIAL_SAMPLES; si++)
+        {
+            int2 offset = int2(
+                int(rand_float(seed) * 17.0) - 8,
+                int(rand_float(seed) * 17.0) - 8);
+            int2 nbr_pixel = clamp(int2(pixel) + offset,
+                int2(0, 0), int2(int(push.params.x) - 1, int(push.params.y) - 1));
+            uint nbr_idx = uint(nbr_pixel.y) * push.params.x + uint(nbr_pixel.x);
+            ReSTIRReservoir nbr_r = prevReservoir[nbr_idx];
+            reservoir = restir_combine_at_point(
+                reservoir, nbr_r, surf, hit_normal, view_dir, hit_pos,
+                push.light_dir.xyz, sun_radiance, push.num_lights,
+                RESTIR_SPATIAL_M_CAP, seed);
+        }
+    }
+
+    // Write reservoir for next frame's temporal reuse
+    currReservoir[linear_idx] = reservoir;
+
+    float restir_weight = restir_resampling_weight(reservoir);
+    if (!(restir_weight > 0.0))
+        return float3(0.0);
+
+    float3 L_dir, L_rad;
+    float dist2;
+    restir_resolve_light(reservoir.light_idx, hit_pos, L_dir, L_rad, dist2,
+        push.light_dir.xyz, sun_radiance);
+
+    if (!(dot(L_rad, L_rad) > 1e-10) || !(dot(hit_normal, L_dir) > 0.0))
+        return float3(0.0);
+
+    float light_distance = sqrt(max(dist2, 0.0));
+    float tmax = dist2 >= 1e9 ? push.ray_max_distance
+        : min(push.ray_max_distance, max(light_distance - 0.001, 0.001));
+    float shadow = sun_visibility(hit_pos, L_dir, tmax);
+    float3 brdf = eval_brdf(surf, hit_normal, view_dir, L_dir);
+    return restir_weight * shadow * brdf * L_rad;
+}
+
 // ---- Compute entry point ----
 [shader("compute")]
 [numthreads(16, 16, 1)]
@@ -244,6 +383,7 @@ void ptMain(uint3 tid : SV_DispatchThreadID)
     uint frame_count = push.params.w & PT_PARAMS_FRAME_MASK;
     uint reset = (push.params.w >> 31u) & 1u;
 
+#if PT_MODE != PT_MODE_TRAIN
     // ---- Reset accumulation on demand ----
     if (reset != 0u)
     {
@@ -260,6 +400,7 @@ void ptMain(uint3 tid : SV_DispatchThreadID)
         outputImage[pixel] = float4(resolved, 1.0);
         return;
     }
+#endif
 
     // ---- RNG ----
     uint seed = tid.x * 73856093u + tid.y * 19349663u + frame_count * 2567483615u;
@@ -274,14 +415,31 @@ void ptMain(uint3 tid : SV_DispatchThreadID)
 
     float3 sun_radiance = push.light_color.rgb * push.light_dir.w;
 
-    // SHARC state for this path. Declared unconditionally so the bounce loop
-    // reads one flag, but only bound to the cache buffers when enabled.
+    // ReSTIR only pays off with several candidate emitters. It is also the one
+    // component with history reuse, so the reference and training variants
+    // force it off.
+#if PT_USE_RESTIR
+    bool restir_on = push.num_lights > 0u;
+#else
+    bool restir_on = false;
+#endif
+
+    // SHARC state for this path. The reference keeps it off entirely; training
+    // only deposits and never terminates on a cache lookup.
+#if PT_MODE == PT_MODE_REFERENCE
+    bool sharc_on = false;
+    bool sharc_update = false;
+#elif PT_MODE == PT_MODE_TRAIN
+    bool sharc_on = false;
+    bool sharc_update = true;
+#else
     bool sharc_on = (push.sharc_flags & SHARC_FLAG_QUERY) != 0u;
-    // RTXGI's update pass renders at 1/downscale resolution, so only 1/N of
-    // the pixels' worth of samples reach the cache per frame. The unified
-    // pipeline has one dispatch, so the same density is obtained by letting
-    // one pixel in every N-by-N block deposit.
     bool sharc_update = (push.sharc_flags & SHARC_FLAG_UPDATE) != 0u;
+#endif
+    // RTXGI's training pass renders at 1/downscale resolution, so only 1/N of
+    // the pixels' worth of samples reach the cache per frame. The unified
+    // consumer obtains the same density by letting one pixel in every N-by-N
+    // block deposit; a dedicated training dispatch leaves the stride at 1.
     uint sharc_stride = max((push.sharc_flags >> SHARC_FLAG_STRIDE_SHIFT) & SHARC_FLAG_STRIDE_MASK, 1u);
     if (sharc_update && sharc_stride > 1u && (tid.x % sharc_stride) != 0u)
         sharc_update = false;
@@ -304,103 +462,39 @@ void ptMain(uint3 tid : SV_DispatchThreadID)
         // ---- Emissive at hit ----
         total_radiance += throughput * surf.emissive;
 
-        // ---- ReSTIR DI ----
-        // RIS initial sampling
-        ReSTIRReservoir reservoir = restir_ris_init(
-            surf, hit_normal, view_dir, hit_pos,
-            push.light_dir.xyz, sun_radiance,
-            push.num_lights, push.num_emissive,
-            RESTIR_M, seed);
-
-        uint linear_idx = pixel.y * push.params.x + pixel.x;
-
-        // Reuse only completed reservoirs from the previous frame. The old
-        // groupshared path placed a group barrier inside divergent control
-        // flow (sky pixels, edge threads and frozen pixels can return early),
-        // which is undefined and can expose partially written reservoirs.
-        if (reset == 0u && frame_count > 0u)
+        // ---- Direct lighting at the primary hit ----
+        if (!restir_on)
         {
-            ReSTIRReservoir prev = prevReservoir[linear_idx];
-            reservoir = restir_combine_at_point(
-                reservoir, prev, surf, hit_normal, view_dir, hit_pos,
-                push.light_dir.xyz, sun_radiance, push.num_lights,
-                RESTIR_TEMPORAL_M_CAP, seed);
+            // Sun-only scenes degenerate the reservoir to one candidate with
+            // weight 1. The reference and training variants also sample a
+            // single emitter uniformly, so all three reduce to this NEE term.
+            uint light_total = push.num_lights + 1u;
+            uint light_idx = 0u;
+            if (light_total > 1u)
+                light_idx = min(uint(rand_float(seed) * float(light_total)), light_total - 1u);
 
-            // Spatial reuse from random previous-frame neighbors. Each source
-            // is re-evaluated against the current material, normal and point.
-            [unroll]
-            for (uint si = 0u; si < RESTIR_SPATIAL_SAMPLES; si++)
-            {
-                int2 offset = int2(
-                    int(rand_float(seed) * 17.0) - 8,
-                    int(rand_float(seed) * 17.0) - 8);
-                int2 nbr_pixel = clamp(int2(pixel) + offset,
-                    int2(0, 0), int2(int(w) - 1, int(h) - 1));
-                uint nbr_idx = uint(nbr_pixel.y) * w + uint(nbr_pixel.x);
-                ReSTIRReservoir nbr_r = prevReservoir[nbr_idx];
-                reservoir = restir_combine_at_point(
-                    reservoir, nbr_r, surf, hit_normal, view_dir, hit_pos,
-                    push.light_dir.xyz, sun_radiance, push.num_lights,
-                    RESTIR_SPATIAL_M_CAP, seed);
-            }
-        }
-
-        // Write reservoir for next frame's temporal reuse
-        currReservoir[linear_idx] = reservoir;
-
-        // ---- ReSTIR-selected direct light ----
-        float restir_weight = restir_resampling_weight(reservoir);
-        if (restir_weight > 0.0)
-        {
             float3 L_dir, L_rad;
             float dist2;
-            restir_resolve_light(reservoir.light_idx, hit_pos, L_dir, L_rad, dist2,
+            restir_resolve_light(light_idx, hit_pos, L_dir, L_rad, dist2,
                 push.light_dir.xyz, sun_radiance);
 
-            float shadow = 1.0;
             if (dot(L_rad, L_rad) > 1e-10 && dot(hit_normal, L_dir) > 0.0)
             {
-                // Shadow ray
-                RayDesc sr;
-                sr.Origin = hit_pos + 0.0001 * L_dir;
-                sr.Direction = L_dir;
-                sr.TMin = 0.001;
                 float light_distance = sqrt(max(dist2, 0.0));
-                sr.TMax = dist2 >= 1e9 ? push.ray_max_distance
-                    : min(push.ray_max_distance,
-                        max(light_distance - 0.001, 0.001));
-                RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> sq;
-                sq.TraceRayInline(tlas, RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, 0xFF, sr);
-                while (sq.Proceed())
-                {
-                    if (sq.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
-                    {
-                        uint si = sq.CandidateInstanceID();
-                        uint sp = sq.CandidatePrimitiveIndex();
-                        float2 sb = sq.CandidateTriangleBarycentrics();
-                        float3 sv0, sv1, sv2;
-                        float2 suv0, suv1, suv2;
-                        float3 sn0, sn1, sn2;
-                        read_hit_triangle(si, sp, vertexData, indices,
-                            sv0, sv1, sv2, suv0, suv1, suv2, sn0, sn1, sn2);
-                        float sw = 1.0 - sb.x - sb.y;
-                        float2 suv = sw * suv0 + sb.x * suv1 + sb.y * suv2;
-                        PtInstanceMeta sm = instance_meta[si];
-                        GpuMaterial smat = materials[sm.material_slot];
-                        if (mat_albedo_alpha(smat, suv) >= 0.5)
-                        {
-                            sq.CommitNonOpaqueTriangleHit();
-                            break;
-                        }
-                    }
-                }
-                if (sq.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
-                    shadow = 0.0;
-
-                float3 brdf_re = eval_brdf(surf, hit_normal, view_dir, L_dir);
-                total_radiance += throughput * brdf_re * L_rad * shadow
-                    * restir_weight;
+                float tmax = dist2 >= 1e9 ? push.ray_max_distance
+                    : min(push.ray_max_distance, max(light_distance - 0.001, 0.001));
+                float shadow = sun_visibility(hit_pos, L_dir, tmax);
+                // Uniform discrete selection: the estimator carries 1/pdf.
+                total_radiance += throughput
+                    * eval_brdf(surf, hit_normal, view_dir, L_dir)
+                    * L_rad * shadow * float(light_total);
             }
+        }
+        else
+        {
+            total_radiance += throughput * restir_primary_direct(
+                surf, hit_normal, view_dir, hit_pos, pixel,
+                frame_count, reset, sun_radiance, seed);
         }
 
         // ---- Emissive triangle NEE (bounce 0, independent of ReSTIR) ----
@@ -432,8 +526,12 @@ void ptMain(uint3 tid : SV_DispatchThreadID)
                 sr.Direction = L_dir_et;
                 sr.TMin = 0.001;
                 sr.TMax = max(l_dist - 0.001, 0.001);
-                RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> sq;
-                sq.TraceRayInline(tlas, RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, 0xFF, sr);
+                // A shadow ray only needs any occluder: stop at the first
+                // alpha-passing candidate instead of searching the closest hit.
+                RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> sq;
+                sq.TraceRayInline(tlas,
+                    RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH,
+                    0xFF, sr);
                 while (sq.Proceed())
                 {
                     if (sq.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
@@ -450,7 +548,7 @@ void ptMain(uint3 tid : SV_DispatchThreadID)
                         float2 suv = sw * suv0 + sb.x * suv1 + sb.y * suv2;
                         PtInstanceMeta sm = instance_meta[si];
                         GpuMaterial smat = materials[sm.material_slot];
-                        if (mat_albedo_alpha(smat, suv) >= 0.5)
+                        if (mat_alpha_pass(smat, suv))
                         {
                             sq.CommitNonOpaqueTriangleHit();
                             break;
@@ -583,7 +681,7 @@ void ptMain(uint3 tid : SV_DispatchThreadID)
                     float2 cuv = cw * cuv0 + cb.x * cuv1 + cb.y * cuv2;
                     PtInstanceMeta cm = instance_meta[ci];
                     GpuMaterial c_mat = materials[cm.material_slot];
-                    if (mat_albedo_alpha(c_mat, cuv) >= 0.5)
+                    if (mat_alpha_pass(c_mat, cuv))
                         q.CommitNonOpaqueTriangleHit();
                 }
             }
@@ -623,64 +721,13 @@ void ptMain(uint3 tid : SV_DispatchThreadID)
 
                 float3 seg_direct = float3(0.0, 0.0, 0.0);
 
-                // ---- Bounce NEE: sample directional sun at indirect hit ----
-                // Without NEE in bounce 1+, shadow regions get indirect light
-                // only when the BRDF-sampled direction accidentally hits a
-                // sun-lit surface — high variance produces colored noise.
-                {
-                    float bn_shadow = 1.0;
-                    float3 bn_dir = push.light_dir.xyz;
-                    if (dot(hn, bn_dir) > 0.0)
-                    {
-                        RayDesc sr;
-                        sr.Origin = hp + 0.0001 * bn_dir;
-                        sr.Direction = bn_dir;
-                        sr.TMin = 0.001;
-                        sr.TMax = push.ray_max_distance;
-                        RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER> sq;
-                        sq.TraceRayInline(tlas, RAY_FLAG_SKIP_CLOSEST_HIT_SHADER, 0xFF, sr);
-                        while (sq.Proceed())
-                        {
-                            if (sq.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
-                            {
-                                uint si = sq.CandidateInstanceID();
-                                uint sp = sq.CandidatePrimitiveIndex();
-                                float2 sb = sq.CandidateTriangleBarycentrics();
-                                float3 sv0, sv1, sv2;
-                                float2 suv0, suv1, suv2;
-                                float3 sn0, sn1, sn2;
-                                read_hit_triangle(si, sp, vertexData, indices,
-                                    sv0, sv1, sv2, suv0, suv1, suv2, sn0, sn1, sn2);
-                                float sw = 1.0 - sb.x - sb.y;
-                                float2 suv = sw * suv0 + sb.x * suv1 + sb.y * suv2;
-                                PtInstanceMeta sm = instance_meta[si];
-                                GpuMaterial smat = materials[sm.material_slot];
-                                if (mat_albedo_alpha(smat, suv) >= 0.5)
-                                {
-                                    sq.CommitNonOpaqueTriangleHit();
-                                    break;
-                                }
-                            }
-                        }
-                        if (sq.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
-                            bn_shadow = 0.0;
-                    }
-                    float3 bn_brdf = eval_brdf(hit_surf, hn, vw_dir, bn_dir);
-                    float p_brdf_bn = eval_brdf_pdf(hit_surf, hn, vw_dir, bn_dir);
-                    float p_nee_bn = 1.0; // sun is deterministic
-                    // `seg_direct` is the same term without throughput: SHARC
-                    // propagates radiometric radiance and carries throughput in
-                    // its own sample weights.
-                    float3 nee_direct = bn_brdf * sun_radiance * bn_shadow
-                        * p_nee_bn / max(p_nee_bn * p_nee_bn + p_brdf_bn * p_brdf_bn, 1e-20);
-                    total_radiance += throughput * nee_direct;
-                    seg_direct += nee_direct;
-                }
-
-                // ---- SHARC: query the cache, then feed this segment back ----
+                // ---- SHARC: query first so a hit terminates the path ----
+                // The cached value already contains this vertex's direct lighting
+                // and the remaining bounces, so a hit must not additionally pay
+                // for the sun shadow ray and BRDF evaluation below.
+                SharcHitData sharc_hit;
                 if (sharc_on)
                 {
-                    SharcHitData sharc_hit;
                     sharc_hit.positionWorld = hp;
                     float3 sharc_normal = gn;
                     if (dot(sharc_normal, dir) > 0.0) sharc_normal = -sharc_normal;
@@ -713,16 +760,43 @@ void ptMain(uint3 tid : SV_DispatchThreadID)
                             break;
                         }
                     }
+                }
 
-                    // Not in the cache yet: deposit this segment's direct
-                    // lighting so a later frame can terminate here.
-                    if (sharc_update)
-                    {
+                // ---- Bounce NEE: sample directional sun at indirect hit ----
+                // Without NEE in bounce 1+, shadow regions get indirect light
+                // only when the BRDF-sampled direction accidentally hits a
+                // sun-lit surface — high variance produces colored noise.
+                {
+                    float3 bn_dir = push.light_dir.xyz;
+                    float bn_shadow = dot(hn, bn_dir) > 0.0
+                        ? sun_visibility(hp, bn_dir, push.ray_max_distance)
+                        : 1.0;
+                    float3 bn_brdf = eval_brdf(hit_surf, hn, vw_dir, bn_dir);
+                    float p_brdf_bn = eval_brdf_pdf(hit_surf, hn, vw_dir, bn_dir);
+                    float p_nee_bn = 1.0; // sun is deterministic
+                    // `seg_direct` is the same term without throughput: SHARC
+                    // propagates radiometric radiance and carries throughput in
+                    // its own sample weights.
+                    float3 nee_direct = bn_brdf * sun_radiance * bn_shadow
+                        * p_nee_bn / max(p_nee_bn * p_nee_bn + p_brdf_bn * p_brdf_bn, 1e-20);
+                    total_radiance += throughput * nee_direct;
+                    seg_direct += nee_direct;
+                }
+
+                // Not in the cache: deposit this segment's direct lighting so a
+                // later frame can terminate here.
+                if (sharc_update)
+                {
+                    // `false` means the resampled voxel already holds confident
+                    // radiance for the remaining path, so training for this
+                    // segment stops here.
+                    bool continue_tracing =
                         SharcUpdateHit(sharc_params, sharc_state, sharc_hit, seg_direct, rand_float(seed));
-                        sharc_roughness_prev += hit_surf.metallic < 0.5
-                            ? 1.0
-                            : max(push.sharc_roughness_threshold, hit_surf.roughness);
-                    }
+                    sharc_roughness_prev += hit_surf.metallic < 0.5
+                        ? 1.0
+                        : max(push.sharc_roughness_threshold, hit_surf.roughness);
+                    if (!continue_tracing)
+                        break;
                 }
 
                 // Russian roulette
@@ -786,13 +860,19 @@ void ptMain(uint3 tid : SV_DispatchThreadID)
                     dir = nd;
                     origin = hp + 0.0001 * nd;
                 }
+
+                // Fold this segment's scatter weight into the vertices the
+                // cache already recorded, so their deposits carry the path
+                // throughput from the camera instead of a flat 1.0.
+                if (sharc_update)
+                    SharcSetThroughput(sharc_state, throughput);
             }
             else
             {
                 // Miss: env map. The sky is the far-field terminator that lets
                 // the cache propagate radiance back along the whole path.
                 float3 sky_radiance = envCube.SampleLevel(dir, 0.0).rgb;
-                if (sharc_on && sharc_update)
+                if (sharc_update)
                     SharcUpdateMiss(sharc_params, sharc_state, sky_radiance);
                 total_radiance += throughput * sky_radiance;
                 break;
@@ -806,13 +886,16 @@ void ptMain(uint3 tid : SV_DispatchThreadID)
 
         // Do not leave a stale geometry reservoir behind a sky pixel. Such a
         // reservoir can otherwise leak across moving silhouettes via reuse.
-        ReSTIRReservoir empty_reservoir;
-        empty_reservoir.light_idx = 0u;
-        empty_reservoir.M = 0.0;
-        empty_reservoir.W = 0.0;
-        empty_reservoir.target_pdf = 0.0;
-        uint linear_idx = pixel.y * push.params.x + pixel.x;
-        currReservoir[linear_idx] = empty_reservoir;
+        if (restir_on)
+        {
+            ReSTIRReservoir empty_reservoir;
+            empty_reservoir.light_idx = 0u;
+            empty_reservoir.M = 0.0;
+            empty_reservoir.W = 0.0;
+            empty_reservoir.target_pdf = 0.0;
+            uint linear_idx = pixel.y * push.params.x + pixel.x;
+            currReservoir[linear_idx] = empty_reservoir;
+        }
     }
 
     // Reject invalid transport values before they poison the persistent
@@ -823,13 +906,17 @@ void ptMain(uint3 tid : SV_DispatchThreadID)
         total_radiance = float3(0.0);
     total_radiance = max(total_radiance, float3(0.0));
 
+#if PT_MODE != PT_MODE_REFERENCE
     // ---- Firefly clamp: prevent individual bright samples from creating
     // persistent sparkles in the accumulation. The bound 50.0 corresponds to
     // ~140× a typical diffuse-sun bounce (0.36), so it only clips outliers.
+    // The reference variant skips it because it biases the converged mean.
     float ff_luma = dot(total_radiance, float3(0.2126, 0.7152, 0.0722));
     if (ff_luma > 50.0)
         total_radiance *= 50.0 / ff_luma;
+#endif
 
+#if PT_MODE != PT_MODE_TRAIN
     // ---- Accumulate ----
     float3 prev = accumImage[pixel].rgb;
     uint   count = sampleCount[pixel];
@@ -843,4 +930,5 @@ void ptMain(uint3 tid : SV_DispatchThreadID)
     float3 result = new_count > 0u ? new_accum / float(new_count) : float3(0.0);
     result *= push.camera_pos.w;
     outputImage[pixel] = float4(result, 1.0);
+#endif
 }

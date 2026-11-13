@@ -22,10 +22,10 @@
    - **Advanced Lighting** — PBR 材质、IBL、CSM 阴影、烘焙 GI
    - **Data-Oriented ECS** — archetype query、反射序列化、RSCN v4
    - **Asset Pipeline** — glTF 导入、纹理压缩、.pak 打包
-   - **Web-Based Editor** — Tauri 2 + Vue 3、组件检查器、预制体系统
+   - **Native Rust Editor** — egui + ash 零拷贝采样、split-tree docking、反射检查器
    - **Bindless Everything** — descriptor indexing、动态批处理
    - **Slang Shaders** — 统一着色器语言、反射驱动绑定
-   - **Built-In Automation** — 截图系统、MCP 服务器、CDP 集成
+   - **Built-In Automation** — 本地 TCP 控制通道、MCP 服务器、原生窗口与离屏抓图
 
 3. **结尾卡**（5秒）
    - PrismaRev logo

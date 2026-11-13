@@ -1176,7 +1176,7 @@ cp target/release/template /tmp/p && strip /tmp/p && ls -l /tmp/p   # strip 后�
 | 砖块 | feature | 默认 | 关掉后省什么 |
 |---|---|---|---|
 | 路径追踪 | `prism-render/pathtrace` | on | `pt_pass.rs`（~1.6k 行）+ 累积/BLAS-TLAS 资源 |
-| RTXGI (SHARC) | `prism-render/rtxgi`（依赖 `pathtrace`） | off | NVIDIA RTXGI SHARC v1.6 世界空间辐射缓存（`sharc.rs` + resolve 计算管线 + 3 个持久 GPU 缓冲） |
+| RTXGI (SHARC) | `prism-render/rtxgi`（依赖 `pathtrace`） | on | NVIDIA RTXGI SHARC v1.6 世界空间辐射缓存（`sharc.rs` + resolve 计算管线 + 3 个持久 GPU 缓冲）。**默认开**：不拉新依赖，且是路径追踪之上唯一的实时 GI 加速；关掉 = 只剩纯 PT（仍设 `gi_mode = Sharc` 时退化为纯 PT 并 warn 一次） |
 | NRC | `prism-render/nrc`（依赖 `pathtrace`） | off | NVIDIA Neural Radiance Cache 接入 |
 | DLSS | `prism-render/dlss` | off | NVIDIA Streamline / DLSS 超分辨率与光线重构接入 |
 | 音频 | `prism-app/audio` + `prism-engine/audio` | off | cpal + firewheel + symphonia（~60 crate，−3.1 MB） |

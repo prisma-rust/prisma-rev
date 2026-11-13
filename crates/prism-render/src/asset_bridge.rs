@@ -14,6 +14,10 @@ use crate::managers::{MeshHandle, MeshUploadInput, TextureUploadInput};
 /// 渲染线程负责上传纹理取 bindless 槽，再据此组装 `MaterialUploadInput`。
 pub struct MaterialResolveData {
     pub scalars: [f32; 18],
+    /// Alpha semantics from the cooked RMAT. Geometry whose material is
+    /// `Opaque` can use the AS `OPAQUE` flag and skip per-candidate alpha tests.
+    pub alpha_mode: crate::managers::MaterialAlphaMode,
+    pub alpha_cutoff: f32,
     pub textures: [Option<TextureUploadInput>; 5],
 }
 

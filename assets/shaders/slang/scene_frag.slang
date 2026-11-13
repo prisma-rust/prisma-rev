@@ -45,7 +45,7 @@ ConstantBuffer<FrameUBO> frame;
 
 // ---- set 0, binding 1 - material SSBO --------------------------------
 // One record per material; the shader indexes by `pc.material_slot`.
-// Layout must match Rust `GpuMaterial` (96 bytes, 16-byte aligned).
+// Layout must match Rust `GpuMaterial` (112 bytes, 16-byte aligned).
 struct GpuMaterial
 {
     float4 base_color;                          // offset 0
@@ -61,6 +61,9 @@ struct GpuMaterial
     uint   occlusion_idx;                       // offset 84: R channel, attenuates IBL only
     float  normal_scale;                        // offset 88: normal map strength
     float  occlusion_strength;                  // offset 92: lerp factor for occlusion R into IBL
+    float  alpha_cutoff;                        // offset 96: MASK threshold
+    uint   alpha_mode;                          // offset 100: 0=Opaque, 1=Mask, 2=Blend
+    float2 alpha_pad;                           // offset 104: keeps the record 16-byte aligned
 };
 [[vk::binding(1, 0)]]
 StructuredBuffer<GpuMaterial> materials;

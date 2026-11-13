@@ -48,7 +48,8 @@ impl DebugHud {
         let mut lines = Vec::with_capacity(5);
         let mut line = format!("{:.1} ms  |  {:.0} FPS", stats.frame_time_ms, stats.fps);
         match stats.gpu_timings.as_ref().filter(|gpu| gpu.supported) {
-            Some(gpu) => line.push_str(&format!("  |  GPU {:.1} ms", gpu.total_ms)),
+            // 有整帧区间时用整帧时间，否则回退到 pass 之和：两种口径必须能区分。
+            Some(gpu) => line.push_str(&format!("  |  GPU {:.1} ms", gpu.frame_or_total_ms())),
             // 设备不支持时间戳：显式写 n/a，不拿 CPU 墙钟冒充 GPU 时间。
             None => line.push_str("  |  GPU n/a"),
         }
@@ -109,7 +110,14 @@ impl DebugHud {
                     .map(|pass| format!("{} {:.1}", pass.name, pass.ms))
                     .collect();
                 let suffix = if passes.len() > top.len() { " …" } else { "" };
-                lines.push(format!("GPU passes: {}{suffix}", top.join(" · ")));
+                // 整帧区间里没有被 pass 覆盖的部分：barrier、图外 dispatch、拷贝等。
+                // 只有确实拿到区间时才显示，否则 0 会被误读成「没有图外开销」。
+                let gap = if gpu.has_frame_span() && gpu.unmeasured_ms() >= 0.05 {
+                    format!(" (+{:.1} unmeasured)", gpu.unmeasured_ms())
+                } else {
+                    String::new()
+                };
+                lines.push(format!("GPU passes: {}{suffix}{gap}", top.join(" · ")));
             }
         }
 
@@ -180,6 +188,7 @@ mod tests {
             frame_stats: Default::default(),
             gpu_timings: Some(GpuTimings {
                 supported: true,
+                frame_ms: 0.0,
                 total_ms: 12.5,
                 passes: vec![
                     PassTiming {
@@ -207,6 +216,33 @@ mod tests {
         assert_eq!(
             lines[2],
             "GPU passes: forward 8.0 · shadow 2.0 · post 0.5 …"
+        );
+    }
+
+    /// 整帧区间存在时，HUD 显示整帧时间，并暴露没有被 pass 覆盖的部分。
+    #[test]
+    fn hud_reports_the_frame_span_and_the_unmeasured_gap() {
+        let stats = RenderStats {
+            frame_time_ms: 16.0,
+            fps: 60.0,
+            pt_frame_count: None,
+            frame_stats: Default::default(),
+            gpu_timings: Some(GpuTimings {
+                supported: true,
+                frame_ms: 15.0,
+                total_ms: 12.0,
+                passes: vec![PassTiming {
+                    name: "forward".into(),
+                    ms: 12.0,
+                }],
+            }),
+        };
+
+        let lines = append(&stats);
+        assert!(lines[0].contains("GPU 15.0 ms"), "{lines:?}");
+        assert!(
+            lines.iter().any(|line| line.contains("(+3.0 unmeasured)")),
+            "{lines:?}"
         );
     }
 

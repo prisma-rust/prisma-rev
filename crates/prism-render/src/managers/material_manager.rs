@@ -41,18 +41,55 @@ new_key_type! {
     pub struct MaterialHandle;
 }
 
+/// How a material's base-colour alpha affects visibility.
+///
+/// Render-side mirror of the cooked `prism_asset::formats::MaterialAlphaMode`;
+/// `prism-render` deliberately does not depend on the asset crate, and the
+/// engine maps one to the other while building upload inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MaterialAlphaMode {
+    /// Alpha is ignored for visibility: geometry can use the AS `OPAQUE` flag.
+    Opaque,
+    /// Alpha is tested against a cutoff; empty-space fragments are holes.
+    #[default]
+    Mask,
+    /// Alpha blends; triangles must stay non-opaque in ray queries.
+    Blend,
+}
+
+impl MaterialAlphaMode {
+    /// True when visibility never depends on the sampled alpha value.
+    pub fn is_opaque(self) -> bool {
+        matches!(self, Self::Opaque)
+    }
+
+    /// Encoding used by the shader (`GpuMaterial.alpha_mode`): 0/1/2.
+    pub fn as_shader_u32(self) -> u32 {
+        match self {
+            Self::Opaque => 0,
+            Self::Mask => 1,
+            Self::Blend => 2,
+        }
+    }
+}
+
+/// Alpha cutoff used when a material carries none (glTF default).
+pub const DEFAULT_ALPHA_CUTOFF: f32 = 0.5;
+
 /// Shader-visible material record. The Slang `GpuMaterial` struct in
 /// `shaders/slang/scene_frag.slang` mirrors this exactly; field order and
 /// size are pinned by the static assertion below.
 ///
-/// Layout (96 bytes, 16-byte aligned):
+/// Layout (112 bytes, 16-byte aligned):
 ///   @0   base_color[4]                          (float4)
 ///   @16  metallic_roughness_emissive[4]          (float4: x=metallic, y=roughness, z=emissive, w=emissive_strength)
 ///   @32  albedo_idx, normal_idx, mr_idx, emissive_idx  (4 x uint)
 ///   @48  transmission_factor[4]                  (float4: x=transmission, y=ior, z=translucency, w=anisotropy)
 ///   @64  clearcoat[4]                            (float4: x=clearcoat, y=clearcoat_roughness, z=reserved, w=reserved)
 ///   @80  transmission_tex_idx, occlusion_idx     (2 x uint)
-///   @88  normal_scale, occlusion_strength         (2 x float, padded to 96)
+///   @88  normal_scale, occlusion_strength         (2 x float)
+///   @96  alpha_cutoff, alpha_mode                 (float, uint)
+///   @104 padding                                  (2 x float, keeps the record 16-byte aligned)
 #[repr(C, align(16))]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuMaterial {
@@ -97,10 +134,18 @@ pub struct GpuMaterial {
     /// Occlusion strength (lerp factor between 1.0 and the occlusion texture's
     /// R channel, applied to IBL diffuse+specular only). Defaults to 1.0.
     pub occlusion_strength: f32,
+    /// Alpha test threshold for `Mask` materials (`alpha >= cutoff` passes).
+    pub alpha_cutoff: f32,
+    /// Alpha semantics: 0 = Opaque, 1 = Mask, 2 = Blend (see
+    /// [`MaterialAlphaMode`]). Only `Mask` consults `alpha_cutoff`; opaque
+    /// geometry is normally not even reported as a non-opaque candidate.
+    pub alpha_mode: u32,
+    /// Padding so the record stays 16-byte aligned (matches the Slang struct).
+    pub alpha_pad: [f32; 2],
 }
 
 // Static assertions for size and alignment.
-const _: [(); 96] = [(); std::mem::size_of::<GpuMaterial>()];
+const _: [(); 112] = [(); std::mem::size_of::<GpuMaterial>()];
 const _: [(); 16] = [(); std::mem::align_of::<GpuMaterial>()];
 
 /// Plain-data material description used at the manager boundary. The
@@ -128,9 +173,48 @@ pub struct MaterialUploadInput {
     pub clearcoat: f32,
     pub clearcoat_roughness: f32,
     pub emissive_strength: f32,
+    /// How base-colour alpha affects visibility. `Opaque` materials may use the
+    /// acceleration-structure `OPAQUE` flag, which removes the per-candidate
+    /// alpha test from ray traversal.
+    pub alpha_mode: MaterialAlphaMode,
+    /// Alpha test threshold for `Mask` materials.
+    pub alpha_cutoff: f32,
+}
+
+impl Default for MaterialUploadInput {
+    fn default() -> Self {
+        Self {
+            base_color: [1.0, 1.0, 1.0, 1.0],
+            metallic: 0.0,
+            roughness: 0.5,
+            emissive: [0.0; 3],
+            albedo_tex: None,
+            normal_tex: None,
+            metallic_roughness_tex: None,
+            emissive_tex: None,
+            occlusion_tex: None,
+            normal_scale: 1.0,
+            occlusion_strength: 1.0,
+            transmission: 0.0,
+            ior: 1.5,
+            translucency: 0.0,
+            anisotropy: 0.0,
+            clearcoat: 0.0,
+            clearcoat_roughness: 0.0,
+            emissive_strength: 1.0,
+            alpha_mode: MaterialAlphaMode::Mask,
+            alpha_cutoff: DEFAULT_ALPHA_CUTOFF,
+        }
+    }
 }
 
 impl MaterialUploadInput {
+    /// True when this material's geometry can be marked opaque in an AS: its
+    /// visibility never depends on the sampled alpha value.
+    pub fn is_opaque(&self) -> bool {
+        self.alpha_mode.is_opaque()
+    }
+
     /// Pack scalar parameters into a [`GpuMaterial`]. The texture
     /// indices are left at `u32::MAX` when `None`.
     pub fn to_gpu(&self) -> GpuMaterial {
@@ -157,6 +241,9 @@ impl MaterialUploadInput {
             occlusion_idx: self.occlusion_tex.unwrap_or(u32::MAX),
             normal_scale: self.normal_scale,
             occlusion_strength: self.occlusion_strength,
+            alpha_cutoff: self.alpha_cutoff,
+            alpha_mode: self.alpha_mode.as_shader_u32(),
+            alpha_pad: [0.0; 2],
         }
     }
 }
@@ -214,6 +301,11 @@ impl RenderMaterialManager {
                 occlusion_idx: u32::MAX,
                 normal_scale: 1.0,
                 occlusion_strength: 1.0,
+                alpha_cutoff: DEFAULT_ALPHA_CUTOFF,
+                // Never treat an empty slot as opaque: a stale free slot must
+                // not be able to make traversal skip an alpha test.
+                alpha_mode: MaterialAlphaMode::Mask.as_shader_u32(),
+                alpha_pad: [0.0; 2],
             };
             MATERIAL_SSBO_MAX as usize
         ];
@@ -270,6 +362,19 @@ impl RenderMaterialManager {
             .iter()
             .position(|h| *h == Some(handle))
             .map(|i| i as u32)
+    }
+
+    /// Alpha semantics of the material in an SSBO slot. `None` when the slot is
+    /// free or the handle is unknown.
+    pub fn alpha_mode_of_slot(&self, slot: u32) -> Option<MaterialAlphaMode> {
+        let handle = (*self.slots.get(slot as usize)?)?;
+        self.materials.get(handle).map(|data| data.alpha_mode)
+    }
+
+    /// Whether the material in an SSBO slot may use the AS `OPAQUE` flag.
+    pub fn is_opaque_slot(&self, slot: u32) -> bool {
+        self.alpha_mode_of_slot(slot)
+            .is_some_and(MaterialAlphaMode::is_opaque)
     }
 
     /// Underlying Vulkan buffer. The descriptor set the renderer builds
@@ -329,6 +434,11 @@ impl RenderMaterialManager {
                 occlusion_idx: u32::MAX,
                 normal_scale: 1.0,
                 occlusion_strength: 1.0,
+                alpha_cutoff: DEFAULT_ALPHA_CUTOFF,
+                // Never treat an empty slot as opaque: a stale free slot must
+                // not be able to make traversal skip an alpha test.
+                alpha_mode: MaterialAlphaMode::Mask.as_shader_u32(),
+                alpha_pad: [0.0; 2],
             };
             self.dirty_slots[slot as usize] = true;
             self.slots[slot as usize] = None;

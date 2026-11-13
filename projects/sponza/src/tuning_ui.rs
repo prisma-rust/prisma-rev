@@ -31,10 +31,16 @@ use prism_scene::ui::{
 };
 use prism_scene::Active;
 
-const NUM_ITEMS: usize = 16;
+const NUM_ITEMS: usize = 17;
 
 #[derive(Debug)]
 pub struct SponzaTuningHook {
+    /// 指针锁定（相机接管键鼠）时的快照，每帧由 `on_tick` 从窗口同步。
+    ///
+    /// 键盘事件不带锁定信息，而面板按键要走「锁定态归相机、解锁态归面板」的
+    /// 分流，所以这里存一份：事件处理时读到的是上一帧的值，比窗口查询快，
+    /// 也不会在一帧里中途变卦。
+    pub locked: bool,
     pub show: bool,
     pub selected_index: usize,
 
@@ -50,6 +56,7 @@ pub struct SponzaTuningHook {
     pub sharc_enable_resolve: bool,
     pub sharc_enable_anti_firefly: bool,
     pub sharc_scene_scale: f32,
+    pub sharc_capacity: u32,
     pub sharc_roughness_threshold: f32,
     pub sharc_downscale_factor: u32,
     pub sharc_accumulation_frame_num: u32,
@@ -74,6 +81,7 @@ impl Default for SponzaTuningHook {
         };
 
         Self {
+            locked: false,
             show: true,
             selected_index: 0,
             render_mode,
@@ -87,6 +95,7 @@ impl Default for SponzaTuningHook {
             sharc_enable_resolve: true,
             sharc_enable_anti_firefly: true,
             sharc_scene_scale: 50.0,
+            sharc_capacity: 1 << 20,
             sharc_roughness_threshold: 0.4,
             sharc_downscale_factor: 5,
             sharc_accumulation_frame_num: 20,
@@ -229,6 +238,16 @@ impl SponzaTuningHook {
                 }
             }
             14 => {
+                // Cache capacity: 2^16 .. 2^23 entries (doubles per step).
+                // Resizing rebuilds the buffers, so the cache restarts empty.
+                if increase {
+                    self.sharc_capacity = (self.sharc_capacity * 2).min(1 << 23);
+                } else {
+                    self.sharc_capacity = (self.sharc_capacity / 2).max(1 << 16);
+                }
+                self.request_reset = true;
+            }
+            15 => {
                 // DLSS Mode
                 self.dlss_mode = match self.dlss_mode {
                     DlssMode::Off => {
@@ -276,105 +295,166 @@ impl SponzaTuningHook {
                 };
                 self.request_reset = true;
             }
-            15 => self.auto_exposure = !self.auto_exposure,
+            16 => self.auto_exposure = !self.auto_exposure,
             _ => {}
         }
     }
 
     fn toggle_parameter(&mut self) {
         match self.selected_index {
-            0 | 1 | 14 => self.adjust_parameter(true),
+            0 | 1 | 15 => self.adjust_parameter(true),
             5 => self.sharc_enable_clear = !self.sharc_enable_clear,
             6 => self.sharc_enable_update = !self.sharc_enable_update,
             7 => self.sharc_enable_resolve = !self.sharc_enable_resolve,
             8 => self.sharc_enable_anti_firefly = !self.sharc_enable_anti_firefly,
-            15 => self.auto_exposure = !self.auto_exposure,
+            16 => self.auto_exposure = !self.auto_exposure,
             _ => {}
         }
     }
 }
 
-impl FrameHook for SponzaTuningHook {
-    fn on_platform_event(&mut self, _window: &PlatformWindow, event: PlatformEvent) -> bool {
-        let PlatformEvent::Key { key, pressed: true } = event else {
-            return false;
-        };
+/// 一次按键的路由结果。
+///
+/// 钩子先于 App 看到事件：返回 `false` 时 App 会走自己的快捷键（F3 / Tab / T /
+/// 数字键 PBR 隔离）**并**把按键交给 InputManager。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyRoute {
+    /// 面板不处理：原样交给 App（含引擎的移动键）。
+    Forward,
+    /// 面板吃掉了这个键（App 的快捷键与引擎的按键状态都不再看到它）。
+    Consume,
+}
 
+/// Key::to_vk 的 'M' / 'R' / 'V'：平台层把两个后端统一成 Win32 VK_*。
+const VK_M: u32 = 0x4D;
+const VK_R: u32 = 0x52;
+const VK_V: u32 = 0x56;
+
+impl SponzaTuningHook {
+    /// 面板按键不区分按下 / 松开：按一次触发一次。
+    fn on_key_pressed(&mut self, key: Key) -> KeyRoute {
         match key {
+            // 面板开关：任何遮挡键都不能抢它，否则面板一开就再也关不掉。
             Key::F1 | Key::Tab => {
                 self.show = !self.show;
-                return true;
+                return KeyRoute::Consume;
             }
+            // GI 模式是 Sponza 的招牌操作，面板收着也要能用（和顶部状态栏写的
+            // 「[1] Ref [2] SHaRC [3] NRC」一致）。
             Key::Digit1 => {
                 self.gi_mode = GiMode::Off;
                 self.request_reset = true;
-                return true;
+                return KeyRoute::Consume;
             }
             Key::Digit2 => {
                 self.gi_mode = GiMode::Sharc;
                 self.request_reset = true;
-                return true;
+                return KeyRoute::Consume;
             }
             Key::Digit3 => {
                 self.gi_mode = GiMode::Nrc;
                 self.request_reset = true;
-                return true;
+                return KeyRoute::Consume;
             }
+            // M / R / V 是面板自己的功能键，同时 R 也是引擎的移动键。
+            // 指针锁定时它们归相机，面板只在解锁态接收。
+            Key::Other(VK_M) if !self.locked => {
+                self.cycle_render_mode();
+                return KeyRoute::Consume;
+            }
+            Key::Other(VK_R) if !self.locked => {
+                self.request_reset = true;
+                return KeyRoute::Consume;
+            }
+            Key::Other(VK_V) if !self.locked => {
+                self.vsync = !self.vsync;
+                return KeyRoute::Consume;
+            }
+            // 面板关着时下面这些都没意义：交给 App 处理自己的 T / 数字键。
+            _ if !self.show => KeyRoute::Forward,
             Key::KeyT => {
                 self.tonemap_mode = (self.tonemap_mode + 1) % 3;
-                return true;
+                return KeyRoute::Consume;
             }
-            // Key 'M' (0x4D in Win32 VK): Raster <-> Path Trace
-            Key::Other(0x4D) => {
-                self.cycle_render_mode();
-                return true;
-            }
-            // Key 'R' (0x52 in Win32 VK)
-            Key::Other(0x52) => {
-                self.request_reset = true;
-                return true;
-            }
-            // Key 'V' (0x56 in Win32 VK)
-            Key::Other(0x56) => {
-                self.vsync = !self.vsync;
-                return true;
-            }
-            Key::ArrowUp | Key::KeyW if self.show => {
-                if self.selected_index == 0 {
-                    self.selected_index = NUM_ITEMS - 1;
+            Key::ArrowUp => {
+                self.selected_index = if self.selected_index == 0 {
+                    NUM_ITEMS - 1
                 } else {
-                    self.selected_index -= 1;
-                }
-                return true;
+                    self.selected_index - 1
+                };
+                return KeyRoute::Consume;
             }
-            Key::ArrowDown | Key::KeyS if self.show => {
+            Key::ArrowDown => {
                 self.selected_index = (self.selected_index + 1) % NUM_ITEMS;
-                return true;
+                return KeyRoute::Consume;
             }
-            Key::ArrowLeft | Key::KeyA if self.show => {
+            Key::ArrowLeft => {
                 self.adjust_parameter(false);
-                return true;
+                return KeyRoute::Consume;
             }
-            Key::ArrowRight | Key::KeyD if self.show => {
+            Key::ArrowRight => {
                 self.adjust_parameter(true);
-                return true;
+                return KeyRoute::Consume;
             }
-            Key::Space | Key::Enter if self.show => {
+            Key::Space | Key::Enter => {
                 self.toggle_parameter();
-                return true;
+                return KeyRoute::Consume;
             }
-            _ => false,
+            // WASD 是引擎的移动键，**永远**原样交给相机（App 的快捷键里没有它们，
+            // 不存在抢键问题）。面板开着时顺带当方向键导航——先前用「未锁定才导航」
+            // 做过分流，结果一开始指针没锁定，走位键全被面板吃掉，相机一动不动。
+            Key::KeyW | Key::KeyA | Key::KeyS | Key::KeyD => {
+                if self.show {
+                    self.navigate_with_wasd(key);
+                }
+                return KeyRoute::Forward;
+            }
+            _ => KeyRoute::Forward,
         }
+    }
+
+    /// 解锁态下 WASD 与方向键同义（面板是唯一在用键盘的地方）。
+    fn navigate_with_wasd(&mut self, key: Key) {
+        match key {
+            Key::KeyW => self.on_key_pressed(Key::ArrowUp),
+            Key::KeyS => self.on_key_pressed(Key::ArrowDown),
+            Key::KeyA => self.on_key_pressed(Key::ArrowLeft),
+            Key::KeyD => self.on_key_pressed(Key::ArrowRight),
+            _ => KeyRoute::Forward,
+        };
+    }
+}
+
+impl FrameHook for SponzaTuningHook {
+    fn on_platform_event(&mut self, _window: &PlatformWindow, event: PlatformEvent) -> bool {
+        if !matches!(event, PlatformEvent::Key { .. }) {
+            log::info!("HOOK-OTHER {event:?}");
+            return false;
+        }
+        let PlatformEvent::Key { key, pressed } = event else {
+            return false;
+        };
+        log::info!("HOOK-KEY {key:?} pressed={pressed} locked={} show={}", self.locked, self.show);
+        if pressed && self.on_key_pressed(key) == KeyRoute::Consume {
+            return true;
+        }
+        // false = 没消费：App 照常走快捷键并路由进 InputManager（锁定态下 WASD
+        // 走的就是这条：面板不管，相机照常移动）。
+        false
     }
 
     fn on_tick(
         &mut self,
-        _window: &PlatformWindow,
+        window: &PlatformWindow,
         world: &mut World,
         settings: &mut RenderSettings,
         stats: &RenderStats,
         _shared: &RenderShared,
     ) {
+        // 指针锁定 = 相机接管键鼠。平台层是唯一真值来源（App 里那份
+        // `InputManager::pointer_locked` 钩子拿不到），每帧同步一次给键盘分流用。
+        self.locked = window.is_pointer_locked();
+
         // Sync runtime settings to engine
         settings.render_mode = self.render_mode;
         settings.auto_exposure = self.auto_exposure;
@@ -382,11 +462,19 @@ impl FrameHook for SponzaTuningHook {
         settings.pt_max_bounces = self.bounces;
         settings.pt_ray_max_distance = self.ray_max_distance;
         settings.tonemap_mode = self.tonemap_mode;
+        // 锁定后光标是藏起来的，UI 不该再处理悬停 / 点击：否则光标被夹在窗口中央
+        // 时，指针下恰好有按钮就会被「按住」，锁定期间界面一直亮着被按下的样子。
+        if self.locked {
+            world.remove_resource::<prism_engine::ui::UiInputState>();
+        }
+        // 指针锁定 = 在走位看画面，面板收起来（F1 / Tab 随时可以叫回来）。
+        self.show = self.show && !self.locked;
         settings.sharc_enable_clear = self.sharc_enable_clear;
         settings.sharc_enable_update = self.sharc_enable_update;
         settings.sharc_enable_resolve = self.sharc_enable_resolve;
         settings.sharc_enable_anti_firefly = self.sharc_enable_anti_firefly;
         settings.sharc_scene_scale = self.sharc_scene_scale;
+        settings.sharc_capacity = self.sharc_capacity;
         settings.sharc_roughness_threshold = self.sharc_roughness_threshold;
         settings.sharc_downscale_factor = self.sharc_downscale_factor;
         settings.sharc_accumulation_frame_num = self.sharc_accumulation_frame_num;
@@ -581,6 +669,7 @@ impl FrameHook for SponzaTuningHook {
                      {}Downscale Factor:   [ {} ]\n\
                      {}Accum Frame Num:    [ {} ]\n\
                      {}Stale Frame Num:    [ {} ]\n\
+                     {}Cache Capacity:     [ {}K ]\n\
                      --- Post / Upscaling -------------------\n\
                      {}DLSS Mode:          [ {} ]\n\
                      {}Auto Exposure:      [ {} ]\n\
@@ -620,8 +709,10 @@ impl FrameHook for SponzaTuningHook {
                     marker(13),
                     self.sharc_stale_frame_num,
                     marker(14),
-                    dlss_str,
+                    self.sharc_capacity / 1024,
                     marker(15),
+                    dlss_str,
+                    marker(16),
                     on_off(self.auto_exposure),
                     on_off(self.vsync),
                 );

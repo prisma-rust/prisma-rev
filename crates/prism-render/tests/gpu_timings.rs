@@ -95,4 +95,15 @@ fn the_second_frame_reports_the_first_frames_pass_timings() {
         timings.passes.iter().any(|pass| pass.ms > 0.0),
         "at least one pass must have taken measurable time"
     );
+    // 整帧区间覆盖所有 pass；时间戳量化允许 pass 之和略大一点点。
+    assert!(
+        timings.has_frame_span(),
+        "a rendered frame must produce a frame span: {timings:?}"
+    );
+    assert!(
+        timings.frame_ms + 0.01 >= timings.total_ms,
+        "frame span {} ms must cover the pass sum {} ms",
+        timings.frame_ms,
+        timings.total_ms
+    );
 }

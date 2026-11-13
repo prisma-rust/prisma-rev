@@ -14,7 +14,7 @@ crate-type = ["lib"]
 # 物理是**可选**能力。`physics_runner` 目前仍是骨架（独立线程 + step/result 通道），
 # 尚未接进 `Engine::update`；不让它默认把 rapier3d / parry3d 拉进玩家二进制。
 # 需要物理时在用户项目里开：`prism-app = { path = "...", features = ["physics"] }`。
-default = ["pathtrace", "ui", "ui-fontdue", "ibl", "skybox", "shadows", "gtao", "winit-backend", "x11", "wayland", "group-3d", "group-2d", "group-ui"]
+default = ["pathtrace", "rtxgi", "ui", "ui-fontdue", "ibl", "skybox", "shadows", "gtao", "winit-backend", "x11", "wayland", "group-3d", "group-2d", "group-ui"]
 # 窗口后端二选一：
 # - `winit-backend`（默认）：winit 窗口 + 事件循环（桌面 / Android）。
 # - `win32-native`（默认关，仅 Windows）：Win32 原生窗口，**不编译任何 winit 代码**，

@@ -546,10 +546,11 @@ fn scene_asset_rejects_bad_magic() {
 
 #[test]
 fn material_asset_decodes_cooked_rmat() {
-    // 构建 an RMAT blob by hand: magic + version + 18 scalars + 5 absent slots.
+    // 构建 an RMAT blob by hand: magic + version + 18 scalars + alpha block
+    // + 5 absent slots.
     let mut buf = Vec::new();
     buf.extend_from_slice(b"RMAT");
-    buf.push(1); // version
+    buf.push(crate::formats::RMAT_VERSION);
     let scalars: [f32; crate::formats::MATERIAL_SCALAR_COUNT] = [
         0.8, 0.8, 0.8, 1.0, // base_color
         0.2, 0.5, // metallic, roughness
@@ -561,6 +562,8 @@ fn material_asset_decodes_cooked_rmat() {
     for s in scalars {
         buf.extend_from_slice(&s.to_le_bytes());
     }
+    buf.push(1); // Mask
+    buf.extend_from_slice(&crate::formats::DEFAULT_ALPHA_CUTOFF.to_le_bytes());
     buf.extend(std::iter::repeat_n(0, 5)); // absent
 
     let asset = MaterialAsset::from_bytes(&buf).unwrap();

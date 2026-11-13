@@ -8,7 +8,7 @@ description = "Vulkan rendering backend for PrismaRev"
 [features]
 # ---- Modular building blocks: project templates select features (see docs/DESIGN.md §12) ----
 # 默认「全量」，库和示例行为不变；项目模板按需挑砖。
-default = ["pathtrace", "ui", "ui-fontdue", "ibl", "skybox", "shadows", "gtao"]
+default = ["pathtrace", "rtxgi", "ui", "ui-fontdue", "ibl", "skybox", "shadows", "gtao"]
 # UI 叠加总开关（字形图集 + 管线 + 屏幕空间四边形）。纯 3D/无 UI 项目可关：
 # 关掉后 `ui_overlay` 只保留输入数据结构，渲染侧忽略 UI 命令。
 #
@@ -25,7 +25,9 @@ ui-fontdue = ["ui", "dep:fontdue"]
 ui-directwrite = ["ui", "dep:windows"]
 # 实时路径追踪（pt_pass.rs + acceleration structure 使用）。纯光栅项目可关。
 pathtrace = []
-# NVIDIA RTXGI (SHARC): Spatially Hashed Radiance Cache
+# NVIDIA RTXGI (SHARC): Spatially Hashed Radiance Cache。
+# 默认**开**：不拉新依赖，但它是引擎里唯一的实时 GI 加速（路径追踪之上叠世界空间
+# 辐射缓存）。关掉 = 只剩纯道路径追踪，见 docs/DESIGN.md §12.2。
 rtxgi = ["pathtrace"]
 # NVIDIA Neural Radiance Cache (NRC)
 nrc = ["pathtrace"]

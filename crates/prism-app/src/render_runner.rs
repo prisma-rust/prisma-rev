@@ -361,7 +361,9 @@ pub fn render_thread_main(
 
         frame_stats.push_frame(
             frame_time_ms,
-            gpu_timings.supported.then_some(gpu_timings.total_ms),
+            gpu_timings
+                .supported
+                .then_some(gpu_timings.frame_or_total_ms()),
         );
         if frame_count.is_multiple_of(30) {
             frame_stats_summary = frame_stats.summary();
@@ -372,7 +374,9 @@ pub fn render_thread_main(
         if let Some(collector) = bench.as_mut() {
             let complete = collector.sample(
                 frame_time_ms,
-                gpu_timings.supported.then_some(gpu_timings.total_ms),
+                gpu_timings
+                    .supported
+                    .then_some(gpu_timings.frame_or_total_ms()),
             );
             if complete && !bench_report_written {
                 bench_report_written = true;
@@ -538,6 +542,7 @@ fn render_one_frame(
         let renderer_settings = renderer.settings_mut();
         renderer_settings.auto_exposure = settings.auto_exposure;
         renderer_settings.gi_mode = settings.gi_mode;
+        renderer_settings.sharc_capacity = settings.sharc_capacity;
         renderer_settings.sharc_scene_scale = settings.sharc_scene_scale;
         renderer_settings.sharc_enable_update = settings.sharc_enable_update;
         renderer_settings.sharc_enable_resolve = settings.sharc_enable_resolve;

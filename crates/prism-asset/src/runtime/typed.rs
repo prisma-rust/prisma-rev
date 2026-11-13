@@ -127,6 +127,16 @@ impl MaterialAsset {
     pub fn texture_ids(&self) -> &[Option<AssetId>; 5] {
         &self.info.texture_ids
     }
+
+    /// Alpha semantics (RMAT alpha block).
+    pub fn alpha_mode(&self) -> crate::formats::MaterialAlphaMode {
+        self.info.alpha_mode
+    }
+
+    /// Alpha test threshold for `Mask` materials.
+    pub fn alpha_cutoff(&self) -> f32 {
+        self.info.alpha_cutoff
+    }
 }
 
 impl Asset for MaterialAsset {

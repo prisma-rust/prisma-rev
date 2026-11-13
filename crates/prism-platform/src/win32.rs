@@ -668,6 +668,11 @@ impl Win32Window {
         Ok(())
     }
 
+    /// 光标是否正被 `ClipCursor` 抓在客户区中央（= 指针锁定）。
+    pub(crate) fn is_pointer_locked(&self) -> bool {
+        lock(&self.state).grab.is_some()
+    }
+
     pub(crate) fn close_requested(&self) -> bool {
         lock(&self.state).close_requested
     }

@@ -337,6 +337,14 @@ compile_stage gi_render renderMain compute
 compile_stage pt_render ptMain compute
 emit_reflection pt_render ptMain compute
 
+# pt_reference / pt_sharc_train: the same transport compiled as the cache-free
+# reference and the standalone SHaRC trainer. PT_MODE in pt_render.slang picks
+# the variant; both carry the same bindings and push constants as the consumer.
+compile_stage pt_reference ptMain compute
+emit_reflection pt_reference ptMain compute
+compile_stage pt_sharc_train ptMain compute
+emit_reflection pt_sharc_train ptMain compute
+
 # sharc_resolve: RTXGI SHARC cache resolve kernel (`crates/prism-render/src/sharc.rs`).
 # Dispatched (capacity+255)/256 groups, one thread per hash-grid entry.
 # The source lives in slang/sharc/, so the name carries the subdirectory and

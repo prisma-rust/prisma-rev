@@ -75,10 +75,35 @@ fn pack_pt_params(frame_count: u32, reset: bool, orthographic: bool) -> u32 {
         | if reset { PT_PARAMS_RESET } else { 0 }
 }
 
+/// Which compiled transport variant the pass dispatches.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PtVariant {
+    /// Shipped consumer: radiance cache query, ReSTIR and firefly clamp.
+    #[default]
+    Consume,
+    /// Cache-free reference used for energy validation: no cache, no ReSTIR,
+    /// no clamp, uniform light sampling.
+    Reference,
+    /// Standalone SHaRC trainer: deposits radiance only and writes no screen
+    /// output. The render graph dispatches it before resolve/consume.
+    Train,
+}
+
+/// Embedded SPIR-V for a transport variant.
+fn variant_spirv(variant: PtVariant) -> &'static [u8] {
+    match variant {
+        PtVariant::Consume => include_bytes!("../../../assets/shaders/pt_render.comp.spv"),
+        PtVariant::Reference => include_bytes!("../../../assets/shaders/pt_reference.comp.spv"),
+        PtVariant::Train => include_bytes!("../../../assets/shaders/pt_sharc_train.comp.spv"),
+    }
+}
+
 /// Real-time path tracing compute pass.
 pub struct PathTracePass {
     // Pipeline
     pipeline: Option<ComputePipeline>,
+    train_pipeline: Option<ComputePipeline>,
+    variant: PtVariant,
     ds_layout: vk::DescriptorSetLayout,
     ds_pool: vk::DescriptorPool,
     ds: vk::DescriptorSet,
@@ -397,6 +422,8 @@ impl PathTracePass {
 
         Ok(Self {
             pipeline: None,
+            train_pipeline: None,
+            variant: PtVariant::Consume,
             ds_layout,
             ds_pool,
             ds,
@@ -467,7 +494,7 @@ impl PathTracePass {
         // `build_pt_scene` only allocates its OWN materials buffer from these
         // bytes; the real-time pass overrides it with the shared manager
         // buffer in `update_ds`, so we pass a minimal placeholder here.
-        let placeholder_material = [0u8; 96]; // one GpuMaterial's worth of zeroes
+        let placeholder_material = vec![0u8; std::mem::size_of::<crate::managers::GpuMaterial>()];
         let scene = crate::bake_common::build_pt_scene(
             context,
             command_pool,
@@ -673,6 +700,21 @@ impl PathTracePass {
         self.frame_counter
     }
 
+    /// Select the transport variant. Changing it rebuilds the pipeline on the
+    /// next dispatch; the accumulation buffers carry over, so the caller should
+    /// also call `request_reset()` when switching mid-scene.
+    pub fn set_variant(&mut self, variant: PtVariant) {
+        if self.variant == variant {
+            return;
+        }
+        self.variant = variant;
+        self.pipeline = None;
+    }
+
+    pub fn variant(&self) -> PtVariant {
+        self.variant
+    }
+
     fn resize_images(
         &mut self,
         device: &ash::Device,
@@ -723,8 +765,10 @@ impl PathTracePass {
         if self.pipeline.is_some() {
             return Ok(());
         }
-        const SPV: &[u8] = include_bytes!("../../../assets/shaders/pt_render.comp.spv");
-        let mod_ = shader::load_shader_module(device, SPV).context("PathTracePass: load spv")?;
+        // All variants share the transport in pt_render.slang; only PT_MODE
+        // differs, so the layouts and push block are identical.
+        let spv = variant_spirv(self.variant);
+        let mod_ = shader::load_shader_module(device, spv).context("PathTracePass: load spv")?;
         let entry = std::ffi::CString::new("ptMain").unwrap();
         // Three sets: set 0 = PT-local (accum/output/TLAS/vertex/index/meta/
         // materials), set 1 = shared bindless texture table (samplers + SRVs),
@@ -744,6 +788,32 @@ impl PathTracePass {
             device.destroy_shader_module(mod_, None);
         }
         self.pipeline = Some(pl);
+        Ok(())
+    }
+
+    fn ensure_train_pipeline(&mut self, device: &ash::Device) -> anyhow::Result<()> {
+        if self.train_pipeline.is_some() {
+            return Ok(());
+        }
+        let spv = variant_spirv(PtVariant::Train);
+        let mod_ =
+            shader::load_shader_module(device, spv).context("PathTracePass: load trainer")?;
+        let entry = std::ffi::CString::new("ptMain").unwrap();
+        let mut layouts = vec![self.ds_layout, self.bindless_layout];
+        if self.ibl_layout != vk::DescriptorSetLayout::null() {
+            layouts.push(self.ibl_layout);
+        }
+        let push = [vk::PushConstantRange {
+            stage_flags: vk::ShaderStageFlags::COMPUTE,
+            offset: 0,
+            size: PT_PUSH_RANGE_SIZE,
+        }];
+        let pl = ComputePipeline::new(device, mod_, entry.as_c_str(), &layouts, &push)
+            .context("PathTracePass: trainer pipeline")?;
+        unsafe {
+            device.destroy_shader_module(mod_, None);
+        }
+        self.train_pipeline = Some(pl);
         Ok(())
     }
 
@@ -884,19 +954,30 @@ impl PathTracePass {
             .buffer(self.emissive_buffer.unwrap_or(self.lights_buffer))
             .offset(0)
             .range(vk::WHOLE_SIZE);
-        // ReSTIR reservoir buffers (ping-pong, b10/b11).
-        // Swap roles each frame: b10 gets the buffer written last frame (prev),
-        // b11 gets the buffer to write this frame (curr).
-        let prev_buf = self.reservoir_buffers[1 - self.reservoir_swap];
-        let curr_buf = self.reservoir_buffers[self.reservoir_swap];
-        let prev_bi = vk::DescriptorBufferInfo::default()
-            .buffer(prev_buf)
-            .offset(0)
-            .range(vk::WHOLE_SIZE);
-        let curr_bi = vk::DescriptorBufferInfo::default()
-            .buffer(curr_buf)
-            .offset(0)
-            .range(vk::WHOLE_SIZE);
+        // ReSTIR reservoir buffers (ping-pong, b10/b11). Swap roles each frame:
+        // b10 gets the buffer written last frame (prev), b11 gets the buffer to
+        // write this frame (curr). They stay null until the first consumer
+        // dispatch allocates them, and the standalone trainer runs before that,
+        // so the writes are only recorded once the buffers exist. Leaving a
+        // binding unwritten is legal because the layout carries PARTIALLY_BOUND.
+        let (prev_buf, curr_buf) = (
+            self.reservoir_buffers[1 - self.reservoir_swap],
+            self.reservoir_buffers[self.reservoir_swap],
+        );
+        let reservoir_bi = if prev_buf != vk::Buffer::null() && curr_buf != vk::Buffer::null() {
+            Some((
+                vk::DescriptorBufferInfo::default()
+                    .buffer(prev_buf)
+                    .offset(0)
+                    .range(vk::WHOLE_SIZE),
+                vk::DescriptorBufferInfo::default()
+                    .buffer(curr_buf)
+                    .offset(0)
+                    .range(vk::WHOLE_SIZE),
+            ))
+        } else {
+            None
+        };
         // SHARC cache buffers. The writes are only recorded when the cache is
         // active: `nullDescriptor` is not enabled, so binding a null handle
         // would be a validation error. Leaving the binding unwritten is legal
@@ -970,18 +1051,19 @@ impl PathTracePass {
                 .dst_binding(9)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .buffer_info(std::slice::from_ref(&ebi)),
-            vk::WriteDescriptorSet::default()
-                .dst_set(self.ds)
-                .dst_binding(10)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(std::slice::from_ref(&prev_bi)),
-            vk::WriteDescriptorSet::default()
-                .dst_set(self.ds)
-                .dst_binding(11)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(std::slice::from_ref(&curr_bi)),
         ];
         let mut writes = writes;
+        if let Some((prev_bi, curr_bi)) = reservoir_bi.as_ref() {
+            for (binding, info) in [(10u32, prev_bi), (11, curr_bi)] {
+                writes.push(
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(self.ds)
+                        .dst_binding(binding)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .buffer_info(std::slice::from_ref(info)),
+                );
+            }
+        }
         if let Some((hash_bi, accum_bi, resolved_bi)) = sharc_bi.as_ref() {
             for (binding, info) in [(12u32, hash_bi), (13, accum_bi), (14, resolved_bi)] {
                 writes.push(
@@ -1079,6 +1161,127 @@ impl Drop for PathTracePass {
     }
 }
 
+impl PathTracePass {
+    /// Training dispatch extent for a cache density of 1/downscale, rounded up
+    /// so the edge block still covers the last pixels.
+    pub fn training_extent(render: vk::Extent2D, downscale: u32) -> vk::Extent2D {
+        let d = downscale.max(1);
+        vk::Extent2D {
+            width: render.width.max(1).div_ceil(d),
+            height: render.height.max(1).div_ceil(d),
+        }
+    }
+
+    /// Dispatch the standalone SHaRC trainer. It writes only the cache: no
+    /// accumulation image, no output image and no reservoir history.
+    pub fn dispatch_training(
+        &mut self,
+        ctx: &RenderContext,
+        extent: vk::Extent2D,
+    ) -> anyhow::Result<()> {
+        if ctx.frame.render_mode != crate::render_graph::RenderMode::PathTrace
+            || !ctx.frame.has_camera
+            || self.pt_scene.is_none()
+            || self.materials_buffer.is_none()
+            || self.sharc_hash_entries.is_none()
+            || self.sharc_capacity == 0
+        {
+            return Ok(());
+        }
+        let w = extent.width.max(1);
+        let h = extent.height.max(1);
+        self.record_dispatch(ctx, w, h, self.frame_counter, false, true)
+    }
+
+    fn record_dispatch(
+        &mut self,
+        ctx: &RenderContext,
+        w: u32,
+        h: u32,
+        frame_counter: u32,
+        reset: bool,
+        train: bool,
+    ) -> anyhow::Result<()> {
+        let device = ctx.device;
+        let cmd = ctx.cmd;
+
+        self.set_lights(ctx.frame.pt_lights);
+        if train {
+            self.ensure_train_pipeline(device)?;
+        } else {
+            self.ensure_pipeline(device)?;
+        }
+        self.update_ds(device);
+
+        let pl = if train {
+            self.train_pipeline.as_ref().unwrap()
+        } else {
+            self.pipeline.as_ref().unwrap()
+        };
+
+        let sets = if self.ibl_set != vk::DescriptorSet::null() {
+            vec![self.ds, self.bindless_set, self.ibl_set]
+        } else {
+            vec![self.ds, self.bindless_set]
+        };
+        unsafe {
+            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, pl.pipeline);
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                pl.layout,
+                0,
+                &sets,
+                &[],
+            );
+        }
+
+        let inv_vp = mat_inverse(&ctx.frame.view_proj);
+        let params_w = pack_pt_params(frame_counter, reset, ctx.frame.camera_orthographic);
+
+        let mut camera_pos = ctx.frame.camera_pos;
+        camera_pos[3] = ctx.frame.exposure;
+        let push = shader_bindings::pt_render::PtPush {
+            inv_view_proj: inv_vp,
+            camera_pos,
+            light_dir: ctx.frame.light_dir,
+            light_color: ctx.frame.light_color,
+            params: [w, h, ctx.frame.pt_max_bounces, params_w],
+            ray_max_distance: ctx.frame.pt_ray_max_distance,
+            max_iterations: ctx.frame.pt_max_iterations,
+            num_lights: ctx.frame.pt_lights.len() as u32,
+            num_emissive: self.emissive_count,
+            sharc_scene_scale: ctx.settings.sharc_scene_scale,
+            sharc_capacity: self.sharc_capacity,
+            sharc_flags: if train {
+                // The dispatch is already downscaled, so no stride is needed;
+                // the training shader forces deposits on and never queries.
+                pack_sharc_flags(false, false, 1)
+            } else {
+                // Deposits belong to the training dispatch, so the consumer
+                // only reads the cache.
+                let query = self.sharc_hash_entries.is_some()
+                    && ctx.settings.gi_mode == crate::render_graph::GiMode::Sharc;
+                pack_sharc_flags(query, false, ctx.settings.sharc_downscale_factor)
+            },
+            sharc_roughness_threshold: ctx.settings.sharc_roughness_threshold,
+            sharc_camera_pos: ctx.frame.camera_pos,
+        };
+        unsafe {
+            device.cmd_push_constants(
+                cmd,
+                pl.layout,
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                bytemuck::bytes_of(&push),
+            );
+            // 16x16 threads per group.
+            device.cmd_dispatch(cmd, w.div_ceil(16), h.div_ceil(16), 1);
+        }
+        Ok(())
+    }
+}
+
 impl RenderPassNode for PathTracePass {
     fn name(&self) -> &str {
         "PathTracePass"
@@ -1137,15 +1340,6 @@ impl RenderPassNode for PathTracePass {
         self.resize_images(device, &ctx.context.physical_device_memory_properties, w, h)?;
         // Resize ReSTIR reservoir ping-pong buffers if needed
         self.ensure_reservoir_buffers(device, &ctx.context, w, h);
-
-        // Write analytic lights into the SSBO (binding 8) — do this before
-        // borrowing `self.pipeline` so the mutable borrow for set_lights
-        // doesn't conflict with the immutable `pl` borrow below.
-        self.set_lights(ctx.frame.pt_lights);
-
-        // Pipeline
-        self.ensure_pipeline(device)?;
-        let pl = self.pipeline.as_ref().unwrap();
 
         // Camera detection
         let cam_pos = ctx.frame.camera_pos;
@@ -1257,79 +1451,7 @@ impl RenderPassNode for PathTracePass {
             );
         }
 
-        // Update descriptors
-        self.update_ds(device);
-
-        // Bind: set 0 = PT-local, set 1 = shared bindless texture table,
-        // set 2 = IBL environment cubemap (if wired).
-        let sets = if self.ibl_set != vk::DescriptorSet::null() {
-            vec![self.ds, self.bindless_set, self.ibl_set]
-        } else {
-            vec![self.ds, self.bindless_set]
-        };
-        unsafe {
-            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, pl.pipeline);
-            device.cmd_bind_descriptor_sets(
-                cmd,
-                vk::PipelineBindPoint::COMPUTE,
-                pl.layout,
-                0,
-                &sets,
-                &[],
-            );
-        }
-
-        // Pack the per-frame flags into params.w: bit 30 = orthographic
-        // camera, bit 31 = reset accumulation (see `PT_PARAMS_*`).
-        let params_w = pack_pt_params(self.frame_counter, reset, ctx.frame.camera_orthographic);
-
-        let light_dir = ctx.frame.light_dir;
-        let light_color = ctx.frame.light_color;
-        // Pack exposure into camera_pos.w (PT only uses camera_pos.xyz for
-        // ray origin; the .w slot was previously unused).
-        let mut camera_pos = cam_pos;
-        camera_pos[3] = ctx.frame.exposure;
-        let push = shader_bindings::pt_render::PtPush {
-            inv_view_proj: inv_vp,
-            camera_pos,
-            light_dir,
-            light_color,
-            params: [w, h, ctx.frame.pt_max_bounces, params_w],
-            ray_max_distance: ctx.frame.pt_ray_max_distance,
-            max_iterations: ctx.frame.pt_max_iterations,
-            num_lights: ctx.frame.pt_lights.len() as u32,
-            num_emissive: self.emissive_count,
-            sharc_scene_scale: ctx.settings.sharc_scene_scale,
-            sharc_capacity: self.sharc_capacity,
-            sharc_flags: {
-                // Querying requires the cache buffers to be bound; updating is
-                // the UI switch that turns deposits off to watch the cache
-                // drain. The downscale factor only thins the deposits — it
-                // must never reach 0, which would disable them silently.
-                let query = self.sharc_hash_entries.is_some()
-                    && ctx.settings.gi_mode == crate::render_graph::GiMode::Sharc;
-                let update = query && ctx.settings.sharc_enable_update;
-                pack_sharc_flags(query, update, ctx.settings.sharc_downscale_factor)
-            },
-            sharc_roughness_threshold: ctx.settings.sharc_roughness_threshold,
-            sharc_camera_pos: ctx.frame.camera_pos,
-        };
-        unsafe {
-            device.cmd_push_constants(
-                cmd,
-                pl.layout,
-                vk::ShaderStageFlags::COMPUTE,
-                0,
-                bytemuck::bytes_of(&push),
-            );
-        }
-
-        // Dispatch (16×16 thread groups)
-        let gx = (w + 15) / 16;
-        let gy = (h + 15) / 16;
-        unsafe {
-            device.cmd_dispatch(cmd, gx, gy, 1);
-        }
+        self.record_dispatch(ctx, w, h, self.frame_counter, reset, false)?;
 
         // Post-dispatch barrier: PT_COLOR_H GENERAL → SHADER_READ_ONLY_OPTIMAL
         // so PostPass can sample it. Must be manual because the write edge

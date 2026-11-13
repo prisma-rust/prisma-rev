@@ -977,7 +977,8 @@ fn material_importer_roundtrip_with_textures() {
 
     // Intermediate must start with RMATI magic.
     assert_eq!(&result.output_data[..5], b"RMATI");
-    assert_eq!(result.output_data[5], 1); // version
+    // Version 2 adds the alpha-mode byte + cutoff after the scalar block.
+    assert_eq!(result.output_data[5], 2);
 
     // Metadata carries the 槽 presence flags.
     let meta = result.metadata.unwrap();

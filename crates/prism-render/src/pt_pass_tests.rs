@@ -65,3 +65,68 @@ fn sharc_flags_pack_query_update_and_stride() {
     assert_eq!(pack_sharc_flags(false, false, u32::MAX) >> 8, 0xFF);
     assert_eq!(pack_sharc_flags(true, true, u32::MAX), 0xFF03);
 }
+
+#[test]
+fn transport_variants_share_the_push_and_entry_contract() {
+    use shader_bindings::{pt_reference, pt_render, pt_sharc_train};
+
+    for spv in [
+        variant_spirv(PtVariant::Consume),
+        variant_spirv(PtVariant::Reference),
+        variant_spirv(PtVariant::Train),
+    ] {
+        assert!(!spv.is_empty(), "variant SPIR-V is embedded");
+        // SPIR-V magic, little endian.
+        assert_eq!(&spv[..4], &[0x03, 0x02, 0x23, 0x07], "SPIR-V magic");
+    }
+
+    assert_eq!(
+        std::mem::size_of::<pt_reference::PtPush>(),
+        std::mem::size_of::<pt_render::PtPush>()
+    );
+    assert_eq!(
+        std::mem::size_of::<pt_sharc_train::PtPush>(),
+        std::mem::size_of::<pt_render::PtPush>()
+    );
+    assert_eq!(
+        pt_reference::PUSH_CONSTANT_SIZE,
+        pt_render::PUSH_CONSTANT_SIZE
+    );
+    assert_eq!(
+        pt_sharc_train::PUSH_CONSTANT_SIZE,
+        pt_render::PUSH_CONSTANT_SIZE
+    );
+    assert_eq!(pt_reference::ENTRY_PT_MAIN, pt_render::ENTRY_PT_MAIN);
+    assert_eq!(pt_sharc_train::ENTRY_PT_MAIN, pt_render::ENTRY_PT_MAIN);
+    assert_eq!(pt_render::PUSH_CONSTANT_SIZE, PT_PUSH_RANGE_SIZE);
+}
+
+#[test]
+fn default_transport_variant_is_the_consumer() {
+    assert_eq!(PtVariant::default(), PtVariant::Consume);
+}
+
+#[test]
+fn training_extent_covers_the_edge_block() {
+    let full = vk::Extent2D {
+        width: 1920,
+        height: 1080,
+    };
+    let half = PathTracePass::training_extent(full, 5);
+    assert_eq!((half.width, half.height), (384, 216));
+    // Round up so the last partial block still contributes samples.
+    let odd = vk::Extent2D {
+        width: 1919,
+        height: 1079,
+    };
+    let odd_train = PathTracePass::training_extent(odd, 5);
+    assert_eq!((odd_train.width, odd_train.height), (384, 216));
+    // A downscale of zero must not divide by zero or collapse the dispatch.
+    assert_eq!(
+        PathTracePass::training_extent(full, 0),
+        vk::Extent2D {
+            width: 1920,
+            height: 1080
+        }
+    );
+}

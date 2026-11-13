@@ -96,6 +96,7 @@ python scripts/pr_ready.py --all      # 全 workspace + 所有独立 workspace
 - 用户项目依赖链保持 **UI 框架无关、编辑器无关**：
   `prisma → prism-app → prism-engine → {prism-scene, prism-ecs, prism-render, prism-asset}`。
   `prism-cooker` / `prism-build-pipeline` 只允许出现在构建侧。
+- **1.0 前禁止编写任何兼容性代码**：当前版本为 0.1，在 1.0 正式发布前不要考虑任何向前/向后兼容逻辑，旧版本兼容被明确视为冗余的垃圾代码。改动公开 API、数据结构或存档格式时直接替换/删除旧逻辑，不留兼容垫片与回退分支。
 - 不要在 `prism-app` / `prism-engine` / `prism-render` 引入 egui 等 UI 框架。
 - `editor/` 是唯一的编辑器壳，允许链接 `prism-engine` / `prism-render`；`prism-editor-api` 只给 MCP / 工具用，不要把 UI 框架带进引擎。
 - 改 `.slang` 后必须重新编译并重跑 `shader-bindgen`；`shader_bindings/` 是提交的生成代码。

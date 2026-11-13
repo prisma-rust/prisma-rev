@@ -1797,7 +1797,26 @@ impl GpuAssetResolver {
         let occlusion = self.load_texture_data(tex_ids[4], false);
         let textures = [albedo, normal, mr, emissive, occlusion];
 
-        Some(MaterialResolveData { scalars, textures })
+        // The renderer keeps its own mirror of the alpha enum (it must not
+        // depend on the asset crate), so map it here at the upload boundary.
+        let alpha_mode = match mat.alpha_mode() {
+            prism_asset::formats::MaterialAlphaMode::Opaque => {
+                prism_render::managers::MaterialAlphaMode::Opaque
+            }
+            prism_asset::formats::MaterialAlphaMode::Mask => {
+                prism_render::managers::MaterialAlphaMode::Mask
+            }
+            prism_asset::formats::MaterialAlphaMode::Blend => {
+                prism_render::managers::MaterialAlphaMode::Blend
+            }
+        };
+
+        Some(MaterialResolveData {
+            scalars,
+            alpha_mode,
+            alpha_cutoff: mat.alpha_cutoff(),
+            textures,
+        })
     }
 
     /// Load texture input by path (standalone texture or .ratlas#sub_sprite) -> `TextureUploadInput`.

@@ -30,6 +30,14 @@ deviating from those conventions is a bug. (`README.md` is the human-facing over
   翻日志；完成、阻塞或放弃都切换标签（[`docs/ai-workflow.md`](docs/ai-workflow.md) §6）。
 - **代码注释只用英文**，删掉复述代码的注释；规范见 [`docs/code-style.md`](docs/code-style.md)。
   注释-only PR 必须跑 `python scripts/check_comment_only.py --base origin/master`，不要夹带逻辑改动。
+- **1.0 前零兼容负担（当前版本 0.1）**：在 1.0 版本发布前，**严禁编写任何兼容性逻辑**（向前/向后兼容、
+  兼容层、兼容门面、废弃垫片或旧版本回退分支）；**旧版本兼容被明确视为冗余的垃圾代码**。涉及 API、
+  数据结构、存档/交换格式、配置或管线重构时，直接按最新最优设计替换/删除旧实现，彻底清理废弃代码，
+  绝不保留过渡兼容包袱。
+- **文档分级与命名规范**：遵循 [`docs/README.md`](docs/README.md) 的 L0–L6 内容尺度划分；技术与流程文档
+  一律全小写连字符 `kebab-case.md` 并带领域前缀（`anim-*`、`editor-*`、`android-*`），顶层大写仅保留
+  `README.md`、`DESIGN.md`、`REFLECT.md`；严禁驼峰式或下划线命名；新文档必须在 `docs/README.md` 登记，
+  不留孤儿文档。
 - **不猜**：改公开 API、存档格式（RSCN / RTTIBin / `.pak`）、坐标约定、workspace 分层，或要加依赖
   → 先改文档或先问人，再写代码。
 - **版本号只改根 `Cargo.toml`**，其他清单由 `python scripts/version.py` 同步；规则与发版流程见

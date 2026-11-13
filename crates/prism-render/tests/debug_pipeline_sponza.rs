@@ -203,6 +203,7 @@ fn load_sponza_primitives(
                 clearcoat: 0.0,
                 clearcoat_roughness: 0.0,
                 emissive_strength: 1.0,
+                ..Default::default()
             };
 
             out.push((mesh_input, mat_input));
@@ -323,6 +324,7 @@ fn test_sponza_pipeline_debug_passes() {
             clearcoat: 0.0,
             clearcoat_roughness: 0.0,
             emissive_strength: 1.0,
+            ..Default::default()
         })
         .expect("register red mat");
     renderer.flush_materials().expect("flush materials");

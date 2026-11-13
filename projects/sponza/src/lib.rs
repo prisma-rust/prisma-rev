@@ -14,6 +14,8 @@ pub fn build_app() -> prism_app::App {
     use prism_engine::render_settings::{GiMode, RenderMode, RenderSettings};
 
     prism_app::app()
+        // 以前**不注册任何子系统**，`App` 认为渲染关着 → 直接走 headless 分支：
+        // 不建窗口、不启渲染线程，键盘事件根本没人处理（所有快捷键失效）。
         .with_subsystem(prism_app::Subsystem::Render)
         .with_render_settings(|settings: &mut RenderSettings| {
             if let Ok(mode) = std::env::var("SPONZA_RENDER_MODE") {

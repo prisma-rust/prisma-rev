@@ -68,6 +68,9 @@ frame_*.ppm
 # Prebuilt slang toolchain (downloaded by CI via curl; glibc binary, not used
 # on Termux). Never commit the 60+ MB release tree — it is fetched at build time.
 tools/slang/
+# Same rule for the newer download directory: it holds the whole release tree
+# (240 MB of headers, libs and the zip), none of which belongs in the repo.
+tools/slang-dl/
 
 # Compiled SPIR-V is committed: a clone has to build without slangc, and the
 # reflection JSON next to it is committed for the same reason. CI recompiles
@@ -97,6 +100,11 @@ assets/scenes/*
 launcher/src-tauri/gen/android/app/src/main/assets/game/*.pak
 launcher/src-tauri/gen/android/app/src/main/assets/game/*.pak.meta.json
 launcher/src-tauri/gen/android/app/src/main/assets/game/settings.toml
+
+# Editor-generated asset sidecars (`<file>.rmeta`): stable GUID + importer name.
+# The editor writes one per project asset while scanning, so a dev-tools run
+# leaves them dirty; the GUIDs are regenerated on demand (prism-asset:core/meta).
+*.rmeta
 
 assets/external
 !assets/external/readme.md

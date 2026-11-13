@@ -975,10 +975,12 @@ fn texture_cooker_rgba8_still_default() {
 fn make_rmati(scalars: &[f32; MATERIAL_SCALAR_COUNT], tex_paths: &[Option<String>; 5]) -> Vec<u8> {
     let mut buf = Vec::new();
     buf.extend_from_slice(b"RMATI");
-    buf.push(1); // version
+    buf.push(crate::cooker::MATERIAL_INTERMEDIATE_VERSION);
     for s in scalars {
         buf.extend_from_slice(&s.to_le_bytes());
     }
+    buf.push(1); // Mask
+    buf.extend_from_slice(&0.5f32.to_le_bytes());
     for slot in tex_paths {
         match slot {
             Some(p) => {
@@ -1071,6 +1073,8 @@ fn material_cooker_roundtrip_with_textures() {
     assert!(info.texture_ids[2].is_none());
     assert!(info.texture_ids[3].is_none());
     assert_eq!(info.texture_ids[4], Some(tex_id_occlusion));
+    assert_eq!(info.alpha_mode, MaterialAlphaMode::Mask);
+    assert_eq!(info.alpha_cutoff, 0.5);
 }
 
 #[test]

@@ -6,7 +6,7 @@ license.workspace = true
 description = "Application layer and main loop for PrismaRev"
 
 [features]
-default = ["pathtrace", "ui", "ui-fontdue", "ibl", "skybox", "shadows", "gtao", "group-3d", "group-2d", "group-ui"]
+default = ["pathtrace", "rtxgi", "ui", "ui-fontdue", "ibl", "skybox", "shadows", "gtao", "group-3d", "group-2d", "group-ui"]
 legacy-disk-scenes = []
 # Modular building-block toggles: forwarded to prism-render (see docs/DESIGN.md §12).
 pathtrace = ["prism-render/pathtrace"]

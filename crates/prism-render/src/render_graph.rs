@@ -280,7 +280,8 @@ pub struct RenderSettings {
     pub gi_mode: GiMode,
 
     /// SHARC hash-map capacity (number of voxel slots).
-    /// Mobile default: 2^20 (1M). Desktop: 2^23 (8M).
+    /// Desktop GPUs can afford 2^23 (8M); the allocation is rebuilt, and the
+    /// cache cleared, whenever this changes.
     pub sharc_capacity: u32,
 
     /// SHARC scene scale — controls voxel physical size.
@@ -369,7 +370,10 @@ impl Default for RenderSettings {
             ray_tracing_enabled: false,
             ray_query_resolution_scale: 0.5,
             gi_mode: GiMode::Off,
-            sharc_capacity: 1 << 20,
+            #[cfg(feature = "rtxgi")]
+            sharc_capacity: crate::sharc::DEFAULT_SHARC_CAPACITY,
+            #[cfg(not(feature = "rtxgi"))]
+            sharc_capacity: 0,
             sharc_scene_scale: 50.0,
             sharc_enable_clear: false,
             sharc_enable_update: true,

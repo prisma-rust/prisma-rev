@@ -175,17 +175,73 @@ pub fn decode_rmes(data: &[u8]) -> Option<RmesInfo> {
 }
 
 pub const MATERIAL_SCALAR_COUNT: usize = 18;
+
+/// RMAT layout version: 18 scalars, then the alpha-semantics block, then the
+/// five texture slots.
+pub const RMAT_VERSION: u8 = 2;
 const RMAT_MAGIC: &[u8; 4] = b"RMAT";
+
+/// How a material's base-colour alpha is interpreted (mirrors glTF `alphaMode`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MaterialAlphaMode {
+    /// Alpha is ignored for visibility; geometry can be marked opaque in an AS.
+    Opaque,
+    /// Alpha is tested against `alpha_cutoff`; fragments below it are holes.
+    #[default]
+    Mask,
+    /// Alpha is used for blending. Ray queries must still treat triangles as
+    /// non-opaque because a blended surface is not a visibility blocker.
+    Blend,
+}
+
+impl MaterialAlphaMode {
+    pub fn as_u8(self) -> u8 {
+        match self {
+            Self::Opaque => 0,
+            Self::Mask => 1,
+            Self::Blend => 2,
+        }
+    }
+
+    pub fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::Opaque,
+            2 => Self::Blend,
+            _ => Self::Mask,
+        }
+    }
+
+    /// Parses a glTF-style name (`Opaque` / `Mask` / `Blend`, case-insensitive).
+    pub fn from_name(name: &str) -> Self {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "opaque" => Self::Opaque,
+            "blend" => Self::Blend,
+            _ => Self::Mask,
+        }
+    }
+
+    pub fn is_opaque(self) -> bool {
+        matches!(self, Self::Opaque)
+    }
+}
+
+/// Default alpha cutoff when a material does not carry one (glTF default).
+pub const DEFAULT_ALPHA_CUTOFF: f32 = 0.5;
 
 #[derive(Debug, Clone)]
 pub struct RmatInfo {
     pub scalars: [f32; MATERIAL_SCALAR_COUNT],
     pub texture_ids: [Option<AssetId>; 5],
+    /// How the base-colour alpha affects visibility.
+    pub alpha_mode: MaterialAlphaMode,
+    /// Threshold used by [`MaterialAlphaMode::Mask`].
+    pub alpha_cutoff: f32,
 }
 
 pub fn decode_rmat(data: &[u8]) -> Option<RmatInfo> {
-    let header = 5 + MATERIAL_SCALAR_COUNT * 4;
-    if data.len() < header || &data[..4] != RMAT_MAGIC || data[4] != 1 {
+    let scalars_end = 5 + MATERIAL_SCALAR_COUNT * 4;
+    let alpha_end = scalars_end + 5;
+    if data.len() < alpha_end || &data[..4] != RMAT_MAGIC || data[4] != RMAT_VERSION {
         return None;
     }
     let mut scalars = [0.0; MATERIAL_SCALAR_COUNT];
@@ -193,8 +249,12 @@ pub fn decode_rmat(data: &[u8]) -> Option<RmatInfo> {
         let off = 5 + i * 4;
         *value = f32::from_le_bytes(data[off..off + 4].try_into().ok()?);
     }
+
+    let alpha_mode = MaterialAlphaMode::from_u8(data[scalars_end]);
+    let alpha_cutoff = f32::from_le_bytes(data[scalars_end + 1..alpha_end].try_into().ok()?);
+    let mut pos = alpha_end;
+
     let mut texture_ids = [None; 5];
-    let mut pos = header;
     for slot in &mut texture_ids {
         if pos >= data.len() {
             return None;
@@ -214,6 +274,8 @@ pub fn decode_rmat(data: &[u8]) -> Option<RmatInfo> {
     Some(RmatInfo {
         scalars,
         texture_ids,
+        alpha_mode,
+        alpha_cutoff,
     })
 }
 
@@ -903,6 +965,65 @@ pub fn decode_rtilemap(data: &[u8]) -> Option<RtilemapInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a minimal RMAT blob by hand so the decoder is tested against the
+    /// wire format itself, not against the cooker's writer.
+    fn rmat_blob(alpha_mode: u8, alpha_cutoff: f32) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(RMAT_MAGIC);
+        buf.push(RMAT_VERSION);
+        for scalar in 0..MATERIAL_SCALAR_COUNT {
+            buf.extend_from_slice(&(scalar as f32).to_le_bytes());
+        }
+        buf.push(alpha_mode);
+        buf.extend_from_slice(&alpha_cutoff.to_le_bytes());
+        // No texture in any of the five slots.
+        buf.resize(buf.len() + 5, 0);
+        buf
+    }
+
+    #[test]
+    fn rmat_rejects_other_versions() {
+        let mut blob = rmat_blob(1, DEFAULT_ALPHA_CUTOFF);
+        blob[4] = RMAT_VERSION.wrapping_add(1);
+        assert!(
+            decode_rmat(&blob).is_none(),
+            "unknown versions must be rejected"
+        );
+    }
+
+    #[test]
+    fn rmat_carries_alpha_mode_and_cutoff() {
+        let info = decode_rmat(&rmat_blob(0, 0.25)).expect("valid RMAT must decode");
+        assert_eq!(info.alpha_mode, MaterialAlphaMode::Opaque);
+        assert_eq!(info.alpha_cutoff, 0.25);
+
+        let blend = decode_rmat(&rmat_blob(2, 0.0)).expect("valid RMAT must decode");
+        assert_eq!(blend.alpha_mode, MaterialAlphaMode::Blend);
+    }
+
+    #[test]
+    fn rmat_alpha_mode_names_match_gltf_spelling() {
+        assert_eq!(
+            MaterialAlphaMode::from_name("Opaque"),
+            MaterialAlphaMode::Opaque
+        );
+        assert_eq!(
+            MaterialAlphaMode::from_name("MASK"),
+            MaterialAlphaMode::Mask
+        );
+        assert_eq!(
+            MaterialAlphaMode::from_name("Blend"),
+            MaterialAlphaMode::Blend
+        );
+        // Unknown spellings fall back to the legacy always-test behaviour.
+        assert_eq!(
+            MaterialAlphaMode::from_name("weird"),
+            MaterialAlphaMode::Mask
+        );
+        assert!(MaterialAlphaMode::Opaque.is_opaque());
+        assert!(!MaterialAlphaMode::Mask.is_opaque());
+    }
 
     #[test]
     fn ratl_encode_decode_roundtrip() {

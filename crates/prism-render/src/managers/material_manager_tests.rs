@@ -20,12 +20,14 @@ fn default_input() -> MaterialUploadInput {
         clearcoat: 0.0,
         clearcoat_roughness: 0.0,
         emissive_strength: 1.0,
+        alpha_mode: MaterialAlphaMode::Mask,
+        alpha_cutoff: DEFAULT_ALPHA_CUTOFF,
     }
 }
 
 #[test]
-fn gpu_material_layout_is_96_bytes() {
-    assert_eq!(std::mem::size_of::<GpuMaterial>(), 96);
+fn gpu_material_layout_is_112_bytes() {
+    assert_eq!(std::mem::size_of::<GpuMaterial>(), 112);
     assert_eq!(std::mem::align_of::<GpuMaterial>(), 16);
 }
 
@@ -44,6 +46,9 @@ fn gpu_material_offsets() {
         occlusion_idx: 0,
         normal_scale: 0.0,
         occlusion_strength: 0.0,
+        alpha_cutoff: 0.0,
+        alpha_mode: 1,
+        alpha_pad: [0.0; 2],
     };
     let base_ptr = &m as *const _ as usize;
     assert_eq!((&m.base_color as *const _ as usize) - base_ptr, 0);
@@ -67,6 +72,24 @@ fn gpu_material_offsets() {
     assert_eq!((&m.occlusion_idx as *const _ as usize) - base_ptr, 84);
     assert_eq!((&m.normal_scale as *const _ as usize) - base_ptr, 88);
     assert_eq!((&m.occlusion_strength as *const _ as usize) - base_ptr, 92);
+    assert_eq!((&m.alpha_cutoff as *const _ as usize) - base_ptr, 96);
+    assert_eq!((&m.alpha_mode as *const _ as usize) - base_ptr, 100);
+    assert_eq!((&m.alpha_pad as *const _ as usize) - base_ptr, 104);
+}
+
+#[test]
+fn to_gpu_carries_alpha_semantics() {
+    let mut input = default_input();
+    input.alpha_mode = MaterialAlphaMode::Opaque;
+    input.alpha_cutoff = 0.25;
+    let gpu = input.to_gpu();
+    assert_eq!(gpu.alpha_mode, 0, "opaque encodes as 0");
+    assert_eq!(gpu.alpha_cutoff, 0.25);
+    assert!(input.is_opaque());
+
+    input.alpha_mode = MaterialAlphaMode::Mask;
+    assert_eq!(input.to_gpu().alpha_mode, 1);
+    assert!(!input.is_opaque());
 }
 
 #[test]

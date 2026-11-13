@@ -685,6 +685,7 @@ impl GltfImporter {
                     roughness: pbr.roughness_factor(),
                     emissive: material.emissive_factor(),
                     alpha_mode: format!("{:?}", material.alpha_mode()),
+                    alpha_cutoff: material.alpha_cutoff(),
                     double_sided: material.double_sided(),
                     base_color_texture: pbr
                         .base_color_texture()
@@ -1133,6 +1134,8 @@ impl GltfImporter {
                 metallic_roughness_tex: tex_path(info.metallic_roughness_texture),
                 emissive_tex: tex_path(info.emissive_texture),
                 occlusion_tex: tex_path(info.occlusion_texture),
+                alpha_mode: Some(info.alpha_mode.clone()),
+                alpha_cutoff: info.alpha_cutoff,
             };
             assets.push(cook_gltf_material(&material, &mat_path)?);
         }
@@ -1158,6 +1161,10 @@ impl GltfImporter {
                 metallic_roughness_tex: None,
                 emissive_tex: None,
                 occlusion_tex: None,
+                // The implicit glTF default material has no alpha modes: it is
+                // fully opaque and must not be alpha-tested.
+                alpha_mode: Some("Opaque".to_string()),
+                alpha_cutoff: None,
             };
             assets.push(cook_gltf_material(&material, &plan.default_path)?);
         }
@@ -1586,6 +1593,8 @@ struct MaterialInfo {
     roughness: f32,
     emissive: [f32; 3],
     alpha_mode: String,
+    /// glTF `alphaCutoff`; `None` means the glTF default (0.5).
+    alpha_cutoff: Option<f32>,
     double_sided: bool,
     base_color_texture: Option<usize>,
     metallic_roughness_texture: Option<usize>,
@@ -2340,6 +2349,14 @@ struct MaterialJson {
     emissive_tex: Option<String>,
     #[serde(default)]
     occlusion_tex: Option<String>,
+    /// glTF-style alpha mode name (`Opaque` / `Mask` / `Blend`). Absent means
+    /// [`MaterialAlphaMode::Mask`], which preserves the pre-v2 behaviour of
+    /// testing every surface's alpha at the default cutoff.
+    #[serde(default)]
+    alpha_mode: Option<String>,
+    /// Alpha comparison threshold for `Mask`. Absent means 0.5.
+    #[serde(default)]
+    alpha_cutoff: Option<f32>,
 }
 
 fn default_base_color() -> [f32; 4] {
@@ -2377,11 +2394,13 @@ fn default_ior() -> f32 {
 pub struct MaterialImporter;
 
 impl MaterialImporter {
-    /// Serialize scalars + 5 texture-path records into the RMATI blob.
+    /// Serialize scalars + alpha semantics + 5 texture-path records into the
+    /// RMATI blob.
     fn write_intermediate(mat: &MaterialJson, tex_paths: &[Option<String>; 5]) -> Vec<u8> {
+        use prism_asset::formats::{MaterialAlphaMode, DEFAULT_ALPHA_CUTOFF};
         let mut buf = Vec::with_capacity(64);
         buf.extend_from_slice(MATERIAL_INTERMEDIATE_MAGIC);
-        buf.push(1); // version
+        buf.push(crate::cooker::MATERIAL_INTERMEDIATE_VERSION);
 
         // 16 scalar floats (64 bytes).
         buf.extend_from_slice(&mat.base_color[0].to_le_bytes());
@@ -2402,6 +2421,19 @@ impl MaterialImporter {
         buf.extend_from_slice(&mat.anisotropy.to_le_bytes());
         buf.extend_from_slice(&mat.clearcoat.to_le_bytes());
         buf.extend_from_slice(&mat.clearcoat_roughness.to_le_bytes());
+
+        // Alpha semantics: mode byte + cutoff float.
+        let alpha_mode = mat
+            .alpha_mode
+            .as_deref()
+            .map(MaterialAlphaMode::from_name)
+            .unwrap_or(MaterialAlphaMode::Mask);
+        buf.push(alpha_mode.as_u8());
+        buf.extend_from_slice(
+            &mat.alpha_cutoff
+                .unwrap_or(DEFAULT_ALPHA_CUTOFF)
+                .to_le_bytes(),
+        );
 
         // 5 texture path records.
         for slot in tex_paths {

@@ -18,9 +18,9 @@ use prism_asset::core::{AssetId, AssetType};
 // RTEX format bytes are part of the wire format; the single source of truth
 // lives in `prism-asset::formats` (shared with the runtime decoder).
 use prism_asset::formats::{
-    RMES_VERSION, RTEX_FORMAT_ASTC_12X12, RTEX_FORMAT_ASTC_4X4, RTEX_FORMAT_ASTC_6X6,
-    RTEX_FORMAT_ASTC_8X8, RTEX_FORMAT_BC1, RTEX_FORMAT_BC3, RTEX_FORMAT_BC5, RTEX_FORMAT_BC7,
-    RTEX_FORMAT_ETC2_RGBA8, RTEX_FORMAT_RGBA8,
+    MaterialAlphaMode, RMAT_VERSION, RMES_VERSION, RTEX_FORMAT_ASTC_12X12, RTEX_FORMAT_ASTC_4X4,
+    RTEX_FORMAT_ASTC_6X6, RTEX_FORMAT_ASTC_8X8, RTEX_FORMAT_BC1, RTEX_FORMAT_BC3, RTEX_FORMAT_BC5,
+    RTEX_FORMAT_BC7, RTEX_FORMAT_ETC2_RGBA8, RTEX_FORMAT_RGBA8,
 };
 use prism_asset::package::PackageBuilder;
 use std::collections::HashMap;
@@ -1055,6 +1055,8 @@ pub fn parse_rmxi_info(data: &[u8]) -> Option<RmxiInfo> {
 /// RMATI intermediate material magic (from the importer). 5 bytes so it is
 /// distinct from the 4-byte RMAT runtime magic.
 const RMATI_MAGIC: &[u8; 5] = b"RMATI";
+/// RMATI layout version: scalars, alpha block, then 5 texture path records.
+pub const MATERIAL_INTERMEDIATE_VERSION: u8 = 2;
 /// RMAT runtime material magic (cooked, packed into .pak).
 pub const RMAT_MAGIC: &[u8; 4] = b"RMAT";
 
@@ -1072,8 +1074,10 @@ const MATERIAL_SCALAR_SIZE: usize = MATERIAL_SCALAR_COUNT * 4;
 /// Runtime format (all little-endian):
 /// ```text
 /// [magic:4]       b"RMAT"
-/// [version:1]     1
+/// [version:1]     2
 /// [scalars]       18 f32 LE (72 bytes) - same layout as RMATI
+/// [alpha_mode:1]  0 = Opaque, 1 = Mask, 2 = Blend
+/// [alpha_cutoff]  f32 LE (MASK threshold)
 /// per slot (5x):
 ///   [present:1]   0 or 1
 ///   [if present]  [asset_id:u64 LE]  - texture AssetId
@@ -1081,27 +1085,39 @@ const MATERIAL_SCALAR_SIZE: usize = MATERIAL_SCALAR_COUNT * 4;
 pub struct MaterialCooker;
 
 impl MaterialCooker {
-    /// Parse the RMATI header + scalars + 5 texture path records.
+    /// Parse the RMATI header + scalars + alpha block + 5 texture path records.
     ///
-    /// Returns `(scalars: [f32; 18], tex_paths: [Option<String>; 5])` or `None`
-    /// on malformed input.
+    /// Returns `(scalars, alpha_mode, alpha_cutoff, tex_paths)` or `None` on
+    /// malformed input or a version this build does not write.
     fn parse_intermediate(
         data: &[u8],
-    ) -> Option<([f32; MATERIAL_SCALAR_COUNT], [Option<String>; 5])> {
+    ) -> Option<(
+        [f32; MATERIAL_SCALAR_COUNT],
+        MaterialAlphaMode,
+        f32,
+        [Option<String>; 5],
+    )> {
         // Header: magic(5) + version(1) + scalars(72) = 78 bytes minimum.
         const MAGIC_LEN: usize = 5;
-        if data.len() < MAGIC_LEN + 1 + MATERIAL_SCALAR_SIZE || &data[..MAGIC_LEN] != RMATI_MAGIC {
+        let scalars_end = MAGIC_LEN + 1 + MATERIAL_SCALAR_SIZE;
+        if data.len() < scalars_end + 5
+            || &data[..MAGIC_LEN] != RMATI_MAGIC
+            || data[MAGIC_LEN] != MATERIAL_INTERMEDIATE_VERSION
+        {
             return None;
         }
-        let _version = data[MAGIC_LEN];
         let mut scalars = [0f32; MATERIAL_SCALAR_COUNT];
         for (i, scalar) in scalars.iter_mut().enumerate() {
             let off = MAGIC_LEN + 1 + i * 4;
             *scalar = f32::from_le_bytes(data[off..off + 4].try_into().ok()?);
         }
 
+        let alpha_mode = MaterialAlphaMode::from_u8(data[scalars_end]);
+        let alpha_cutoff =
+            f32::from_le_bytes(data[scalars_end + 1..scalars_end + 5].try_into().ok()?);
+        let mut pos = scalars_end + 5;
+
         let mut tex_paths: [Option<String>; 5] = [None, None, None, None, None];
-        let mut pos = MAGIC_LEN + 1 + MATERIAL_SCALAR_SIZE;
         for slot in tex_paths.iter_mut() {
             if pos >= data.len() {
                 return None;
@@ -1123,19 +1139,23 @@ impl MaterialCooker {
             }
         }
 
-        Some((scalars, tex_paths))
+        Some((scalars, alpha_mode, alpha_cutoff, tex_paths))
     }
 
     fn write_rmat(
         scalars: &[f32; MATERIAL_SCALAR_COUNT],
         tex_ids: &[Option<AssetId>; 5],
+        alpha_mode: MaterialAlphaMode,
+        alpha_cutoff: f32,
     ) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(5 + MATERIAL_SCALAR_SIZE + 5 * 9);
+        let mut buf = Vec::with_capacity(5 + MATERIAL_SCALAR_SIZE + 5 + 5 * 9);
         buf.extend_from_slice(RMAT_MAGIC);
-        buf.push(1); // version
+        buf.push(RMAT_VERSION);
         for s in scalars {
             buf.extend_from_slice(&s.to_le_bytes());
         }
+        buf.push(alpha_mode.as_u8());
+        buf.extend_from_slice(&alpha_cutoff.to_le_bytes());
         for id in tex_ids {
             match id {
                 Some(id) => {
@@ -1159,7 +1179,7 @@ impl Cooker for MaterialCooker {
     }
 
     fn cook(&self, ctx: &CookContext) -> Result<CookResult, CookError> {
-        let (scalars, tex_paths) =
+        let (scalars, alpha_mode, alpha_cutoff, tex_paths) =
             Self::parse_intermediate(ctx.imported_data).ok_or_else(|| {
                 CookError::CookFailed("Invalid material intermediate: missing RMATI header".into())
             })?;
@@ -1190,7 +1210,7 @@ impl Cooker for MaterialCooker {
             }
         }
 
-        let cooked_data = Self::write_rmat(&scalars, &tex_ids);
+        let cooked_data = Self::write_rmat(&scalars, &tex_ids, alpha_mode, alpha_cutoff);
 
         Ok(CookResult {
             cooked_data,
@@ -1210,19 +1230,20 @@ pub struct RmatInfo {
     pub scalars: [f32; MATERIAL_SCALAR_COUNT],
     /// 5 texture slots, each `Some(AssetId)` or `None`.
     pub texture_ids: [Option<AssetId>; 5],
+    /// Alpha semantics from the cooked material.
+    pub alpha_mode: MaterialAlphaMode,
+    pub alpha_cutoff: f32,
 }
 
 /// Decode a cooked RMAT blob back into structured material data.
 ///
 /// This is the inverse of [`MaterialCooker::write_rmat`]. Returns `None` if the
-/// data is malformed.
+/// data is malformed or written by a different layout version.
 pub fn decode_rmat(data: &[u8]) -> Option<RmatInfo> {
     let header = 5 + MATERIAL_SCALAR_SIZE;
-    if data.len() < header || &data[..4] != RMAT_MAGIC {
+    let alpha_end = header + 5;
+    if data.len() < alpha_end || &data[..4] != RMAT_MAGIC || data[4] != RMAT_VERSION {
         return None;
-    }
-    if data[4] != 1 {
-        return None; // unknown version
     }
     let mut scalars = [0f32; MATERIAL_SCALAR_COUNT];
     for (i, scalar) in scalars.iter_mut().enumerate() {
@@ -1230,8 +1251,11 @@ pub fn decode_rmat(data: &[u8]) -> Option<RmatInfo> {
         *scalar = f32::from_le_bytes(data[off..off + 4].try_into().ok()?);
     }
 
+    let alpha_mode = MaterialAlphaMode::from_u8(data[header]);
+    let alpha_cutoff = f32::from_le_bytes(data[header + 1..alpha_end].try_into().ok()?);
+    let mut pos = alpha_end;
+
     let mut texture_ids: [Option<AssetId>; 5] = [None, None, None, None, None];
-    let mut pos = header;
     for slot in texture_ids.iter_mut() {
         if pos >= data.len() {
             return None;
@@ -1251,6 +1275,8 @@ pub fn decode_rmat(data: &[u8]) -> Option<RmatInfo> {
     Some(RmatInfo {
         scalars,
         texture_ids,
+        alpha_mode,
+        alpha_cutoff,
     })
 }
 

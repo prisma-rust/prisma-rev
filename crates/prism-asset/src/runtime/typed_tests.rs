@@ -45,15 +45,17 @@ fn rmes_blob() -> Vec<u8> {
     blob
 }
 
-/// Minimal RMAT blob: 18 scalars, one present texture slot, plus a trailing
-/// payload that the decoder ignores.
+/// Minimal RMAT blob: 18 scalars, alpha block, one present texture slot, plus a
+/// trailing payload that the decoder ignores.
 fn rmat_blob() -> Vec<u8> {
     let mut blob = Vec::new();
     blob.extend_from_slice(b"RMAT");
-    blob.push(1);
+    blob.push(crate::formats::RMAT_VERSION);
     for i in 0..MATERIAL_SCALAR_COUNT {
         blob.extend_from_slice(&(i as f32).to_le_bytes());
     }
+    blob.push(1); // Mask
+    blob.extend_from_slice(&crate::formats::DEFAULT_ALPHA_CUTOFF.to_le_bytes());
     blob.push(1);
     blob.extend_from_slice(&7u64.to_le_bytes());
     blob.extend_from_slice(&[0; 4]);

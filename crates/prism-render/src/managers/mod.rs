@@ -14,7 +14,8 @@ pub mod mesh_manager;
 pub mod texture_manager;
 
 pub use material_manager::{
-    GpuMaterial, MaterialHandle, MaterialUploadInput, RenderMaterialManager, MATERIAL_SSBO_MAX,
+    GpuMaterial, MaterialAlphaMode, MaterialHandle, MaterialUploadInput, RenderMaterialManager,
+    DEFAULT_ALPHA_CUTOFF, MATERIAL_SSBO_MAX,
 };
 pub use mesh_manager::{
     MeshHandle, MeshUploadInput, RenderMeshManager, SkinAttributes, UploadedMesh,

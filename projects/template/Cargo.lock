@@ -1621,19 +1621,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "template"
-version = "0.1.0"
-dependencies = [
- "keyframe",
- "log",
- "prism-app",
- "prism-engine",
- "prism-game-api",
- "prism-project-api",
- "prism-scene",
-]
-
-[[package]]
 name = "proc-macro-crate"
 version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2011,6 +1998,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "template"
+version = "0.1.0"
+dependencies = [
+ "keyframe",
+ "log",
+ "prism-app",
+ "prism-engine",
+ "prism-game-api",
+ "prism-project-api",
+ "prism-scene",
 ]
 
 [[package]]
