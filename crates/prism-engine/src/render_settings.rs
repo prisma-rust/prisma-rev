@@ -4,7 +4,7 @@
 //! into a single struct so [`render_system`] has a clean, extensible parameter
 //! instead of a growing list of scalar arguments.
 
-pub use prism_render::{InternalScaleMode, RenderMode};
+pub use prism_render::{DlssMode, GiMode, InternalScaleMode, RenderMode};
 
 /// Debug flag names, ordered by shader bit (`PBR_FLAG_*` in
 /// `scene_frag.slang`). Bit `i` corresponds to `PBR_FLAG_NAMES[i]`.
@@ -90,6 +90,28 @@ pub struct RenderSettings {
     pub pt_ray_max_distance: f32,
     /// Maximum iterations (samples per pixel). 0 = accumulate forever.
     pub pt_max_iterations: u32,
+    /// Global Illumination technique mode (Off, Sharc, Nrc).
+    pub gi_mode: GiMode,
+    /// RTXGI SHARC: World-space scale of the hash grid voxels.
+    pub sharc_scene_scale: f32,
+    /// RTXGI SHARC: Cache clear toggle.
+    pub sharc_enable_clear: bool,
+    /// RTXGI SHARC: Cache update toggle.
+    pub sharc_enable_update: bool,
+    /// RTXGI SHARC: Cache resolve toggle.
+    pub sharc_enable_resolve: bool,
+    /// RTXGI SHARC: Anti-firefly filter toggle.
+    pub sharc_enable_anti_firefly: bool,
+    /// RTXGI SHARC: Maximum stale frames before entry eviction.
+    pub sharc_stale_frame_num: u32,
+    /// RTXGI SHARC: Downscale factor for the sparse path update.
+    pub sharc_downscale_factor: u32,
+    /// RTXGI SHARC: Temporal accumulation frame window size.
+    pub sharc_accumulation_frame_num: u32,
+    /// RTXGI SHARC: Roughness threshold below which mirror rays query direct radiance instead of cache.
+    pub sharc_roughness_threshold: f32,
+    /// DLSS Mode (Off, Quality, Balanced, Performance, UltraPerformance, Dlaa).
+    pub dlss_mode: DlssMode,
     /// 是否在场景视图中渲染地面基准网格 (Y = 0)。
     pub show_grid: bool,
     /// 显示空间对比度（围绕中灰 `0.5` 缩放，`1.0` = 不变）。色调映射之后应用。
@@ -235,6 +257,17 @@ impl Default for RenderSettings {
             pt_max_bounces: 3,
             pt_ray_max_distance: 1000.0,
             pt_max_iterations: 0,
+            gi_mode: GiMode::Off,
+            sharc_scene_scale: 50.0,
+            sharc_enable_clear: false,
+            sharc_enable_update: true,
+            sharc_enable_resolve: true,
+            sharc_enable_anti_firefly: true,
+            sharc_stale_frame_num: 60,
+            sharc_downscale_factor: 5,
+            sharc_accumulation_frame_num: 20,
+            sharc_roughness_threshold: 0.4,
+            dlss_mode: DlssMode::Off,
             show_grid: false,
             contrast: 1.0,
             saturation: 1.0,

@@ -32,9 +32,9 @@ use crate::shader;
 use crate::shader_bindings;
 
 /// GPU push-constant block size for PtPush (std140 rounds to 16-byte boundary).
-/// The auto-generated `shader_bindings::pt_render::PtPush` is 136 bytes in
-/// `#[repr(C)]`; add 8 bytes of std140 trailing padding for the actual range.
-const PT_PUSH_RANGE_SIZE: u32 = 144;
+/// The auto-generated `shader_bindings::pt_render::PtPush` reflects to 176
+/// bytes after the SHARC fields were added; the range is that rounded block.
+const PT_PUSH_RANGE_SIZE: u32 = 176;
 
 /// `PtPush::params.w` bit layout, mirrored in `pt_render.slang`
 /// (`PT_PARAMS_*`). Bits 0..=29 are the frame counter, bit 30 marks an
@@ -42,6 +42,27 @@ const PT_PUSH_RANGE_SIZE: u32 = 144;
 const PT_PARAMS_FRAME_MASK: u32 = 0x3FFF_FFFF;
 const PT_PARAMS_ORTHOGRAPHIC: u32 = 1 << 30;
 const PT_PARAMS_RESET: u32 = 1 << 31;
+
+/// `sharc_flags` bit layout, mirroring the `SHARC_FLAG_*` constants in
+/// `pt_render.slang`: bit 0 queries the cache, bit 1 deposits into it and
+/// bits 8..=15 carry the deposit stride.
+const SHARC_FLAG_QUERY: u32 = 1 << 0;
+const SHARC_FLAG_UPDATE: u32 = 1 << 1;
+const SHARC_FLAG_STRIDE_SHIFT: u32 = 8;
+
+/// Pack the SHARC switches and deposit stride the path tracer reads out of
+/// `sharc_flags`. The stride reproduces RTXGI's `sharcDownscaleFactor`, which
+/// shrinks the update pass instead of the whole dispatch: only one pixel in
+/// every stride-by-stride block deposits a sample.
+fn pack_sharc_flags(query: bool, update: bool, downscale_factor: u32) -> u32 {
+    let stride = downscale_factor.clamp(1, 0xFF);
+    // Deposits are meaningless without queries: the shader reads the buffers
+    // from both paths, so a clear query bit must also clear the update bit.
+    let update = query && update;
+    (if query { SHARC_FLAG_QUERY } else { 0 })
+        | (if update { SHARC_FLAG_UPDATE } else { 0 })
+        | (stride << SHARC_FLAG_STRIDE_SHIFT)
+}
 
 /// Pack the per-frame flags the path tracer reads out of `params.w`.
 fn pack_pt_params(frame_count: u32, reset: bool, orthographic: bool) -> u32 {
@@ -118,6 +139,16 @@ pub struct PathTracePass {
     reservoir_memories: [vk::DeviceMemory; 2],
     reservoir_size: vk::DeviceSize, // current buffer size in bytes
     reservoir_swap: usize,          // index of curr buffer (0 or 1) for this frame
+
+    // SHARC cache buffers (bindings 12/13/14). The buffers are owned by
+    // `GraphRenderer` (created lazily when `gi_mode` becomes `Sharc`); this
+    // pass only holds the handles so `update_ds` can bind them. All `None`
+    // when the cache is inactive, in which case `sharc_enabled` stays 0 and
+    // the shader never touches the (unbound) bindings.
+    sharc_hash_entries: Option<vk::Buffer>,
+    sharc_accumulation: Option<vk::Buffer>,
+    sharc_resolved: Option<vk::Buffer>,
+    sharc_capacity: u32,
 
     // State tracking
     img_width: u32,
@@ -216,6 +247,21 @@ impl PathTracePass {
                 vk::DescriptorType::STORAGE_BUFFER,
                 vk::ShaderStageFlags::COMPUTE,
             ), // currReservoir (write)
+            b(
+                12,
+                vk::DescriptorType::STORAGE_BUFFER,
+                vk::ShaderStageFlags::COMPUTE,
+            ), // SHARC hash entries
+            b(
+                13,
+                vk::DescriptorType::STORAGE_BUFFER,
+                vk::ShaderStageFlags::COMPUTE,
+            ), // SHARC accumulation
+            b(
+                14,
+                vk::DescriptorType::STORAGE_BUFFER,
+                vk::ShaderStageFlags::COMPUTE,
+            ), // SHARC resolved
         ];
 
         // All bindings get UPDATE_AFTER_BIND + PARTIALLY_BOUND because
@@ -247,6 +293,12 @@ impl PathTracePass {
                 | vk::DescriptorBindingFlags::PARTIALLY_BOUND, // b10 prevReservoir
             vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
                 | vk::DescriptorBindingFlags::PARTIALLY_BOUND, // b11 currReservoir
+            vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
+                | vk::DescriptorBindingFlags::PARTIALLY_BOUND, // b12 sharcHashEntries
+            vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
+                | vk::DescriptorBindingFlags::PARTIALLY_BOUND, // b13 sharcAccumulation
+            vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
+                | vk::DescriptorBindingFlags::PARTIALLY_BOUND, // b14 sharcResolved
         ];
         let mut flags_info =
             vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&binding_flags);
@@ -269,7 +321,7 @@ impl PathTracePass {
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::STORAGE_BUFFER,
-                descriptor_count: 8,
+                descriptor_count: 11,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
@@ -379,6 +431,10 @@ impl PathTracePass {
             prev_camera_pos: None,
             prev_view_proj: None,
             accum_dirty: false,
+            sharc_hash_entries: None,
+            sharc_accumulation: None,
+            sharc_resolved: None,
+            sharc_capacity: 0,
             device: Some(device.clone()),
         })
     }
@@ -427,6 +483,17 @@ impl PathTracePass {
         Ok(())
     }
 
+    /// Returns true if geometry has been uploaded and TLAS/BLAS built.
+    pub fn has_geometry(&self) -> bool {
+        self.pt_scene.is_some()
+    }
+
+    /// Invalidate existing geometry, forcing a rebuild on next frame.
+    pub fn invalidate_geometry(&mut self) {
+        self.pt_scene = None;
+        self.accum_dirty = true;
+    }
+
     /// Wire the shared bindless texture table (set 1) + materials SSBO (set 0
     /// binding 7). Must be called before the first frame so the pipeline layout
     /// can include the bindless set and `update_ds` can write the materials
@@ -442,6 +509,24 @@ impl PathTracePass {
         self.bindless_layout = bindless_layout;
         // Force pipeline rebuild so it picks up the 2-set layout.
         self.pipeline = None;
+    }
+
+    /// Wire the SHARC radiance-cache buffers (`GraphRenderer` owns them and
+    /// calls this every frame while `gi_mode == Sharc`). Passing `None`
+    /// disables the cache: the shader then skips both the query and the
+    /// update, so an unbound binding is never dereferenced.
+    pub fn set_sharc_buffers(
+        &mut self,
+        hash_entries: Option<vk::Buffer>,
+        accumulation: Option<vk::Buffer>,
+        resolved: Option<vk::Buffer>,
+        capacity: u32,
+    ) {
+        let enabled = hash_entries.is_some() && accumulation.is_some() && resolved.is_some();
+        self.sharc_capacity = if enabled { capacity } else { 0 };
+        self.sharc_hash_entries = hash_entries;
+        self.sharc_accumulation = accumulation;
+        self.sharc_resolved = resolved;
     }
 
     /// Wire the IBL environment cubemap descriptor set (set 2) so the shader
@@ -796,7 +881,7 @@ impl PathTracePass {
             .offset(0)
             .range(vk::WHOLE_SIZE);
         let ebi = vk::DescriptorBufferInfo::default()
-            .buffer(self.emissive_buffer.unwrap_or(vk::Buffer::null()))
+            .buffer(self.emissive_buffer.unwrap_or(self.lights_buffer))
             .offset(0)
             .range(vk::WHOLE_SIZE);
         // ReSTIR reservoir buffers (ping-pong, b10/b11).
@@ -812,6 +897,32 @@ impl PathTracePass {
             .buffer(curr_buf)
             .offset(0)
             .range(vk::WHOLE_SIZE);
+        // SHARC cache buffers. The writes are only recorded when the cache is
+        // active: `nullDescriptor` is not enabled, so binding a null handle
+        // would be a validation error. Leaving the binding unwritten is legal
+        // because the set layout carries PARTIALLY_BOUND, and the shader never
+        // dereferences it while `sharc_enabled` is 0.
+        let sharc_bi = match (
+            self.sharc_hash_entries,
+            self.sharc_accumulation,
+            self.sharc_resolved,
+        ) {
+            (Some(hash), Some(accum), Some(resolved)) => Some((
+                vk::DescriptorBufferInfo::default()
+                    .buffer(hash)
+                    .offset(0)
+                    .range(vk::WHOLE_SIZE),
+                vk::DescriptorBufferInfo::default()
+                    .buffer(accum)
+                    .offset(0)
+                    .range(vk::WHOLE_SIZE),
+                vk::DescriptorBufferInfo::default()
+                    .buffer(resolved)
+                    .offset(0)
+                    .range(vk::WHOLE_SIZE),
+            )),
+            _ => None,
+        };
 
         let writes = vec![
             vk::WriteDescriptorSet::default()
@@ -870,6 +981,18 @@ impl PathTracePass {
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .buffer_info(std::slice::from_ref(&curr_bi)),
         ];
+        let mut writes = writes;
+        if let Some((hash_bi, accum_bi, resolved_bi)) = sharc_bi.as_ref() {
+            for (binding, info) in [(12u32, hash_bi), (13, accum_bi), (14, resolved_bi)] {
+                writes.push(
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(self.ds)
+                        .dst_binding(binding)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .buffer_info(std::slice::from_ref(info)),
+                );
+            }
+        }
         unsafe {
             device.update_descriptor_sets(&writes, &[]);
         }
@@ -912,6 +1035,11 @@ impl PathTracePass {
         // PtScene drops its own vertex/index/meta/materials buffers + BLAS + TLAS.
         self.pt_scene = None;
         self.materials_buffer = None;
+        // SHARC buffers are owned by `GraphRenderer`; only drop the handles.
+        self.sharc_hash_entries = None;
+        self.sharc_accumulation = None;
+        self.sharc_resolved = None;
+        self.sharc_capacity = 0;
         unsafe {
             device.unmap_memory(self.lights_memory);
             device.destroy_buffer(self.lights_buffer, None);
@@ -1171,6 +1299,20 @@ impl RenderPassNode for PathTracePass {
             max_iterations: ctx.frame.pt_max_iterations,
             num_lights: ctx.frame.pt_lights.len() as u32,
             num_emissive: self.emissive_count,
+            sharc_scene_scale: ctx.settings.sharc_scene_scale,
+            sharc_capacity: self.sharc_capacity,
+            sharc_flags: {
+                // Querying requires the cache buffers to be bound; updating is
+                // the UI switch that turns deposits off to watch the cache
+                // drain. The downscale factor only thins the deposits — it
+                // must never reach 0, which would disable them silently.
+                let query = self.sharc_hash_entries.is_some()
+                    && ctx.settings.gi_mode == crate::render_graph::GiMode::Sharc;
+                let update = query && ctx.settings.sharc_enable_update;
+                pack_sharc_flags(query, update, ctx.settings.sharc_downscale_factor)
+            },
+            sharc_roughness_threshold: ctx.settings.sharc_roughness_threshold,
+            sharc_camera_pos: ctx.frame.camera_pos,
         };
         unsafe {
             device.cmd_push_constants(
@@ -1315,6 +1457,7 @@ fn make_pt_output_image(
         vk::Format::R32G32B32A32_SFLOAT,
         vk::ImageUsageFlags::STORAGE
             | vk::ImageUsageFlags::TRANSFER_DST
+            | vk::ImageUsageFlags::TRANSFER_SRC
             | vk::ImageUsageFlags::SAMPLED,
     )
 }

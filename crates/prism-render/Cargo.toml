@@ -25,6 +25,12 @@ ui-fontdue = ["ui", "dep:fontdue"]
 ui-directwrite = ["ui", "dep:windows"]
 # 实时路径追踪（pt_pass.rs + acceleration structure 使用）。纯光栅项目可关。
 pathtrace = []
+# NVIDIA RTXGI (SHARC): Spatially Hashed Radiance Cache
+rtxgi = ["pathtrace"]
+# NVIDIA Neural Radiance Cache (NRC)
+nrc = ["pathtrace"]
+# NVIDIA Streamline / DLSS (Super Resolution & Ray Reconstruction)
+dlss = []
 # 图像光照（IBL）：环境 cubemap 卷积 / irradiance / prefilter / BRDF LUT + HDR 解码。
 # 2D 或纯色场景可关，`IblResources` 退化为 1x1 中性灰（descriptor 布局不变）。
 ibl = []
@@ -67,3 +73,4 @@ windows = { workspace = true, optional = true, features = [
 
 [dev-dependencies]
 bytemuck = { workspace = true }
+gltf = { workspace = true }

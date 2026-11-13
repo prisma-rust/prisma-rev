@@ -948,3 +948,72 @@ delta 光源没有面积，也就不存在这个 Jacobian——正确做法是�
   混用会静默压暗/提亮，编译器不会报错哪。
 - 这类错误只在「有解析光源 + 开 NEE」时才出现，视觉上像「灯不够亮」，
   很容易被误当成 tonemap 或曝光问题。
+
+## VkApplicationInfo.api_version 限制 Vulkan 1.2+ Core 函数符号导出
+
+**问题**：无头模式或离屏渲染启用光追时，`PathTracePass::set_geometry` -> `build_pt_scene` 触发 ash panic：
+`Unable to load get_buffer_device_address`（在 `ash::tables::DeviceFnV1_2::load_erased` 处崩溃）。
+
+**根本原因**：
+创建 Vulkan 实例时，`VkApplicationInfo.apiVersion` 硬编码为 `vk::API_VERSION_1_1`。
+依据 Vulkan 规范，当实例 API 版本声明为 1.1 时，严格遵守规范的驱动（如 NVIDIA Windows 驱动）在通过 `vkGetDeviceProcAddr` 解析未带 `KHR` 后缀的 Vulkan 1.2 核心入口点（如 `vkGetBufferDeviceAddress`）时返回 `NULL`。
+`ash::Device` 的 `get_buffer_device_address` 直接调用 `self.device_fn_1_2.get_buffer_device_address`（1.2 表），遇到空指针直接进入 ash 生成的 panic stub。
+
+**解决与教训**：
+- 使用 `entry.try_enumerate_instance_version()` 探测加载器支持的最大实例版本。
+- 当加载器版本支持时，请求 `vk::API_VERSION_1_2`（或者不低于 1.2），以便驱动安全导出 Vulkan 1.2 核心函数指针。
+- 绝不能一边在注释中写「目标是 Vulkan 1.2」，一边在 `ApplicationInfo` 传递 `API_VERSION_1_1`。
+
+## include_bytes! 嵌入 SPIR-V 字节的对齐风险
+
+**问题**：调用 `bytemuck::cast_slice::<u8, u32>(SPV)` 转换 `include_bytes!` 宏嵌入的 SPIR-V 字节时，在部分构建配置下触发运行时 panic：
+`bytemuck: TargetAlignmentGreaterAndInputNotAligned`。
+
+**根本原因**：
+Rust 的 `include_bytes!` 宏将二进制数据嵌入到只读数据段（`.rodata`），其指针仅保证 1 字节对齐。如果嵌入的起始地址刚好不是 4 字节对齐，`bytemuck::cast_slice` 执行强转检查时会直接 panic。
+
+**解决与教训**：
+- 渲染管线加载 SPIR-V 统一调用 `crate::shader::load_shader_module`。
+- `load_shader_module` 内部显式检测指针地址对齐；若未对齐则通过 `as_chunks::<4>` 安全重组为 `u32`，避免未定义行为和对齐 panic。
+
+## RTXGI SHARC 显存屏障与 64 位缓冲原子操作
+
+**经验**：
+- SHARC 哈希表基于 64 位空间哈希键（`uint64`），物理设备必须在逻辑设备创建时开启 `PhysicalDeviceVulkan12Features.shader_buffer_int64_atomics`。
+- SHARC 分配显存时，首帧必须通过 `cmd_fill_buffer` 零初始化，随后必须通过 `TRANSFER -> COMPUTE_SHADER` 显存屏障（`TRANSFER_WRITE -> SHADER_READ | SHADER_WRITE`）同步，防止未初始化脏数据被识别为有效空间体素。
+- `SharcResolvePass::execute` 计算写出后，必须在执行后续光线追踪或降噪 pass 之前发出 `COMPUTE_SHADER -> COMPUTE_SHADER | FRAGMENT_SHADER` 内存屏障，保证空间哈希辐射度跨帧解析正确可见。
+
+## 路径追踪时间累加：便利包装层切勿硬编码 pt_accum_dirty: true
+
+**问题**：无头离屏渲染或外部调用 `GraphRenderer::render_frame_with_overrides` 时，路径追踪画面每帧都为高频随机噪点，增加采样迭代数也完全不收敛。
+
+**根本原因**：
+在 `GraphRenderer` 便利方法构造 `FramePacket` 时，`pt_accum_dirty` 字段被直接硬编码为 `true`。
+渲染管线的 `PathTracePass::execute` 每次检测到 `pt_accum_dirty: true`，都会调用 `clear_accum_images` 并将 `sampleCount` 重置为 0，导致原本设计的多帧时间累积（Temporal Accumulation）在每一帧都被无条件丢弃。
+
+**教训**：
+- 状态机或数据包包装函数切勿滥用硬编码重置标记，应默认为 `false`，仅在相机移动、场景变换或显式标记失效时设为 `true`。
+- 排查多帧累加管线时，应优先在日志中打出当前帧的 `sample_count` 和累积权重，一旦发现始终为 1，立即可断定是重置标记或脏状态异常。
+
+## 异步资产流式加载与截图落盘时序竞态
+
+**问题**：设置截屏计划（`ScreenshotPlan`）在第 90 帧自动抓图，输出的图片却只有天空盒或纯黑底色，场景内的核心 3D 网格全部丢失。
+
+**根本原因**：
+大型 3D 资产（如 Crytek Sponza 模型）通常由引擎资源系统通过后台线程异步加载与反序列化。主渲染线程在第 1 帧启动后快速循环推进，当到达第 90 帧时，后台 IO 尚未将 103 个子网格实体挂载至 ECS，导致截屏逻辑在空场景下提前触发并标记完成退出。
+
+**教训**：
+- 自动化截屏与 Goldenframe 测试不能只依赖固定帧计数（Frame Count）。
+- 必须给抓图计划注入内容就绪守卫：`plan.fires_on(frame_count + 1) && (!packet.draw_items.is_empty() || frame_count >= 300)`，确保绘制指令真正就绪后才执行抓图落盘。
+
+## Slang 矩阵乘法字节码（RowMajor 与 OpVectorTimesMatrix）
+
+**问题**：观察到路径追踪或法线输出与光栅化存在差异，怀疑是矩阵未转置，于是在 Host 侧代码中对变换矩阵调用 `mat_transpose`，导致网格全部被拍平或投影翻转。
+
+**根本原因**：
+使用 `spirv-dis` 反汇编 Slang 编译生成的 SPIR-V 发现，Slang 生成的 Push Constants 默认带有 `RowMajor` 装饰，且矩阵与向量乘法编译为 `OpVectorTimesMatrix %vec %mat`。
+在 Vulkan 硬件执行上，$\vec{v} \cdot M_{\text{spirv}} = \vec{v} \cdot (M_{\text{rust}})^T = M_{\text{rust}} \cdot \vec{v}$，其读取内存的逻辑刚好与 Rust 传入的列主序数组相抵消，数学上自然等同于标准的列向量乘法。如果在 Host 侧额外调用转置，反而造成了重复转置（Double Transpose）。
+
+**教训**：
+- 涉及着色器矩阵排布问题时，切勿通过反复加减 `transpose()` 盲猜，必须直接反汇编对应的 `.spv` 文件查看具体指令。
+- 只有准确比对着色器内部的内存修饰（`RowMajor`/`ColMajor`）与矢量乘法指令（`OpVectorTimesMatrix` / `OpMatrixTimesVector`），才能正确推导 Host 侧需要传递的数据格式。

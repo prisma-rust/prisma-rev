@@ -334,6 +334,10 @@ pub struct GraphRenderer {
     /// 实现 is injected by the app 层 (eg 编辑器 host) — this 渲染器
     /// knows nothing about the concrete UI framework.
     external_overlay: Option<Box<dyn SwapchainOverlay>>,
+    #[cfg(feature = "rtxgi")]
+    sharc_targets: Option<crate::sharc::SharcTargets>,
+    #[cfg(feature = "rtxgi")]
+    sharc_resolve: Option<crate::sharc::SharcResolvePass>,
     /// ECS UI 叠加 (GPU-only) — quads + fontdue glyph text, rendered on 顶部
     /// of the ForwardPass 输出 (below the external overlay). Created lazily
     /// on the 渲染 线程 when the 引擎 sends UI 命令
@@ -635,15 +639,25 @@ impl GraphRenderer {
         let anf_pass = crate::anf::AnfPass::new(&context, swapchain.extent, swapchain.extent)
             .context("AnfPass::new")?;
 
-        // PostPass parameters: 2 in-flight frames = 2 descriptor sets.
-        let frame_count = 2u32;
-        let post_pass = crate::post::PostPass::new(
+        // PostPass parameters: one descriptor set per swapchain image. The sets
+        // are picked by `image_index`, so allocating fewer than the swapchain
+        // has would make two images share a set and rewrite a descriptor the
+        // GPU may still be reading.
+        let frame_count = swapchain.views.len() as u32;
+        let mut post_pass = crate::post::PostPass::new(
             &context,
             color_format,
             frame_count,
             vk::ImageLayout::PRESENT_SRC_KHR,
         )
         .context("PostPass::new")?;
+
+        // AutoExposurePass meters the HDR image PostPass is about to tonemap and
+        // publishes the adapted luminance PostPass divides AUTO_EXPOSURE_KEY by.
+        // Registered ahead of PostPass so the ordering falls out of the graph.
+        let auto_exposure = crate::auto_exposure::AutoExposurePass::new(&context, frame_count)
+            .context("AutoExposurePass::new")?;
+        post_pass.set_adapted_luminance(&context.device, auto_exposure.luminance_buffer());
 
         // PathTracePass — real-time path tracing compute pass.
         // Registered when hardware acceleration structures are supported;
@@ -692,6 +706,7 @@ impl GraphRenderer {
         if let Some(pt) = pt_pass {
             graph.add_pass(Box::new(pt));
         }
+        graph.add_pass(Box::new(auto_exposure));
         graph.add_pass(Box::new(post_pass));
 
         // per-pass GPU 计时（#518）：设备不支持时间戳时是 `None`（面板回退到 CPU 墙钟）。
@@ -728,6 +743,10 @@ impl GraphRenderer {
             dummy_ao,
             color_format,
             external_overlay: None,
+            #[cfg(feature = "rtxgi")]
+            sharc_targets: None,
+            #[cfg(feature = "rtxgi")]
+            sharc_resolve: None,
             #[cfg(feature = "ui")]
             ui_overlay: None,
             #[cfg(feature = "ui")]
@@ -1058,13 +1077,20 @@ impl GraphRenderer {
         // Headless contexts do not enable `VK_KHR_swapchain`, so the offscreen
         // image must never end a render pass in `PRESENT_SRC_KHR`; it stays a
         // color attachment until something explicitly transitions it.
-        let post_pass = crate::post::PostPass::new(
+        let mut post_pass = crate::post::PostPass::new(
             &context,
             color_format,
             frame_count,
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
         )
         .context("PostPass::new (headless)")?;
+
+        // AutoExposurePass meters the HDR image PostPass is about to tonemap and
+        // publishes the adapted luminance PostPass divides AUTO_EXPOSURE_KEY by.
+        // Registered ahead of PostPass so the ordering falls out of the graph.
+        let auto_exposure = crate::auto_exposure::AutoExposurePass::new(&context, frame_count)
+            .context("AutoExposurePass::new (headless)")?;
+        post_pass.set_adapted_luminance(&context.device, auto_exposure.luminance_buffer());
 
         // `gtao` feature 关闭时 set 4 退化为 1×1 白色（无遮蔽）。
         #[cfg(feature = "gtao")]
@@ -1123,6 +1149,7 @@ impl GraphRenderer {
         if let Some(pt) = pt_pass {
             graph.add_pass(Box::new(pt));
         }
+        graph.add_pass(Box::new(auto_exposure));
         graph.add_pass(Box::new(post_pass));
         if let Some(post_pass) = graph.pass_mut::<crate::post::PostPass>() {
             post_pass.set_target(
@@ -1166,6 +1193,10 @@ impl GraphRenderer {
             dummy_ao,
             color_format,
             external_overlay: None,
+            #[cfg(feature = "rtxgi")]
+            sharc_targets: None,
+            #[cfg(feature = "rtxgi")]
+            sharc_resolve: None,
             #[cfg(feature = "ui")]
             ui_overlay: None,
             #[cfg(feature = "ui")]
@@ -1260,6 +1291,16 @@ impl GraphRenderer {
     /// after construction.
     pub fn graph_mut(&mut self) -> &mut RenderGraph {
         &mut self.graph
+    }
+
+    /// Current render settings.
+    pub fn settings(&self) -> &RenderSettings {
+        &self.settings
+    }
+
+    /// Mutable reference to current render settings.
+    pub fn settings_mut(&mut self) -> &mut RenderSettings {
+        &mut self.settings
     }
 
     /// 设置本帧要画选中描边的 ECS 实体 id（#487）。
@@ -2656,7 +2697,116 @@ impl GraphRenderer {
         // 统一在 prepare 阶段收敛并批量执行暂存的 GPU 资产操作
         self.flush_staged_assets()?;
 
+        #[cfg(feature = "pathtrace")]
+        if input.render_mode == crate::render_graph::RenderMode::PathTrace {
+            let needs_geom = self
+                .graph
+                .pass_ref::<PathTracePass>()
+                .map(|pt| !pt.has_geometry())
+                .unwrap_or(false);
+            if needs_geom && !input.draw_items.is_empty() {
+                self.sync_pt_geometry(input.draw_items)?;
+            }
+        }
         Ok(())
+    }
+
+    /// Upload world-space geometry from draw_items into PathTracePass.
+    #[cfg(feature = "pathtrace")]
+    pub fn sync_pt_geometry(
+        &mut self,
+        draw_items: &[crate::render_graph::DrawItem],
+    ) -> anyhow::Result<()> {
+        let mut instances = Vec::new();
+        for item in draw_items {
+            if let Some((verts, indices)) = self.mesh_manager.get_cpu_geometry(item.mesh) {
+                let model = &item.model;
+                let world_vertices: Vec<crate::mesh::Vertex> = verts
+                    .iter()
+                    .map(|v| {
+                        let p = crate::math::transform_point(model, v.position);
+                        let n = crate::math::transform_vector_normalized(model, v.normal);
+                        let t = crate::math::transform_vector_normalized(
+                            model,
+                            [v.tangent[0], v.tangent[1], v.tangent[2]],
+                        );
+                        crate::mesh::Vertex {
+                            position: p,
+                            normal: n,
+                            color: v.color,
+                            uv: v.uv,
+                            tangent: [t[0], t[1], t[2], v.tangent[3]],
+                        }
+                    })
+                    .collect();
+
+                let sub_indices: Vec<u32> = if let Some(count) = item.index_count {
+                    let start = item.index_start as usize;
+                    let count = count as usize;
+                    if start + count <= indices.len() {
+                        indices[start..start + count].to_vec()
+                    } else {
+                        indices.to_vec()
+                    }
+                } else {
+                    indices.to_vec()
+                };
+
+                instances.push(crate::bake_common::PtGeometryInstance {
+                    vertices: world_vertices,
+                    indices: sub_indices,
+                    material_slot: item.material.unwrap_or(0),
+                });
+            }
+        }
+
+        if instances.is_empty() {
+            log::debug!("sync_pt_geometry: no CPU geometry found in draw_items");
+            return Ok(());
+        }
+
+        {
+            let mut lo = [f32::INFINITY; 3];
+            let mut hi = [f32::NEG_INFINITY; 3];
+            let mut slots = Vec::new();
+            for inst in &instances {
+                slots.push(inst.material_slot);
+                for v in &inst.vertices {
+                    for axis in 0..3 {
+                        lo[axis] = lo[axis].min(v.position[axis]);
+                        hi[axis] = hi[axis].max(v.position[axis]);
+                    }
+                }
+            }
+            slots.sort_unstable();
+            slots.dedup();
+            log::debug!(
+                "sync_pt_geometry: {} instances, world bounds {:?}..{:?}, material slots {:?} ({} unique)",
+                instances.len(),
+                lo,
+                hi,
+                slots,
+                slots.len()
+            );
+            log::debug!(
+                "sync_pt_geometry: material_manager len={} slot0={:?}",
+                self.material_manager.len(),
+                self.material_manager.debug_slot(0)
+            );
+        }
+
+        if let Some(pt) = self.graph.pass_mut::<PathTracePass>() {
+            pt.set_geometry(&self.runtime.context, self.runtime.command_pool, &instances)?;
+        }
+        Ok(())
+    }
+
+    /// Invalidate path-tracing geometry, forcing a rebuild on next frame.
+    pub fn invalidate_pt_geometry(&mut self) {
+        #[cfg(feature = "pathtrace")]
+        if let Some(pt) = self.graph.pass_mut::<PathTracePass>() {
+            pt.invalidate_geometry();
+        }
     }
 
     /// Phase 2/3: record all render commands into the frame's command buffer.
@@ -2888,6 +3038,148 @@ impl GraphRenderer {
                 .filter(|item| item.entity_id != u32::MAX)
                 .map(|item| (item.entity_id, item.model))
                 .collect();
+
+            #[cfg(feature = "rtxgi")]
+            if self.settings.gi_mode == crate::render_graph::GiMode::Sharc
+                && *render_mode == RenderMode::PathTrace
+            {
+                let mut needs_init_clear = false;
+                if self.sharc_targets.is_none() {
+                    match crate::sharc::SharcTargets::new(
+                        &self.runtime.context,
+                        crate::sharc::DEFAULT_SHARC_CAPACITY,
+                    ) {
+                        Ok(targets) => match crate::sharc::SharcResolvePass::new(
+                            &self.runtime.context,
+                            &targets,
+                        ) {
+                            Ok(resolve) => {
+                                self.sharc_targets = Some(targets);
+                                self.sharc_resolve = Some(resolve);
+                                needs_init_clear = true;
+                                log::info!("RTXGI SHARC initialized (1M entries)");
+                            }
+                            Err(e) => log::warn!("Failed to create SharcResolvePass: {e:#}"),
+                        },
+                        Err(e) => log::warn!("Failed to create SharcTargets: {e:#}"),
+                    }
+                }
+
+                if needs_init_clear || self.settings.sharc_enable_clear {
+                    if let Some(targets) = &self.sharc_targets {
+                        targets.clear(device, cmd);
+                        // Pipeline barrier: TRANSFER_WRITE -> SHADER_READ | SHADER_WRITE
+                        let barrier = vk::MemoryBarrier::default()
+                            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                            .dst_access_mask(
+                                vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
+                            );
+                        unsafe {
+                            device.cmd_pipeline_barrier(
+                                cmd,
+                                vk::PipelineStageFlags::TRANSFER,
+                                vk::PipelineStageFlags::COMPUTE_SHADER,
+                                vk::DependencyFlags::empty(),
+                                &[barrier],
+                                &[],
+                                &[],
+                            );
+                        }
+                    }
+                    self.settings.sharc_enable_clear = false;
+                }
+
+                if self.settings.sharc_enable_resolve {
+                    if let (Some(targets), Some(resolve)) =
+                        (&self.sharc_targets, &self.sharc_resolve)
+                    {
+                        // The previous frame's path-trace dispatch wrote this
+                        // frame's inputs (hash entries + accumulation). Frame
+                        // boundaries do not order shader writes, so the
+                        // dependency has to be declared here explicitly.
+                        let prior_writes = vk::MemoryBarrier::default()
+                            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                            .dst_access_mask(
+                                vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
+                            );
+                        unsafe {
+                            device.cmd_pipeline_barrier(
+                                cmd,
+                                vk::PipelineStageFlags::COMPUTE_SHADER,
+                                vk::PipelineStageFlags::COMPUTE_SHADER,
+                                vk::DependencyFlags::empty(),
+                                &[prior_writes],
+                                &[],
+                                &[],
+                            );
+                        }
+                        let push = crate::sharc::SharcResolvePush {
+                            camera_pos: frame_data.camera_position,
+                            camera_pos_prev: self
+                                .prev_camera_view_proj
+                                .map(|_| frame_data.camera_position)
+                                .unwrap_or(frame_data.camera_position),
+                            scene_scale: self.settings.sharc_scene_scale,
+                            capacity: targets.capacity,
+                            accumulation_frame_num: self.settings.sharc_accumulation_frame_num,
+                            stale_frame_num_max: self.settings.sharc_stale_frame_num,
+                            frame_index: frame as u32,
+                            radiance_scale: 1000.0,
+                            enable_anti_firefly: if self.settings.sharc_enable_anti_firefly {
+                                1
+                            } else {
+                                0
+                            },
+                            pad: 0,
+                        };
+                        resolve.execute(device, cmd, &push);
+
+                        // Pipeline barrier: COMPUTE_SHADER write -> subsequent read
+                        let barrier = vk::MemoryBarrier::default()
+                            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                            .dst_access_mask(
+                                vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
+                            );
+                        unsafe {
+                            device.cmd_pipeline_barrier(
+                                cmd,
+                                vk::PipelineStageFlags::COMPUTE_SHADER,
+                                vk::PipelineStageFlags::COMPUTE_SHADER
+                                    | vk::PipelineStageFlags::FRAGMENT_SHADER,
+                                vk::DependencyFlags::empty(),
+                                &[barrier],
+                                &[],
+                                &[],
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Hand the cache buffers to the path tracer, or clear the handles
+            // when the cache is inactive so the shader never dereferences an
+            // unbound descriptor (it gates on `push.sharc_enabled`).
+            #[cfg(feature = "rtxgi")]
+            {
+                let (hash_entries, accumulation, resolved, capacity) =
+                    match (&self.sharc_targets, self.settings.gi_mode) {
+                        (Some(targets), crate::render_graph::GiMode::Sharc) => (
+                            Some(targets.hash_entries_buffer),
+                            Some(targets.accumulation_buffer),
+                            Some(targets.resolved_buffer),
+                            targets.capacity,
+                        ),
+                        _ => (None, None, None, 0),
+                    };
+                if let Some(pt) = self.graph.pass_mut::<PathTracePass>() {
+                    pt.set_sharc_buffers(hash_entries, accumulation, resolved, capacity);
+                }
+            }
+            #[cfg(all(feature = "pathtrace", not(feature = "rtxgi")))]
+            if let Some(pt) = self.graph.pass_mut::<PathTracePass>() {
+                pt.set_sharc_buffers(None, None, None, 0);
+            }
+
             let render_ctx = crate::render_graph::RenderContext {
                 device,
                 context: &self.runtime.context,
@@ -2899,6 +3191,7 @@ impl GraphRenderer {
                 render_extent,
                 frame: &graph_frame,
             };
+
             record = self
                 .graph
                 .execute_with_timer(&render_ctx, self.gpu_timer.as_mut())
@@ -3260,6 +3553,9 @@ impl GraphRenderer {
 
     /// 帧结束阶段：推进帧级状态并执行延迟回收。
     pub fn end_frame(&mut self, _ctx: &FrameCtx, _presented: bool) -> anyhow::Result<()> {
+        // `PRISMREV_PASS_DUMP`: the previous `present` waited on the frame
+        // fence, so the readback buffers are safe to map and encode here.
+        self.graph.flush_pass_dump(&self.runtime.context.device)?;
         Ok(())
     }
 
@@ -3339,7 +3635,7 @@ impl GraphRenderer {
             pt_max_iterations,
             exposure,
             pt_lights,
-            pt_accum_dirty: true,
+            pt_accum_dirty: false,
             has_camera: true,
             // The convenience wrapper has no camera entity to inspect and
             // always drove a perspective projection before, so keep that.
@@ -3411,6 +3707,8 @@ impl GraphRenderer {
             unsafe { capture.destroy(device) };
         }
 
+        self.graph.discard_pass_dump(device);
+
         if let Some(timer) = self.gpu_timer.as_mut() {
             timer.destroy(device);
         }
@@ -3456,11 +3754,31 @@ impl GraphRenderer {
             post.destroy(device);
         }
 
+        // Destroy AutoExposurePass (histogram/luminance buffers, descriptor
+        // pool, sampler). Must run before `self.graph.destroy`, which drops the
+        // pass objects themselves.
+        if let Some(auto_exposure) = self
+            .graph
+            .pass_mut::<crate::auto_exposure::AutoExposurePass>()
+        {
+            auto_exposure.destroy(device);
+        }
+
         // Destroy PathTracePass (accumulation images, geometry buffers,
         // BLAS/TLAS, descriptor set, layout, pool).
         #[cfg(feature = "pathtrace")]
         if let Some(pt) = self.graph.pass_mut::<PathTracePass>() {
             pt.destroy(device);
+        }
+
+        #[cfg(feature = "rtxgi")]
+        {
+            if let Some(mut resolve) = self.sharc_resolve.take() {
+                resolve.destroy(device);
+            }
+            if let Some(mut targets) = self.sharc_targets.take() {
+                targets.destroy(&self.runtime.context);
+            }
         }
 
         // Destroy ShadowMapPass (framebuffer, render pass, pipeline/layout).

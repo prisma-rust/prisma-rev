@@ -38,6 +38,8 @@ mod anf_tests;
 /// 主线程(CPU) ↔ 渲染线程(GPU) 资产解析请求/结果桥接类型。
 pub mod asset_bridge;
 pub mod asset_decoders;
+/// 自动曝光（亮度直方图 + 适应），移植自 RTXGI `AutoExposurePass`。
+pub mod auto_exposure;
 pub mod bake_common;
 pub mod batch;
 pub mod bindless;
@@ -72,6 +74,8 @@ mod math;
 pub mod mesh;
 pub mod offscreen;
 pub mod particle_pass;
+/// `PRISMREV_PASS_DUMP`：headless 下把各个 pass 的附件写成 PNG。
+pub(crate) mod pass_dump;
 pub mod pipeline;
 pub mod plugin;
 pub mod post;
@@ -108,6 +112,8 @@ pub const MAX_SHADOW_MAP_SIZE: u32 = 8192;
 /// Directional shadow-map pass (building-block feature `shadows`).
 #[cfg(feature = "shadows")]
 pub mod shadow_map_pass;
+#[cfg(feature = "rtxgi")]
+pub mod sharc;
 pub mod skybox_pass;
 pub mod sprite_pass;
 pub mod suballocator;
@@ -148,17 +154,19 @@ pub use probe_loader::{load_probe_volume, save_probe_volume, ProbeVolumeData};
 #[cfg(feature = "pathtrace")]
 pub use pt_pass::PathTracePass;
 pub use render_graph::{
-    clip_bounds, internal_extent, post_destination, sort_draw_items, trim_sprite_lights, DrawItem,
-    DrawState, InternalScaleMode, ParticleDrawItem, PassInfo, PassKind, PostGrade,
-    RenderGraphSnapshot, RenderMode, RenderSettings, ResourceHandle, ResourceInfo, ResourceType,
-    ShadowMode, SpriteDrawItem, SpriteLight, FORWARD_COLOR_H, FORWARD_DEPTH_H, FORWARD_NORMAL_H,
-    NO_CLIP, PT_COLOR_H, SHADOW_MAP_H, SPRITE_LIGHT_AMBIENT, SPRITE_LIGHT_DIRECTIONAL,
-    SPRITE_LIGHT_MAX, SPRITE_LIGHT_POINT,
+    clip_bounds, internal_extent, post_destination, sort_draw_items, trim_sprite_lights, DlssMode,
+    DrawItem, DrawState, GiMode, InternalScaleMode, ParticleDrawItem, PassInfo, PassKind,
+    PostGrade, RenderGraphSnapshot, RenderMode, RenderSettings, ResourceHandle, ResourceInfo,
+    ResourceType, ShadowMode, SpriteDrawItem, SpriteLight, FORWARD_COLOR_H, FORWARD_DEPTH_H,
+    FORWARD_NORMAL_H, NO_CLIP, PT_COLOR_H, SHADOW_MAP_H, SPRITE_LIGHT_AMBIENT,
+    SPRITE_LIGHT_DIRECTIONAL, SPRITE_LIGHT_MAX, SPRITE_LIGHT_POINT,
 };
 pub use render_pass::{DepthImage, Framebuffers, NormalImage, RenderPass};
 pub use shader::load_shader_module;
 #[cfg(feature = "shadows")]
 pub use shadow_map_pass::ShadowMapPass;
+#[cfg(feature = "rtxgi")]
+pub use sharc::{SharcResolvePass, SharcResolvePush, SharcTargets, DEFAULT_SHARC_CAPACITY};
 pub use skybox_pass::SkyboxSettings;
 pub use sprite_pass::SpritePass;
 pub use suballocator::{MemorySuballocator, StagingArena, Suballocation, SuballocatorStats};

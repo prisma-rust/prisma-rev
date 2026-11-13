@@ -125,10 +125,14 @@ impl DepthImage {
             .array_layers(1)
             .samples(vk::SampleCountFlags::TYPE_1)
             .tiling(vk::ImageTiling::OPTIMAL)
-            // DEPTH_STENCIL_ATTACHMENT for the scene render pass + SAMPLED so
-            // the GTAO pass can 读取 it 后 as a 纹理 after ForwardPass
-            // stores depth.
-            .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED)
+            // DEPTH_STENCIL_ATTACHMENT for the scene render pass, SAMPLED so
+            // the GTAO pass can read it back as a texture after ForwardPass
+            // stores depth, TRANSFER_SRC so the pass-dump readback can copy it.
+            .usage(
+                vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
+                    | vk::ImageUsageFlags::SAMPLED
+                    | vk::ImageUsageFlags::TRANSFER_SRC,
+            )
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
         let image =
@@ -235,7 +239,11 @@ impl NormalImage {
             .array_layers(1)
             .samples(vk::SampleCountFlags::TYPE_1)
             .tiling(vk::ImageTiling::OPTIMAL)
-            .usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED)
+            .usage(
+                vk::ImageUsageFlags::COLOR_ATTACHMENT
+                    | vk::ImageUsageFlags::SAMPLED
+                    | vk::ImageUsageFlags::TRANSFER_SRC,
+            )
             .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
         let image =

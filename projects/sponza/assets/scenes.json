@@ -1,0 +1,9 @@
+{
+  "scenes": [
+    {
+      "name": "sponza",
+      "path": "scenes/sponza.scene.json",
+      "enabled": true
+    }
+  ]
+}

@@ -64,3 +64,117 @@ mod tests {
         }
     }
 }
+
+/// Transform a 3D point by a 4x4 column-major affine model matrix (w = 1).
+#[allow(dead_code)]
+pub(crate) fn transform_point(m: &[[f32; 4]; 4], p: [f32; 3]) -> [f32; 3] {
+    [
+        m[0][0] * p[0] + m[1][0] * p[1] + m[2][0] * p[2] + m[3][0],
+        m[0][1] * p[0] + m[1][1] * p[1] + m[2][1] * p[2] + m[3][1],
+        m[0][2] * p[0] + m[1][2] * p[1] + m[2][2] * p[2] + m[3][2],
+    ]
+}
+
+/// Transform a 3D vector by a 4x4 column-major affine model matrix (w = 0) and normalize.
+#[allow(dead_code)]
+pub(crate) fn transform_vector_normalized(m: &[[f32; 4]; 4], v: [f32; 3]) -> [f32; 3] {
+    let x = m[0][0] * v[0] + m[1][0] * v[1] + m[2][0] * v[2];
+    let y = m[0][1] * v[0] + m[1][1] * v[1] + m[2][1] * v[2];
+    let z = m[0][2] * v[0] + m[1][2] * v[1] + m[2][2] * v[2];
+    let len_sq = x * x + y * y + z * z;
+    if len_sq > 1e-12 {
+        let inv = 1.0 / len_sq.sqrt();
+        [x * inv, y * inv, z * inv]
+    } else {
+        [0.0, 0.0, 0.0]
+    }
+}
+
+/// Transpose a 4x4 matrix (swaps rows and columns).
+#[allow(dead_code)]
+pub(crate) fn mat_transpose(m: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
+    let mut out = [[0.0f32; 4]; 4];
+    for col in 0..4 {
+        for row in 0..4 {
+            out[row][col] = m[col][row];
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+#[allow(clippy::needless_range_loop, clippy::excessive_precision)]
+mod inverse_tests {
+    use super::*;
+
+    /// Reference inverse via Gauss-Jordan on the row-major expansion, so the
+    /// test does not depend on `mat_inverse`'s own formula.
+    fn reference_inverse(m: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
+        // rows[r][c]
+        let mut a = [[0.0f64; 8]; 4];
+        for r in 0..4 {
+            for c in 0..4 {
+                a[r][c] = m[c][r] as f64;
+            }
+            a[r][4 + r] = 1.0;
+        }
+        for col in 0..4 {
+            let mut pivot = col;
+            for r in col + 1..4 {
+                if a[r][col].abs() > a[pivot][col].abs() {
+                    pivot = r;
+                }
+            }
+            a.swap(col, pivot);
+            let p = a[col][col];
+            assert!(p.abs() > 1e-12, "matrix is singular at column {col}");
+            for c in 0..8 {
+                a[col][c] /= p;
+            }
+            for r in 0..4 {
+                if r != col {
+                    let f = a[r][col];
+                    for c in 0..8 {
+                        a[r][c] -= f * a[col][c];
+                    }
+                }
+            }
+        }
+        let mut out = [[0.0f32; 4]; 4];
+        for r in 0..4 {
+            for c in 0..4 {
+                out[c][r] = a[r][4 + c] as f32;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn mat_inverse_matches_gauss_jordan() {
+        // Vulkan-style y-flipped perspective (fov 65 deg, aspect 16:9, near
+        // 0.05, far 1000) times a view looking down +X from eye (-10, 2, 0),
+        // column-major [col][row] exactly as the engine stores it.
+        let vp = [
+            [0.0, 0.0, 1.00005, 1.0],
+            [0.0, -1.5696856, 0.0, 0.0],
+            [0.8829481, 0.0, 0.0, 0.0],
+            [0.0, 3.1393712, 9.9504975, 10.0],
+        ];
+        let ours = mat_inverse(&vp);
+        let theirs = reference_inverse(&vp);
+        // The inverse of this matrix reaches ~200 in the near/far terms, so
+        // compare with a relative tolerance; f32 cannot hold 1e-3 absolute
+        // there. Verified against the f64 Gauss-Jordan reference above.
+        for c in 0..4 {
+            for r in 0..4 {
+                let scale = ours[c][r].abs().max(theirs[c][r].abs()).max(1.0);
+                assert!(
+                    (ours[c][r] - theirs[c][r]).abs() <= 1e-4 * scale,
+                    "mismatch [{c}][{r}]: ours={} ref={}",
+                    ours[c][r],
+                    theirs[c][r]
+                );
+            }
+        }
+    }
+}

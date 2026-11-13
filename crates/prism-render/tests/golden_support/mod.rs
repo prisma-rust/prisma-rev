@@ -448,7 +448,7 @@ pub fn write_mismatch_artifacts(
     Ok(dir)
 }
 
-fn save_png(path: &Path, pixels: &[u8], size: usize) -> Result<()> {
+pub fn save_png(path: &Path, pixels: &[u8], size: usize) -> Result<()> {
     image::save_buffer_with_format(
         path,
         pixels,

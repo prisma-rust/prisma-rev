@@ -29,6 +29,9 @@ x11 = ["winit-backend", "prism-platform/x11"]
 wayland = ["winit-backend", "prism-platform/wayland"]
 # Modular building-block toggles: forwarded to prism-render / prism-engine (see docs/DESIGN.md §12).
 pathtrace = ["prism-render/pathtrace", "prism-engine/pathtrace"]
+rtxgi = ["prism-render/rtxgi", "prism-engine/rtxgi", "pathtrace"]
+nrc = ["prism-render/nrc", "prism-engine/nrc", "pathtrace"]
+dlss = ["prism-render/dlss", "prism-engine/dlss"]
 ui = ["prism-render/ui", "prism-engine/ui"]
 # 文本光栅后端（透传到 prism-render，见 docs/DESIGN.md §12.2）。默认走 fontdue；
 # Windows 发布包可以只要系统 DirectWrite（`ui-directwrite`），省掉 fontdue/ttf-parser。

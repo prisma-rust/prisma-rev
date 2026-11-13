@@ -1958,8 +1958,13 @@ dependencies = [
 name = "sponza"
 version = "0.1.0"
 dependencies = [
+ "log",
  "prism-app",
  "prism-engine",
+ "prism-game-api",
+ "prism-platform",
+ "prism-project-api",
+ "prism-scene",
 ]
 
 [[package]]

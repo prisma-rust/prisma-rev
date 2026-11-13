@@ -22,6 +22,8 @@ pub const LUT_TEX_SET: u32 = 0;
 pub const LUT_TEX_BINDING: u32 = 2; // COMBINED_IMAGE_SAMPLER
 pub const MOTION_SET: u32 = 0;
 pub const MOTION_BINDING: u32 = 3; // UNIFORM_BUFFER
+pub const ADAPTED_LUMINANCE_SET: u32 = 0;
+pub const ADAPTED_LUMINANCE_BINDING: u32 = 4; // UNIFORM_BUFFER
 
 /// Push-constant struct (auto-generated from Slang `PostPush`).
 ///
