@@ -59,6 +59,12 @@ cargo test --manifest-path editor/Cargo.toml   # 编辑器数据层 + 壳
   不要手改 `editor/`、`launcher/` 里的版本号。
 - 规则、tag 与发布流程见 [`docs/versioning.md`](docs/versioning.md)。
 
+## 分支
+
+- `master`：严格。不接受直接 push，改动经分支 → PR → 合并，PR 必须贴自检块。
+- `dev`：开发集成分支，允许直接提交、直接 push；推之前 `git pull --rebase origin dev`。
+  `dev` 合进 `master` 时按完整 PR 流程走。
+
 ## 提交前自检
 
 ```bash

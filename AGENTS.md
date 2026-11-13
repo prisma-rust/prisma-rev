@@ -10,7 +10,10 @@ deviating from those conventions is a bug. (`README.md` is the human-facing over
 
 完整规范见 [`docs/ai-workflow.md`](docs/ai-workflow.md)。硬规则：
 
-- **一个任务 = 一个分支 = 一个 PR**；默认 diff < ~500 行，更大的工作先拆成可独立 review 的步骤。
+- **合进 `master` 的改动必须一个任务 = 一个分支 = 一个 PR**；默认 diff < ~500 行，更大的工作先拆成
+  可独立 review 的步骤。**`dev` 是开发集成分支，允许直接提交、直接 push**，不必为每个任务单开
+  分支；但提交仍要原子，行为 / 约定有变化仍要自检，`dev` 合进 `master` 走 PR。
+  分支保护只对 `master` 生效。
 - **合并前跑 `python scripts/pr_ready.py`**，把它打印的 Markdown 块贴进 PR；红灯不合并。
 - **AI 产出必须标注**：PR / issue 首行写明「谁的 agent、用什么工具」，每条评论以 `🤖 Agent:` 开头。
   commit 的 `Co-Authored-By:` 只在 agent 有官方 GitHub 账号时写（Codex / Claude Code 有）；
