@@ -1,4 +1,4 @@
-//! Sponza RTXGI & Path Tracing interactive tuning UI.
+//! Sponza SHaRC & Path Tracing interactive tuning UI.
 //!
 //! Replicates the sections and controls of the NVIDIA RTXGI SDK
 //! (`Samples/Pathtracer/UI.cpp`):
@@ -6,7 +6,7 @@
 //! - **Render**: Raster / Path Trace mode, Post (DLSS, Auto Exposure).
 //! - **Path Tracing**: Mode (Reference, SHaRC, ReSTIR GI, NRC), Bounces, Ray Max Distance,
 //!   Exposure.
-//! - **SHaRC (RTXGI)**: Enable Clear, Update, Resolve, Anti-firefly, Roughness threshold,
+//! - **SHaRC**: Enable Clear, Update, Resolve, Anti-firefly, Roughness threshold,
 //!   Downscale factor, Scene scale, Accumulation frame count, Stale frame count.
 //! - **ReSTIR GI**: raster-path real-time GI that reuses the same SHaRC cache; picking it
 //!   also switches the renderer back to raster mode.
@@ -667,7 +667,7 @@ impl FrameHook for SponzaTuningHook {
 
                 let gi_str = match self.gi_mode {
                     GiMode::Off => "Reference (PT)",
-                    GiMode::Sharc => "SHaRC (RTXGI)",
+                    GiMode::Sharc => "SHaRC (PT cache)",
                     GiMode::Restir => "ReSTIR GI (raster)",
                     GiMode::Nrc => "NRC (Neural)",
                 };
@@ -696,7 +696,7 @@ impl FrameHook for SponzaTuningHook {
                 let on_off = |v: bool| if v { "ON" } else { "OFF" };
 
                 let content = format!(
-                    "=== Sponza RTXGI / PT Tuning ===\n\
+                    "=== Sponza SHaRC / PT Tuning ===\n\
                      Frame: {:.2} ms ({:.0} FPS) | GPU: {}\n\
                      Accum Samples: {} | [F1] Hide | [R] Reset\n\
                      ----------------------------------------\n\
@@ -705,7 +705,7 @@ impl FrameHook for SponzaTuningHook {
                      {}Max Bounces:        [ {} ]\n\
                      {}Ray Max Dist:       [ {:.0} ]\n\
                      {}Tonemapper:         [ {} ] (Key: T)\n\
-                     --- RTXGI SHaRC Options ----------------\n\
+                     --- SHaRC Options ----------------------\n\
                      {}Enable Clear:       [ {} ]\n\
                      {}Enable Update:      [ {} ]\n\
                      {}Enable Resolve:     [ {} ]\n\

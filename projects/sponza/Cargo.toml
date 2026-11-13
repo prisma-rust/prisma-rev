@@ -3,7 +3,7 @@ name = "sponza"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Sponza path-tracing & RTXGI sample project"
+description = "Sponza path-tracing & SHaRC sample project"
 
 [workspace]
 
@@ -20,7 +20,7 @@ path = "src/main.rs"
 required-features = ["player"]
 
 [features]
-default = ["player", "rtxgi"]
+default = ["player", "sharc"]
 # 只负责「链接引擎」，**不**决定渲染能力：能力开关都写在自己的 feature 里，
 # 否则 `--no-default-features --features player` 会悄悄把能力带回来。
 player = [
@@ -62,14 +62,14 @@ preview-module = [
 # NVIDIA RTXGI SHaRC（世界空间辐射缓存）。**默认开**：Sponza 的默认渲染路径就是
 # 路径追踪 + SHaRC。关掉即回退到纯路径追踪：
 #   cargo run --no-default-features --features player
-rtxgi = ["prism-app/rtxgi", "prism-engine/rtxgi"]
+sharc = ["prism-app/sharc", "prism-engine/sharc"]
 nrc = ["prism-app/nrc", "prism-engine/nrc"]
 dlss = ["prism-app/dlss", "prism-engine/dlss"]
 
 [dependencies]
-# 两个依赖都关掉默认特性：能力由上面的 `player` / `rtxgi` 显式列出。
+# 两个依赖都关掉默认特性：能力由上面的 `player` / `sharc` 显式列出。
 # 开着默认特性时 Cargo 的「只能加不能减」会让 `--no-default-features --features player`
-# 仍然把 `rtxgi` 带回来，开关等于没有。
+# 仍然把 `sharc` 带回来，开关等于没有。
 prism-app = { path = "../../crates/prism-app", optional = true, default-features = false }
 prism-engine = { path = "../../crates/prism-engine", optional = true, default-features = false }
 prism-game-api = { path = "../../crates/prism-game-api", default-features = false }

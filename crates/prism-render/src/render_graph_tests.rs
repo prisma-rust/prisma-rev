@@ -28,10 +28,10 @@ fn settings_default_is_high_precision_gbuffer() {
     assert!(s.gbuffer_high_precision);
     assert!(!s.ray_tracing_enabled);
     assert_eq!(s.ray_query_resolution_scale, 0.5);
-    #[cfg(feature = "rtxgi")]
+    #[cfg(feature = "sharc")]
     assert_eq!(s.sharc_capacity, crate::DEFAULT_SHARC_CAPACITY);
     // Without the SHARC feature no cache is ever allocated.
-    #[cfg(not(feature = "rtxgi"))]
+    #[cfg(not(feature = "sharc"))]
     assert_eq!(s.sharc_capacity, 0);
 }
 

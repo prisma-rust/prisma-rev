@@ -10,7 +10,7 @@ description = "Vulkan rendering backend for PrismaRev"
 # 默认「全量」，库和示例行为不变；项目模板按需挑砖。
 default = [
     "pathtrace",
-    "rtxgi",
+    "sharc",
     "restir_gi",
     "ui",
     "ui-fontdue",
@@ -40,11 +40,11 @@ pathtrace = []
 # raster scene gets real-time indirect diffuse WITHOUT compiling the path tracer.
 # Needs VK_KHR_ray_query at runtime; falls back to Off when unavailable.
 restir_gi = []
-# NVIDIA RTXGI (SHARC): Spatially Hashed Radiance Cache。
+# SHaRC（NVIDIA RTXGI v1.6）: Spatially Hashed Radiance Cache。
 # 不依赖 pathtrace：光栅模式的 ReSTIR GI 也用它当辐射缓存终点（命中点查缓存，
 # 不再往下追）。关掉 = ReSTIR GI 只剩单次弹射 + 天空，PT 也退回纯路径追踪。
 # 见 docs/DESIGN.md §12.2。
-rtxgi = []
+sharc = []
 # NVIDIA Neural Radiance Cache (NRC)
 nrc = ["pathtrace"]
 # NVIDIA Streamline / DLSS (Super Resolution & Ray Reconstruction)

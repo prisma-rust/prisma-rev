@@ -114,7 +114,7 @@ pub const MAX_SHADOW_MAP_SIZE: u32 = 8192;
 /// Directional shadow-map pass (building-block feature `shadows`).
 #[cfg(feature = "shadows")]
 pub mod shadow_map_pass;
-#[cfg(feature = "rtxgi")]
+#[cfg(feature = "sharc")]
 pub mod sharc;
 pub mod skybox_pass;
 pub mod sprite_pass;
@@ -169,7 +169,7 @@ pub use restir_gi::{RestirGiFrame, RestirGiPass, RestirGiReservoir, RESERVOIR_BY
 pub use shader::load_shader_module;
 #[cfg(feature = "shadows")]
 pub use shadow_map_pass::ShadowMapPass;
-#[cfg(feature = "rtxgi")]
+#[cfg(feature = "sharc")]
 pub use sharc::{
     SharcInvalidation, SharcResolvePass, SharcResolvePush, SharcTargets, DEFAULT_SHARC_CAPACITY,
 };

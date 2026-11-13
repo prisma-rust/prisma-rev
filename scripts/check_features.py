@@ -38,8 +38,8 @@ MATRIX: list[tuple[str, list[str]]] = [
         ["check", "-p", "prism-render", "--no-default-features", "--features", "ui,ui-fontdue"],
     ),
     (
-        "prism-render rtxgi",
-        ["check", "-p", "prism-render", "--no-default-features", "--features", "rtxgi"],
+        "prism-render sharc",
+        ["check", "-p", "prism-render", "--no-default-features", "--features", "sharc"],
     ),
     # 光栅实时 GI：不依赖 pathtrace，只需要 ray query。退化路径（设备不支持）在运行时
     # 判断（graph_renderer.rs 里一次性 warn），编译期必须独立成立。
@@ -47,10 +47,20 @@ MATRIX: list[tuple[str, list[str]]] = [
         "prism-render restir_gi",
         ["check", "-p", "prism-render", "--no-default-features", "--features", "restir_gi"],
     ),
-    # 退化路径：有 pathtrace、没有 rtxgi。`gi_mode = Sharc` 时必须能编过，退化为纯 PT
+    # `sharc` 不再蕴含 `pathtrace`：缓存的两个消费者各自可选，这两条把「只开 sharc」
+    # 这个组合钉住（DESIGN §12.2）。
+    (
+        "prism-app x11 + sharc（无 pathtrace）",
+        ["check", "-p", "prism-app", "--no-default-features", "--features", "x11,sharc"],
+    ),
+    (
+        "prism-engine sharc（无 pathtrace）",
+        ["check", "-p", "prism-engine", "--no-default-features", "--features", "sharc"],
+    ),
+    # 退化路径：有 pathtrace、没有 sharc。`gi_mode = Sharc` 时必须能编过，退化为纯 PT
     # 并 warn 一次（graph_renderer.rs 里一次性诊断），而不是 `#[cfg]` 漏一处导致编译失败。
     (
-        "prism-render pathtrace（无 rtxgi）",
+        "prism-render pathtrace（无 sharc）",
         ["check", "-p", "prism-render", "--no-default-features", "--features", "pathtrace"],
     ),
     # Linux 上 winit 必须至少有一个窗口后端，所以「全关」不是合法组合；

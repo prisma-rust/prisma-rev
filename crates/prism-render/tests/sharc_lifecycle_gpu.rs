@@ -1,4 +1,4 @@
-#![cfg(feature = "rtxgi")]
+#![cfg(feature = "sharc")]
 //! SHaRC 世界缓存的生命周期规则（修复规格 §8）。
 //!
 //! 缓存有两种寿命：屏幕历史（累积、运动向量）跟随相机与 extent 变化；世界缓存

@@ -98,26 +98,26 @@ pub struct RenderSettings {
     pub pt_max_iterations: u32,
     /// Global Illumination technique mode (Off, Sharc, Nrc).
     pub gi_mode: GiMode,
-    /// RTXGI SHARC: Hash-map capacity (number of voxel slots). Changing it
+    /// SHaRC: Hash-map capacity (number of voxel slots). Changing it
     /// rebuilds the cache buffers, which clears all cached radiance.
     pub sharc_capacity: u32,
-    /// RTXGI SHARC: World-space scale of the hash grid voxels.
+    /// SHaRC: World-space scale of the hash grid voxels.
     pub sharc_scene_scale: f32,
-    /// RTXGI SHARC: Cache clear toggle.
+    /// SHaRC: Cache clear toggle.
     pub sharc_enable_clear: bool,
-    /// RTXGI SHARC: Cache update toggle.
+    /// SHaRC: Cache update toggle.
     pub sharc_enable_update: bool,
-    /// RTXGI SHARC: Cache resolve toggle.
+    /// SHaRC: Cache resolve toggle.
     pub sharc_enable_resolve: bool,
-    /// RTXGI SHARC: Anti-firefly filter toggle.
+    /// SHaRC: Anti-firefly filter toggle.
     pub sharc_enable_anti_firefly: bool,
-    /// RTXGI SHARC: Maximum stale frames before entry eviction.
+    /// SHaRC: Maximum stale frames before entry eviction.
     pub sharc_stale_frame_num: u32,
-    /// RTXGI SHARC: Downscale factor for the sparse path update.
+    /// SHaRC: Downscale factor for the sparse path update.
     pub sharc_downscale_factor: u32,
-    /// RTXGI SHARC: Temporal accumulation frame window size.
+    /// SHaRC: Temporal accumulation frame window size.
     pub sharc_accumulation_frame_num: u32,
-    /// RTXGI SHARC: Roughness threshold below which mirror rays query direct radiance instead of cache.
+    /// SHaRC: Roughness threshold below which mirror rays query direct radiance instead of cache.
     pub sharc_roughness_threshold: f32,
     /// ReSTIR GI: resolution scale relative to the internal render extent
     /// (0.5 = half resolution). 0 disables the pass.

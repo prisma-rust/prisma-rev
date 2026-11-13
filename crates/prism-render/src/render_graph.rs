@@ -420,9 +420,9 @@ impl Default for RenderSettings {
             ray_tracing_enabled: false,
             ray_query_resolution_scale: 0.5,
             gi_mode: GiMode::Off,
-            #[cfg(feature = "rtxgi")]
+            #[cfg(feature = "sharc")]
             sharc_capacity: crate::sharc::DEFAULT_SHARC_CAPACITY,
-            #[cfg(not(feature = "rtxgi"))]
+            #[cfg(not(feature = "sharc"))]
             sharc_capacity: 0,
             sharc_scene_scale: 50.0,
             sharc_enable_clear: false,

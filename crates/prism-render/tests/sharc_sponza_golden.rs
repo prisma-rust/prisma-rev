@@ -1,4 +1,4 @@
-//! Real-time RTXGI SHARC test render & golden frame comparison test.
+//! Real-time SHaRC (NVIDIA RTXGI v1.6) test render & golden frame comparison test.
 //!
 //! Renders Sponza-like architectural geometry in offscreen mode under:
 //! 1. Standard Rasterization (baseline)
@@ -105,7 +105,7 @@ fn simple_material(base_color: [f32; 4], roughness: f32, metallic: f32) -> Mater
 
 #[test]
 #[allow(clippy::vec_init_then_push)]
-fn test_sponza_rtxgi_real_render_and_comparison() {
+fn test_sponza_sharc_real_render_and_comparison() {
     let mut renderer = match GraphRenderer::offscreen_new(SIZE as u32, SIZE as u32, None) {
         Ok(r) => r,
         Err(e) => {
@@ -425,9 +425,9 @@ fn test_sponza_rtxgi_real_render_and_comparison() {
 
     // Training and resolve are their own stages: each must show up as a GPU
     // interval of its own, separate from the consumer pass. The SHaRC graph
-    // work is behind the `rtxgi` feature, so this only applies to builds that
+    // work is behind the `sharc` feature, so this only applies to builds that
     // enable it.
-    if cfg!(feature = "rtxgi") {
+    if cfg!(feature = "sharc") {
         let timings = renderer.gpu_timings().clone();
         if timings.supported {
             let names: Vec<&str> = timings.passes.iter().map(|p| p.name.as_str()).collect();
@@ -581,7 +581,7 @@ fn test_sponza_rtxgi_real_render_and_comparison() {
          - Changed Pixels: 1702350 (94.32%)\n\
          - Max Channel Diff: 250\n\
          - Mean Channel Diff: 103.752\n\
-         - Artifacts: target/golden-frames/rtxgi_reference_diff.diff.png\n\
+         - Artifacts: target/golden-frames/sharc_reference_diff.diff.png\n\
          \n\
          [RTXGI Sponza Convergence & Radiance Cache Analysis]\n\
          - In RTXGI SDK (SharcGuide Image 1 & 2), SHARC radiance caching acts on indirect\n\

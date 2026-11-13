@@ -37,10 +37,10 @@ player-core = [
     # 第二份引擎。host 只在静态 Player 组合里显式打开。
     "prism-game-api/host",
     "prism-app/pathtrace",
-    # 引擎默认已含 `rtxgi`（SHaRC）；模板关掉了 prism-app / prism-engine 的默认
+    # 引擎默认已含 `sharc`（SHaRC）；模板关掉了 prism-app / prism-engine 的默认
     # 特性，必须在这里显式补回，否则模板玩家会少一块引擎默认能力。
-    "prism-app/rtxgi",
-    "prism-engine/rtxgi",
+    "prism-app/sharc",
+    "prism-engine/sharc",
     # 引擎调试层（F3 HUD / Tab 调试图 / T 色调映射 / 数字键 PBR 隔离）**默认关**，
     # 模板显式打开：新建项目就该能看帧时间、切调试图。不需要的项目删掉这两行即可。
     "prism-app/engine-debug",

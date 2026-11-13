@@ -308,7 +308,7 @@ pub struct GraphRenderer {
     /// Previous frame's world-space camera position. SHARC's resolve stage
     /// reprojects sparse voxels when the camera moved between frames, so it
     /// needs the real previous position rather than this frame's.
-    #[cfg(feature = "rtxgi")]
+    #[cfg(feature = "sharc")]
     prev_camera_position: Option<[f32; 4]>,
     /// Previous frame's model matrix per ECS entity (#883 Phase 2). Used to
     /// build per-object motion vectors without forcing the engine to track
@@ -339,9 +339,9 @@ pub struct GraphRenderer {
     /// 实现 is injected by the app 层 (eg 编辑器 host) — this 渲染器
     /// knows nothing about the concrete UI framework.
     external_overlay: Option<Box<dyn SwapchainOverlay>>,
-    #[cfg(feature = "rtxgi")]
+    #[cfg(feature = "sharc")]
     sharc_targets: Option<crate::sharc::SharcTargets>,
-    #[cfg(feature = "rtxgi")]
+    #[cfg(feature = "sharc")]
     sharc_resolve: Option<crate::sharc::SharcResolvePass>,
     /// Reasons the world-space SHaRC cache no longer describes the scene.
     ///
@@ -349,12 +349,12 @@ pub struct GraphRenderer {
     /// [`Self::set_environment`], asset release/upload) and by the frame's
     /// [`DirtyDispatchPlan`]; consumed by `execute`, which clears the cache
     /// buffers and then resets this to the default.
-    #[cfg(feature = "rtxgi")]
+    #[cfg(feature = "sharc")]
     sharc_invalidation: crate::sharc::SharcInvalidation,
     /// How many times the world-space SHaRC cache has been cleared since the
     /// renderer was created (initial allocation included). Lifecycle tests use
     /// it to observe that an invalidation actually reached the cache.
-    #[cfg(feature = "rtxgi")]
+    #[cfg(feature = "sharc")]
     sharc_clear_count: u64,
     /// The voxel scale the cache was last trained against.
     ///
@@ -363,7 +363,7 @@ pub struct GraphRenderer {
     /// which voxel a position lands in without moving any world-space radiance:
     /// every stored entry becomes a key/value mismatch, which §8 calls a cache
     /// format change and wants cleared.
-    #[cfg(feature = "rtxgi")]
+    #[cfg(feature = "sharc")]
     sharc_cache_scene_scale: Option<f32>,
     /// ECS UI 叠加 (GPU-only) — quads + fontdue glyph text, rendered on 顶部
     /// of the ForwardPass 输出 (below the external overlay). Created lazily
@@ -796,7 +796,7 @@ impl GraphRenderer {
             taa_frame: 0,
             taa_jitter_ndc: [0.0; 2],
             prev_camera_view_proj: None,
-            #[cfg(feature = "rtxgi")]
+            #[cfg(feature = "sharc")]
             prev_camera_position: None,
             prev_models: std::collections::HashMap::new(),
             applied_lut: None,
@@ -809,15 +809,15 @@ impl GraphRenderer {
             dummy_ao,
             color_format,
             external_overlay: None,
-            #[cfg(feature = "rtxgi")]
+            #[cfg(feature = "sharc")]
             sharc_targets: None,
-            #[cfg(feature = "rtxgi")]
+            #[cfg(feature = "sharc")]
             sharc_resolve: None,
-            #[cfg(feature = "rtxgi")]
+            #[cfg(feature = "sharc")]
             sharc_invalidation: crate::sharc::SharcInvalidation::default(),
-            #[cfg(feature = "rtxgi")]
+            #[cfg(feature = "sharc")]
             sharc_clear_count: 0,
-            #[cfg(feature = "rtxgi")]
+            #[cfg(feature = "sharc")]
             sharc_cache_scene_scale: None,
             #[cfg(feature = "ui")]
             ui_overlay: None,
@@ -1298,7 +1298,7 @@ impl GraphRenderer {
             taa_frame: 0,
             taa_jitter_ndc: [0.0; 2],
             prev_camera_view_proj: None,
-            #[cfg(feature = "rtxgi")]
+            #[cfg(feature = "sharc")]
             prev_camera_position: None,
             prev_models: std::collections::HashMap::new(),
             applied_lut: None,
@@ -1311,15 +1311,15 @@ impl GraphRenderer {
             dummy_ao,
             color_format,
             external_overlay: None,
-            #[cfg(feature = "rtxgi")]
+            #[cfg(feature = "sharc")]
             sharc_targets: None,
-            #[cfg(feature = "rtxgi")]
+            #[cfg(feature = "sharc")]
             sharc_resolve: None,
-            #[cfg(feature = "rtxgi")]
+            #[cfg(feature = "sharc")]
             sharc_invalidation: crate::sharc::SharcInvalidation::default(),
-            #[cfg(feature = "rtxgi")]
+            #[cfg(feature = "sharc")]
             sharc_clear_count: 0,
-            #[cfg(feature = "rtxgi")]
+            #[cfg(feature = "sharc")]
             sharc_cache_scene_scale: None,
             #[cfg(feature = "ui")]
             ui_overlay: None,
@@ -1733,7 +1733,7 @@ impl GraphRenderer {
         self.ibl = new_ibl;
         // 天空/IBL 是辐射缓存训练时的入射光来源；换了环境，旧体素里的辐射
         // 就不再属于这个场景（repair spec §8）。
-        #[cfg(feature = "rtxgi")]
+        #[cfg(feature = "sharc")]
         {
             self.sharc_invalidation.sky = true;
         }
@@ -1880,7 +1880,7 @@ impl GraphRenderer {
         // Released meshes/materials mean the geometry (or its shading) that the
         // world-space cache was trained on no longer exists.
         if freed > 0 {
-            #[cfg(feature = "rtxgi")]
+            #[cfg(feature = "sharc")]
             {
                 self.sharc_invalidation.geometry = true;
             }
@@ -2337,7 +2337,7 @@ impl GraphRenderer {
         // extent; clear it so the first frame after a resize does not emit
         // bogus motion vectors.
         self.prev_camera_view_proj = None;
-        #[cfg(feature = "rtxgi")]
+        #[cfg(feature = "sharc")]
         {
             self.prev_camera_position = None;
         }
@@ -2453,7 +2453,7 @@ impl GraphRenderer {
         // extent; clear it so the first frame after a resize does not emit
         // bogus motion vectors.
         self.prev_camera_view_proj = None;
-        #[cfg(feature = "rtxgi")]
+        #[cfg(feature = "sharc")]
         {
             self.prev_camera_position = None;
         }
@@ -3085,7 +3085,7 @@ impl GraphRenderer {
     /// The cache itself is fully device-local, so this counter is how the
     /// lifecycle tests (and the editor's diagnostics) observe that an
     /// invalidation reason reached the cache.
-    #[cfg(feature = "rtxgi")]
+    #[cfg(feature = "sharc")]
     pub fn sharc_clear_count(&self) -> u64 {
         self.sharc_clear_count
     }
@@ -3093,7 +3093,7 @@ impl GraphRenderer {
     /// Whether a SHaRC invalidation reason is queued for the next frame the
     /// cache is used. Reasons raised while the cache is idle (raster mode, or
     /// `gi_mode != Sharc`) stay pending until then.
-    #[cfg(feature = "rtxgi")]
+    #[cfg(feature = "sharc")]
     pub fn sharc_invalidation_pending(&self) -> bool {
         self.sharc_invalidation.any()
     }
@@ -3108,7 +3108,7 @@ impl GraphRenderer {
         if let Some(pt) = self.graph.pass_mut::<PathTracePass>() {
             pt.invalidate_geometry();
         }
-        #[cfg(feature = "rtxgi")]
+        #[cfg(feature = "sharc")]
         {
             self.sharc_invalidation.geometry = true;
         }
@@ -3184,7 +3184,7 @@ impl GraphRenderer {
         // for that. Genuine geometry changes reach us through
         // `mesh_releases`/`material_releases` here and through
         // [`Self::invalidate_pt_geometry`] on scene unload.
-        #[cfg(feature = "rtxgi")]
+        #[cfg(feature = "sharc")]
         if let Some(plan) = dispatch_plan {
             if plan.lights_dirty {
                 self.sharc_invalidation.lights = true;
@@ -3196,7 +3196,7 @@ impl GraphRenderer {
                 self.sharc_invalidation.geometry = true;
             }
         }
-        #[cfg(not(feature = "rtxgi"))]
+        #[cfg(not(feature = "sharc"))]
         let _ = dispatch_plan;
         // #883 Phase 2: frame_data is copied so we can inject the previous
         // unjittered view-projection without mutating the caller's value.
@@ -3213,7 +3213,7 @@ impl GraphRenderer {
         };
         frame_data.prev_view_proj = self.prev_camera_view_proj.unwrap_or(prev_vp);
         // Captured before the history writeback below overwrites it.
-        #[cfg(feature = "rtxgi")]
+        #[cfg(feature = "sharc")]
         let prev_camera_position = self.prev_camera_position;
         let light_view_proj = *light_view_proj;
         let light_view_proj1 = *light_view_proj1;
@@ -3371,7 +3371,7 @@ impl GraphRenderer {
                 dispatch_plan: input.dispatch_plan,
             };
             self.prev_camera_view_proj = Some(prev_vp);
-            #[cfg(feature = "rtxgi")]
+            #[cfg(feature = "sharc")]
             {
                 self.prev_camera_position = Some(frame_data.camera_position);
             }
@@ -3386,13 +3386,13 @@ impl GraphRenderer {
             // queries while tracing its secondary rays, no path tracer involved).
             // Both need the same clear / resolve bookkeeping, so the gate below
             // covers either mode instead of hard-coding the path-traced one.
-            #[cfg(feature = "rtxgi")]
+            #[cfg(feature = "sharc")]
             let sharc_active = match self.settings.gi_mode {
                 crate::render_graph::GiMode::Sharc => *render_mode == RenderMode::PathTrace,
                 crate::render_graph::GiMode::Restir => *render_mode == RenderMode::Raster,
                 _ => false,
             };
-            #[cfg(feature = "rtxgi")]
+            #[cfg(feature = "sharc")]
             if sharc_active {
                 // The hash map is sized when it is allocated, so a capacity
                 // change has to rebuild the buffers. Voxel keys are meaningless
@@ -3414,7 +3414,7 @@ impl GraphRenderer {
                     if let Some(mut targets) = self.sharc_targets.take() {
                         targets.destroy(&self.runtime.context);
                     }
-                    log::info!("RTXGI SHARC capacity changed to {capacity} entries");
+                    log::info!("SHaRC capacity changed to {capacity} entries");
                 }
                 if self.sharc_targets.is_none() {
                     match crate::sharc::SharcTargets::new(&self.runtime.context, capacity) {
@@ -3426,7 +3426,7 @@ impl GraphRenderer {
                                 self.sharc_targets = Some(targets);
                                 self.sharc_resolve = Some(resolve);
                                 needs_init_clear = true;
-                                log::info!("RTXGI SHARC initialized ({capacity} entries)");
+                                log::info!("SHaRC initialized ({capacity} entries)");
                             }
                             Err(e) => log::warn!("Failed to create SharcResolvePass: {e:#}"),
                         },
@@ -3441,7 +3441,7 @@ impl GraphRenderer {
                 let invalidation = std::mem::take(&mut self.sharc_invalidation);
                 if invalidation.any() {
                     log::debug!(
-                        "RTXGI SHARC cache invalidated: geometry={} lights={} sky={}",
+                        "SHaRC cache invalidated: geometry={} lights={} sky={}",
                         invalidation.geometry,
                         invalidation.lights,
                         invalidation.sky
@@ -3456,7 +3456,7 @@ impl GraphRenderer {
                     .is_some_and(|previous| previous != scale);
                 self.sharc_cache_scene_scale = Some(scale);
                 if scale_changed {
-                    log::info!("RTXGI SHARC voxel scale changed to {scale}; clearing the cache");
+                    log::info!("SHaRC voxel scale changed to {scale}; clearing the cache");
                 }
                 if needs_init_clear
                     || invalidation.any()
@@ -3490,7 +3490,7 @@ impl GraphRenderer {
                 // Hand the cache buffers to their consumers before anything is
                 // dispatched: the trainer below needs them bound, and the
                 // consumers only read the resolved cache.
-                #[cfg(all(feature = "rtxgi", any(feature = "pathtrace", feature = "restir_gi")))]
+                #[cfg(all(feature = "sharc", any(feature = "pathtrace", feature = "restir_gi")))]
                 {
                     let (hash_entries, accumulation, resolved, capacity) =
                         match (&self.sharc_targets, self.settings.gi_mode) {
@@ -3506,7 +3506,7 @@ impl GraphRenderer {
                             ),
                             _ => (None, None, None, 0),
                         };
-                    // `rtxgi` no longer implies `pathtrace` (the path tracer is
+                    // `sharc` no longer implies `pathtrace` (the path tracer is
                     // one optional consumer of the cache, not a dependency).
                     #[cfg(feature = "pathtrace")]
                     if let Some(pt) = self.graph.pass_mut::<PathTracePass>() {
@@ -3518,15 +3518,15 @@ impl GraphRenderer {
                         gi.set_sharc_buffers(hash_entries, accumulation, resolved, capacity);
                     }
                 }
-                // 设了 `gi_mode = Sharc` 却没编 `rtxgi`：退化为纯路径追踪，但必须说清楚
+                // 设了 `gi_mode = Sharc` 却没编 `sharc`：退化为纯路径追踪，但必须说清楚
                 // 缺哪个 feature（DESIGN §12.3 规则 3：关掉要可诊断，不要静默降级）。
                 // 这个分支每帧都会走到，所以只报一次。
-                #[cfg(all(feature = "pathtrace", not(feature = "rtxgi")))]
+                #[cfg(all(feature = "pathtrace", not(feature = "sharc")))]
                 {
                     static SHARC_MISSING_WARNED: std::sync::Once = std::sync::Once::new();
                     SHARC_MISSING_WARNED.call_once(|| {
                         log::warn!(
-                            "gi_mode = Sharc 需要 prism-render/rtxgi，本次构建没有编译 SHaRC；\
+                            "gi_mode = Sharc 需要 prism-render/sharc，本次构建没有编译 SHaRC；\
                              已退化为纯路径追踪"
                         );
                     });
@@ -4268,7 +4268,7 @@ impl GraphRenderer {
             pt.destroy(device);
         }
 
-        #[cfg(feature = "rtxgi")]
+        #[cfg(feature = "sharc")]
         {
             if let Some(mut resolve) = self.sharc_resolve.take() {
                 resolve.destroy(device);
