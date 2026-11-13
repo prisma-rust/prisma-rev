@@ -65,9 +65,13 @@ pub struct SponzaTuningHook {
 
 impl Default for SponzaTuningHook {
     fn default() -> Self {
-        let (render_mode, gi_mode) = match std::env::var("SPONZA_RENDER_MODE").as_deref() {
-            Ok("raster") => (RenderMode::Raster, GiMode::Off),
-            Ok("pt_off") => (RenderMode::PathTrace, GiMode::Off),
+        let (render_mode, gi_mode) = match std::env::var("SPONZA_RENDER_MODE") {
+            Ok(mode) if mode.eq_ignore_ascii_case("raster") => {
+                (RenderMode::Raster, GiMode::Off)
+            }
+            Ok(mode) if mode.eq_ignore_ascii_case("pt_off") => {
+                (RenderMode::PathTrace, GiMode::Off)
+            }
             _ => (RenderMode::PathTrace, GiMode::Sharc),
         };
 
