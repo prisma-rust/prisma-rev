@@ -31,8 +31,14 @@ fn pattern_covers_the_window_and_text_sits_on_top() {
     }
 
     let texts: Vec<_> = list.texts().collect();
-    assert_eq!(texts.len(), 3);
+    assert_eq!(texts.len(), 5);
     assert!(texts[0].content.contains("NO SCENE"));
+    // The hint must be copy-pasteable, not a bare "run build-scenes".
+    let hint: Vec<&str> = texts.iter().map(|text| text.content.as_str()).collect();
+    assert!(hint.iter().any(|line| line.starts_with("cd ")));
+    assert!(hint
+        .iter()
+        .any(|line| line.contains("prism-build-pipeline") && line.contains("build-scenes")));
     // Text is centred on the window and drawn above the pattern.
     let top = &texts[0];
     assert!((top.rect[0] + top.rect[2] * 0.5 - 640.0).abs() < 1.0);

@@ -225,3 +225,43 @@ fn packaged_assets_are_visible_without_loose_files() {
         "v2".to_string()
     );
 }
+
+#[test]
+fn build_scenes_steps_use_the_project_dir_and_workspace_manifest() {
+    let tree = TempTree::new("build-scenes-steps");
+    // <repo>/crates/prism-build-pipeline + <repo>/projects/demo/assets
+    std::fs::create_dir_all(tree.path.join("crates/prism-build-pipeline")).unwrap();
+    std::fs::write(tree.path.join("Cargo.toml"), "[workspace]\n").unwrap();
+    let assets = tree.path.join("projects/demo/assets");
+    std::fs::create_dir_all(&assets).unwrap();
+
+    let steps = build_scenes_steps(&assets);
+    assert!(steps[0].starts_with("cd "), "{}", steps[0]);
+    assert!(steps[0].ends_with("projects/demo"), "{}", steps[0]);
+    assert_eq!(
+        steps[1],
+        "cargo run -q --manifest-path ../../Cargo.toml -p prism-build-pipeline -- build-scenes"
+    );
+
+    // The log form is the two steps joined, never a bare "build-scenes".
+    let command = build_scenes_command(&assets);
+    assert!(command.contains(" && cargo run -q --manifest-path"));
+    assert!(command.contains("prism-build-pipeline -- build-scenes"));
+}
+
+#[test]
+fn build_scenes_steps_fall_back_without_a_workspace_manifest() {
+    let tree = TempTree::new("build-scenes-steps-fallback");
+    let assets = tree.path.join("assets");
+    std::fs::create_dir_all(&assets).unwrap();
+    std::fs::write(tree.path.join("Cargo.toml"), "[workspace]\n").unwrap();
+
+    // No `crates/prism-build-pipeline` next to the manifest: the fallback keeps
+    // the package name explicit instead of inventing a manifest path.
+    let steps = build_scenes_steps(&assets);
+    assert!(steps[0].starts_with("cd "));
+    assert_eq!(
+        steps[1],
+        "cargo run -q -p prism-build-pipeline -- build-scenes"
+    );
+}

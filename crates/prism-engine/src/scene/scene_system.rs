@@ -649,14 +649,13 @@ impl SceneManager {
             }
         }
         self.missing_scene = true;
-        let assets = match crate::asset_paths::asset_dir() {
-            Some(dir) => dir.display().to_string(),
-            None => "<no assets/ directory found>".to_string(),
+        let command = match crate::asset_paths::asset_dir() {
+            Some(dir) => crate::asset_paths::build_scenes_command(&dir),
+            None => "cargo run -q -p prism-build-pipeline -- build-scenes".to_string(),
         };
         log::error!(
             "no resolvable scene: the window shows the no-scene placeholder. Scene bytes are \
-             read from `.pak` only (no disk fallback) — run `build-scenes` from the directory \
-             that owns `assets/` ({assets}), then restart (see scripts/dev.sh)"
+             read from `.pak` only (no disk fallback). Build the package, then restart: {command}"
         );
         if let Some(name) = scene_name {
             log::error!("requested scene '{name}' was not found in the manifest");

@@ -82,6 +82,65 @@ pub fn asset_path(relative: impl AsRef<Path>) -> Option<PathBuf> {
     asset_dir().map(|dir| dir.join(relative.as_ref()))
 }
 
+/// 复制即可执行的两步 `build-scenes` 命令：先 cd 到项目目录，再带完整参数跑
+/// `prism-build-pipeline`。只写 "run build-scenes" 的话，读的人还得猜
+/// `cargo run build-scenes` 之类的错误写法。
+///
+/// `assets_dir` 是项目里那个 `assets/` 目录：工程有自己的 `Cargo.toml` 时用
+/// `Cargo.toml`，`projects/<name>/` 下的工程用 `../../Cargo.toml`（仓库根 workspace）。
+/// 找不到仓库根时退回不带 `--manifest-path` 的形式。
+pub fn build_scenes_steps(assets_dir: &Path) -> [String; 2] {
+    let project = assets_dir.parent().unwrap_or(assets_dir);
+    let project = project
+        .canonicalize()
+        .unwrap_or_else(|_| project.to_path_buf());
+    match repo_root_for(&project) {
+        Some(repo) => {
+            let manifest = if repo == project {
+                "Cargo.toml".to_string()
+            } else {
+                let depth = project
+                    .components()
+                    .count()
+                    .saturating_sub(repo.components().count());
+                let mut manifest = "../".repeat(depth.max(1));
+                manifest.push_str("Cargo.toml");
+                manifest
+            };
+            [
+                format!("cd {}", project.display()),
+                format!(
+                    "cargo run -q --manifest-path {manifest} -p prism-build-pipeline -- build-scenes"
+                ),
+            ]
+        }
+        None => [
+            format!("cd {}", project.display()),
+            "cargo run -q -p prism-build-pipeline -- build-scenes".to_string(),
+        ],
+    }
+}
+
+/// [`build_scenes_steps`] 的日志形式（一行，`&&` 连接）。
+pub fn build_scenes_command(assets_dir: &Path) -> String {
+    build_scenes_steps(assets_dir).join(" && ")
+}
+
+fn repo_root_for(project: &Path) -> Option<PathBuf> {
+    let candidates = [project.join("../.."), project.to_path_buf()];
+    for candidate in candidates {
+        let Ok(candidate) = candidate.canonicalize() else {
+            continue;
+        };
+        if candidate.join("Cargo.toml").is_file()
+            && candidate.join("crates/prism-build-pipeline").is_dir()
+        {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Internals (纯函数，便于单测)
 // ---------------------------------------------------------------------------

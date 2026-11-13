@@ -50,7 +50,7 @@ pub fn push_no_scene_screen(list: &mut UiDrawList, width: f32, height: f32, time
 
     // The panel keeps the text readable over the pattern at any scroll offset.
     let panel_width = (width * 0.72).min(width - 24.0).max(1.0);
-    let panel_height = (height * 0.22).clamp(112.0, 190.0);
+    let panel_height = (height * 0.32).clamp(160.0, 280.0);
     let panel_left = (width - panel_width) * 0.5;
     let panel_top = (height - panel_height) * 0.5;
     list.push_quad(UiQuad {
@@ -89,18 +89,30 @@ pub fn push_no_scene_screen(list: &mut UiDrawList, width: f32, height: f32, time
         body_size,
         BODY,
     );
-    push_text(
-        list,
-        [
-            text_left,
-            title_top + title_size * 1.55 + body_size * 1.5 + line_gap,
-            text_width,
-            hint_size * 1.5,
+    // 提示里给完整命令：只写 "run build-scenes" 的话，读的人还得猜
+    // `cargo run build-scenes` 之类的错误写法。
+    let steps = match crate::asset_paths::asset_dir() {
+        Some(dir) => crate::asset_paths::build_scenes_steps(&dir),
+        None => [
+            "cd <project that owns assets/>".to_string(),
+            "cargo run -q -p prism-build-pipeline -- build-scenes".to_string(),
         ],
-        "Run scripts/dev.sh <project>, or `build-scenes` in the directory that owns assets/.",
-        hint_size,
-        HINT,
-    );
+    };
+    let mut hint_top = title_top + title_size * 1.55 + body_size * 1.5 + line_gap;
+    for line in [
+        "Build it (or just run bash scripts/dev.sh <project>):".to_string(),
+        steps[0].clone(),
+        steps[1].clone(),
+    ] {
+        push_text(
+            list,
+            [text_left, hint_top, text_width, hint_size * 1.5],
+            line.as_str(),
+            hint_size,
+            HINT,
+        );
+        hint_top += hint_size * 1.65;
+    }
 }
 
 fn push_checkerboard(list: &mut UiDrawList, width: f32, height: f32, time: f32) {
@@ -147,7 +159,7 @@ fn push_text(
         color,
         alignment: TextAlign::Center,
         font: String::new(),
-        wrap: false,
+        wrap: true,
         layer: TEXT_LAYER,
         order: 0,
     });
