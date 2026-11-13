@@ -1,7 +1,7 @@
 //! 2D 物理系统单元测试（#1160）。
 
 use prism_ecs::World;
-use prism_scene::components::{Collider2D, LocalTransform, RigidBody2D, RigidBody2DType};
+use prism_scene::components::{LocalTransform, PhysicsCollider2D, RigidBody2D, RigidBody2DType};
 
 use super::physics2d::{
     overlap_box_2d, overlap_circle_2d, raycast_2d, step_2d, Physics2DEventKind, Physics2DEvents,
@@ -52,7 +52,7 @@ fn test_physics2d_circle_circle_collision() {
             ..Default::default()
         },
     );
-    world.insert(c1, Collider2D::new_circle(1.0));
+    world.insert(c1, PhysicsCollider2D::new_circle(1.0));
     world.insert(
         c1,
         RigidBody2D {
@@ -71,7 +71,7 @@ fn test_physics2d_circle_circle_collision() {
             ..Default::default()
         },
     );
-    world.insert(c2, Collider2D::new_circle(1.0));
+    world.insert(c2, PhysicsCollider2D::new_circle(1.0));
     world.insert(
         c2,
         RigidBody2D {
@@ -104,7 +104,7 @@ fn test_physics2d_box_box_collision() {
             ..Default::default()
         },
     );
-    world.insert(floor, Collider2D::new_box(10.0, 1.0));
+    world.insert(floor, PhysicsCollider2D::new_box(10.0, 1.0));
     world.insert(
         floor,
         RigidBody2D {
@@ -122,7 +122,7 @@ fn test_physics2d_box_box_collision() {
             ..Default::default()
         },
     );
-    world.insert(box_e, Collider2D::new_box(1.0, 1.0));
+    world.insert(box_e, PhysicsCollider2D::new_box(1.0, 1.0));
     world.insert(
         box_e,
         RigidBody2D {
@@ -153,7 +153,7 @@ fn test_physics2d_sensor_events() {
             ..Default::default()
         },
     );
-    let mut sensor_col = Collider2D::new_circle(2.0);
+    let mut sensor_col = PhysicsCollider2D::new_circle(2.0);
     sensor_col.is_sensor = true;
     world.insert(sensor, sensor_col);
 
@@ -166,7 +166,7 @@ fn test_physics2d_sensor_events() {
             ..Default::default()
         },
     );
-    world.insert(walker, Collider2D::new_circle(0.5));
+    world.insert(walker, PhysicsCollider2D::new_circle(0.5));
     world.insert(
         walker,
         RigidBody2D {
@@ -206,7 +206,7 @@ fn test_physics2d_raycast_circle() {
             ..Default::default()
         },
     );
-    world.insert(circle, Collider2D::new_circle(1.0));
+    world.insert(circle, PhysicsCollider2D::new_circle(1.0));
 
     // 从原点向 +X 发射射线
     let hit =
@@ -228,7 +228,7 @@ fn test_physics2d_raycast_box() {
             ..Default::default()
         },
     );
-    world.insert(box_e, Collider2D::new_box(2.0, 1.0));
+    world.insert(box_e, PhysicsCollider2D::new_box(2.0, 1.0));
 
     // 从下方往 +Y 发射射线
     let hit = raycast_2d(&world, [0.0, 0.0], [0.0, 1.0], 10.0, 0xFFFF_FFFF)
@@ -251,7 +251,7 @@ fn test_physics2d_overlap_queries() {
             ..Default::default()
         },
     );
-    world.insert(e1, Collider2D::new_circle(1.0));
+    world.insert(e1, PhysicsCollider2D::new_circle(1.0));
 
     let e2 = world.spawn();
     world.insert(
@@ -261,7 +261,7 @@ fn test_physics2d_overlap_queries() {
             ..Default::default()
         },
     );
-    world.insert(e2, Collider2D::new_box(1.0, 1.0));
+    world.insert(e2, PhysicsCollider2D::new_box(1.0, 1.0));
 
     let circle_hits = overlap_circle_2d(&world, [0.0, 0.0], 3.0, 0xFFFF_FFFF);
     assert!(circle_hits.contains(&e1));

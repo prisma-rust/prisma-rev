@@ -43,7 +43,7 @@ pub mod keys {
     pub const OTHER_BASE: usize = 30;
 }
 
-pub const ABI_VERSION: u32 = 11;
+pub const ABI_VERSION: u32 = 13;
 
 pub const SUCCESS: i32 = 0;
 pub const INVALID_ARGUMENT: i32 = 1;
@@ -99,6 +99,8 @@ pub const HOST_CAP_SAVE: u64 = 1 << 8;
 /// 一次性音效（`play_sound` / `stop_sound`，#987）。宿主注入音频实现后才会
 /// 声明该能力位；没有它时编辑器 Play 是一次性音效的哑巴。
 pub const HOST_CAP_AUDIO: u64 = 1 << 9;
+/// 2D AABB collider queries (`Collider2D` world bounds).
+pub const HOST_CAP_PHYSICS_2D: u64 = 1 << 10;
 
 /// An entity handle crossing the ABI.
 ///
@@ -212,6 +214,8 @@ pub struct InputSnapshot {
     pub touch_count: u32,
     /// Touch table; only the first `touch_count` entries are valid.
     pub touches: [TouchSnapshot; 10],
+    /// Remainder of the host fixed-step accumulator, in `0..=1`.
+    pub interpolation_alpha: f32,
 }
 
 impl InputSnapshot {
@@ -235,6 +239,7 @@ impl InputSnapshot {
         key_edges: [0; 8],
         touch_count: 0,
         touches: [TouchSnapshot::EMPTY; Self::MAX_TOUCHES],
+        interpolation_alpha: 0.0,
     };
 
     pub fn set_key(&mut self, index: usize, down: bool) {
@@ -376,6 +381,28 @@ pub type Raycast = unsafe extern "C" fn(
     max_distance: f32,
     layer_mask: u32,
     out_hit: *mut RaycastHit,
+) -> i32;
+
+/// One active 2D collider in world space.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Collider2DHit {
+    pub entity: EntityHandle,
+    /// World-space AABB `[min_x, min_y, max_x, max_y]`.
+    pub bounds: [f32; 4],
+    pub is_trigger: u8,
+    pub _reserved: [u8; 3],
+    pub layer: u32,
+}
+
+/// Enumerates active 2D colliders matching a layer mask. A null output pointer
+/// performs a count-only query; the result is valid until the next host call.
+pub type QueryColliders2D = unsafe extern "C" fn(
+    user_data: *mut core::ffi::c_void,
+    layer_mask: u32,
+    out_colliders: *mut Collider2DHit,
+    capacity: usize,
+    out_count: *mut usize,
 ) -> i32;
 
 /// 写入一条玩家存档（#984）：`0` = 已落盘，负数为错误码（没有能力 / 写失败）。
@@ -544,6 +571,8 @@ pub struct HostApi {
     pub unload_scene: Option<UnloadScene>,
     /// Physics ray query (#522); capability bit [`HOST_CAP_PHYSICS`].
     pub raycast: Option<Raycast>,
+    /// 2D collider query; capability bit [`HOST_CAP_PHYSICS_2D`].
+    pub query_colliders2d: Option<QueryColliders2D>,
     /// 玩家存档（#984）；能力位 [`HOST_CAP_SAVE`]。
     pub save_value: Option<SaveValue>,
     pub load_value: Option<LoadValue>,
@@ -580,6 +609,7 @@ impl HostApi {
             load_scene: None,
             unload_scene: None,
             raycast: None,
+            query_colliders2d: None,
             save_value: None,
             load_value: None,
 
@@ -596,6 +626,10 @@ pub type CreateProject =
 pub type TickProject =
     unsafe extern "C" fn(host: *const HostApi, state: *mut core::ffi::c_void, dt: f32) -> i32;
 
+/// One deterministic gameplay simulation step.
+pub type FixedUpdateProject =
+    unsafe extern "C" fn(host: *const HostApi, state: *mut core::ffi::c_void, dt: f32) -> i32;
+
 pub type ShutdownProject = unsafe extern "C" fn(state: *mut core::ffi::c_void);
 
 /// Exported entry point resolved by the runtime host.
@@ -609,6 +643,7 @@ pub struct ProjectApi {
     pub schema_fingerprint: u64,
     pub create: Option<CreateProject>,
     pub tick: Option<TickProject>,
+    pub fixed_update: Option<FixedUpdateProject>,
     pub shutdown: Option<ShutdownProject>,
 }
 
@@ -619,6 +654,7 @@ impl ProjectApi {
             schema_fingerprint: 0,
             create: None,
             tick: None,
+            fixed_update: None,
             shutdown: None,
         }
     }

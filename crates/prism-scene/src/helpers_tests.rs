@@ -124,3 +124,109 @@ fn has_children_works() {
     HierarchyHelper::reparent(&mut world, child, Some(parent));
     assert!(HierarchyHelper::has_children(&world, parent));
 }
+
+#[test]
+fn active_hierarchy_queries_read_current_parent_state_without_waiting_for_propagation() {
+    use crate::components::Active;
+
+    let mut world = World::new();
+    let parent = world.spawn();
+    let child = world.spawn();
+    HierarchyHelper::reparent(&mut world, child, Some(parent));
+
+    world.insert(parent, Active(true));
+    assert!(is_active_in_hierarchy(&world, child));
+
+    world.insert(parent, Active(false));
+    assert!(!is_active_in_hierarchy(&world, child));
+
+    world.insert(parent, Active(true));
+    assert!(is_active_in_hierarchy(&world, child));
+}
+
+#[test]
+fn world_matrix_reads_current_parent_and_child_locals_before_propagation() {
+    use crate::components::{LocalToWorld, LocalTransform};
+
+    let mut world = World::new();
+    let parent = world.spawn();
+    let child = world.spawn();
+    world.insert(
+        parent,
+        LocalTransform {
+            position: glam::Vec3::new(10.0, 20.0, 0.0),
+            ..LocalTransform::default()
+        },
+    );
+    world.insert(
+        child,
+        LocalTransform {
+            position: glam::Vec3::new(3.0, 4.0, 0.0),
+            ..LocalTransform::default()
+        },
+    );
+    HierarchyHelper::reparent(&mut world, child, Some(parent));
+    world.insert(child, LocalToWorld(glam::Mat4::IDENTITY));
+    world.get_mut::<LocalTransform>(parent).unwrap().position.x = 30.0;
+
+    let matrix = world_matrix(&world, child).unwrap();
+    assert_eq!(matrix.w_axis.truncate(), glam::Vec3::new(33.0, 24.0, 0.0));
+}
+
+#[test]
+fn world_matrix_propagates_through_transformless_nodes() {
+    use crate::components::{LocalToWorld, LocalTransform};
+
+    let mut world = World::new();
+    let root = world.spawn();
+    let middle = world.spawn();
+    let leaf = world.spawn();
+    world.insert(
+        root,
+        LocalTransform {
+            position: glam::Vec3::new(8.0, 12.0, 0.0),
+            ..LocalTransform::default()
+        },
+    );
+    world.insert(
+        middle,
+        LocalToWorld(glam::Mat4::from_translation(glam::Vec3::splat(500.0))),
+    );
+    world.insert(
+        leaf,
+        LocalTransform {
+            position: glam::Vec3::new(2.0, 3.0, 0.0),
+            ..LocalTransform::default()
+        },
+    );
+    HierarchyHelper::reparent(&mut world, middle, Some(root));
+    HierarchyHelper::reparent(&mut world, leaf, Some(middle));
+
+    let matrix = world_matrix(&world, leaf).unwrap();
+    assert_eq!(matrix.w_axis.truncate(), glam::Vec3::new(10.0, 15.0, 0.0));
+    assert_eq!(
+        world_matrix(&world, middle).unwrap().w_axis.truncate(),
+        glam::Vec3::new(8.0, 12.0, 0.0)
+    );
+}
+
+#[test]
+fn world_matrix_does_not_use_cached_transform_from_a_cycle() {
+    use crate::components::{LocalToWorld, LocalTransform};
+
+    let mut world = World::new();
+    let a = world.spawn();
+    let b = world.spawn();
+    world.insert(a, LocalTransform::default());
+    world.insert(b, LocalTransform::default());
+    world.insert(a, Parent(b));
+    world.insert(b, Parent(a));
+    world.insert(a, Child(vec![b]));
+    world.insert(b, Child(vec![a]));
+    world.insert(
+        a,
+        LocalToWorld(glam::Mat4::from_translation(glam::Vec3::splat(900.0))),
+    );
+
+    assert!(world_matrix(&world, a).is_none());
+}

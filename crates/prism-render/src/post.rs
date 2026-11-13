@@ -112,6 +112,11 @@ pub struct PostPass {
     /// Motion-blur matrix UBOs (set 0 binding 3), one per frame in flight.
     motion_buffers: Vec<vk::Buffer>,
     motion_memories: Vec<vk::DeviceMemory>,
+    /// Zeroed stand-in bound to set 0 binding 4 until
+    /// [`Self::set_adapted_luminance`] supplies the metering pass's buffer.
+    /// Owned by this pass, so it is freed in [`Self::destroy`].
+    luminance_fallback: vk::Buffer,
+    luminance_fallback_memory: vk::DeviceMemory,
     /// Previous frame's view-projection, used to reproject static pixels.
     /// `None` on the first frame (velocity is zero).
     prev_view_proj: Option<[[f32; 4]; 4]>,
@@ -209,6 +214,15 @@ impl PostPass {
                 .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            // Adapted luminance from `AutoExposurePass` (set 0, binding 4).
+            // Bound once by `set_adapted_luminance`; until then it points at a
+            // 1-element zeroed buffer so the descriptor is always valid and the
+            // shader's `auto_exposure()` returns its no-op 1.0.
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(shader_bindings::post::ADAPTED_LUMINANCE_BINDING)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
         ];
         let ds_layout = unsafe {
             device.create_descriptor_set_layout(
@@ -231,6 +245,10 @@ impl PostPass {
                         },
                         vk::DescriptorPoolSize {
                             ty: vk::DescriptorType::UNIFORM_BUFFER,
+                            descriptor_count: fif,
+                        },
+                        vk::DescriptorPoolSize {
+                            ty: vk::DescriptorType::STORAGE_BUFFER,
                             descriptor_count: fif,
                         },
                     ]),
@@ -312,6 +330,34 @@ impl PostPass {
             .collect();
         unsafe { device.update_descriptor_sets(&motion_writes, &[]) };
 
+        // Zeroed stand-in for the adapted-luminance buffer. `AutoExposurePass`
+        // replaces it via `set_adapted_luminance` on the first frame it runs,
+        // but the descriptor must be valid from the start: a null buffer with
+        // PARTIALLY_BOUND unset would trip validation, and a zero reading makes
+        // the shader's `auto_exposure()` return its no-op gain of 1.
+        let (luminance_fallback, luminance_fallback_memory) = crate::buffer::create_buffer(
+            context,
+            4,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        )
+        .context("PostPass: create fallback luminance buffer")?;
+        let fallback_info = vk::DescriptorBufferInfo::default()
+            .buffer(luminance_fallback)
+            .offset(0)
+            .range(4);
+        let fallback_writes: Vec<vk::WriteDescriptorSet> = descriptor_sets
+            .iter()
+            .map(|set| {
+                vk::WriteDescriptorSet::default()
+                    .dst_set(*set)
+                    .dst_binding(shader_bindings::post::ADAPTED_LUMINANCE_BINDING)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .buffer_info(std::slice::from_ref(&fallback_info))
+            })
+            .collect();
+        unsafe { device.update_descriptor_sets(&fallback_writes, &[]) };
+
         let render_pass = create_render_pass(device, color_format, final_layout)?;
 
         Ok(Self {
@@ -340,6 +386,8 @@ impl PostPass {
             lut_size: identity.size,
             motion_buffers,
             motion_memories,
+            luminance_fallback,
+            luminance_fallback_memory,
             prev_view_proj: None,
             device: Some(device.clone()),
         })
@@ -362,6 +410,34 @@ impl PostPass {
     /// asks for a swapchain-only layout.
     pub fn final_layout(&self) -> vk::ImageLayout {
         self.final_layout
+    }
+
+    /// Bind the metering pass's adapted-luminance buffer to set 0 binding 4.
+    ///
+    /// `GraphRenderer` calls this once after constructing both passes. The
+    /// buffer holds a single `uint` (a float bit pattern) and is rewritten by
+    /// `AutoExposurePass` every frame, so the descriptor only has to be updated
+    /// here — the contents change underneath it. Passing the fallback back in
+    /// restores the no-op behaviour.
+    pub fn set_adapted_luminance(&mut self, device: &ash::Device, buffer: vk::Buffer) {
+        let info = vk::DescriptorBufferInfo::default()
+            .buffer(buffer)
+            .offset(0)
+            .range(4);
+        let writes: Vec<vk::WriteDescriptorSet> = self
+            .descriptor_sets
+            .iter()
+            .map(|set| {
+                vk::WriteDescriptorSet::default()
+                    .dst_set(*set)
+                    .dst_binding(shader_bindings::post::ADAPTED_LUMINANCE_BINDING)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .buffer_info(std::slice::from_ref(&info))
+            })
+            .collect();
+        if !writes.is_empty() {
+            unsafe { device.update_descriptor_sets(&writes, &[]) };
+        }
     }
 
     /// Ensure the framebuffer for `image_index` exists and is built against the
@@ -778,6 +854,14 @@ impl PostPass {
             if memory != vk::DeviceMemory::null() {
                 unsafe { device.free_memory(memory, None) };
             }
+        }
+        if self.luminance_fallback != vk::Buffer::null() {
+            unsafe { device.destroy_buffer(self.luminance_fallback, None) };
+            self.luminance_fallback = vk::Buffer::null();
+        }
+        if self.luminance_fallback_memory != vk::DeviceMemory::null() {
+            unsafe { device.free_memory(self.luminance_fallback_memory, None) };
+            self.luminance_fallback_memory = vk::DeviceMemory::null();
         }
         self.device = None;
     }

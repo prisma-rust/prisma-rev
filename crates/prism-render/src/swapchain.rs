@@ -115,7 +115,8 @@ impl Swapchain {
             swapchain,
             images,
             views,
-        } = create_swapchain(context, surface, vk::SwapchainKHR::null(), present_mode)?;
+        } = create_swapchain(context, surface, vk::SwapchainKHR::null(), present_mode)?
+            .context("surface has zero extent during initial swapchain creation")?;
         let n_images = images.len();
         let sem_info = vk::SemaphoreCreateInfo::default();
         let image_available = (0..FRAMES_IN_FLIGHT)
@@ -171,29 +172,54 @@ impl Swapchain {
         self.present_mode = mode;
     }
 
+    /// Query the extent currently requested by the surface without replacing
+    /// the live swapchain. A minimized Win32 surface reports `0x0`.
+    pub fn desired_extent(
+        &self,
+        physical_device: vk::PhysicalDevice,
+    ) -> anyhow::Result<vk::Extent2D> {
+        let capabilities = unsafe {
+            self._surface_ext
+                .get_physical_device_surface_capabilities(physical_device, self.surface)
+        }
+        .context("get surface capabilities")?;
+        Ok(choose_extent(&capabilities))
+    }
+
     /// Recreate the swapchain for a new window size. Waits for the device to
     /// be idle first. Transactional: if creating the new swapchain fails, the
     /// existing one (and its semaphores) are left intact so rendering can
     /// retry later rather than end up with dangling handles.
     pub fn recreate(&mut self, context: &VulkanContext) -> anyhow::Result<()> {
+        self.recreate_if_drawable(context)?;
+        Ok(())
+    }
+
+    pub(crate) fn recreate_if_drawable(&mut self, context: &VulkanContext) -> anyhow::Result<bool> {
+        if !extent_is_drawable(self.desired_extent(context.physical_device)?) {
+            return Ok(false);
+        }
         unsafe { context.device.device_wait_idle() }.context("wait idle during recreate")?;
 
         let old_swapchain = self.swapchain;
         // Build the new swapchain first, handing off the old one so the
         // implementation can retire it cleanly (avoids NATIVE_WINDOW_IN_USE).
-        let SwapchainOutput {
+        let Some(SwapchainOutput {
             format,
             extent,
             pre_transform,
             swapchain,
             images,
             views,
-        } = create_swapchain(context, self.surface, old_swapchain, self.present_mode).map_err(
+        }) = create_swapchain(context, self.surface, old_swapchain, self.present_mode).map_err(
             |e| {
                 log::warn!("swapchain recreate failed, keeping old swapchain: {e}");
                 e
             },
-        )?;
+        )?
+        else {
+            return Ok(false);
+        };
 
         // Old views and per-image render-finished semaphores go with the old
         // swapchain; build replacements sized to the new image set.
@@ -222,7 +248,7 @@ impl Swapchain {
         self.images = images;
         self.views = views;
         self.render_finished = new_render_finished;
-        Ok(())
+        Ok(true)
     }
 
     /// Acquire the next image, returning `(image_index, frame, image_available,
@@ -349,7 +375,7 @@ fn create_swapchain(
     surface: vk::SurfaceKHR,
     old_swapchain: vk::SwapchainKHR,
     present_mode: vk::PresentModeKHR,
-) -> anyhow::Result<SwapchainOutput> {
+) -> anyhow::Result<Option<SwapchainOutput>> {
     let surface_ext = ash::khr::surface::Instance::new(&context.entry, &context.instance);
 
     let capabilities = unsafe {
@@ -382,6 +408,9 @@ fn create_swapchain(
 
     let format = choose_surface_format(&formats);
     let extent = choose_extent(&capabilities);
+    if !extent_is_drawable(extent) {
+        return Ok(None);
+    }
     // Honor the presentation engine's current orientation. On a landscape app
     // running on a portrait-native device this is `ROTATE_90`/`ROTATE_270`, so
     // the compositor rotates the (portrait) swapchain buffer to landscape.
@@ -422,14 +451,14 @@ fn create_swapchain(
         .map(|image| create_image_view(context, *image, format.format))
         .collect::<anyhow::Result<Vec<_>>>()?;
 
-    Ok(SwapchainOutput {
+    Ok(Some(SwapchainOutput {
         format,
         extent,
         pre_transform,
         swapchain,
         images,
         views,
-    })
+    }))
 }
 
 fn choose_surface_format(available: &[vk::SurfaceFormatKHR]) -> vk::SurfaceFormatKHR {
@@ -504,6 +533,10 @@ fn choose_extent(caps: &vk::SurfaceCapabilitiesKHR) -> vk::Extent2D {
     }
 }
 
+fn extent_is_drawable(extent: vk::Extent2D) -> bool {
+    extent.width > 0 && extent.height > 0
+}
+
 fn create_image_view(
     context: &VulkanContext,
     image: vk::Image,
@@ -554,6 +587,35 @@ mod tests {
             pick_present_mode(&[vk::PresentModeKHR::FIFO], true),
             vk::PresentModeKHR::FIFO
         );
+    }
+
+    #[test]
+    fn choose_extent_preserves_zero_sized_suspended_surfaces() {
+        let caps = vk::SurfaceCapabilitiesKHR {
+            current_extent: vk::Extent2D {
+                width: 0,
+                height: 0,
+            },
+            min_image_extent: vk::Extent2D {
+                width: 1,
+                height: 1,
+            },
+            max_image_extent: vk::Extent2D {
+                width: 4096,
+                height: 4096,
+            },
+            ..Default::default()
+        };
+        assert_eq!(choose_extent(&caps), caps.current_extent);
+        assert!(!extent_is_drawable(choose_extent(&caps)));
+        assert!(!extent_is_drawable(vk::Extent2D {
+            width: 1280,
+            height: 0,
+        }));
+        assert!(extent_is_drawable(vk::Extent2D {
+            width: 1280,
+            height: 720,
+        }));
     }
 
     #[test]

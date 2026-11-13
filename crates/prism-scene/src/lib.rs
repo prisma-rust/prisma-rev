@@ -21,7 +21,7 @@ pub mod terrain;
 pub mod ui;
 
 pub use components::*;
-pub use helpers::HierarchyHelper;
+pub use helpers::{is_active_in_hierarchy, world_matrix, HierarchyHelper};
 pub use json::{EntityJson, SceneJson, TransformJson};
 pub use manifest::{SceneManifest, SceneManifestEntry};
 pub use migrate::{doc_version, migrate_scene_doc, normalize_scene_doc, SCENE_DOC_VERSION};

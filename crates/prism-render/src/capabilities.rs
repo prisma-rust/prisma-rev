@@ -40,6 +40,22 @@ pub struct RayTracingCaps {
     pub timeline_semaphore: bool,
     pub synchronization2: bool,
     pub copy_commands2: bool,
+    /// `shaderBufferInt64Atomics` available (64-bit atomics, used by RTXGI SHARC).
+    pub shader_buffer_int64_atomics: bool,
+    /// `shaderInt64` available. RTXGI's hash-grid key packing (`HashGridKey`)
+    /// is a `uint64_t`, so a shader module that declares the SPIR-V `Int64`
+    /// capability cannot be created without this feature.
+    pub shader_int64: bool,
+    /// `shaderFloat16` available. SHARC packs cached radiance as `float16_t4`.
+    pub shader_float16: bool,
+    /// `storageBuffer16BitAccess` available. The packed `SharcPackedData`
+    /// storage buffer holds 16-bit components, which needs this feature in
+    /// addition to `shaderFloat16`.
+    pub storage_buffer_16bit_access: bool,
+    /// `uniformAndStorageBuffer16BitAccess` available. Slang emits this
+    /// capability (alongside `StorageBuffer16BitAccess`) for the SHARC cache
+    /// buffers, and Vulkan 1.1 wants both feature bits enabled to match.
+    pub uniform_and_storage_buffer_16bit_access: bool,
 
     // -- Layer 2: acceleration structures (prerequisite for any RT) --
     /// `VK_KHR_acceleration_structure` extension + feature available.
@@ -222,12 +238,16 @@ pub unsafe fn probe(
     // --- feature chain: query what the driver actually supports ---
     // We chain Vulkan12Features + the three RT feature structs (when their
     // extensions are advertised) and read back the support bools.
+    let mut vk11 = vk::PhysicalDeviceVulkan11Features::default();
     let mut vk12 = vk::PhysicalDeviceVulkan12Features::default();
     let mut accel_features = vk::PhysicalDeviceAccelerationStructureFeaturesKHR::default();
     let mut rt_pipeline_features = vk::PhysicalDeviceRayTracingPipelineFeaturesKHR::default();
     let mut ray_query_features = vk::PhysicalDeviceRayQueryFeaturesKHR::default();
 
-    let mut features2 = vk::PhysicalDeviceFeatures2::default().push_next(&mut vk12);
+    let mut features2 = vk::PhysicalDeviceFeatures2::default()
+        .push_next(&mut vk11)
+        .push_next(&mut vk12);
+
     if has_accel_ext {
         features2 = features2.push_next(&mut accel_features);
     }
@@ -244,6 +264,15 @@ pub unsafe fn probe(
     let buffer_device_address = vk12.buffer_device_address == vk::TRUE;
     let descriptor_indexing = vk12.descriptor_indexing == vk::TRUE;
     let timeline_semaphore = vk12.timeline_semaphore == vk::TRUE;
+    let shader_buffer_int64_atomics = vk12.shader_buffer_int64_atomics == vk::TRUE;
+    let shader_float16 = vk12.shader_float16 == vk::TRUE;
+    let storage_buffer_16bit_access = vk11.storage_buffer16_bit_access == vk::TRUE;
+    let uniform_and_storage_buffer_16bit_access =
+        vk11.uniform_and_storage_buffer16_bit_access == vk::TRUE;
+    // `shaderInt64` lives in the legacy `VkPhysicalDeviceFeatures`, not in the
+    // Vulkan12 struct, so it needs its own query.
+    let legacy_features = unsafe { instance.get_physical_device_features(physical_device) };
+    let shader_int64 = legacy_features.shader_int64 == vk::TRUE;
 
     // Layer 2: acceleration structure (real only when ext + feature agree).
     let acceleration_structure = has_accel_ext
@@ -279,6 +308,11 @@ pub unsafe fn probe(
             || has_extension(&available, vk::KHR_SYNCHRONIZATION2_NAME.to_str().unwrap()),
         copy_commands2: vulkan_1_3
             || has_extension(&available, vk::KHR_COPY_COMMANDS2_NAME.to_str().unwrap()),
+        shader_buffer_int64_atomics,
+        shader_int64,
+        shader_float16,
+        storage_buffer_16bit_access,
+        uniform_and_storage_buffer_16bit_access,
         acceleration_structure,
         deferred_host_operations,
         ray_tracing_pipeline,

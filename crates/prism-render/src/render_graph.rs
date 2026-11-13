@@ -236,6 +236,30 @@ pub enum ShadowMode {
     Auto,
 }
 
+/// Global Illumination technique selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum GiMode {
+    /// Pure path-traced reference (no radiance cache).
+    #[default]
+    Off,
+    /// NVIDIA RTXGI SHARC (Spatially Hashed Radiance Cache).
+    Sharc,
+    /// NVIDIA Neural Radiance Cache.
+    Nrc,
+}
+
+/// DLSS upscaling mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum DlssMode {
+    #[default]
+    Off,
+    Quality,
+    Balanced,
+    Performance,
+    UltraPerformance,
+    Dlaa,
+}
+
 /// Quality / feature settings that passes consult at execution time.
 /// These are the runtime-switchable knobs described in
 /// `docs/mobile-raytracing-gi-design.md`.
@@ -252,12 +276,35 @@ pub struct RenderSettings {
     /// Setting to 1.0 disables half-resolution (user wants full quality).
     pub ray_query_resolution_scale: f32,
 
+    /// Global Illumination technique mode (Off / SHARC / NRC).
+    pub gi_mode: GiMode,
+
     /// SHARC hash-map capacity (number of voxel slots).
     /// Mobile default: 2^20 (1M). Desktop: 2^23 (8M).
     pub sharc_capacity: u32,
 
     /// SHARC scene scale — controls voxel physical size.
     pub sharc_scene_scale: f32,
+
+    /// SHARC cache clear toggle.
+    pub sharc_enable_clear: bool,
+    /// SHARC cache update toggle.
+    pub sharc_enable_update: bool,
+    /// SHARC cache resolve toggle.
+    pub sharc_enable_resolve: bool,
+    /// SHARC anti-firefly filter toggle.
+    pub sharc_enable_anti_firefly: bool,
+    /// SHARC roughness threshold below which rays keep tracing.
+    pub sharc_roughness_threshold: f32,
+    /// SHARC downscale factor for sparse updates.
+    pub sharc_downscale_factor: u32,
+    /// SHARC temporal accumulation frame window size.
+    pub sharc_accumulation_frame_num: u32,
+    /// SHARC stale frames before eviction.
+    pub sharc_stale_frame_num: u32,
+
+    /// DLSS upscaling mode.
+    pub dlss_mode: DlssMode,
 
     /// Shadow strategy. `Auto` (default) picks RayQuery when RT is enabled and
     /// `VK_KHR_ray_query` is supported, otherwise falls back to the rasterized
@@ -292,6 +339,12 @@ pub struct RenderSettings {
     pub taa: bool,
     /// History blend weight for TAA, clamped to `0..=0.95`; 0 = current frame.
     pub taa_strength: f32,
+
+    /// Histogram auto-exposure metering (default off).
+    ///
+    /// Off keeps the pre-metering image: `AutoExposurePass` writes a zero
+    /// adapted luminance, which the tonemapper reads as a no-op gain of 1.0.
+    pub auto_exposure: bool,
     /// 内部渲染分辨率 `[宽度, 高度]`（#613）；`[0, 0]` = 关闭。
     ///
     /// 开启后场景（网格 / 2D 精灵 / 瓦片 / 粒子 / PT）按这个尺寸渲染，
@@ -315,8 +368,18 @@ impl Default for RenderSettings {
             gbuffer_high_precision: true,
             ray_tracing_enabled: false,
             ray_query_resolution_scale: 0.5,
+            gi_mode: GiMode::Off,
             sharc_capacity: 1 << 20,
-            sharc_scene_scale: 1.0,
+            sharc_scene_scale: 50.0,
+            sharc_enable_clear: false,
+            sharc_enable_update: true,
+            sharc_enable_resolve: true,
+            sharc_enable_anti_firefly: true,
+            sharc_roughness_threshold: 0.4,
+            sharc_downscale_factor: 5,
+            sharc_accumulation_frame_num: 20,
+            sharc_stale_frame_num: 60,
+            dlss_mode: DlssMode::Off,
             shadow_mode: ShadowMode::Auto,
             shadow_map_size: crate::SHADOW_MAP_SIZE,
             shadow_cascade_count: 1,
@@ -326,6 +389,7 @@ impl Default for RenderSettings {
             pt_max_iterations: 0,
             taa: false,
             taa_strength: 0.9,
+            auto_exposure: false,
             internal_resolution: [0, 0],
             internal_scale_mode: InternalScaleMode::Stretch,
             anf_sr: false,
@@ -1664,6 +1728,7 @@ impl RenderGraphBuilder {
             state_tracker: ResourceStateTracker::new(),
             lifecycles,
             last_barrier_probe: Instant::now(),
+            pass_dump: crate::pass_dump::PassDump::from_env(),
         };
         g.validate_edges();
         g
@@ -1712,6 +1777,8 @@ pub struct RenderGraph {
     /// Last time the `BARRIER_PROBE` trace lines were emitted; throttled to
     /// once per second so the log isn't flooded at frame rate.
     last_barrier_probe: Instant,
+    /// `PRISMREV_PASS_DUMP` state; a no-op unless the env var is set.
+    pass_dump: crate::pass_dump::PassDump,
 }
 
 impl RenderGraph {
@@ -1935,6 +2002,10 @@ impl RenderGraph {
     ) -> Result<()> {
         self.graph_resources.clear_frame();
 
+        // `PRISMREV_PASS_DUMP`: decide once per frame whether to snapshot the
+        // published attachments at the end. A no-op unless the env var is set.
+        let capture = self.pass_dump.should_capture();
+
         // Throttle the BARRIER_PROBE trace lines to once per second so the log
         // isn't flooded at frame rate. The probe is a debugging aid for the
         // automatic barrier pipeline; gating it here avoids passing `Instant`
@@ -2011,7 +2082,241 @@ impl RenderGraph {
                 .apply_writes(&self.pass_edges[pass_idx], ctx.image_index);
         }
 
+        if capture {
+            self.dump_published_images(ctx);
+            self.pass_dump.mark_captured();
+        }
+
         Ok(())
+    }
+
+    /// Copy the graph's published color attachments into host-visible buffers
+    /// for `PRISMREV_PASS_DUMP` (see [`crate::pass_dump`]).
+    ///
+    /// Runs after every pass has executed, so each image is in the layout the
+    /// state tracker recorded for its last write.
+    fn dump_published_images(&mut self, ctx: &RenderContext) {
+        // (handle, name, format, kind)
+        let targets = [
+            (
+                FORWARD_COLOR_H,
+                "forward_color",
+                vk::Format::R16G16B16A16_SFLOAT,
+                crate::pass_dump::DumpKind::Radiance,
+            ),
+            (
+                FORWARD_NORMAL_H,
+                "forward_normal",
+                vk::Format::R16G16B16A16_SFLOAT,
+                crate::pass_dump::DumpKind::Normal,
+            ),
+            (
+                FORWARD_DEPTH_H,
+                "forward_depth",
+                vk::Format::D32_SFLOAT,
+                crate::pass_dump::DumpKind::Depth,
+            ),
+            (
+                PT_COLOR_H,
+                "pt_color",
+                vk::Format::R32G32B32A32_SFLOAT,
+                crate::pass_dump::DumpKind::Radiance,
+            ),
+        ];
+
+        for (handle, name, format, kind) in targets {
+            let Some(image) = self.graph_resources.published_image(handle) else {
+                log::warn!("pass dump: {name} was not published this frame");
+                continue;
+            };
+            let Some(path) = self.pass_dump.path_for(name) else {
+                continue;
+            };
+            let state = self.state_tracker.get(handle, ctx.image_index);
+            let layout = if state.layout == vk::ImageLayout::UNDEFINED {
+                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+            } else {
+                state.layout
+            };
+
+            if let Err(err) = self.record_dump(
+                ctx,
+                name,
+                image,
+                ctx.render_extent,
+                format,
+                kind,
+                layout,
+                state.access,
+                path,
+            ) {
+                log::warn!("pass dump: {name} failed: {err}");
+            }
+        }
+
+        // The shadow atlas is graph-owned (ShadowMapPass does not publish it)
+        // and its extent is the atlas size, not the render extent.
+        if let Some(image) = self.graph_resources.image(SHADOW_MAP_H) {
+            let atlas_extent = self
+                .graph_resources
+                .resources
+                .get(&SHADOW_MAP_H)
+                .and_then(|r| match r.res_type {
+                    ResourceType::DepthAttachment { extent, .. } => Some(extent),
+                    _ => None,
+                });
+            if let (Some(extent), Some(path)) =
+                (atlas_extent, self.pass_dump.path_for("shadow_map"))
+            {
+                let name = "shadow_map";
+                let layout = vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+                let access = vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE;
+                if let Err(err) = self.record_dump(
+                    ctx,
+                    name,
+                    image,
+                    extent,
+                    vk::Format::D32_SFLOAT,
+                    crate::pass_dump::DumpKind::Depth,
+                    layout,
+                    access,
+                    path,
+                ) {
+                    log::warn!("pass dump: {name} failed: {err}");
+                }
+            } else {
+                log::warn!("pass dump: shadow_map has no atlas extent");
+            }
+        } else {
+            log::warn!("pass dump: shadow_map was not allocated this frame");
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_dump(
+        &mut self,
+        ctx: &RenderContext,
+        name: &str,
+        image: vk::Image,
+        extent: vk::Extent2D,
+        format: vk::Format,
+        kind: crate::pass_dump::DumpKind,
+        old_layout: vk::ImageLayout,
+        old_access: vk::AccessFlags,
+        path: std::path::PathBuf,
+    ) -> anyhow::Result<()> {
+        use crate::pass_dump::image_bytes;
+
+        let (buffer, memory) = crate::buffer::create_buffer(
+            ctx.context,
+            image_bytes(extent, format),
+            vk::BufferUsageFlags::TRANSFER_DST,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        )?;
+
+        let aspect = if format == vk::Format::D32_SFLOAT {
+            vk::ImageAspectFlags::DEPTH
+        } else {
+            vk::ImageAspectFlags::COLOR
+        };
+        let range = vk::ImageSubresourceRange::default()
+            .aspect_mask(aspect)
+            .base_mip_level(0)
+            .level_count(1)
+            .base_array_layer(0)
+            .layer_count(1);
+
+        let to_transfer = vk::ImageMemoryBarrier::default()
+            .old_layout(old_layout)
+            .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(image)
+            .subresource_range(range)
+            .src_access_mask(old_access)
+            .dst_access_mask(vk::AccessFlags::TRANSFER_READ);
+
+        // Put the image back so the recorded layout still matches reality.
+        let restore = vk::ImageMemoryBarrier::default()
+            .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+            .new_layout(old_layout)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(image)
+            .subresource_range(range)
+            .src_access_mask(vk::AccessFlags::TRANSFER_READ)
+            .dst_access_mask(old_access);
+
+        let region = vk::BufferImageCopy::default()
+            .buffer_offset(0)
+            .buffer_row_length(0)
+            .buffer_image_height(0)
+            .image_subresource(
+                vk::ImageSubresourceLayers::default()
+                    .aspect_mask(aspect)
+                    .mip_level(0)
+                    .base_array_layer(0)
+                    .layer_count(1),
+            )
+            .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+            .image_extent(vk::Extent3D {
+                width: extent.width,
+                height: extent.height,
+                depth: 1,
+            });
+
+        unsafe {
+            ctx.device.cmd_pipeline_barrier(
+                ctx.cmd,
+                vk::PipelineStageFlags::ALL_COMMANDS,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[to_transfer],
+            );
+            ctx.device.cmd_copy_image_to_buffer(
+                ctx.cmd,
+                image,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                buffer,
+                &[region],
+            );
+            ctx.device.cmd_pipeline_barrier(
+                ctx.cmd,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::ALL_COMMANDS,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[restore],
+            );
+        }
+
+        self.pass_dump.push(crate::pass_dump::PendingDump {
+            buffer,
+            memory,
+            extent,
+            format,
+            kind,
+            path,
+        });
+        log::info!(
+            "pass dump: captured {name} ({}x{})",
+            extent.width,
+            extent.height
+        );
+        Ok(())
+    }
+
+    /// Decode pending dumps into PNGs. Call after the frame fence signalled.
+    pub fn flush_pass_dump(&mut self, device: &ash::Device) -> anyhow::Result<()> {
+        self.pass_dump.flush(device)
+    }
+
+    /// Release pending dump buffers without writing them.
+    pub fn discard_pass_dump(&mut self, device: &ash::Device) {
+        self.pass_dump.discard(device);
     }
 
     /// Allocate (or re-use) Vulkan resources for all declared graph resources.
@@ -2057,7 +2362,8 @@ impl RenderGraph {
                         *sample_count,
                         vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
                             | vk::ImageUsageFlags::INPUT_ATTACHMENT
-                            | vk::ImageUsageFlags::SAMPLED,
+                            | vk::ImageUsageFlags::SAMPLED
+                            | vk::ImageUsageFlags::TRANSFER_SRC,
                     )?;
                     res.image = Some(image);
                     res.image_view = Some(view);

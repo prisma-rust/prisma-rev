@@ -1176,6 +1176,9 @@ cp target/release/prisma /tmp/p && strip /tmp/p && ls -l /tmp/p   # strip 后（
 | 砖块 | feature | 默认 | 关掉后省什么 |
 |---|---|---|---|
 | 路径追踪 | `prism-render/pathtrace` | on | `pt_pass.rs`（~1.6k 行）+ 累积/BLAS-TLAS 资源 |
+| RTXGI (SHARC) | `prism-render/rtxgi`（依赖 `pathtrace`） | off | NVIDIA RTXGI SHARC v1.6 世界空间辐射缓存（`sharc.rs` + resolve 计算管线 + 3 个持久 GPU 缓冲） |
+| NRC | `prism-render/nrc`（依赖 `pathtrace`） | off | NVIDIA Neural Radiance Cache 接入 |
+| DLSS | `prism-render/dlss` | off | NVIDIA Streamline / DLSS 超分辨率与光线重构接入 |
 | 音频 | `prism-app/audio` + `prism-engine/audio` | off | cpal + firewheel + symphonia（~60 crate，−3.1 MB） |
 | 物理 | `prism-app/physics` | off | rapier3d + parry3d（~40 crate） |
 | 异步资产 IO | `prism-asset/async-io` | off | tokio |
@@ -1568,3 +1571,40 @@ powershell -File scripts/build-dist.ps1 -Pack projects/prisma   # Windows 主机
 一个实现细节：UPX **就地覆盖** `target/<target>/<profile>/<pkg>` 下的产物，
 所以同一个 target 里再跑一次不带 `--pack` 的构建不会把它「解压」回来
 （cargo 认为产物是最新的）；需要干净产物就改一行代码触发重新链接，或直接删掉文件。
+
+## 13. 2D 物理几何内核
+
+`prism-physics2d` 提供不依赖 ECS、渲染或刚体后端的确定性 2D 碰撞几何，
+`prism-engine::physics2d` 与 `prism-game-api::physics2d` re-export 同一实现。
+这让静态 Player 与编辑器动态项目模块可以共用游戏移动代码，不需要跨 ABI 发送房间几何，
+也不会让插件链接第二份 `prism-engine`。
+
+`prism-scene::Collider2D` 是场景组件层的 AABB 碰撞体，支持局部偏移、触发器和 layer mask；
+其世界边界与 `SpriteRenderer::world_bounds` 共用 XY 变换规则，包含局部缩放、旋转和 pivot。
+`GameWorld::colliders2d`、`overlap2d` 与 `move_and_slide2d` 在静态 Player 和项目模块中使用
+同一套接口。碰撞查询按当前 `Parent` 链即时合成局部变换，确保同一玩法步内刚修改的父子位置
+也会参与碰撞；无局部变换的运行时实体回退到 `LocalToWorld`。因此父级平移、旋转、缩放下的
+精灵、粒子、门和触发器与碰撞保持一致。
+
+引擎把玩法更新分成每帧 `Schedule` 和固定步 `fixed_schedule`。`App::add_fixed_game_system`
+注册固定步玩法；引擎在 `begin_frame` 缓存这一帧输入，固定步只消费一次按键按下/释放边沿，
+各子步都能读取当前按住状态。项目模块通过 ABI 可选的 `fixed_update` 回调加入相同固定步，
+普通 `tick` 仍每个渲染帧执行一次；`InputSnapshot::interpolation_alpha` 提供固定步余量供渲染插值。
+
+固定步驱动的 2D 实体可挂运行时组件 `TransformInterpolation2D`。引擎在固定步前保存其局部
+XY 位置，精灵提取与 `VirtualCamera2D` 目标读取按 `interpolation_alpha` 插值；模拟和碰撞始终
+读取当前 `LocalTransform`，渲染位置不会回写物理状态。项目通过 `GameWorld::enable_transform_interpolation2d`
+启用，并在重生、传送或切房落点后调用 `snap_transform_interpolation2d`，避免跨位置插值。
+组件属于派生运行时状态，不写入 `.scene.json` / RSCN。
+
+坐标使用 XY 平面，+X 向右、+Y 向上；Z 不参与 2D 几何。单位由调用方决定，
+因此 EchoWell 可以直接使用像素，而场景物理仍可使用米。`Aabb2` 的 `min` / `max`
+是世界空间边界；边界接触不算重叠。2D 射线距离和移动增量都使用同一世界单位。
+
+首个切片提供 AABB 重叠、AABB 射线检测和静态 AABB 障碍上的连续 `move_and_slide`：
+移动扫掠直接求接触时间，不靠逐像素子步；结果包含修正后的位置、实际位移、接触法线、
+墙面/地面/天花板标记。普通移动只把障碍作为不动几何输入，触发器由调用方从 solid 列表排除。
+圆形/多边形碰撞体、动态刚体与碰撞事件和 Rapier2D runtime
+仍未实现。GitHub issue #1160 提出的 2D 虚拟相机（阻尼、死区、边界限制、像素吸附）
+已由 `VirtualCamera2D` 场景组件和引擎系统提供；纯 2D 模式的渲染 pass 裁剪仍未实现，
+也不由当前 AABB 几何内核覆盖。

@@ -72,7 +72,12 @@ deviating from those conventions is a bug. (`README.md` is the human-facing over
   **UI-framework-free**; hosts inject UI via the neutral `SwapchainOverlay` trait (`external_overlay.rs`).
 - `crates/prism-engine` — runtime engine: render systems/settings, asset resolver, audio hookup,
   own ECS UI systems. Re-exports `prism-scene` types for path compatibility (`scene::components`,
-  `scene::component_registry`, `ui::components`). **UI-framework-free.**
+  `scene::component_registry`, `ui::components`), plus the pure `prism-physics2d` geometry API at
+  `prism_engine::physics2d`. **UI-framework-free.**
+- `crates/prism-physics2d` — deterministic 2D AABB geometry (`overlaps`, raycast, continuous
+  move-and-slide); no ECS, renderer or rigid-body backend dependency. Re-exported by
+  `prism-engine` and `prism-game-api` so project gameplay can share the same kernel in Player and
+  preview-module builds. Contract: `docs/DESIGN.md` §13.
 - `crates/prism-app` — platform layer (winit event loop, window, `FrameHook` extension point,
   `run_on_android` helper). **UI-framework-free**; the Android JNI entry lives in the user project.
 - `crates/prism-platform` — platform abstraction (window system, Vulkan surface, input routing).
@@ -169,7 +174,7 @@ deviating from those conventions is a bug. (`README.md` is the human-facing over
 
 ## Editor / user-project separation (do not regress)
 The user project's dependency chain must stay **UI-framework-free and editor-free**:
-`prisma → prism-app → prism-engine → {prism-scene, prism-ecs, prism-render, prism-asset}`.
+`prisma → prism-app → prism-engine → {prism-scene, prism-ecs, prism-render, prism-asset, prism-physics2d}`.
 `prism-cooker` / `prism-build-pipeline` are build-host only and must never appear in this chain.
 可选能力**默认关**、按 feature 打开：`prism-app/physics`、`prism-app/audio`（连带
 `prism-engine/audio` 的 `AudioSource`）、`prism-asset/async-io`。玩家树由
@@ -216,7 +221,8 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
     needs **no** ABI change.
   - `crates/prism-game-api` — one `GameWorld` surface with two backends: `host` borrows
     the host `World` directly (zero serialization), `plugin` speaks the ABI. Gameplay
-    code is written once; `cargo tree -p prism-game-api --no-default-features --features
+    code is written once; its `physics2d` re-export stays in the pure `prism-physics2d` crate,
+    so `cargo tree -p prism-game-api --no-default-features --features
     plugin -e normal` must stay free of `prism-engine` / `prism-render` / `prism-app`.
   - `projects/<p>/Cargo.toml` splits `player` (links the engine) from `preview-module`
     (cdylib that links none). Bins use `required-features = ["player"]`; `android_main`

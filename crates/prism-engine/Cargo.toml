@@ -10,6 +10,9 @@ default = ["pathtrace", "ui", "ui-fontdue", "ibl", "skybox", "shadows", "gtao", 
 legacy-disk-scenes = []
 # Modular building-block toggles: forwarded to prism-render (see docs/DESIGN.md §12).
 pathtrace = ["prism-render/pathtrace"]
+rtxgi = ["prism-render/rtxgi", "pathtrace"]
+nrc = ["prism-render/nrc", "pathtrace"]
+dlss = ["prism-render/dlss"]
 ui = ["prism-render/ui"]
 # 文本光栅后端（透传）：默认 fontdue；Windows 可选系统 DirectWrite。
 ui-fontdue = ["prism-render/ui-fontdue"]
@@ -40,6 +43,7 @@ prism-render = { path = "../prism-render", default-features = false }
 prism-asset = { path = "../prism-asset", default-features = false, features = ["runtime"] }
 prism-anim = { path = "../prism-anim" }
 prism-anim-ik = { path = "../prism-anim-ik" }
+prism-physics2d = { path = "../prism-physics2d" }
 
 prism-audio = { path = "../prism-audio", optional = true }
 glam.workspace = true

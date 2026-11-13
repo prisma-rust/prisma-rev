@@ -371,6 +371,11 @@ impl RenderMaterialManager {
         self.materials.len()
     }
 
+    /// Debug helper: the GPU mirror of one SSBO slot, if populated.
+    pub fn debug_slot(&self, slot: u32) -> Option<GpuMaterial> {
+        self.gpu_data.get(slot as usize).copied()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.materials.is_empty()
     }

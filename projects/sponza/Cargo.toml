@@ -3,21 +3,47 @@ name = "sponza"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Sponza path-tracing sample project"
+description = "Sponza path-tracing & RTXGI sample project"
 
 [workspace]
 
-# 产物名与 package 名一致：桌面二进制 `sponza` + Android cdylib `lib_sponza.so`
-# （JNI `android_main` 在 src/lib.rs）。
 [lib]
 crate-type = ["lib", "cdylib"]
 
-[dependencies]
-prism-app = { path = "../../crates/prism-app" }
-prism-engine = { path = "../../crates/prism-engine" }
+[[bin]]
+name = "sponza"
+path = "src/main.rs"
+required-features = ["player"]
 
-# 玩家 / Android 打包：体积优先（fat LTO + 单 codegen unit + abort + strip）。
-# 编辑器/工具跑在引擎进程内，不能用这个 profile。
+[features]
+default = ["player", "rtxgi"]
+player = [
+    "dep:prism-app",
+    "dep:prism-engine",
+    "prism-game-api/host",
+    "prism-app/rtxgi",
+    "prism-engine/rtxgi",
+]
+preview-module = [
+    "dep:prism-project-api",
+    "prism-game-api/plugin",
+    "prism-scene/group-3d",
+    "prism-scene/group-2d",
+    "prism-scene/group-ui",
+]
+rtxgi = []
+nrc = ["prism-app/nrc", "prism-engine/nrc"]
+dlss = ["prism-app/dlss", "prism-engine/dlss"]
+
+[dependencies]
+prism-app = { path = "../../crates/prism-app", optional = true }
+prism-engine = { path = "../../crates/prism-engine", optional = true }
+prism-game-api = { path = "../../crates/prism-game-api", default-features = false }
+prism-project-api = { path = "../../crates/prism-project-api", optional = true }
+prism-platform = { path = "../../crates/prism-platform" }
+prism-scene = { path = "../../crates/prism-scene", default-features = false }
+log = "0.4"
+
 [profile.dist]
 inherits = "release"
 lto = "fat"

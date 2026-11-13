@@ -17,7 +17,7 @@ use ash::vk;
 use slotmap::{new_key_type, SlotMap};
 
 use crate::context::VulkanContext;
-use crate::mesh::{Mesh, SkinVertex};
+use crate::mesh::{Mesh, SkinVertex, Vertex};
 
 // Local handle. The engine layer translates asset mesh handles into
 // this when it calls `RenderMeshManager::register` so the render
@@ -82,6 +82,11 @@ pub struct UploadedMesh {
     /// Only skinned meshes allocate it: the static-mesh pipeline does not
     /// declare binding 1, so unskinned meshes keep their old memory profile.
     pub skin: Option<SkinBuffer>,
+    /// CPU-side interleaved vertices preserved for acceleration structure
+    /// builds and ray-query geometry queries.
+    pub cpu_vertices: Vec<Vertex>,
+    /// CPU-side indices (or empty if unindexed).
+    pub cpu_indices: Vec<u32>,
 }
 
 /// Device-local `SkinVertex` array owned by an [`UploadedMesh`].
@@ -193,7 +198,12 @@ impl RenderMeshManager {
             indices_opt,
         )
         .context("RenderMeshManager::register: Mesh::new failed")?;
-        let handle = self.meshes.insert(UploadedMesh { mesh, skin: None });
+        let handle = self.meshes.insert(UploadedMesh {
+            mesh,
+            skin: None,
+            cpu_vertices: vertices,
+            cpu_indices: input.indices.clone(),
+        });
         Ok(handle)
     }
 
@@ -230,6 +240,8 @@ impl RenderMeshManager {
         Ok(self.meshes.insert(UploadedMesh {
             mesh,
             skin: skin_buffer,
+            cpu_vertices: vertices,
+            cpu_indices: input.indices.clone(),
         }))
     }
 
@@ -268,6 +280,8 @@ impl RenderMeshManager {
         let handle = self.meshes.insert(UploadedMesh {
             mesh,
             skin: skin_buffer,
+            cpu_vertices: vertices,
+            cpu_indices: input.indices.clone(),
         });
         Ok(handle)
     }
@@ -275,6 +289,14 @@ impl RenderMeshManager {
     /// Read-only access to a registered mesh.
     pub fn get(&self, handle: MeshHandle) -> Option<&UploadedMesh> {
         self.meshes.get(handle)
+    }
+
+    /// Get CPU-side geometry (interleaved vertices and indices) for ray-tracing
+    /// acceleration structure builds.
+    pub fn get_cpu_geometry(&self, handle: MeshHandle) -> Option<(&[crate::mesh::Vertex], &[u32])> {
+        self.meshes
+            .get(handle)
+            .map(|u| (u.cpu_vertices.as_slice(), u.cpu_indices.as_slice()))
     }
 
     /// Drop a single mesh and release its GPU resources. Subsequent calls

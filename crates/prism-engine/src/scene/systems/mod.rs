@@ -18,6 +18,7 @@ pub mod camera2d;
 mod camera2d_tests;
 pub mod foot_ik;
 pub mod hierarchy;
+pub mod interpolation2d;
 pub mod lights;
 pub mod lod;
 pub mod particles;

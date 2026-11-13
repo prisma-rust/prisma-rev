@@ -15,6 +15,7 @@
 | 写代码注释 / 统一注释风格 | [`code-style.md`](code-style.md) |
 | 给人看的贡献简版 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) |
 | 查踩过的坑和根因 | [`lessons-learned.md`](lessons-learned.md) |
+| 排查渲染画面异常 / 二分诊断方法论 | [`rendering-pipeline-investigation.md`](rendering-pipeline-investigation.md) |
 | 改反射、RTTIBin、RSCN | [`REFLECT.md`](REFLECT.md) |
 | 改动画图 / `.rag` 格式 | [`anim-graph.md`](anim-graph.md) |
 | 改两骨 IK / 动画 IK 接线 | [`anim-ik.md`](anim-ik.md) |

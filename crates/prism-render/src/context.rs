@@ -306,7 +306,7 @@ pub fn create_host_instance(
 
 /// 选择一块能向 `surface` 呈现、且有图形队列的物理设备。
 ///
-/// 渲染器要求 `maxPushConstantsSize >= 144`（PathTracePass），这里一并校验，
+/// 渲染器要求 `maxPushConstantsSize >= 176`（PathTracePass），这里一并校验，
 /// 避免宿主先建好设备、渲染器初始化时才失败。
 pub fn pick_host_physical_device(
     instance: &ash::Instance,
@@ -359,14 +359,24 @@ fn create_instance(
 ) -> anyhow::Result<ash::Instance> {
     use anyhow::Context as _;
 
+    // Query loader instance version; request Vulkan 1.2 if supported (required
+    // for core 1.2 entry points like vkGetBufferDeviceAddress without KHR suffix).
+    let instance_version = unsafe { entry.try_enumerate_instance_version() }
+        .ok()
+        .flatten()
+        .unwrap_or(vk::API_VERSION_1_1);
+    let api_version = if instance_version >= vk::API_VERSION_1_2 {
+        vk::API_VERSION_1_2
+    } else {
+        vk::API_VERSION_1_1
+    };
+
     let app_info = vk::ApplicationInfo::default()
         .application_name(c"PrismaRev")
         .application_version(vk::make_api_version(0, 0, 1, 0))
         .engine_name(c"PrismaRev")
         .engine_version(vk::make_api_version(0, 0, 1, 0))
-        // Keep the instance contract at Vulkan 1.1. Optional 1.2/1.3
-        // capabilities are queried per-device and enabled only when present.
-        .api_version(vk::API_VERSION_1_1);
+        .api_version(api_version);
 
     // Instance extensions: surface + platform. Debug utils only in debug builds
     // (it's a debugging aid; the validation layer warns if enabled in release).
@@ -461,7 +471,7 @@ fn pick_physical_device_impl(
         }
     }
     let device = best.ok_or_else(|| anyhow::anyhow!("no GPU with a graphics queue found"))?;
-    // The path-trace pass uses a 144-byte push-constant block (PtPushConstants,
+    // The path-trace pass uses a 176-byte push-constant block (PtPushConstants,
     // padded per std140: the trailing `ray_max_distance` float rounds the struct
     // up to a 16-byte multiple). Vulkan only guarantees 128 bytes, so verify
     // the device actually supports more before we write past the guaranteed
@@ -471,8 +481,8 @@ fn pick_physical_device_impl(
     let props = unsafe { instance.get_physical_device_properties(device) };
     let max_pc = props.limits.max_push_constants_size;
     anyhow::ensure!(
-        max_pc >= 144,
-        "selected GPU only supports {} bytes of push constants; PT pass needs 144",
+        max_pc >= 176,
+        "selected GPU only supports {} bytes of push constants; PT pass needs 176",
         max_pc
     );
     Ok(device)
@@ -512,7 +522,7 @@ fn create_device(
     // Query the available legacy features (validation layer wants this) and
     // mirror the ones we need into the Features2 chain.
     let available_features = unsafe { instance.get_physical_device_features(physical_device) };
-    let legacy_features = vk::PhysicalDeviceFeatures {
+    let mut legacy_features = vk::PhysicalDeviceFeatures {
         shader_clip_distance: available_features.shader_clip_distance,
         // MRT pipelines (ForwardPass writes 颜色 + view-space 法线 use
         // different blend states per attachment (color = alpha blend, normal =
@@ -611,6 +621,28 @@ fn create_device(
     }
     if rt_caps.timeline_semaphore {
         vk12.timeline_semaphore = vk::TRUE;
+    }
+    if rt_caps.shader_buffer_int64_atomics {
+        vk12.shader_buffer_int64_atomics = vk::TRUE;
+    }
+    // RTXGI SHARC packs its hash-grid key as a `uint64_t` and its cached
+    // radiance as `float16_t4`. The SPIR-V module declares the `Int64`,
+    // `Float16` and `StorageBuffer16BitAccess` capabilities, so the device must
+    // enable the matching features or `vkCreateShaderModule` rejects it.
+    if rt_caps.shader_int64 {
+        legacy_features.shader_int64 = vk::TRUE;
+    }
+    if rt_caps.shader_float16 {
+        vk12.shader_float16 = vk::TRUE;
+    }
+    if rt_caps.uniform_and_storage_buffer_16bit_access {
+        vk11.uniform_and_storage_buffer16_bit_access = vk::TRUE;
+    }
+    if rt_caps.storage_buffer_16bit_access {
+        // Vulkan 1.1 promoted this from VkPhysicalDevice16BitStorageFeatures,
+        // so it is set on the vk11 struct; chaining the standalone 16-bit
+        // struct as well is a VUID violation.
+        vk11.storage_buffer16_bit_access = vk::TRUE;
     }
 
     if rt_caps.synchronization2 {

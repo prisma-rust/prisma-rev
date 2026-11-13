@@ -24,7 +24,12 @@ pub struct ScreenshotPlan {
 impl ScreenshotPlan {
     /// 从环境变量读取；没有 `PRISMREV_SCREENSHOT` 时返回 `None`。
     pub fn from_env() -> Option<Self> {
-        let path = std::env::var_os("PRISMREV_SCREENSHOT")?;
+        let raw_path = std::env::var("PRISMREV_SCREENSHOT").ok()?;
+        let trimmed = raw_path.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let path = PathBuf::from(trimmed);
         let frame = std::env::var("PRISMREV_SCREENSHOT_FRAME")
             .ok()
             .and_then(|value| value.trim().parse::<u64>().ok())
@@ -41,16 +46,16 @@ impl ScreenshotPlan {
             log::debug!("screenshot: no size/scale requested, using the window resolution");
         }
         Some(Self {
-            path: PathBuf::from(path),
+            path,
             frame,
             size,
             scale,
         })
     }
 
-    /// 这一帧是否该抓图。
+    /// 这一帧是否达到或超过设定帧数（一旦满足且内容就绪即可抓图）。
     pub fn fires_on(&self, frame_count: u64) -> bool {
-        frame_count == self.frame
+        frame_count >= self.frame
     }
 }
 
@@ -77,7 +82,7 @@ mod tests {
     }
 
     #[test]
-    fn fires_only_on_the_requested_frame() {
+    fn fires_when_frame_reached() {
         let plan = ScreenshotPlan {
             path: PathBuf::from("shot.png"),
             frame: 5,
@@ -86,6 +91,6 @@ mod tests {
         };
         assert!(!plan.fires_on(4));
         assert!(plan.fires_on(5));
-        assert!(!plan.fires_on(6));
+        assert!(plan.fires_on(6));
     }
 }

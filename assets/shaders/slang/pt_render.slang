@@ -28,6 +28,7 @@
 // The b6/b7/b8/b9 + set 1 bindings are declared in path_integrator.slang (imported).
 
 #include "path_integrator.slang"
+#include "sharc/sharc_common.slang"
 
 // ---- ReSTIR constants ----
 static const uint RESTIR_M = 8u;               // RIS candidates per pixel
@@ -47,6 +48,16 @@ struct PtPush
     uint     max_iterations;   // 132: 0 = accumulate forever
     uint     num_lights;       // 136: analytic lights in ptLights
     uint     num_emissive;     // 140: emissive triangles in ptEmissive
+    // SHARC (RTXGI spatial hash radiance cache). sharc_flags packs both
+    // switches and the deposit stride in one word: bit 0 = query the cache,
+    // bit 1 = deposit into it, bits 8..15 = deposit stride (1 = every pixel).
+    // Bit 0 is clear whenever gi_mode is not Sharc, in which case the cache
+    // buffers are unbound and must not be touched.
+    float    sharc_scene_scale;        // 144: hash-grid scene scale
+    uint     sharc_capacity;           // 148: hash-grid entry count
+    uint     sharc_flags;              // 152: bit 0 = query, bit 1 = update
+    float    sharc_roughness_threshold;// 156: roughness clamped before caching
+    float4   sharc_camera_pos;         // 160: .xyz = cache camera position
 };
 
 // ---- Descriptors (set 0) ----
@@ -77,6 +88,17 @@ StructuredBuffer<ReSTIRReservoir> prevReservoir;
 [[vk::binding(11, 0)]]
 RWStructuredBuffer<ReSTIRReservoir> currReservoir;
 
+// SHARC cache buffers (written by this pass, resolved by SharcResolvePass
+// before the next frame's trace). Only accessed when push.sharc_enabled != 0.
+[[vk::binding(12, 0)]]
+RWStructuredBuffer<HashGridKey> sharcHashEntries;
+
+[[vk::binding(13, 0)]]
+RWStructuredBuffer<SharcAccumulationData> sharcAccumulation;
+
+[[vk::binding(14, 0)]]
+RWStructuredBuffer<SharcPackedData> sharcResolved;
+
 [[vk::push_constant]]
 PtPush push;
 
@@ -84,6 +106,35 @@ PtPush push;
 static const uint PT_PARAMS_FRAME_MASK = 0x3FFFFFFFu; // bits 0..29: frame counter
 static const uint PT_PARAMS_ORTHOGRAPHIC = 1u << 30u; // bit 30: orthographic camera
 static const uint PT_PARAMS_RESET = 1u << 31u;        // bit 31: clear accumulation
+
+// ---- SHARC ----
+// Radiance is accumulated as `value * radianceScale` in fixed point, so the
+// update and the resolve kernel must agree on the same scale (1000.0, as in
+// SharcResolvePass). Material demodulation is disabled in sharc_common.slang,
+// so the cache stores radiance directly and the sample weights stay 1.
+static const float SHARC_RADIANCE_SCALE = 1000.0;
+static const uint SHARC_FLAG_QUERY = 1u << 0u;
+static const uint SHARC_FLAG_UPDATE = 1u << 1u;
+static const uint SHARC_FLAG_STRIDE_SHIFT = 8u;
+static const uint SHARC_FLAG_STRIDE_MASK = 0xFFu;
+
+SharcParameters make_sharc_parameters()
+{
+    SharcParameters params;
+    params.gridParameters.cameraPosition = push.sharc_camera_pos.xyz;
+    params.gridParameters.logarithmBase = SHARC_GRID_LOGARITHM_BASE;
+    params.gridParameters.sceneScale = push.sharc_scene_scale;
+    params.gridParameters.levelBias = SHARC_GRID_LEVEL_BIAS;
+
+    params.hashMapData.capacity = push.sharc_capacity;
+    params.hashMapData.hashEntriesBuffer = sharcHashEntries;
+
+    params.accumulationBuffer = sharcAccumulation;
+    params.resolvedBuffer = sharcResolved;
+    params.radianceScale = SHARC_RADIANCE_SCALE;
+    params.enableAntiFireflyFilter = true;
+    return params;
+}
 
 // ---- Ray generation ----
 // NDC z = 0 is the near plane and z = 1 the far plane (Vulkan depth range
@@ -222,6 +273,23 @@ void ptMain(uint3 tid : SV_DispatchThreadID)
     float3 throughput = float3(1.0, 1.0, 1.0);
 
     float3 sun_radiance = push.light_color.rgb * push.light_dir.w;
+
+    // SHARC state for this path. Declared unconditionally so the bounce loop
+    // reads one flag, but only bound to the cache buffers when enabled.
+    bool sharc_on = (push.sharc_flags & SHARC_FLAG_QUERY) != 0u;
+    // RTXGI's update pass renders at 1/downscale resolution, so only 1/N of
+    // the pixels' worth of samples reach the cache per frame. The unified
+    // pipeline has one dispatch, so the same density is obtained by letting
+    // one pixel in every N-by-N block deposit.
+    bool sharc_update = (push.sharc_flags & SHARC_FLAG_UPDATE) != 0u;
+    uint sharc_stride = max((push.sharc_flags >> SHARC_FLAG_STRIDE_SHIFT) & SHARC_FLAG_STRIDE_MASK, 1u);
+    if (sharc_update && sharc_stride > 1u && (tid.x % sharc_stride) != 0u)
+        sharc_update = false;
+    if (sharc_update && sharc_stride > 1u && (tid.y % sharc_stride) != 0u)
+        sharc_update = false;
+    SharcParameters sharc_params = make_sharc_parameters();
+    SharcState sharc_state;
+    SharcInit(sharc_state);
 
     // ---- Bounce 0: primary ray + ReSTIR direct light ----
     float3 hit_pos, hit_normal;
@@ -471,6 +539,20 @@ void ptMain(uint3 tid : SV_DispatchThreadID)
         }
         else { p_rr = 0; }
 
+        // The query rejects cache hits whose roughness footprint is smaller
+        // than a voxel, so it needs the accumulated roughness of the path so
+        // far. The primary hit counts as one diffuse bounce.
+        // Roughness accumulated over the path so far; the cache lookup needs it
+        // to size the cone the remaining bounces would cover. RTXGI clamps the
+        // per-hit roughness to the threshold before it feeds this accumulator,
+        // which is what keeps very rough paths from querying voxels far smaller
+        // than their footprint.
+        float sharc_roughness_prev = 0.0;
+        if (sharc_on)
+            sharc_roughness_prev += surf.metallic < 0.5
+                ? 1.0
+                : max(push.sharc_roughness_threshold, surf.roughness);
+
         // ---- Bounces 1+ (indirect, no NEE) ----
         for (uint bounce = 1u; bounce < push.params.z; bounce++)
         {
@@ -539,6 +621,8 @@ void ptMain(uint3 tid : SV_DispatchThreadID)
                 // Emissive
                 total_radiance += throughput * hit_surf.emissive;
 
+                float3 seg_direct = float3(0.0, 0.0, 0.0);
+
                 // ---- Bounce NEE: sample directional sun at indirect hit ----
                 // Without NEE in bounce 1+, shadow regions get indirect light
                 // only when the BRDF-sampled direction accidentally hits a
@@ -584,8 +668,61 @@ void ptMain(uint3 tid : SV_DispatchThreadID)
                     float3 bn_brdf = eval_brdf(hit_surf, hn, vw_dir, bn_dir);
                     float p_brdf_bn = eval_brdf_pdf(hit_surf, hn, vw_dir, bn_dir);
                     float p_nee_bn = 1.0; // sun is deterministic
-                    total_radiance += throughput * bn_brdf * sun_radiance * bn_shadow
+                    // `seg_direct` is the same term without throughput: SHARC
+                    // propagates radiometric radiance and carries throughput in
+                    // its own sample weights.
+                    float3 nee_direct = bn_brdf * sun_radiance * bn_shadow
                         * p_nee_bn / max(p_nee_bn * p_nee_bn + p_brdf_bn * p_brdf_bn, 1e-20);
+                    total_radiance += throughput * nee_direct;
+                    seg_direct += nee_direct;
+                }
+
+                // ---- SHARC: query the cache, then feed this segment back ----
+                if (sharc_on)
+                {
+                    SharcHitData sharc_hit;
+                    sharc_hit.positionWorld = hp;
+                    float3 sharc_normal = gn;
+                    if (dot(sharc_normal, dir) > 0.0) sharc_normal = -sharc_normal;
+                    sharc_hit.normalWorld = sharc_normal;
+
+                    // Only trust the cache once a path segment is longer than
+                    // the voxel it lands in and its roughness footprint covers
+                    // that voxel; otherwise the lookup is aliased.
+                    float hit_distance = q.CommittedRayT();
+                    float voxel_size = HashGridGetVoxelSize(
+                        HashGridGetLevel(hp, sharc_params.gridParameters),
+                        sharc_params.gridParameters);
+                    float roughness_prev = min(sharc_roughness_prev, 0.99);
+                    float alpha = roughness_prev * roughness_prev;
+                    float footprint = hit_distance
+                        * sqrt(0.5 * alpha * alpha / max(1.0 - alpha * alpha, 1e-6));
+                    bool valid_hit = reset == 0u && frame_count > 0u
+                        && hit_distance > voxel_size * 1.7320508
+                        && footprint > voxel_size;
+
+                    if (valid_hit)
+                    {
+                        float3 cached_radiance;
+                        if (SharcGetCachedRadiance(sharc_params, sharc_hit, cached_radiance, false))
+                        {
+                            // The cache answers the remaining bounces; keep the
+                            // path radiometrically consistent by adding it with
+                            // the current throughput.
+                            total_radiance += throughput * cached_radiance;
+                            break;
+                        }
+                    }
+
+                    // Not in the cache yet: deposit this segment's direct
+                    // lighting so a later frame can terminate here.
+                    if (sharc_update)
+                    {
+                        SharcUpdateHit(sharc_params, sharc_state, sharc_hit, seg_direct, rand_float(seed));
+                        sharc_roughness_prev += hit_surf.metallic < 0.5
+                            ? 1.0
+                            : max(push.sharc_roughness_threshold, hit_surf.roughness);
+                    }
                 }
 
                 // Russian roulette
@@ -652,8 +789,12 @@ void ptMain(uint3 tid : SV_DispatchThreadID)
             }
             else
             {
-                // Miss: env map
-                total_radiance += throughput * envCube.SampleLevel(dir, 0.0).rgb;
+                // Miss: env map. The sky is the far-field terminator that lets
+                // the cache propagate radiance back along the whole path.
+                float3 sky_radiance = envCube.SampleLevel(dir, 0.0).rgb;
+                if (sharc_on && sharc_update)
+                    SharcUpdateMiss(sharc_params, sharc_state, sky_radiance);
+                total_radiance += throughput * sky_radiance;
                 break;
             }
         }

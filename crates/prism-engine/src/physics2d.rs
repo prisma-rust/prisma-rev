@@ -6,11 +6,16 @@
 //! 3. 接触求解器（弹性系数、库仑摩擦力、Baumgarte 穿透修正）
 //! 4. 传感器（Sensor/Trigger）与碰撞事件（Started / Stopped）
 //! 5. 2D 空间查询（`raycast_2d`、`overlap_circle_2d`、`overlap_box_2d`、`shapecast_2d`）
+//!
+//! 纯几何内核 `prism-physics2d` 也从这里 re-export，玩法代码与静态 Player
+//! 共用同一套 AABB 扫掠 / move-and-slide 实现。
+
+pub use prism_physics2d::*;
 
 use glam::{Quat, Vec2};
 use prism_ecs::{Entity, World};
 use prism_scene::components::{
-    Collider2D, Collider2DShape, LocalToWorld, LocalTransform, RigidBody2D, RigidBody2DType,
+    Collider2DShape, LocalToWorld, LocalTransform, PhysicsCollider2D, RigidBody2D, RigidBody2DType,
 };
 
 /// 2D 碰撞 / 传感器事件类型。
@@ -92,7 +97,7 @@ enum WorldShape2D {
 }
 
 impl WorldShape2D {
-    fn from_collider(collider: &Collider2D, pos: Vec2, rot_angle: f32) -> Self {
+    fn from_collider(collider: &PhysicsCollider2D, pos: Vec2, rot_angle: f32) -> Self {
         let rot_cos = rot_angle.cos();
         let rot_sin = rot_angle.sin();
         let rot_mat = |v: Vec2| -> Vec2 {
@@ -379,7 +384,7 @@ pub fn raycast_2d_excluding(
 
     let mut best: Option<RayHit2D> = None;
 
-    for (entity, collider) in world.query::<Collider2D>() {
+    for (entity, collider) in world.query::<PhysicsCollider2D>() {
         if collider.collision_groups & layer_mask == 0 || Some(entity) == excluded {
             continue;
         }
@@ -422,7 +427,7 @@ pub fn raycast_2d_all(
 
     let mut hits = Vec::new();
 
-    for (entity, collider) in world.query::<Collider2D>() {
+    for (entity, collider) in world.query::<PhysicsCollider2D>() {
         if collider.collision_groups & layer_mask == 0 {
             continue;
         }
@@ -458,7 +463,7 @@ pub fn overlap_circle_2d(
     let c = Vec2::from_array(center);
     let mut result = Vec::new();
 
-    for (entity, collider) in world.query::<Collider2D>() {
+    for (entity, collider) in world.query::<PhysicsCollider2D>() {
         if collider.collision_groups & layer_mask == 0 {
             continue;
         }
@@ -490,7 +495,7 @@ pub fn overlap_box_2d(
     };
 
     let mut result = Vec::new();
-    for (entity, collider) in world.query::<Collider2D>() {
+    for (entity, collider) in world.query::<PhysicsCollider2D>() {
         if collider.collision_groups & layer_mask == 0 {
             continue;
         }
@@ -507,7 +512,7 @@ pub fn overlap_box_2d(
 /// 2D 形状投射查询（Shapecast2D）。
 pub fn shapecast_2d(
     world: &World,
-    cast_shape: &Collider2D,
+    cast_shape: &PhysicsCollider2D,
     origin: [f32; 2],
     direction: [f32; 2],
     max_distance: f32,
@@ -528,7 +533,7 @@ pub fn shapecast_2d(
         let test_pos = current_pos + dir * dist;
         let shape = WorldShape2D::from_collider(cast_shape, test_pos, 0.0);
 
-        for (entity, target_col) in world.query::<Collider2D>() {
+        for (entity, target_col) in world.query::<PhysicsCollider2D>() {
             if target_col.collision_groups & layer_mask == 0 {
                 continue;
             }
@@ -751,9 +756,9 @@ pub fn step_2d(world: &mut World, dt: f32, gravity: [f32; 2]) {
         rb.linear_velocity = [vel.x, vel.y];
     }
 
-    // 收集所有带 Collider2D 的实体
+    // 收集所有带 PhysicsCollider2D 的实体
     let mut colliders = Vec::new();
-    for (entity, col) in world.query::<Collider2D>() {
+    for (entity, col) in world.query::<PhysicsCollider2D>() {
         let (pos, rot) = extract_2d_transform(world, entity);
         let rb = world.get::<RigidBody2D>(entity).cloned();
         let shape = WorldShape2D::from_collider(col, pos, rot);
@@ -872,10 +877,10 @@ pub fn step_2d(world: &mut World, dt: f32, gravity: [f32; 2]) {
     for &pair in &current_contacts {
         if !prev_contacts.pairs.contains(&pair) {
             let is_sensor = world
-                .get::<Collider2D>(pair.0)
+                .get::<PhysicsCollider2D>(pair.0)
                 .map_or(false, |c| c.is_sensor)
                 || world
-                    .get::<Collider2D>(pair.1)
+                    .get::<PhysicsCollider2D>(pair.1)
                     .map_or(false, |c| c.is_sensor);
             events.push(Physics2DEvent {
                 kind: Physics2DEventKind::Started,
@@ -889,10 +894,10 @@ pub fn step_2d(world: &mut World, dt: f32, gravity: [f32; 2]) {
     for &pair in &prev_contacts.pairs {
         if !current_contacts.contains(&pair) {
             let is_sensor = world
-                .get::<Collider2D>(pair.0)
+                .get::<PhysicsCollider2D>(pair.0)
                 .map_or(false, |c| c.is_sensor)
                 || world
-                    .get::<Collider2D>(pair.1)
+                    .get::<PhysicsCollider2D>(pair.1)
                     .map_or(false, |c| c.is_sensor);
             events.push(Physics2DEvent {
                 kind: Physics2DEventKind::Stopped,

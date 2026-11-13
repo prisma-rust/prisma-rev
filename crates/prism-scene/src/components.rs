@@ -8,7 +8,7 @@
 //! | 动画     | `SpriteAnimation`（2D 帧）, `KeyframeAnimation`（曲线） |
 //! | 粒子     | `ParticleSystem`（世界空间 3D CPU 粒子）、`ParticleEmitter2D`（世界 XY 平面 2D 粒子）、`UiParticleEmitter`（屏幕空间，画在 UI 图层） |
 //! | 光源 | `Light`（形状）, `DirectionalLight`, `PointLight`, `SpotLight`（旧）, `Light2D`（2D 精灵光照） |
-//! | 相机     | `Camera`, `FlyCameraController` |
+//! | 相机     | `Camera`, `VirtualCamera2D`, `FlyCameraController` |
 //! | 天空盒   | `Skybox` |
 //! | 音频     | `AudioSource`（场景内播放）, `AudioListener`（听者） |
 //! | 地形     | `Terrain`（高度场 → 运行时生成网格） |
@@ -26,6 +26,7 @@ use crate::render_enums::{
     correlated_color_temperature_to_rgb, BlendMode, BlendOp, CameraClearFlags, CullMode,
     LightRenderMode, LightShadows, LightType, RenderQueue, ShadowCastingMode,
 };
+use prism_physics2d::Aabb2;
 
 // ---------------------------------------------------------------------------
 // SceneAssetId
@@ -152,6 +153,41 @@ impl LocalToWorld {
 /// Optional dirty marker for subtree-optimised recompute future use).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TransformDirty(pub bool);
+
+/// Runtime-only 2D transform history used to render fixed-step entities smoothly.
+///
+/// The simulation always reads and writes `LocalTransform` / `LocalToWorld`.
+/// This component stores world-space XY samples for render interpolation and is
+/// never authored in a scene document.
+#[derive(Debug, Clone, Copy, PartialEq, Reflect)]
+#[reflect(name = "prism_engine::scene::TransformInterpolation2D")]
+pub struct TransformInterpolation2D {
+    pub previous: [f32; 2],
+    pub current: [f32; 2],
+}
+
+impl Default for TransformInterpolation2D {
+    fn default() -> Self {
+        Self {
+            previous: [0.0; 2],
+            current: [0.0; 2],
+        }
+    }
+}
+
+impl TransformInterpolation2D {
+    pub fn sample(&self, alpha: f32) -> [f32; 2] {
+        let alpha = if alpha.is_finite() {
+            alpha.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        [
+            self.previous[0] + (self.current[0] - self.previous[0]) * alpha,
+            self.previous[1] + (self.current[1] - self.previous[1]) * alpha,
+        ]
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Render references
@@ -568,6 +604,105 @@ impl SpriteRenderer {
         let frame = self.frame_size_or(texture_size);
         [frame[0] as f32 / ppu, frame[1] as f32 / ppu]
     }
+
+    /// World-space AABB of the visible sprite frame, including pivot, scale and rotation.
+    pub fn world_bounds(
+        &self,
+        transform: &LocalTransform,
+        texture_size: [u32; 2],
+    ) -> Option<Aabb2> {
+        let frame = self.frame_size_or(texture_size);
+        if frame[0] == 0 || frame[1] == 0 || !self.pixels_per_unit.is_finite() {
+            return None;
+        }
+        let ppu = if self.pixels_per_unit > 0.0 {
+            self.pixels_per_unit
+        } else {
+            100.0
+        };
+        let size = [frame[0] as f32 / ppu, frame[1] as f32 / ppu];
+        transformed_aabb2(
+            [-self.pivot[0] * size[0], -self.pivot[1] * size[1]],
+            [
+                (1.0 - self.pivot[0]) * size[0],
+                (1.0 - self.pivot[1]) * size[1],
+            ],
+            transform.to_model_matrix(),
+        )
+    }
+}
+
+/// Axis-aligned 2D collider authored relative to an entity's transform.
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
+#[reflect(name = "prism_engine::scene::Collider2D")]
+#[serde(default)]
+pub struct Collider2D {
+    pub offset: [f32; 2],
+    pub half_extents: [f32; 2],
+    pub is_trigger: bool,
+    pub layer: u32,
+}
+
+impl Default for Collider2D {
+    fn default() -> Self {
+        Self {
+            offset: [0.0; 2],
+            half_extents: [0.5; 2],
+            is_trigger: false,
+            layer: 1,
+        }
+    }
+}
+
+impl Collider2D {
+    /// Return this collider's world-space AABB using an entity-local transform.
+    ///
+    /// This is the root-entity convenience path. For parented entities, callers
+    /// should prefer [`Self::world_bounds_with_matrix`] with the hierarchy's
+    /// `LocalToWorld` matrix so physics and rendering use the same transform.
+    pub fn world_bounds(&self, transform: &LocalTransform) -> Option<Aabb2> {
+        self.world_bounds_with_matrix(transform.to_model_matrix())
+    }
+
+    /// Return this collider's world-space AABB from a complete world matrix.
+    ///
+    /// The authored offset and half extents are transformed as a rectangle and
+    /// reduced to an axis-aligned bound, matching sprite bounds and the 2D
+    /// physics query contract. Non-finite matrices or coordinates return `None`.
+    pub fn world_bounds_with_matrix(&self, matrix: glam::Mat4) -> Option<Aabb2> {
+        let half = [self.half_extents[0].abs(), self.half_extents[1].abs()];
+        transformed_aabb2(
+            [self.offset[0] - half[0], self.offset[1] - half[1]],
+            [self.offset[0] + half[0], self.offset[1] + half[1]],
+            matrix,
+        )
+    }
+}
+
+fn transformed_aabb2(
+    local_min: [f32; 2],
+    local_max: [f32; 2],
+    matrix: glam::Mat4,
+) -> Option<Aabb2> {
+    let corners = [
+        [local_min[0], local_min[1]],
+        [local_max[0], local_min[1]],
+        [local_min[0], local_max[1]],
+        [local_max[0], local_max[1]],
+    ];
+    let mut min = [f32::INFINITY; 2];
+    let mut max = [f32::NEG_INFINITY; 2];
+    for [x, y] in corners {
+        let point = matrix.transform_point3(glam::Vec3::new(x, y, 0.0));
+        if !point.x.is_finite() || !point.y.is_finite() {
+            return None;
+        }
+        min[0] = min[0].min(point.x);
+        min[1] = min[1].min(point.y);
+        max[0] = max[0].max(point.x);
+        max[1] = max[1].max(point.y);
+    }
+    Some(Aabb2 { min, max })
 }
 
 /// 2D 瓦片地图 = `Tilemap`（#529）。
@@ -2129,6 +2264,51 @@ impl Default for Camera2D {
     }
 }
 
+/// 2D virtual camera follow settings.
+///
+/// The camera keeps its current world-space Z and follows the entity whose
+/// [`Name`] matches [`Self::target_name`]. Follow and confiner coordinates are
+/// world-space, including when the camera is parented. `damping` is a per-axis
+/// convergence rate in inverse seconds; zero snaps immediately. `deadzone`
+/// is the half-size around the camera that the target may occupy before the
+/// camera starts moving. `confiner` is an optional world-space rectangle
+/// `[min_x, min_y, max_x, max_y]`; it keeps the orthographic view inside the
+/// rectangle and centers the camera when the room is smaller than the view.
+/// Confiner bounds take priority over pixel snapping when no grid point fits.
+#[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
+#[reflect(name = "prism_engine::scene::VirtualCamera2D")]
+#[serde(default)]
+pub struct VirtualCamera2D {
+    /// Stable scene name used to resolve the follow target at runtime.
+    pub target_name: String,
+    /// Exponential follow rates for X and Y. Zero means immediate follow.
+    pub damping: [f32; 2],
+    /// Target deadzone half-size in world units.
+    pub deadzone: [f32; 2],
+    /// Optional world-space confiner rectangle.
+    pub confiner: Option<[f32; 4]>,
+    /// Offset applied to the resolved target before deadzone and damping.
+    pub follow_offset: [f32; 2],
+    /// Snap the camera position to the pixel grid after damping and confining.
+    pub pixel_snap: bool,
+    /// Pixels per world unit used by pixel snapping.
+    pub pixels_per_unit: f32,
+}
+
+impl Default for VirtualCamera2D {
+    fn default() -> Self {
+        Self {
+            target_name: String::new(),
+            damping: [0.0; 2],
+            deadzone: [0.0; 2],
+            confiner: None,
+            follow_offset: [0.0; 2],
+            pixel_snap: false,
+            pixels_per_unit: 1.0,
+        }
+    }
+}
+
 /// 局部后处理体积（#502 Phase 2）。
 ///
 /// 挂在场景实体上，用轴对齐盒（`size` = 半尺寸，米）圈出一块区域；主相机进入
@@ -2723,11 +2903,11 @@ impl ReflectType for Collider2DShape {
     }
 }
 
-/// 2D 碰撞体 = `Collider2D`（#1160）。
+/// 2D 碰撞体 = `PhysicsCollider2D`（#1160）。
 #[derive(Debug, Clone, Serialize, Deserialize, Reflect)]
-#[reflect(name = "prism_engine::scene::Collider2D")]
+#[reflect(name = "prism_engine::scene::PhysicsCollider2D")]
 #[serde(default)]
-pub struct Collider2D {
+pub struct PhysicsCollider2D {
     pub shape: Collider2DShape,
     /// 形状中心相对实体原点的局部偏移。
     pub offset: [f32; 2],
@@ -2755,7 +2935,7 @@ pub struct Collider2D {
     pub collision_mask: u32,
 }
 
-impl Default for Collider2D {
+impl Default for PhysicsCollider2D {
     fn default() -> Self {
         Self {
             shape: Collider2DShape::Box,
@@ -2775,7 +2955,7 @@ impl Default for Collider2D {
     }
 }
 
-impl Collider2D {
+impl PhysicsCollider2D {
     pub fn new_box(half_w: f32, half_h: f32) -> Self {
         Self {
             shape: Collider2DShape::Box,
@@ -2819,9 +2999,9 @@ impl Collider2D {
     }
 }
 
-pub type BoxCollider2D = Collider2D;
-pub type CircleCollider2D = Collider2D;
-pub type PolygonCollider2D = Collider2D;
+pub type BoxCollider2D = PhysicsCollider2D;
+pub type CircleCollider2D = PhysicsCollider2D;
+pub type PolygonCollider2D = PhysicsCollider2D;
 
 // ---------------------------------------------------------------------------
 // 蒙皮

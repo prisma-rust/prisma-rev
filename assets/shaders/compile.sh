@@ -332,6 +332,24 @@ compile_stage gi_render renderMain compute
 compile_stage pt_render ptMain compute
 emit_reflection pt_render ptMain compute
 
+# sharc_resolve: RTXGI SHARC cache resolve kernel (`crates/prism-render/src/sharc.rs`).
+# Dispatched (capacity+255)/256 groups, one thread per hash-grid entry.
+# The source lives in slang/sharc/, so the name carries the subdirectory and
+# the fourth argument pins the output filename the engine include_bytes!'s.
+# It must be compiled with `-entry resolveMain`: a stale .spv built without it
+# has the entry point `main` and fails pipeline creation with ERROR_UNKNOWN.
+compile_stage sharc/sharc_resolve resolveMain compute sharc_resolve
+
+# auto_exposure: luminance metering for the tonemapper (two dispatches, one
+# source file). Ported from RTXGI `Samples/Shared/Shaders/AutoExposure.hlsl`.
+# `luminanceHistogram` builds a log2 histogram (one 16x16 group per tile),
+# `exposureAdaptation` reduces it to the adapted luminance the tonemapper
+# divides `AUTO_EXPOSURE_KEY` by. The output filenames carry a stage suffix
+# because the two entry points become two separate .spv files.
+compile_stage auto_exposure luminanceHistogram compute auto_exposure_hist
+compile_stage auto_exposure exposureAdaptation compute auto_exposure_adapt
+emit_reflection auto_exposure luminanceHistogram compute exposureAdaptation compute
+
 # harness_copy: tiny compute kernel for the reusable GPU shader harness test
 # (`crates/prism-render/tests/shader_harness_gpu.rs`). No bindless state.
 compile_stage harness_copy main compute
