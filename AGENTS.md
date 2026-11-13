@@ -673,9 +673,7 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   尺寸渲染、相机按内部宽高比投影、`PostPass` 再放大到窗口（`integer` = 最近邻 +
   整数倍 + 居中等比黑边）。游戏进程与编辑器 Game 视图走同一条
   `GraphRenderer::set_internal_resolution` 路径，默认 `off` 保持旧行为。
-- 兼容旧项目：读端「新文件优先、旧 `.toml` 只读回退 + `warn!`」，`.pak` 里的旧
-  `scenes.toml` 清单同样可解析；**写端只产出新格式**。一次性迁移 =
-  `prism-build-pipeline build-scenes`（`migrate_legacy_config`，幂等，打印 `migrated …`）。
+- 配置与清单格式唯一：统一采用 `assets/settings.ini` 与 `assets/scenes.json`，不编写任何向后兼容回退读取分支；写端与读端均只认新格式（1.0 前零兼容逻辑）。
 - 场景清单读写统一走 `prism_editor_api::scene_manifest`（`read` / `render` / `write` /
   `existing_manifest`）与引擎的 `SceneManifest::parse`，不要各自 `serde_json::from_str`
   后再拼字符串。

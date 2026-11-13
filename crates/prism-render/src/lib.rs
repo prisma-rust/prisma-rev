@@ -50,9 +50,6 @@ pub mod context;
 pub mod culling;
 pub mod descriptor;
 pub mod dirty_dispatch;
-/// pass 级 feature（`shadows` / `gtao`）关闭时的 1×1 占位资源。
-#[cfg(any(not(feature = "shadows"), not(feature = "gtao")))]
-pub(crate) mod dummy;
 pub mod external_overlay;
 pub mod forward_pass;
 pub mod frame_stats;
@@ -77,6 +74,9 @@ pub mod particle_pass;
 /// `PRISMREV_PASS_DUMP`：headless 下把各个 pass 的附件写成 PNG。
 pub(crate) mod pass_dump;
 pub mod pipeline;
+/// pass 级 feature（`shadows` / `gtao`）关闭时的 1×1 占位资源。
+#[cfg(any(not(feature = "shadows"), not(feature = "gtao")))]
+pub(crate) mod placeholder;
 pub mod plugin;
 pub mod post;
 pub mod primitives;

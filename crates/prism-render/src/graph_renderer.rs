@@ -327,10 +327,10 @@ pub struct GraphRenderer {
     shadow_view: vk::ImageView,
     /// `shadows` feature 关闭时的 1×1 远深度图（填充 forward 的 set 3）。
     #[cfg(not(feature = "shadows"))]
-    dummy_shadow: crate::dummy::SolidImage,
+    dummy_shadow: crate::placeholder::SolidImage,
     /// `gtao` feature 关闭时的 1×1 白色 AO 图（填充 forward 的 set 4）。
     #[cfg(not(feature = "gtao"))]
-    dummy_ao: crate::dummy::SolidImage,
+    dummy_ao: crate::placeholder::SolidImage,
     #[allow(dead_code)]
     color_format: vk::Format,
     /// Optional 外部叠加层（宿主 UI 等）rendered on 顶部 of the ECS UI
@@ -556,7 +556,7 @@ impl GraphRenderer {
             graph
                 .allocate_resources(&context.device, &context.physical_device_memory_properties)
                 .context("allocate graph resources (shadows off)")?;
-            let dummy = crate::dummy::shadow_map_dummy(
+            let dummy = crate::placeholder::shadow_map_dummy(
                 &context,
                 runtime.command_pool,
                 context.graphics_queue,
@@ -628,9 +628,12 @@ impl GraphRenderer {
             crate::gtao::GtaoPass::new(&context, runtime.command_pool, swapchain_extent)
                 .context("GtaoPass::new")?;
         #[cfg(not(feature = "gtao"))]
-        let dummy_ao =
-            crate::dummy::ao_texture_dummy(&context, runtime.command_pool, context.graphics_queue)
-                .context("create 1x1 dummy AO texture")?;
+        let dummy_ao = crate::placeholder::ao_texture_dummy(
+            &context,
+            runtime.command_pool,
+            context.graphics_queue,
+        )
+        .context("create 1x1 dummy AO texture")?;
         #[cfg(not(feature = "gtao"))]
         log::warn!(
             "`gtao` feature 关闭：屏幕空间环境光遮蔽不可用（set 4 绑定 1x1 白色图）；\
@@ -1032,7 +1035,7 @@ impl GraphRenderer {
             graph
                 .allocate_resources(&context.device, &context.physical_device_memory_properties)
                 .context("allocate graph resources (headless, shadows off)")?;
-            let dummy = crate::dummy::shadow_map_dummy(
+            let dummy = crate::placeholder::shadow_map_dummy(
                 &context,
                 runtime.command_pool,
                 context.graphics_queue,
@@ -1105,9 +1108,12 @@ impl GraphRenderer {
             crate::gtao::GtaoPass::new(&context, runtime.command_pool, offscreen.extent())
                 .context("GtaoPass::new (headless)")?;
         #[cfg(not(feature = "gtao"))]
-        let dummy_ao =
-            crate::dummy::ao_texture_dummy(&context, runtime.command_pool, context.graphics_queue)
-                .context("create 1x1 dummy AO texture (headless)")?;
+        let dummy_ao = crate::placeholder::ao_texture_dummy(
+            &context,
+            runtime.command_pool,
+            context.graphics_queue,
+        )
+        .context("create 1x1 dummy AO texture (headless)")?;
         #[cfg(not(feature = "gtao"))]
         log::warn!(
             "`gtao` feature 关闭：屏幕空间环境光遮蔽不可用（set 4 绑定 1x1 白色图）；\

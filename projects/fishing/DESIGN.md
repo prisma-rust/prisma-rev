@@ -207,7 +207,7 @@ impl SaveGame {
 
 ### 3.7 输入
 
-已有只读 `Input` 门面（`input_facade.rs`），M0 够用；手柄/虚拟摇杆后置。
+已有只读 `Input` 视口（`input_view.rs`），M0 够用；手柄/虚拟摇杆后置。
 
 ---
 

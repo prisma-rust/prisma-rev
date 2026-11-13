@@ -23,7 +23,8 @@ pub mod dirty_router;
 pub mod ecs;
 pub mod engine;
 pub mod input;
-pub mod input_facade;
+pub mod input_actions;
+pub mod input_view;
 pub mod launch_config;
 pub mod physics;
 pub mod physics2d;
@@ -40,5 +41,6 @@ pub mod util;
 
 pub use app::{AppBuilder, DefaultSubsystems, ScheduleLabel, Subsystem, System};
 pub use engine::{orbit_camera_demo_system, Engine};
-pub use input_facade::Input;
+pub use input_actions::{key_code_from_vk, EngineAction, KeyBinding, KeyBindings};
+pub use input_view::Input;
 pub use render_system::{euler_xyz_deg_to_dir, render_system};

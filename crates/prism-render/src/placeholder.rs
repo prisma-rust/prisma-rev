@@ -232,7 +232,8 @@ fn alloc_image(
         .usage(usage)
         .sharing_mode(vk::SharingMode::EXCLUSIVE);
 
-    let image = unsafe { device.create_image(&image_info, None) }.context("dummy: create image")?;
+    let image =
+        unsafe { device.create_image(&image_info, None) }.context("placeholder: create image")?;
 
     let requirements = unsafe { device.get_image_memory_requirements(image) };
     let memory_type = find_memory_type(
@@ -240,7 +241,7 @@ fn alloc_image(
         requirements.memory_type_bits,
         vk::MemoryPropertyFlags::DEVICE_LOCAL,
     )
-    .context("dummy: no DEVICE_LOCAL memory type")?;
+    .context("placeholder: no DEVICE_LOCAL memory type")?;
     let memory = match unsafe {
         device.allocate_memory(
             &vk::MemoryAllocateInfo::default()
@@ -252,7 +253,7 @@ fn alloc_image(
         Ok(memory) => memory,
         Err(err) => {
             unsafe { device.destroy_image(image, None) };
-            return Err(err).context("dummy: allocate image memory");
+            return Err(err).context("placeholder: allocate image memory");
         }
     };
     if let Err(err) = unsafe { device.bind_image_memory(image, memory, 0) } {
@@ -260,7 +261,7 @@ fn alloc_image(
             device.free_memory(memory, None);
             device.destroy_image(image, None);
         }
-        return Err(err).context("dummy: bind image memory");
+        return Err(err).context("placeholder: bind image memory");
     }
 
     let view_info = vk::ImageViewCreateInfo::default()
@@ -281,7 +282,7 @@ fn alloc_image(
                 device.free_memory(memory, None);
                 device.destroy_image(image, None);
             }
-            return Err(err).context("dummy: create image view");
+            return Err(err).context("placeholder: create image view");
         }
     };
 
@@ -308,7 +309,7 @@ fn one_shot(
                 .command_buffer_count(1),
         )
     }
-    .context("dummy: allocate one-shot command buffer")?[0];
+    .context("placeholder: allocate one-shot command buffer")?[0];
 
     let result = (|| -> anyhow::Result<()> {
         unsafe {
@@ -318,21 +319,23 @@ fn one_shot(
                     &vk::CommandBufferBeginInfo::default()
                         .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
                 )
-                .context("dummy: begin one-shot command buffer")?;
+                .context("placeholder: begin one-shot command buffer")?;
         }
         record(device, cmd);
         unsafe {
             device
                 .end_command_buffer(cmd)
-                .context("dummy: end one-shot command buffer")?;
+                .context("placeholder: end one-shot command buffer")?;
             device
                 .queue_submit(
                     queue,
                     &[vk::SubmitInfo::default().command_buffers(std::slice::from_ref(&cmd))],
                     vk::Fence::null(),
                 )
-                .context("dummy: submit one-shot command buffer")?;
-            device.queue_wait_idle(queue).context("dummy: wait idle")?;
+                .context("placeholder: submit one-shot command buffer")?;
+            device
+                .queue_wait_idle(queue)
+                .context("placeholder: wait idle")?;
         }
         Ok(())
     })();

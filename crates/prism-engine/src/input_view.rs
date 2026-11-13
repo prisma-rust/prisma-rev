@@ -131,5 +131,5 @@ impl<'a> From<&'a InputManager> for Input<'a> {
 }
 
 #[cfg(test)]
-#[path = "input_facade_tests.rs"]
+#[path = "input_view_tests.rs"]
 mod tests;

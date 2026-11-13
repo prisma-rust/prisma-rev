@@ -84,9 +84,11 @@ docs/
   ├── editor-mcp.md                       # [L2 编辑器子系统] MCP 自动化契约与工具注册表
   ├── project-module-architecture.md      # [L2 模块宿主] 游戏工程 C ABI 与动态预览模块架构
   ├── mobile-raytracing-gi-design.md      # [L2 渲染进阶] 移动端 RayQuery 与实时 GI 管线蓝图
+  ├── rtx-dlss-integration-design.md      # [L2 渲染进阶] DLSS / 光线重构 / 帧生成的 guide buffer 契约与里程碑
   │
   ├── ai-workflow.md                      # [L3 协作流程] AI 协同工作流与五条硬规则
   ├── code-style.md                       # [L3 编码规范] 英文代码注释规范与冗余清理指南
+  ├── naming-and-abstraction-guide.md     # [L3 编码规范] 代码与着色器命名及内容抽象规范
   ├── versioning.md                       # [L3 版本治理] SemVer 规则、1.0 前零兼容逻辑与发版
   ├── integrations.md                     # [L3 工程治理] CI/CD、Discord 机器人与 Agent 认领契约
   ├── agent-issues.md                     # [L3 规范门禁] Agent 提 Issue 准则与查重机制
@@ -119,9 +121,11 @@ docs/
 | | [`editor-mcp.md`](editor-mcp.md) | MCP 工具集、场景审查、离屏截屏、自动化驱动 | `crates/prism-editor-mcp` |
 | | [`project-module-architecture.md`](project-module-architecture.md) | 预览模块 cdylib、C ABI 契约、HostApi 表 | `prism-project-api`, `prism-runtime-host` |
 | **渲染专题** | [`mobile-raytracing-gi-design.md`](mobile-raytracing-gi-design.md) | RayQuery inline、SHARC 辐射度缓存 | `prism-render` |
+| | [`rtx-dlss-integration-design.md`](rtx-dlss-integration-design.md) | DLSS-SR/RR/G、guide buffer 句柄与格式、降级阶梯 | `prism-render`, `assets/shaders/` |
 | | [`slang-bindless-migration.md`](slang-bindless-migration.md) | Slang 编译、绑定代码生成、Bindless 纹理表 | `assets/shaders/`, `xtask` |
 | **协作规范** | [`ai-workflow.md`](ai-workflow.md) | 五条硬规则、原子提交、自检门禁、PR 模板 | 全仓库 |
 | | [`code-style.md`](code-style.md) | 纯英文注释、删除代码复述、删除旧版本兼容垫片 | 全仓库 `.rs` 源码 |
+| | [`naming-and-abstraction-guide.md`](naming-and-abstraction-guide.md) | 代码与着色器命名及内容抽象规范（去歧义、去口语化、零兼容） | 全仓库源码与着色器 |
 | | [`versioning.md`](versioning.md) | 0.1 演进策略、单一版本源、格式版本升级 | `Cargo.toml`, `scripts/version.py` |
 | | [`integrations.md`](integrations.md) | CI/CD 标签门禁、Issue 自动化认领 | `.github/workflows/` |
 | | [`agent-issues.md`](agent-issues.md) | 查重准则、复现模板、禁止提虚假兼容回归 | GitHub Issues |

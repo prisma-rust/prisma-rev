@@ -13,10 +13,8 @@ use prism_asset::GuidIndex;
 use prism_scene::references::{path_to_asset_relative, SyncMode};
 use serde::{Deserialize, Serialize};
 
-/// 新格式清单路径（相对项目根）。
+/// 清单路径（相对项目根）。
 pub const MANIFEST_FILE: &str = "assets/scenes.json";
-/// 旧格式清单路径（只读兼容）。
-pub const LEGACY_MANIFEST_FILE: &str = "assets/scenes.toml";
 
 fn default_enabled() -> bool {
     true
@@ -46,26 +44,21 @@ pub fn manifest_path(root: &Path) -> PathBuf {
     root.join(MANIFEST_FILE)
 }
 
-/// 旧格式路径：`<root>/assets/scenes.toml`。
-pub fn legacy_manifest_path(root: &Path) -> PathBuf {
-    root.join(LEGACY_MANIFEST_FILE)
-}
-
-/// 实际存在的清单文件：`scenes.json` 优先，回退旧 `scenes.toml`。
+/// 实际存在的清单文件：检查 `<root>/assets/scenes.json`。
 pub fn existing_manifest(root: &Path) -> Option<PathBuf> {
-    [manifest_path(root), legacy_manifest_path(root)]
-        .into_iter()
-        .find(|path| path.is_file())
+    let path = manifest_path(root);
+    if path.is_file() {
+        Some(path)
+    } else {
+        None
+    }
 }
 
-/// 解析清单文本：JSON 优先，失败时回退旧 TOML 格式。
+/// 解析清单文本（JSON 格式）。
 pub fn parse(text: &str) -> Result<Vec<SceneListEntry>, String> {
-    match serde_json::from_str::<SceneManifestFile>(text) {
-        Ok(file) => Ok(file.scenes),
-        Err(json_error) => parse_legacy_toml(text).map_err(|toml_error| {
-            format!("不是 scenes.json（{json_error}），也不是旧 scenes.toml（{toml_error}）")
-        }),
-    }
+    serde_json::from_str::<SceneManifestFile>(text)
+        .map(|file| file.scenes)
+        .map_err(|error| format!("解析 scenes.json 失败: {error}"))
 }
 
 /// 读取清单条目；两个文件都不存在时返回空列表。
@@ -172,67 +165,6 @@ pub fn validate(scenes: &[SceneListEntry]) -> Result<(), String> {
     Ok(())
 }
 
-/// 旧格式 `scenes.toml` 的最小读取器（`[[scenes]]` + `name` / `path` / `enabled`）。
-///
-/// 与 `prism_engine::scene::SceneManifest::parse` 的回退分支保持同一份语义。
-fn parse_legacy_toml(text: &str) -> Result<Vec<SceneListEntry>, String> {
-    let mut scenes: Vec<SceneListEntry> = Vec::new();
-    let mut current: Option<SceneListEntry> = None;
-    let mut saw_table = false;
-
-    for raw in text.lines() {
-        let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if line == "[[scenes]]" {
-            if let Some(entry) = current.take() {
-                scenes.push(entry);
-            }
-            current = Some(SceneListEntry {
-                name: String::new(),
-                path: String::new(),
-                enabled: true,
-                guid: None,
-            });
-            saw_table = true;
-            continue;
-        }
-        if line.starts_with('[') && line.ends_with(']') {
-            if let Some(entry) = current.take() {
-                scenes.push(entry);
-            }
-            continue;
-        }
-        let Some(entry) = current.as_mut() else {
-            continue;
-        };
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        let value = crate::ini::parse_value(value);
-        match key.trim() {
-            "name" => entry.name = value,
-            "path" => entry.path = value,
-            "enabled" => {
-                entry.enabled = !matches!(
-                    value.trim().to_ascii_lowercase().as_str(),
-                    "false" | "0" | "no" | "off"
-                )
-            }
-            _ => {}
-        }
-    }
-    if let Some(entry) = current.take() {
-        scenes.push(entry);
-    }
-
-    if !saw_table {
-        return Err("没有 [[scenes]] 表".into());
-    }
-    Ok(scenes)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,36 +250,6 @@ mod tests {
         .unwrap();
         let text = std::fs::read_to_string(manifest_path(&root)).unwrap();
         assert!(text.contains(&meta.guid), "{text}");
-    }
-
-    #[test]
-    fn legacy_toml_is_readable_and_json_wins() {
-        let root = temp_root("legacy");
-        std::fs::write(
-            legacy_manifest_path(&root),
-            "# old\n[[scenes]]\nname = \"intro\"\npath = \"scenes/intro.rscn\"\n\
-             [[scenes]]\nname = \"off\"\npath = \"scenes/off.rscn\"\nenabled = false\n",
-        )
-        .unwrap();
-        let scenes = read(&root).unwrap();
-        assert_eq!(scenes.len(), 2);
-        assert!(scenes[0].enabled);
-        assert!(!scenes[1].enabled);
-
-        // 新文件写好之后，旧文件不再参与解析。
-        write(
-            &root,
-            &[SceneListEntry {
-                name: "new".into(),
-                path: "scenes/new.rscn".into(),
-                enabled: true,
-                guid: None,
-            }],
-        )
-        .unwrap();
-        let scenes = read(&root).unwrap();
-        assert_eq!(scenes.len(), 1);
-        assert_eq!(scenes[0].name, "new");
     }
 
     #[test]

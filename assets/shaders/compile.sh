@@ -326,11 +326,6 @@ emit_reflection gtao vertexMain vertex fragmentMain fragment
 # VK_KHR_ray_query hardware. Output: RWTexture3D coefficient-major depth slices.
 compile_stage gi_bake bakeMain compute
 
-# gi_render: compute shader for offline path-traced image rendering (ray-query).
-# Dispatched per pixel — renders an HDR image directly. Requires
-# VK_KHR_ray_query hardware. Output: RWTexture2D RGBA32F.
-compile_stage gi_render renderMain compute
-
 # pt_render: real-time path tracing compute shader (temporal accumulation).
 # Dispatched per pixel — traces 1 sample/frame, accumulates for convergence.
 # Requires VK_KHR_ray_query hardware. Output: RWTexture2D RGBA32F (accumulated).
