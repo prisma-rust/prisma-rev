@@ -1697,24 +1697,12 @@ impl App {
                 );
             }
             PlatformEvent::Key { key, pressed } => {
-                // `Other(u32::MAX)` = 平台没给出物理键（winit 的 `Unidentified`）。
-                // 旧实现直接丢弃这类事件，这里保持一致。
-                if key == Key::Other(u32::MAX) {
-                    return true;
-                }
-                let key = engine_key_from_native(key);
-                if should_release_pointer_lock(key, pressed, self.input.pointer_locked) {
+                // 键码换算 + Esc 解锁 + 写进 InputManager 收在 `apply_key_event`，
+                // 单测才能覆盖「平台键 -> 引擎键 -> key_held」整条链路；
+                // 只有真正碰窗口的 release_pointer 留在外面。
+                if apply_key_event(&mut self.input, key, pressed) {
                     prism_platform::release_pointer(window);
-                    self.input.set_locked(false);
                 }
-                self.input.handle_keyboard(
-                    key,
-                    if pressed {
-                        ElementState::Pressed
-                    } else {
-                        ElementState::Released
-                    },
-                );
             }
             PlatformEvent::Modifiers(modifiers) => self.modifiers = modifiers,
             // 尺寸变化同时更新宽高比（渲染线程从平台上下文读真实尺寸）。
@@ -2053,6 +2041,36 @@ fn spawn_pak_watcher() -> Option<prism_engine::scene::hot_reload::HotReloadWatch
             None
         }
     }
+}
+
+/// 把一个平台按键事件落到 [`InputManager`] 上，返回是否需要释放指针锁定。
+///
+/// 平台键码 -> 引擎键码 -> `key_held` 是三条独立的表（winit 物理键、VK、
+/// `KeyCode`），任何一张表漏项都会让「按了没反应」，而这条链路以前只有
+/// 各段自己的单测。把换算与写入收在这里，单测能一次覆盖整条路径；
+/// 真正操作窗口的 `release_pointer` 仍由调用方执行。
+fn apply_key_event(input: &mut InputManager, key: Key, pressed: bool) -> bool {
+    use prism_engine::input::ElementState;
+
+    // `Other(u32::MAX)` = 平台没给出物理键（winit 的 `Unidentified`）。
+    // 旧实现直接丢弃这类事件，这里保持一致。
+    if key == Key::Other(u32::MAX) {
+        return false;
+    }
+    let key = engine_key_from_native(key);
+    let release = should_release_pointer_lock(key, pressed, input.pointer_locked);
+    if release {
+        input.set_locked(false);
+    }
+    input.handle_keyboard(
+        key,
+        if pressed {
+            ElementState::Pressed
+        } else {
+            ElementState::Released
+        },
+    );
+    release
 }
 
 /// Esc 是指针锁定的逃生口：锁定态下它先释放光标，再作为普通按键交给游戏。
@@ -2402,6 +2420,59 @@ mod tests {
         }
         // 未列出的键不能丢：退化为原始码（winit 判别值 / Win32 VK）。
         assert_eq!(engine_key_from_native(K::Other(0x5A)), Eng::Other(0x5A));
+    }
+
+    /// 端到端：平台按键事件走完换算后必须能在 `InputManager` 里查到，
+    /// 否则相机读 `key_held(KeyW)` 永远是 false（Sponza WASD 不动相机的根因）。
+    #[test]
+    fn platform_key_events_reach_the_engine_input_state() {
+        use prism_engine::input::KeyCode;
+        use prism_platform::Key as K;
+        let mut input = InputManager::new();
+        for key in [K::KeyW, K::KeyA, K::KeyS, K::KeyD, K::KeyQ, K::KeyE] {
+            assert!(!apply_key_event(&mut input, key, true), "{key:?} 不该解锁");
+            assert!(
+                input.key_held(engine_key_from_native(key)),
+                "{key:?} 按下后不在 key_held 里"
+            );
+            assert!(!apply_key_event(&mut input, key, false), "{key:?} 不该解锁");
+            assert!(
+                !input.key_held(engine_key_from_native(key)),
+                "{key:?} 抬起后仍在 key_held 里"
+            );
+        }
+        // 只走 `LETTER_KEYS` 兜底的那些键同样不能丢。
+        assert!(!apply_key_event(&mut input, K::Other(0x52), true));
+        assert!(input.key_held(KeyCode::Other(0x52)));
+    }
+
+    /// Esc 在锁定态下先释放锁定，然后仍作为普通按键交给游戏。
+    #[test]
+    fn escape_unlocks_and_still_reaches_the_game() {
+        use prism_engine::input::KeyCode;
+        use prism_platform::Key as K;
+        let mut input = InputManager::new();
+        input.set_locked(true);
+        assert!(
+            apply_key_event(&mut input, K::Escape, true),
+            "锁定态 Esc 要解锁"
+        );
+        assert!(!input.pointer_locked, "Esc 之后必须已经解锁");
+        assert!(input.key_held(KeyCode::Escape), "解锁不影响 Esc 本身的分发");
+        // 已解锁时再按 Esc 不重复触发。
+        assert!(!apply_key_event(&mut input, K::Escape, true));
+    }
+
+    /// winit 的 `Unidentified`（`Other(u32::MAX)`）必须被丢弃，不能塞进输入表。
+    #[test]
+    fn unidentified_keys_are_dropped() {
+        use prism_engine::input::KeyCode;
+        use prism_platform::Key as K;
+        let mut input = InputManager::new();
+        input.set_locked(true);
+        assert!(!apply_key_event(&mut input, K::Other(u32::MAX), true));
+        assert!(!input.key_held(KeyCode::Other(u32::MAX)));
+        assert!(input.pointer_locked, "丢弃事件不该动锁定状态");
     }
 }
 
