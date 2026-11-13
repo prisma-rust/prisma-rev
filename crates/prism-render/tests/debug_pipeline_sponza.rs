@@ -124,7 +124,21 @@ fn calibration_quad() -> MeshUploadInput {
 fn load_sponza_primitives(
     path: &Path,
 ) -> anyhow::Result<Vec<(MeshUploadInput, MaterialUploadInput)>> {
-    let (doc, buffers, _images) = gltf::import(path)?;
+    // 贴图资源没有全部入库，而这里只用几何与材质因子（贴图槽位留空），
+    // 所以绕开 `gltf::import` 的图片解码，直接读文档 + buffer。
+    let bytes = std::fs::read(path)?;
+    let gltf = gltf::Gltf::from_slice(&bytes)?;
+    let base = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut buffers = Vec::new();
+    for buffer in gltf.document.buffers() {
+        match buffer.source() {
+            gltf::buffer::Source::Uri(uri) => buffers.push(std::fs::read(base.join(uri))?),
+            gltf::buffer::Source::Bin => {
+                anyhow::bail!("GLB 内嵌 buffer 未支持：{}", path.display())
+            }
+        }
+    }
+    let doc = gltf.document;
     let mut out = Vec::new();
 
     for mesh in doc.meshes() {
@@ -372,8 +386,10 @@ fn test_sponza_pipeline_debug_passes() {
     // -----------------------------------------------------------------------
     // Pass 3: Real Crytek Sponza Meshes Loading
     // -----------------------------------------------------------------------
-    let sponza_gltf_path = Path::new("F:/repos/prisma/prisma-rev/.worktree/sponza-rtxgi/projects/sponza/assets/models/sponza/Sponza.gltf");
-    let sponza_prims = load_sponza_primitives(sponza_gltf_path).expect("load sponza gltf");
+    // 资源随仓库提交，按 crate 位置解析，避免写死某台机器上的绝对路径。
+    let sponza_gltf_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../projects/sponza/assets/models/sponza/Sponza.gltf");
+    let sponza_prims = load_sponza_primitives(&sponza_gltf_path).expect("load sponza gltf");
     println!(
         "Loaded {} primitives from Crytek Sponza glTF",
         sponza_prims.len()

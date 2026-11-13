@@ -15,7 +15,7 @@ pub use prism_physics2d::*;
 use glam::{Quat, Vec2};
 use prism_ecs::{Entity, World};
 use prism_scene::components::{
-    PhysicsCollider2D, Collider2DShape, LocalToWorld, LocalTransform, RigidBody2D, RigidBody2DType,
+    Collider2DShape, LocalToWorld, LocalTransform, PhysicsCollider2D, RigidBody2D, RigidBody2DType,
 };
 
 /// 2D 碰撞 / 传感器事件类型。

@@ -1,7 +1,7 @@
 //! 2D 物理系统单元测试（#1160）。
 
 use prism_ecs::World;
-use prism_scene::components::{PhysicsCollider2D, LocalTransform, RigidBody2D, RigidBody2DType};
+use prism_scene::components::{LocalTransform, PhysicsCollider2D, RigidBody2D, RigidBody2DType};
 
 use super::physics2d::{
     overlap_box_2d, overlap_circle_2d, raycast_2d, step_2d, Physics2DEventKind, Physics2DEvents,

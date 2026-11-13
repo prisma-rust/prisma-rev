@@ -6288,6 +6288,8 @@ fn render_settings_from_json(
         // 编辑器偏好不覆盖它——否则 Game 视图和打包产物的像素比例会不一致。
         internal_resolution: base.internal_resolution,
         internal_scale_mode: base.internal_scale_mode,
+        // 其余字段（ANF / SHARC / DLSS 等）编辑器暂不暴露，沿用默认值。
+        ..Default::default()
     }
 }
 
