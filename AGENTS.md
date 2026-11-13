@@ -427,7 +427,7 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
   Entry points are `vertexMain` / `fragmentMain` (`-fvk-use-entrypoint-name`).
   Compile via `bash assets/shaders/compile.sh` (Windows: `scripts/run.ps1` does it automatically).
   Requires `slangc` on PATH.
-- `.spv` files **are committed** (deterministic slangc output; 36 modules, ~540 KB) and
+- `.spv` files **are committed** (deterministic slangc output; 36 modules, ~460 KB) and
   `include_bytes!`'d by the renderer, so a clone builds without `slangc`. CI recompiles
   every shader and fails when the committed bytes drift, so **recompile and commit the
   `.spv` after editing a `.slang`** — otherwise the engine runs stale SPIR-V (a common

@@ -17,7 +17,7 @@ PrismaRev 是从零实现的 Rust 游戏引擎：**Vulkan** 渲染，**Android �
 | Android NDK（可选） | 打 APK，见 `scripts/build-android.ps1` |
 | Python 3.11+ | `scripts/pr_ready.py` 自检 |
 
-`assets/shaders/*.spv` **已入库**（确定性产物，约 540 KB），克隆下来就能构建；改了 `.slang` 时用
+`assets/shaders/*.spv` **已入库**（确定性产物，约 460 KB），克隆下来就能构建；改了 `.slang` 时用
 `bash assets/shaders/compile.sh` 重新生成，并把 `.spv` 一起提交（CI 会比对，漂移即失败）。
 
 ## 构建与运行

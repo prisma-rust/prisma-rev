@@ -65,7 +65,7 @@ cargo test -p prism-render
 >
 > 生成它们的是 slangc `2026.21`（CI 的 `SLANG_VERSION` 与 `compile.sh` 的 `SLANGC_MIN_VERSION` 都钉在它上面；自己的机器版本落后时按脚本提示自行安装，不要下调检查）。`compile.sh` 会检查 `slangc -version`，并在反射与仓库不一致时失败——所以本地那次「只在 /tmp 生成 `.spv`」的绕法不再需要，也不该再手工改 `-reflection-json` 的目标。
 >
-> 同理，`assets/shaders/*.spv` 也 checked-in（确定性产物，约 540 KB）：**新 worktree 或新克隆不需要 slangc 就能构建**。改了 `.slang` 要重新跑 `bash assets/shaders/compile.sh` 并把新的 `.spv` 一起提交；CI 的 shaders job 重编后比对 `assets/shaders/`，漂移即失败。
+> 同理，`assets/shaders/*.spv` 也 checked-in（确定性产物，约 460 KB）：**新 worktree 或新克隆不需要 slangc 就能构建**。改了 `.slang` 要重新跑 `bash assets/shaders/compile.sh` 并把新的 `.spv` 一起提交；CI 的 shaders job 重编后比对 `assets/shaders/`，漂移即失败。
 
 ### xtask 为什么是独立 crate（不是 build.rs）
 - `build.rs` 每次 `cargo build` 都跑 → 如果它自己调 slangc 就会强制依赖 slangc → **手机端构建直接崩**。
