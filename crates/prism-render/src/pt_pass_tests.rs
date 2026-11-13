@@ -101,6 +101,43 @@ fn transport_variants_share_the_push_and_entry_contract() {
     assert_eq!(pt_render::PUSH_CONSTANT_SIZE, PT_PUSH_RANGE_SIZE);
 }
 
+/// The guide UBO and the guide storage images are a contract with
+/// `pt_render.slang`: the shader indexes them by the reflected binding
+/// numbers, and the std140 block must stay three 4x4 matrices wide. A size
+/// mismatch here shows up as garbage matrices (wrong motion vectors and
+/// normals), not as a compile error.
+#[test]
+fn guide_contract_matches_the_reflected_bindings() {
+    use shader_bindings::{pt_reference, pt_render, pt_sharc_train};
+
+    // 3 x mat4 = 192 bytes; the shader block is std140 and holds no scalars.
+    assert_eq!(std::mem::size_of::<PtGuides>(), 192);
+
+    assert_eq!(pt_render::GUIDE_DEPTH_BINDING, 15);
+    assert_eq!(pt_render::GUIDE_VELOCITY_BINDING, 16);
+    assert_eq!(pt_render::GUIDES_BINDING, 17);
+    assert_eq!(pt_render::GUIDE_NORMAL_ROUGHNESS_BINDING, 18);
+
+    // All three transport variants write the same guides, so they must agree on
+    // the binding numbers - the pass binds one descriptor set for all of them.
+    assert_eq!(
+        pt_reference::GUIDE_DEPTH_BINDING,
+        pt_render::GUIDE_DEPTH_BINDING
+    );
+    assert_eq!(
+        pt_sharc_train::GUIDE_DEPTH_BINDING,
+        pt_render::GUIDE_DEPTH_BINDING
+    );
+    assert_eq!(
+        pt_reference::GUIDE_NORMAL_ROUGHNESS_BINDING,
+        pt_render::GUIDE_NORMAL_ROUGHNESS_BINDING
+    );
+    assert_eq!(
+        pt_sharc_train::GUIDE_NORMAL_ROUGHNESS_BINDING,
+        pt_render::GUIDE_NORMAL_ROUGHNESS_BINDING
+    );
+}
+
 #[test]
 fn default_transport_variant_is_the_consumer() {
     assert_eq!(PtVariant::default(), PtVariant::Consume);

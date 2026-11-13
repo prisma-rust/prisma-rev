@@ -108,6 +108,12 @@ impl FrameHarness {
     }
 
     /// The unit box mesh registered by this harness.
+    /// The live render graph, for tests that assert on pass wiring rather
+    /// than on pixels.
+    pub fn graph(&self) -> &prism_render::render_graph::RenderGraph {
+        self.renderer.graph()
+    }
+
     pub fn mesh_handle(&self) -> MeshHandle {
         self.mesh
     }

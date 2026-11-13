@@ -160,3 +160,42 @@ fn taa_resolves_the_path_traced_image() {
     }
     assert_eq!(again.len(), 256 * 256 * 4);
 }
+
+/// The temporal resolve has to run *after* the tracer that feeds it, and the
+/// tracer has to publish every guide the resolve reads. Both are easy to break
+/// silently: the graph never reorders passes, and a missing guide only shows up
+/// as a subtle ghosting artifact.
+#[test]
+fn the_resolve_runs_after_the_tracer_and_reads_its_guides() {
+    use prism_render::render_graph::{PT_DEPTH_H, PT_NORMAL_ROUGHNESS_H, PT_VELOCITY_H};
+
+    let Some(harness) = FrameHarness::new(64) else {
+        return;
+    };
+    let snapshot = harness.graph().snapshot();
+
+    let pt = snapshot
+        .passes
+        .iter()
+        .find(|p| p.name == "PathTracePass")
+        .expect("path tracer registered");
+    let taa = snapshot
+        .passes
+        .iter()
+        .find(|p| p.name == "TaaPass")
+        .expect("taa registered");
+
+    assert!(
+        taa.index > pt.index,
+        "TaaPass (#{}) must run after PathTracePass (#{}) so it can consume this frame's guides",
+        taa.index,
+        pt.index
+    );
+
+    for guide in [PT_DEPTH_H, PT_VELOCITY_H, PT_NORMAL_ROUGHNESS_H] {
+        assert!(
+            pt.outputs.contains(&guide),
+            "PathTracePass must publish {guide:?}"
+        );
+    }
+}

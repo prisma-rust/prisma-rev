@@ -61,6 +61,20 @@ pub const PT_DEPTH_H: ResourceHandle = ResourceHandle(1008);
 /// `FORWARD_VELOCITY_H`: `current_uv - previous_uv`). Written by
 /// `PathTracePass` and consumed by `TaaPass`.
 pub const PT_VELOCITY_H: ResourceHandle = ResourceHandle(1009);
+/// Path-tracer surface guides for the neural denoisers (DLSS-RR / NRD):
+/// view-space unit normal in xyz and perceptual roughness in w, matching the
+/// raster G-buffer's SV_Target1 convention but without the reactive mask.
+/// Written by `PathTracePass` as an RGBA16F storage+sampled image.
+pub const PT_NORMAL_ROUGHNESS_H: ResourceHandle = ResourceHandle(1010);
+/// Raster G-buffer surface data for screen-space GI: RGB = base color
+/// (albedo), A = perceptual roughness. Written by `ForwardPass` as an extra
+/// SV_Target3 attachment and read by `RestirGiPass` to demodulate the
+/// secondary bounce, so the GI signal is lighting only.
+pub const FORWARD_ALBEDO_H: ResourceHandle = ResourceHandle(1011);
+/// Screen-space indirect diffuse produced by `RestirGiPass`. Written as a
+/// storage+sampled image at the internal resolution, read by `ForwardPass`
+/// next frame (1-frame latency, same handshake as the GTAO visibility buffer).
+pub const RESTIR_GI_COLOR_H: ResourceHandle = ResourceHandle(1012);
 
 impl ResourceHandle {
     pub const INVALID: ResourceHandle = ResourceHandle(u32::MAX);

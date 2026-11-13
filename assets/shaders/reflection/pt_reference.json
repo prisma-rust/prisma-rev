@@ -884,6 +884,27 @@
             }
         },
         {
+            "name": "guideNormalRoughness",
+            "binding": {"kind": "descriptorTableSlot", "index": 18},
+            "format": "rgba16f",
+            "type": {
+                "kind": "resource",
+                "baseShape": "texture2D",
+                "access": "readWrite",
+                "resultType": {
+                    "kind": "vector",
+                    "elementCount": 4,
+                    "elementType": {
+                        "kind": "scalar",
+                        "scalarType": "float32"
+                    }
+                },
+                "sizes": [
+                    {"kind": "descriptorTableSlot", "value": 1}
+                ]
+            }
+        },
+        {
             "name": "guides",
             "binding": {"kind": "descriptorTableSlot", "index": 17},
             "type": {
@@ -923,10 +944,26 @@
                                 ]
                             },
                             "binding": {"kind": "uniform", "offset": 64, "size": 64, "elementStride": 0}
+                        },
+                        {
+                            "name": "worldToView",
+                            "type": {
+                                "kind": "matrix",
+                                "rowCount": 4,
+                                "columnCount": 4,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                },
+                                "sizes": [
+                                    {"kind": "uniform", "value": 64, "alignment": 16}
+                                ]
+                            },
+                            "binding": {"kind": "uniform", "offset": 128, "size": 64, "elementStride": 0}
                         }
                     ],
                     "sizes": [
-                        {"kind": "uniform", "value": 128, "alignment": 16}
+                        {"kind": "uniform", "value": 192, "alignment": 16}
                     ]
                 },
                 "containerVarLayout": {
@@ -968,13 +1005,29 @@
                                     ]
                                 },
                                 "binding": {"kind": "uniform", "offset": 64, "size": 64, "elementStride": 0}
+                            },
+                            {
+                                "name": "worldToView",
+                                "type": {
+                                    "kind": "matrix",
+                                    "rowCount": 4,
+                                    "columnCount": 4,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    },
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 64, "alignment": 16}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 128, "size": 64, "elementStride": 0}
                             }
                         ],
                         "sizes": [
-                            {"kind": "uniform", "value": 128, "alignment": 16}
+                            {"kind": "uniform", "value": 192, "alignment": 16}
                         ]
                     },
-                    "binding": {"kind": "uniform", "offset": 0, "size": 128, "elementStride": 0}
+                    "binding": {"kind": "uniform", "offset": 0, "size": 192, "elementStride": 0}
                 },
                 "sizes": [
                     {"kind": "descriptorTableSlot", "value": 1}
@@ -2260,6 +2313,27 @@
                 }
             },
             {
+                "name": "guideNormalRoughness",
+                "binding": {"kind": "descriptorTableSlot", "index": 18},
+                "format": "rgba16f",
+                "type": {
+                    "kind": "resource",
+                    "baseShape": "texture2D",
+                    "access": "readWrite",
+                    "resultType": {
+                        "kind": "vector",
+                        "elementCount": 4,
+                        "elementType": {
+                            "kind": "scalar",
+                            "scalarType": "float32"
+                        }
+                    },
+                    "sizes": [
+                        {"kind": "descriptorTableSlot", "value": 1}
+                    ]
+                }
+            },
+            {
                 "name": "guides",
                 "binding": {"kind": "descriptorTableSlot", "index": 17},
                 "type": {
@@ -2299,10 +2373,26 @@
                                     ]
                                 },
                                 "binding": {"kind": "uniform", "offset": 64, "size": 64, "elementStride": 0}
+                            },
+                            {
+                                "name": "worldToView",
+                                "type": {
+                                    "kind": "matrix",
+                                    "rowCount": 4,
+                                    "columnCount": 4,
+                                    "elementType": {
+                                        "kind": "scalar",
+                                        "scalarType": "float32"
+                                    },
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 64, "alignment": 16}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 128, "size": 64, "elementStride": 0}
                             }
                         ],
                         "sizes": [
-                            {"kind": "uniform", "value": 128, "alignment": 16}
+                            {"kind": "uniform", "value": 192, "alignment": 16}
                         ]
                     },
                     "containerVarLayout": {
@@ -2344,13 +2434,29 @@
                                         ]
                                     },
                                     "binding": {"kind": "uniform", "offset": 64, "size": 64, "elementStride": 0}
+                                },
+                                {
+                                    "name": "worldToView",
+                                    "type": {
+                                        "kind": "matrix",
+                                        "rowCount": 4,
+                                        "columnCount": 4,
+                                        "elementType": {
+                                            "kind": "scalar",
+                                            "scalarType": "float32"
+                                        },
+                                        "sizes": [
+                                            {"kind": "uniform", "value": 64, "alignment": 16}
+                                        ]
+                                    },
+                                    "binding": {"kind": "uniform", "offset": 128, "size": 64, "elementStride": 0}
                                 }
                             ],
                             "sizes": [
-                                {"kind": "uniform", "value": 128, "alignment": 16}
+                                {"kind": "uniform", "value": 192, "alignment": 16}
                             ]
                         },
-                        "binding": {"kind": "uniform", "offset": 0, "size": 128, "elementStride": 0}
+                        "binding": {"kind": "uniform", "offset": 0, "size": 192, "elementStride": 0}
                     },
                     "sizes": [
                         {"kind": "descriptorTableSlot", "value": 1}
@@ -2878,6 +2984,11 @@
                     "name": "guideVelocity",
                     "binding": {"kind": "descriptorTableSlot", "index": 16, "used": 1},
                     "format": "rg32f"
+                },
+                {
+                    "name": "guideNormalRoughness",
+                    "binding": {"kind": "descriptorTableSlot", "index": 18, "used": 1},
+                    "format": "rgba16f"
                 },
                 {
                     "name": "guides",

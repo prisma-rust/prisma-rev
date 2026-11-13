@@ -26,7 +26,8 @@ use crate::descriptor::{PtAnalyticLight, ReSTIRReservoir, PT_LIGHT_MAX};
 use crate::math::mat_inverse;
 use crate::render_graph::{
     GraphResources, PassInfo, PassKind, RenderContext, RenderGraphBuilder, RenderPassNode,
-    RenderSettings, ResourceType, ResourceUsage, PT_COLOR_H, PT_DEPTH_H, PT_VELOCITY_H,
+    RenderSettings, ResourceType, ResourceUsage, PT_COLOR_H, PT_DEPTH_H, PT_NORMAL_ROUGHNESS_H,
+    PT_VELOCITY_H,
 };
 use crate::shader;
 use crate::shader_bindings;
@@ -37,14 +38,17 @@ use crate::shader_bindings;
 /// NDC depth of the primary hit. `prev_view_proj` is the previous frame's
 /// *unjittered* transform: reprojecting the current hit with it yields the UV the
 /// surface occupied last frame, which is the motion vector TAA/DLSS-RR expects.
+/// `world_to_view` rotates the world-space shading normal into the view space
+/// both DLSS-RR and NRD expect for their normal guides.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
 struct PtGuides {
     view_proj: [[f32; 4]; 4],
     prev_view_proj: [[f32; 4]; 4],
+    world_to_view: [[f32; 4]; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<PtGuides>() == 128);
+const _: () = assert!(std::mem::size_of::<PtGuides>() == 192);
 
 /// GPU push-constant block size for PtPush (std140 rounds to 16-byte boundary).
 /// The auto-generated `shader_bindings::pt_render::PtPush` reflects to 176
@@ -157,6 +161,12 @@ pub struct PathTracePass {
     guide_velocity_image: vk::Image,
     guide_velocity_view: vk::ImageView,
     guide_velocity_memory: vk::DeviceMemory,
+    // View-space normal.xyz + perceptual roughness.w of the primary hit,
+    // published as PT_NORMAL_ROUGHNESS_H. DLSS-RR's packed normal/roughness
+    // mode and NRD both consume exactly this layout.
+    guide_normal_roughness_image: vk::Image,
+    guide_normal_roughness_view: vk::ImageView,
+    guide_normal_roughness_memory: vk::DeviceMemory,
 
     // Guide camera state (binding 17) — HOST_VISIBLE constant buffer rewritten
     // every dispatch with the current and previous frame view-projections.
@@ -338,6 +348,11 @@ impl PathTracePass {
                 vk::DescriptorType::UNIFORM_BUFFER,
                 vk::ShaderStageFlags::COMPUTE,
             ), // guides (PtGuides camera state)
+            b(
+                18,
+                vk::DescriptorType::STORAGE_IMAGE,
+                vk::ShaderStageFlags::COMPUTE,
+            ), // guideNormalRoughness (PT_NORMAL_ROUGHNESS_H)
         ];
 
         // All bindings get UPDATE_AFTER_BIND + PARTIALLY_BOUND because
@@ -385,6 +400,8 @@ impl PathTracePass {
             // descriptorBindingUniformBufferUpdateAfterBind device feature, which
             // this renderer deliberately does not request.
             vk::DescriptorBindingFlags::empty(), // b17 guides
+            vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
+                | vk::DescriptorBindingFlags::PARTIALLY_BOUND, // b18 guideNormalRoughness
         ];
         let mut flags_info =
             vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&binding_flags);
@@ -403,7 +420,7 @@ impl PathTracePass {
         let pool_sizes = [
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::STORAGE_IMAGE,
-                descriptor_count: 5,
+                descriptor_count: 6,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::UNIFORM_BUFFER,
@@ -450,6 +467,8 @@ impl PathTracePass {
             .context("PathTracePass: guide depth")?;
         let (gvi, gvv, gvm) = make_guide_velocity_image(device, mem_props, 1, 1)
             .context("PathTracePass: guide velocity")?;
+        let (gnri, gnrv, gnrm) = make_guide_normal_roughness_image(device, mem_props, 1, 1)
+            .context("PathTracePass: guide normal roughness")?;
 
         // Guide camera constant buffer (binding 17), rewritten every dispatch.
         let guides_size = std::mem::size_of::<PtGuides>() as vk::DeviceSize;
@@ -566,6 +585,9 @@ impl PathTracePass {
             guide_velocity_image: gvi,
             guide_velocity_view: gvv,
             guide_velocity_memory: gvm,
+            guide_normal_roughness_image: gnri,
+            guide_normal_roughness_view: gnrv,
+            guide_normal_roughness_memory: gnrm,
             guides_buffer,
             guides_memory,
             guides_mapped,
@@ -878,12 +900,16 @@ impl PathTracePass {
             device.destroy_image_view(self.guide_velocity_view, None);
             device.destroy_image(self.guide_velocity_image, None);
             device.free_memory(self.guide_velocity_memory, None);
+            device.destroy_image_view(self.guide_normal_roughness_view, None);
+            device.destroy_image(self.guide_normal_roughness_image, None);
+            device.free_memory(self.guide_normal_roughness_memory, None);
         }
         let (ai, av, am) = make_accum_image(device, mem_props, w, h)?;
         let (si, sv, sm) = make_sample_count_image(device, mem_props, w, h)?;
         let (oi, ov, om) = make_pt_output_image(device, mem_props, w, h)?;
         let (gdi, gdv, gdm) = make_guide_depth_image(device, mem_props, w, h)?;
         let (gvi, gvv, gvm) = make_guide_velocity_image(device, mem_props, w, h)?;
+        let (gnri, gnrv, gnrm) = make_guide_normal_roughness_image(device, mem_props, w, h)?;
         self.accum_image = ai;
         self.accum_view = av;
         self.accum_memory = am;
@@ -899,6 +925,9 @@ impl PathTracePass {
         self.guide_velocity_image = gvi;
         self.guide_velocity_view = gvv;
         self.guide_velocity_memory = gvm;
+        self.guide_normal_roughness_image = gnri;
+        self.guide_normal_roughness_view = gnrv;
+        self.guide_normal_roughness_memory = gnrm;
         self.frame_counter = 0;
         self.prev_camera_pos = None;
         self.prev_view_proj = None;
@@ -1075,6 +1104,9 @@ impl PathTracePass {
         let gvi = vk::DescriptorImageInfo::default()
             .image_view(self.guide_velocity_view)
             .image_layout(vk::ImageLayout::GENERAL);
+        let gnri = vk::DescriptorImageInfo::default()
+            .image_view(self.guide_normal_roughness_view)
+            .image_layout(vk::ImageLayout::GENERAL);
         // Geometry buffers come from the PtScene (vertex/index/instance_meta).
         // The materials buffer is the shared RenderMaterialManager SSBO (wired
         // via set_material_resources), NOT the PtScene's placeholder buffer.
@@ -1213,6 +1245,11 @@ impl PathTracePass {
                 .dst_binding(16)
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .image_info(std::slice::from_ref(&gvi)),
+            vk::WriteDescriptorSet::default()
+                .dst_set(self.ds)
+                .dst_binding(18)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .image_info(std::slice::from_ref(&gnri)),
             // b17 (guides UBO) is deliberately absent: it is written through the
             // mapped pointer every dispatch, so the descriptor is bound exactly
             // once in `new`. Re-writing it here would mark the set "updated while
@@ -1287,6 +1324,9 @@ impl PathTracePass {
             device.destroy_image_view(self.guide_velocity_view, None);
             device.destroy_image(self.guide_velocity_image, None);
             device.free_memory(self.guide_velocity_memory, None);
+            device.destroy_image_view(self.guide_normal_roughness_view, None);
+            device.destroy_image(self.guide_normal_roughness_image, None);
+            device.free_memory(self.guide_normal_roughness_memory, None);
             device.unmap_memory(self.guides_memory);
             device.destroy_buffer(self.guides_buffer, None);
             device.free_memory(self.guides_memory, None);
@@ -1424,9 +1464,22 @@ impl PathTracePass {
         unjittered[3][0] -= ctx.frame.view_proj_jitter[0];
         unjittered[3][1] -= ctx.frame.view_proj_jitter[1];
         let prev_view_proj = self.guide_prev_view_proj.unwrap_or(unjittered);
+        // `inv_view_rot` is the transpose of the view matrix's upper-left 3x3,
+        // so transposing it back yields the world -> view rotation with the same
+        // memory layout `frame.view` has in the shader. That lets the guide
+        // write use the identical `mul((float3x3)m, worldNormal)` expression
+        // scene_frag.slang uses for SV_Target1.
+        let mut world_to_view = [[0.0f32; 4]; 4];
+        for (c, column) in world_to_view.iter_mut().enumerate().take(3) {
+            for (r, value) in column.iter_mut().enumerate().take(3) {
+                *value = ctx.frame.inv_view_rot[r][c];
+            }
+        }
+        world_to_view[3][3] = 1.0;
         let guides = PtGuides {
             view_proj: ctx.frame.view_proj,
             prev_view_proj,
+            world_to_view,
         };
         unsafe {
             ptr::copy_nonoverlapping(
@@ -1692,9 +1745,9 @@ impl RenderPassNode for PathTracePass {
             );
         }
 
-        // Barrier: guides → GENERAL (compute write). Both are written by the
-        // same dispatch, so one barrier array covers them; UNDEFINED as the old
-        // layout is always legal (same reasoning as PT_COLOR_H above).
+        // Barrier: guides → GENERAL (compute write). All three are written by
+        // the same dispatch, so one barrier array covers them; UNDEFINED as the
+        // old layout is always legal (same reasoning as PT_COLOR_H above).
         let guide_to_gen = [
             vk::ImageMemoryBarrier::default()
                 .image(self.guide_depth_image)
@@ -1711,6 +1764,19 @@ impl RenderPassNode for PathTracePass {
                 .dst_access_mask(vk::AccessFlags::SHADER_WRITE),
             vk::ImageMemoryBarrier::default()
                 .image(self.guide_velocity_image)
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::GENERAL)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .src_access_mask(vk::AccessFlags::empty())
+                .dst_access_mask(vk::AccessFlags::SHADER_WRITE),
+            vk::ImageMemoryBarrier::default()
+                .image(self.guide_normal_roughness_image)
                 .old_layout(vk::ImageLayout::UNDEFINED)
                 .new_layout(vk::ImageLayout::GENERAL)
                 .subresource_range(vk::ImageSubresourceRange {
@@ -1796,6 +1862,19 @@ impl RenderPassNode for PathTracePass {
                 })
                 .src_access_mask(vk::AccessFlags::SHADER_WRITE)
                 .dst_access_mask(vk::AccessFlags::SHADER_READ),
+            vk::ImageMemoryBarrier::default()
+                .image(self.guide_normal_roughness_image)
+                .old_layout(vk::ImageLayout::GENERAL)
+                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ),
         ];
         unsafe {
             device.cmd_pipeline_barrier(
@@ -1821,6 +1900,8 @@ impl RenderPassNode for PathTracePass {
         resources.set_image(PT_DEPTH_H, self.guide_depth_image);
         resources.set_image_view(PT_VELOCITY_H, self.guide_velocity_view);
         resources.set_image(PT_VELOCITY_H, self.guide_velocity_image);
+        resources.set_image_view(PT_NORMAL_ROUGHNESS_H, self.guide_normal_roughness_view);
+        resources.set_image(PT_NORMAL_ROUGHNESS_H, self.guide_normal_roughness_image);
 
         log::trace!(
             "PathTracePass: dispatch {}×{} reset={} frame={}",
@@ -1838,7 +1919,7 @@ impl RenderPassNode for PathTracePass {
             name: self.name().to_string(),
             kind: PassKind::Pt,
             inputs: Vec::new(),
-            outputs: vec![PT_COLOR_H, PT_DEPTH_H, PT_VELOCITY_H],
+            outputs: vec![PT_COLOR_H, PT_DEPTH_H, PT_VELOCITY_H, PT_NORMAL_ROUGHNESS_H],
         }
     }
 
@@ -1945,6 +2026,26 @@ fn make_guide_velocity_image(
         w,
         h,
         vk::Format::R32G32_SFLOAT,
+        vk::ImageUsageFlags::STORAGE
+            | vk::ImageUsageFlags::TRANSFER_DST
+            | vk::ImageUsageFlags::SAMPLED,
+    )
+}
+
+fn make_guide_normal_roughness_image(
+    device: &ash::Device,
+    mem_props: &vk::PhysicalDeviceMemoryProperties,
+    w: u32,
+    h: u32,
+) -> anyhow::Result<(vk::Image, vk::ImageView, vk::DeviceMemory)> {
+    // RGBA16F is one of the formats Vulkan requires storage-image support for,
+    // unlike R32G32_SFLOAT, so the compute write needs no format feature probe.
+    make_image(
+        device,
+        mem_props,
+        w,
+        h,
+        vk::Format::R16G16B16A16_SFLOAT,
         vk::ImageUsageFlags::STORAGE
             | vk::ImageUsageFlags::TRANSFER_DST
             | vk::ImageUsageFlags::SAMPLED,

@@ -26,7 +26,10 @@
 //    b11 RWStructuredBuffer<ReSTIRReservoir> currReservoir (write for next frame)
 //    b15 RWTexture2D<float>  guideDepth    (NDC depth for reprojection)
 //    b16 RWTexture2D<float2> guideVelocity (screen-space motion vectors)
-//    b17 ConstantBuffer<PtGuides> guides   (current + previous view-projection)
+//    b17 ConstantBuffer<PtGuides> guides   (current + previous view-projection,
+//                                          world -> view rotation)
+//    b18 RWTexture2D<float4> guideNormalRoughness (view-space normal.xyz +
+//                                          perceptual roughness.w)
 //   set 1 (shared bindless): globalSamplers[] + bindlessSrvs[] (module-global)
 // The b6/b7/b8/b9 + set 1 bindings are declared in path_integrator.slang (imported).
 
@@ -141,14 +144,26 @@ RWTexture2D<float> guideDepth;
 [format("rg32f")]
 RWTexture2D<float2> guideVelocity;
 
+// View-space normal (xyz, unit) and perceptual roughness (w) of the primary
+// hit. DLSS-RR's ePacked normal/roughness mode reads exactly this layout, and
+// NRD wants the same pair, so one image serves both consumers.
+[[vk::binding(18, 0)]]
+[format("rgba16f")]
+RWTexture2D<float4> guideNormalRoughness;
+
 // Camera state for the guide write. `viewProj` is this frame jittered
 // world -> clip transform; `prevViewProj` is the previous frame unjittered
 // one, so reprojecting the current primary hit yields the pixel it occupied
 // last frame.
+// `worldToView` is the rotation of the view matrix (world -> view). The
+// primary hit normal comes out of `trace_primary_ray` in world space, and both
+// DLSS-RR and NRD expect guide normals in view space, matching the raster
+// G-buffer's SV_Target1 convention.
 struct PtGuides
 {
     float4x4 viewProj;
     float4x4 prevViewProj;
+    float4x4 worldToView;
 };
 [[vk::binding(17, 0)]]
 ConstantBuffer<PtGuides> guides;
@@ -485,9 +500,10 @@ void ptMain(uint3 tid : SV_DispatchThreadID)
 
     bool primary_hit = trace_primary_ray(origin, dir, push.ray_max_distance,
         hit_pos, hit_normal, surf, meta, hit_uv, view_dir);
-    // The guide write below needs the primary surface, and `hit_pos` is reused
-    // as scratch space by the secondary bounces.
+    // The guide write below needs the primary surface, and both `hit_pos` and
+    // `dir` are reused as scratch space by the secondary bounces.
     float3 primary_pos = hit_pos;
+    float3 primary_dir = dir;
     if (primary_hit)
     {
         // ---- Emissive at hit ----
@@ -955,8 +971,17 @@ void ptMain(uint3 tid : SV_DispatchThreadID)
     {
         float guide_depth = 1.0;
         float2 guide_velocity = float2(0.0, 0.0);
+        // View-space shading normal and perceptual roughness. A miss has no
+        // surface, so it reports the negated view-space ray direction (a plane
+        // facing the camera) with mid roughness - the same fallback RTXPT uses
+        // in PrepareGuideBuffers.hlsl. All-zero normals would make the denoiser
+        // treat the background as a degenerate plane.
+        float3 guide_normal = mul((float3x3)guides.worldToView, -primary_dir);
+        float guide_roughness = 0.5;
         if (primary_hit)
         {
+            guide_normal = mul((float3x3)guides.worldToView, hit_normal);
+            guide_roughness = saturate(surf.roughness);
             // NDC depth of the primary hit in [0,1], the same convention the
             // raster depth buffer uses, so TAA depth disocclusion compares
             // like with like.
@@ -977,6 +1002,7 @@ void ptMain(uint3 tid : SV_DispatchThreadID)
         }
         guideDepth[pixel] = guide_depth;
         guideVelocity[pixel] = guide_velocity;
+        guideNormalRoughness[pixel] = float4(normalize(guide_normal), guide_roughness);
     }
 
     // ---- Accumulate ----
