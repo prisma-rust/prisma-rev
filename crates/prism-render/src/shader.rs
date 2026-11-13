@@ -1,12 +1,14 @@
 //! Shader module loading from SPIR-V bytecode.
 //!
-//! SPIR-V shaders are compiled offline from Slang via `slangc` (see
-//! `shaders/compile.sh`).  Built-in shaders are embedded at compile time via
-//! `include_bytes!` (the default path).  Content / user shaders can be loaded
-//! from the asset pipeline via [`super::shader_asset::load_shader_module_from_rm`].
+//! SPIR-V is compiled offline from Slang via `slangc` (see
+//! `assets/shaders/compile.sh`) and embedded at compile time with
+//! `include_bytes!`; `build.rs` turns missing `.spv` into one actionable message
+//! (and compiles them when a `slangc` is available).
 //!
-//! See also `crates/prism-engine/src/shader_asset.rs` for the RM-based entry
-//! point.
+//! Every module here is a built-in engine pass: descriptor bindings and
+//! push-constant layouts come from the generated `shader_bindings`, so bytecode
+//! and Rust pipeline code have to ship together. `prism-asset` can decode a
+//! `ShaderAsset`, but no runtime path consumes one yet.
 
 use anyhow::Context as _;
 use ash::vk;

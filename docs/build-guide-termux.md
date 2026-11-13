@@ -31,8 +31,10 @@ cd PrismaRev
 ```
 
 注意：`assets/shaders/*.spv` 是 gitignored 的（不入库），克隆下来**没有** `.spv`，
-但 `prism-render` 用 `include_bytes!` 引用它们——直接 `cargo build` 会失败，
-必须先走第 3 节生成/获取 `.spv`。
+但 `prism-render` 用 `include_bytes!` 引用它们。`crates/prism-render/build.rs`
+会在编译前检查：能跑 `slangc` 时自己调 `assets/shaders/compile.sh`；找不到时报
+**一条**可照抄的提示（`compile.sh` / CI `spirv` artifact / `SLANGC=`），而不是三十多条
+`couldn't read … .spv`。按第 3 节生成或取回 `.spv` 后重新 `cargo build` 即可。
 
 ## 3. Shader 流程（无 slangc 主机）
 
