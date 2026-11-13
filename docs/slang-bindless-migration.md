@@ -13,7 +13,7 @@
 assets/shaders/slang/*.slang              # 每个模块一个文件（common.slang 提供共享类型）
 assets/shaders/compile.sh                 # slangc 编译脚本 (.spv + reflection JSON)
 assets/shaders/reflection/*.json          # slangc 产出的反射 JSON（checked-in，驱动 codegen）
-assets/shaders/*.spv                      # 编译产物（gitignore，include_bytes! 进二进制）
+assets/shaders/*.spv                      # slangc 产物（checked-in，include_bytes! 进二进制）
 crates/xtask/                             # 反射 JSON -> Rust 绑定 codegen（独立 workspace）
 crates/prism-render/src/shader_bindings/   # @generated：每个 shader 模块一个 .rs + mod.rs
 ```
@@ -65,10 +65,11 @@ cargo test -p prism-render
 >
 > 生成它们的是 slangc `2026.21`（CI 的 `SLANG_VERSION` 与 `compile.sh` 的 `SLANGC_MIN_VERSION` 都钉在它上面；自己的机器版本落后时按脚本提示自行安装，不要下调检查）。`compile.sh` 会检查 `slangc -version`，并在反射与仓库不一致时失败——所以本地那次「只在 /tmp 生成 `.spv`」的绕法不再需要，也不该再手工改 `-reflection-json` 的目标。
 >
-> 反过来，`assets/shaders/*.spv` 是 gitignore 的：**每个新 worktree 或新克隆都要先 `bash assets/shaders/compile.sh`**，否则 `include_bytes!` 找不到文件、`prism-render` 相关编译直接失败。
+> 同理，`assets/shaders/*.spv` 也 checked-in（确定性产物，约 540 KB）：**新 worktree 或新克隆不需要 slangc 就能构建**。改了 `.slang` 要重新跑 `bash assets/shaders/compile.sh` 并把新的 `.spv` 一起提交；CI 的 shaders job 重编后比对 `assets/shaders/`，漂移即失败。
 
 ### xtask 为什么是独立 crate（不是 build.rs）
-- `build.rs` 每次 `cargo build` 都跑 → 会强制依赖 slangc → **手机端构建直接崩**。
+- `build.rs` 每次 `cargo build` 都跑 → 如果它自己调 slangc 就会强制依赖 slangc → **手机端构建直接崩**。
+  （`crates/prism-render/build.rs` 只做检查 + 「有 slangc 才顺手编译」的兜底，缺 slangc 时只发提示。）
 - xtask 在 workspace `exclude` 列表里，默认 `cargo check`/`build` **完全不碰它**，生成的 `shader_bindings/` checked-in。
 - 运行方式：`cd crates/xtask && cargo run --bin shader-bindgen -- <反射目录> <输出目录>`（不能用 `cargo run -p xtask`，因为它被 exclude 了）。
 
@@ -108,7 +109,7 @@ Flags：`PARTIALLY_BOUND | UPDATE_AFTER_BIND | VARIABLE_DESCRIPTOR_COUNT`，配�
 4. **shaders** — slangc 编 `.spv` + 反射，`shader-bindgen` 从新反射重生成绑定，**drift guard**（committed 绑定与真实反射不符则 fail），并把 `spirv` / `slang-reflection-real` 作为 artifact 上传。
 
 > 没有 Android job：APK/`.so` 由桌面上的 `scripts/build-android.ps1` 产出（见 `AGENTS.md` 的「Android packaging chain」）。
-> `.spv` 是 `include_bytes!` 编进 Rust 的，所以 shaders job 的 drift guard 是硬保证——谁改了 `.slang` 忘了重编 spv，CI 直接挂。
+> `.spv` 是 checked-in 且被 `include_bytes!` 编进 Rust 的，所以 shaders job 的 drift guard 是硬保证——谁改了 `.slang` 忘了重编并提交 `.spv`，CI 直接挂。
 
 ## 资产
 `assets/fbx/`：`coord.fbm/`、`coord.fbx`、`cornell-box.fbx`、`cube-coord.fbx`。

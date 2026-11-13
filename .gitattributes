@@ -1,0 +1,2 @@
+# Generated binaries: keep git and the forge from treating them as text.
+*.spv binary

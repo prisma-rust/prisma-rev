@@ -6,8 +6,13 @@
 # On Android the engine ships the pre-compiled .spv produced here.
 #
 # Output per stage:
-#   <name>.<stage>.spv          — SPIR-V for the Vulkan pipeline
+#   <name>.<stage>.spv          — SPIR-V for the Vulkan pipeline (committed)
 #   reflection/<name>.json      — slang reflection (drives Rust binding codegen)
+#
+# Both outputs are checked in: a fresh clone has to build without slangc, and
+# CI recompiles every shader to prove the committed bytes still match the
+# sources. Re-run this script after editing a `.slang` and commit the new
+# `.spv` alongside it.
 #
 # Reflection JSON is committed. The script never overwrites it unless asked:
 # the freshly generated files go to a staging directory and are compared with
@@ -405,3 +410,12 @@ fi
 settle_reflection
 
 echo "All Slang shaders compiled. SPIR-V in $OUT, reflection JSON in $REFL"
+
+# The .spv are committed, so a recompile that changed them means the shader
+# edit was not committed with its bytecode yet.
+if command -v git >/dev/null 2>&1 && git -C "$HERE" rev-parse --git-dir >/dev/null 2>&1; then
+    if [ -n "$(git -C "$HERE" status --porcelain -- "$OUT")" ]; then
+        echo "note: compiled output differs from the committed files — commit" >&2
+        echo "      the .spv together with the .slang edits." >&2
+    fi
+fi

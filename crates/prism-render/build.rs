@@ -1,15 +1,13 @@
 //! Build-time gate for the SPIR-V modules `prism-render` embeds with `include_bytes!`.
 //!
-//! `assets/shaders/*.spv` is gitignored (see `.gitignore`), so a fresh clone — or any
-//! host without a usable `slangc`, e.g. an aarch64 device where the official
-//! prebuilts are glibc binaries — cannot compile this crate at all. `rustc` then
-//! reports one `couldn't read ... .spv` error per reference (over thirty of them) and
-//! never says what to do about it.
-//!
-//! This script runs before the crate is compiled and:
+//! `assets/shaders/*.spv` is committed, so a clone builds without `slangc`. This
+//! script keeps that honest: it runs before the crate is compiled and
 //!   1. collects every `.spv` path referenced from `src/` (and `tests/`),
-//!   2. compiles them with `assets/shaders/compile.sh` when a `slangc` is available,
-//!   3. otherwise fails once, with a message that can be replaced per project.
+//!   2. recompiles them with `assets/shaders/compile.sh` when a `slangc` is
+//!      available and the sources are newer (or a module is missing),
+//!   3. otherwise fails once, with a message that can be replaced per project —
+//!      without it, `rustc` reports one `couldn't read ... .spv` error per
+//!      reference (over thirty of them) and never says what to do.
 //!
 //! Env knobs (all optional):
 //!   `PRISMREV_SHADER_AUTOCOMPILE`  `0` disables running `compile.sh` (default: enabled)
@@ -86,9 +84,9 @@ fn main() {
             }
         } else if stale {
             println!(
-                "cargo:warning=prism-render: Slang sources are newer than the embedded SPIR-V \
-                 and no `slangc` was found; rebuild them once with \
-                 `bash {}/assets/shaders/compile.sh` (or fetch the CI `spirv` artifact)",
+                "cargo:warning=prism-render: Slang sources are newer than the committed SPIR-V \
+                 and no `slangc` was found; regenerate them once with \
+                 `bash {}/assets/shaders/compile.sh`, then commit the `.spv` with the `.slang`",
                 repo.display()
             );
         }
@@ -185,21 +183,21 @@ fn hint_text() -> String {
     DEFAULT_HINT.to_string()
 }
 
-const DEFAULT_HINT: &str = r#"`assets/shaders/*.spv` is gitignored on purpose, so a fresh clone has to
-generate (or fetch) it once:
+const DEFAULT_HINT: &str = r#"The compiled Slang shaders are committed under `assets/shaders`. Either
+restore them, or regenerate them after editing a `.slang`:
 
-  A. desktop / CI host with slangc 2026.21+:
+  A. files missing (fresh checkout, bad merge):
+       git -C {repo} checkout -- assets/shaders
+
+  B. after editing `assets/shaders/slang/*.slang` (needs slangc 2026.21+):
        bash {repo}/assets/shaders/compile.sh
-
-  B. host without slangc (Termux / aarch64, no network build):
-       gh run download <run-id> -n spirv -D /tmp/spirv
-       cp /tmp/spirv/*.spv {shaders}/
-       cp /tmp/spirv/reflection/*.json {shaders}/reflection/
-
-  C. slangc installed somewhere else:
        SLANGC=/path/to/slangc bash {repo}/assets/shaders/compile.sh
 
-`cargo build` also does this automatically when it can find a `slangc`
+  C. no slangc at hand, need the CI bytecode:
+       gh run download <run-id> -n spirv -D /tmp/spirv
+       cp /tmp/spirv/*.spv {shaders}/
+
+`cargo build` runs `compile.sh` on its own when it can find a `slangc`
 (set PRISMREV_SHADER_AUTOCOMPILE=0 to turn that off)."#;
 
 /// Collect every `.spv` path referenced from `include_bytes!` under `dir`.

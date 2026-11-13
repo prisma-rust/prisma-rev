@@ -24,7 +24,7 @@ bash scripts/build-android-game.sh fishing release
 | JDK 21 | AGP 8.11 要求 17+ |
 | Android SDK | `platforms;android-36` + `build-tools;36.0.0` |
 | NDK | r29（`ANDROID_NDK_HOME`），官方 x86_64 主机版即可 |
-| `.spv` | 不入库，先在有 slangc 的机器上编，或从 CI 的 `spirv` artifact 下载（[build-guide-termux.md §3](build-guide-termux.md)） |
+| `.spv` | 已入库，clone 后直接可用；改了 shader 才需要重新生成或从 CI `spirv` artifact 取（[build-guide-termux.md §3](build-guide-termux.md)） |
 
 ```bash
 # x86_64 Linux 示例

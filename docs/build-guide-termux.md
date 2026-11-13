@@ -30,15 +30,17 @@ git clone https://github.com/Excurs1ons/PrismaRev.git
 cd PrismaRev
 ```
 
-注意：`assets/shaders/*.spv` 是 gitignored 的（不入库），克隆下来**没有** `.spv`，
-但 `prism-render` 用 `include_bytes!` 引用它们。`crates/prism-render/build.rs`
-会在编译前检查：能跑 `slangc` 时自己调 `assets/shaders/compile.sh`；找不到时报
-**一条**可照抄的提示（`compile.sh` / CI `spirv` artifact / `SLANGC=`），而不是三十多条
-`couldn't read … .spv`。按第 3 节生成或取回 `.spv` 后重新 `cargo build` 即可。
+注意：`assets/shaders/*.spv` **已入库**，克隆下来就能直接 `cargo build`，不必先有
+`slangc`。只有改了 `assets/shaders/slang/*.slang` 时才需要第 3 节——重新生成 `.spv`
+并把它们一起提交。`crates/prism-render/build.rs` 会在编译前检查：能跑 `slangc` 时自己调
+`assets/shaders/compile.sh`；找不到时报**一条**可照抄的提示（恢复文件 / `compile.sh` /
+CI `spirv` artifact），而不是三十多条 `couldn't read … .spv`。
 
 ## 3. Shader 流程（无 slangc 主机）
 
-### 3a. 首次：从 CI 取预编译产物
+### 3a. 需要新的 `.spv` 时：从 CI 取产物
+
+> 平时用不到：`.spv` 已入库。只有改了 shader 又没装 slangc 时才走这条。
 
 ```bash
 # 触发一次 CI（推送任意提交，或手动跑 workflow）

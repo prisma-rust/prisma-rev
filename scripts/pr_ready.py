@@ -16,7 +16,7 @@
   * 改到 shader/reflection/bindings：在临时目录重跑 shader-bindgen，比对是否漂移；
   * 改到 editor/：cargo test（独立 workspace，含数据层与 egui 壳）；
   * 改到 projects/*、launcher/：各自 cargo check（独立 workspace）；
-  * 拦截生成物 / 签名材料（.spv、.pak、keystore 等）和空白错误。
+  * 拦截生成物 / 签名材料（.pak、keystore 等）和空白错误（.spv 已入库，不拦）。
 
 stdout 只输出 Markdown；进度和失败详情走 stderr。任何检查失败 → 退出码 1。
 """
@@ -53,7 +53,6 @@ WORKSPACE_PREFIXES = (".cargo/",)
 SKIP_BY_DEFAULT = {"prism-app"}
 
 BAD_SUFFIXES = (
-    ".spv",
     ".pak",
     ".pak.meta.json",
     ".keystore",
@@ -749,8 +748,8 @@ def main() -> int:
 
     if failed and not shutil.which("slangc"):
         eprint("")
-        eprint("提示：本机没有 slangc。编译依赖 assets/shaders/*.spv；")
-        eprint("     请先运行 scripts/run.ps1，或 bash assets/shaders/compile.sh。")
+        eprint("提示：本机没有 slangc。assets/shaders/*.spv 已入库，")
+        eprint("     若报缺文件，先把工作区恢复干净，或 bash assets/shaders/compile.sh 重新生成。")
 
     eprint("")
     eprint("PASS" if not failed else "FAIL")
