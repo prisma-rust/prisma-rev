@@ -119,6 +119,21 @@ pub struct RenderSettings {
     pub sharc_accumulation_frame_num: u32,
     /// RTXGI SHARC: Roughness threshold below which mirror rays query direct radiance instead of cache.
     pub sharc_roughness_threshold: f32,
+    /// ReSTIR GI: resolution scale relative to the internal render extent
+    /// (0.5 = half resolution). 0 disables the pass.
+    pub restir_gi_scale: f32,
+    /// ReSTIR GI: secondary rays traced per pixel each frame.
+    pub restir_gi_rays_per_pixel: u32,
+    /// ReSTIR GI: spatial reuse taps per pixel (0 disables spatial reuse).
+    pub restir_gi_spatial_samples: u32,
+    /// ReSTIR GI: maximum number of frames a reservoir may be reused.
+    pub restir_gi_max_history: u32,
+    /// ReSTIR GI: reuse the previous frame reservoirs (temporal reuse).
+    pub restir_gi_temporal_reuse: bool,
+    /// ReSTIR GI: reuse neighbouring pixels reservoirs (spatial reuse).
+    pub restir_gi_spatial_reuse: bool,
+    /// ReSTIR GI: maximum world-space length of a secondary ray.
+    pub restir_gi_max_secondary_dist: f32,
     /// DLSS Mode (Off, Quality, Balanced, Performance, UltraPerformance, Dlaa).
     pub dlss_mode: DlssMode,
     /// 是否在场景视图中渲染地面基准网格 (Y = 0)。
@@ -278,6 +293,13 @@ impl Default for RenderSettings {
             sharc_downscale_factor: 5,
             sharc_accumulation_frame_num: 20,
             sharc_roughness_threshold: 0.4,
+            restir_gi_scale: 0.5,
+            restir_gi_rays_per_pixel: 1,
+            restir_gi_spatial_samples: 5,
+            restir_gi_max_history: 20,
+            restir_gi_temporal_reuse: true,
+            restir_gi_spatial_reuse: true,
+            restir_gi_max_secondary_dist: 30.0,
             dlss_mode: DlssMode::Off,
             show_grid: false,
             contrast: 1.0,

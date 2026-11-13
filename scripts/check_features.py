@@ -41,6 +41,12 @@ MATRIX: list[tuple[str, list[str]]] = [
         "prism-render rtxgi",
         ["check", "-p", "prism-render", "--no-default-features", "--features", "rtxgi"],
     ),
+    # 光栅实时 GI：不依赖 pathtrace，只需要 ray query。退化路径（设备不支持）在运行时
+    # 判断（graph_renderer.rs 里一次性 warn），编译期必须独立成立。
+    (
+        "prism-render restir_gi",
+        ["check", "-p", "prism-render", "--no-default-features", "--features", "restir_gi"],
+    ),
     # 退化路径：有 pathtrace、没有 rtxgi。`gi_mode = Sharc` 时必须能编过，退化为纯 PT
     # 并 warn 一次（graph_renderer.rs 里一次性诊断），而不是 `#[cfg]` 漏一处导致编译失败。
     (

@@ -455,6 +455,7 @@ fn pass_kind(pass: &PassInfo) -> &'static str {
         PassKind::Pt => "pt",
         PassKind::Rt => "rt",
         PassKind::Anf => "anf",
+        PassKind::RestirGi => "restir-gi",
         PassKind::Unknown => "unknown",
     }
 }
@@ -479,6 +480,9 @@ fn resource_name(handle: ResourceHandle) -> String {
         handle if handle == crate::render_graph::FORWARD_COLOR_H.0 => "forward.color".into(),
         handle if handle == crate::render_graph::ANF_COLOR_H.0 => "anf.color".into(),
         handle if handle == crate::render_graph::PT_COLOR_H.0 => "pt.color".into(),
+        handle if handle == crate::render_graph::FORWARD_VELOCITY_H.0 => "forward.velocity".into(),
+        handle if handle == crate::render_graph::FORWARD_ALBEDO_H.0 => "forward.albedo".into(),
+        handle if handle == crate::render_graph::RESTIR_GI_COLOR_H.0 => "restir_gi.color".into(),
         handle => format!("resource#{handle}"),
     }
 }

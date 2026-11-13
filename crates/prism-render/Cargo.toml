@@ -8,7 +8,17 @@ description = "Vulkan rendering backend for PrismaRev"
 [features]
 # ---- Modular building blocks: project templates select features (see docs/DESIGN.md §12) ----
 # 默认「全量」，库和示例行为不变；项目模板按需挑砖。
-default = ["pathtrace", "rtxgi", "ui", "ui-fontdue", "ibl", "skybox", "shadows", "gtao"]
+default = [
+    "pathtrace",
+    "rtxgi",
+    "restir_gi",
+    "ui",
+    "ui-fontdue",
+    "ibl",
+    "skybox",
+    "shadows",
+    "gtao",
+]
 # UI 叠加总开关（字形图集 + 管线 + 屏幕空间四边形）。纯 3D/无 UI 项目可关：
 # 关掉后 `ui_overlay` 只保留输入数据结构，渲染侧忽略 UI 命令。
 #
@@ -25,10 +35,16 @@ ui-fontdue = ["ui", "dep:fontdue"]
 ui-directwrite = ["ui", "dep:windows"]
 # 实时路径追踪（pt_pass.rs + acceleration structure 使用）。纯光栅项目可关。
 pathtrace = []
+# ReSTIR GI for the raster path (restir_gi.rs + restir_gi.slang). Traces
+# secondary rays from the GBuffer and reuses reservoirs in space + time, so the
+# raster scene gets real-time indirect diffuse WITHOUT compiling the path tracer.
+# Needs VK_KHR_ray_query at runtime; falls back to Off when unavailable.
+restir_gi = []
 # NVIDIA RTXGI (SHARC): Spatially Hashed Radiance Cache。
-# 默认**开**：不拉新依赖，但它是引擎里唯一的实时 GI 加速（路径追踪之上叠世界空间
-# 辐射缓存）。关掉 = 只剩纯道路径追踪，见 docs/DESIGN.md §12.2。
-rtxgi = ["pathtrace"]
+# 不依赖 pathtrace：光栅模式的 ReSTIR GI 也用它当辐射缓存终点（命中点查缓存，
+# 不再往下追）。关掉 = ReSTIR GI 只剩单次弹射 + 天空，PT 也退回纯路径追踪。
+# 见 docs/DESIGN.md §12.2。
+rtxgi = []
 # NVIDIA Neural Radiance Cache (NRC)
 nrc = ["pathtrace"]
 # NVIDIA Streamline / DLSS (Super Resolution & Ray Reconstruction)

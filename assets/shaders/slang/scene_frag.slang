@@ -117,6 +117,13 @@ SamplerComparisonState shadowSampler;
 [[vk::binding(0, 4)]]
 Sampler2D aoTex;
 
+// ---- set 4, binding 1 - previous-frame ReSTIR GI (RGBA16F) ----
+// Screen-space indirect diffuse E(n)/PI produced by RestirGiPass the
+// previous frame. Sampled only when `pc.gi_mode == 1`; otherwise the
+// baked probe volume (set 5) or the IBL cubemaps provide GI.
+[[vk::binding(1, 4)]]
+Sampler2D giTex;
+
 // ---- set 5, binding 0 - probe volume 3D texture (RGBA16F) ----
 // Regular grid of order-2 SH probes; coefficient c occupies depth slices
 // [c*dims.z, (c+1)*dims.z). Sampled with integer Load + manual trilinear in
@@ -151,6 +158,7 @@ struct PbrBindlessPush
     uint     splat_slot2;
     uint     splat_slot3;
     float    splat_tiling;    // 0 = no texture splat
+    uint     gi_mode;         // 0 = baked probe volume / IBL, 1 = screen-space ReSTIR GI
 };
 [[vk::push_constant]]
 PbrBindlessPush pc;
@@ -517,6 +525,9 @@ struct SceneOutput
     float4 color     : SV_Target0;
     float4 viewNormal: SV_Target1;
     float2 velocity  : SV_Target2;
+    // Base color (post texture, pre lighting) in .rgb and perceptual roughness
+    // in .a. Consumed by the ReSTIR GI pass to demodulate indirect diffuse.
+    float4 albedoRoughness : SV_Target3;
 };
 
 // #517: texture-layer splat helpers. `slot` is a material SSBO index; a
@@ -551,6 +562,7 @@ SceneOutput fragmentMain(MeshVaryings in)
         heat.viewNormal = float4(
             normalize(mul((float3x3)frame.view, normalize(in.worldNormal))), reactive);
         heat.velocity = in.velocity;
+        heat.albedoRoughness = float4(0.0, 0.0, 0.0, 1.0);
         return heat;
     }
 
@@ -806,7 +818,27 @@ SceneOutput fragmentMain(MeshVaryings in)
     // applied to IBL values that GI then overwrote, discarding the occlusion.
     if (on(PBR_FLAG_GI))
     {
-        // — Diffuse: probes at surface normal (irradiance SH, A_l factors) —
+        // ---- ReSTIR GI: screen-space indirect diffuse (1-frame latency) ----
+        // giTex holds E(n)/PI, so the Lambertian term is kd * giTex * albedo,
+        // exactly like the probe-volume path below. Specular stays on the
+        // prefiltered environment cubemap because the screen-space signal
+        // only covers the diffuse lobe.
+        if (pc.gi_mode == 1u)
+        {
+            float3 gi_signal = giTex.SampleLevel(screen_uv, 0.0).rgb;
+            gi_diffuse = kd_ibl * gi_signal * albedo;
+            diffuse_ibl = ibl_intensity * gi_diffuse;
+            if (on(PBR_FLAG_SPECULAR_IBL))
+            {
+                float3 r_gi = reflect(-v, n);
+                float3 prefiltered = sample_specular(r_gi, roughness);
+                float2 brdf = sample_brdf_lut(max(dot(n, v), 0.0), roughness);
+                specular_ibl = ibl_intensity * prefiltered * (f_ibl * brdf.x + brdf.y);
+            }
+        }
+        else
+        {
+            // — Diffuse: probes at surface normal (irradiance SH, A_l factors) —
         // E(n) = ∑ c_lm * A_l * Y_lm(n) where A_l = [PI, 2*PI/3, PI/4]
         // are the Ramamoorthi & Hanrahan cosine-convolution factors applied
         // by EvalSH9Irradiance inside SampleProbeVolumeIrradiance.
@@ -830,6 +862,7 @@ SceneOutput fragmentMain(MeshVaryings in)
                 probeVolume, probeInfo, in.worldPos, r);
             float2 brdf = sample_brdf_lut(max(dot(n, v), 0.0), roughness);
             specular_ibl = ibl_intensity * gi_radiance * (f_ibl * brdf.x + brdf.y);
+        }
         }
     }
     // ---- IBL (environment cubemap, only when GI is inactive). ----
@@ -950,6 +983,7 @@ SceneOutput fragmentMain(MeshVaryings in)
         float3 vn = normalize(mul((float3x3)frame.view, n));
         o.viewNormal = float4(vn, reactive);
         o.velocity = in.velocity;
+        o.albedoRoughness = float4(albedo, roughness);
         return o;
     }
 
@@ -979,5 +1013,6 @@ SceneOutput fragmentMain(MeshVaryings in)
     float3 vn = normalize(mul((float3x3)frame.view, n));
     o.viewNormal = float4(vn, reactive);
     o.velocity = in.velocity;
+    o.albedoRoughness = float4(albedo, roughness);
     return o;
 }

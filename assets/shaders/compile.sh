@@ -400,6 +400,14 @@ compile_stage rt_preview vertexMain vertex
 compile_stage rt_preview fragmentMain fragment
 emit_reflection rt_preview vertexMain vertex fragmentMain fragment
 
+# restir_gi: screen-space ReSTIR GI compute kernel (crates/prism-render/src/restir_gi.rs).
+# Raster-only path: traces secondary rays from the G-buffer with ray queries, reuses
+# reservoirs temporally + spatially, and terminates rays in the SHaRC cache when the
+# cache is warm. Output: RGBA16F indirect diffuse (already modulated by nothing --
+# the forward pass applies kd * albedo itself).
+compile_stage restir_gi giMain compute
+emit_reflection restir_gi giMain compute
+
 # Hard gate: every emitted module must be valid SPIR-V (#580). Slang can emit
 # illegal layout decorations that only show up as a Vulkan validation error at
 # startup; fail the compile instead of shipping them.

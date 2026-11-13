@@ -4,9 +4,12 @@
 //! (`Samples/Pathtracer/UI.cpp`):
 //! - **Generic**: Camera coordinates, VSync, Frame time / FPS.
 //! - **Render**: Raster / Path Trace mode, Post (DLSS, Auto Exposure).
-//! - **Path Tracing**: Mode (Reference, SHaRC, NRC), Bounces, Ray Max Distance, Exposure.
+//! - **Path Tracing**: Mode (Reference, SHaRC, ReSTIR GI, NRC), Bounces, Ray Max Distance,
+//!   Exposure.
 //! - **SHaRC (RTXGI)**: Enable Clear, Update, Resolve, Anti-firefly, Roughness threshold,
 //!   Downscale factor, Scene scale, Accumulation frame count, Stale frame count.
+//! - **ReSTIR GI**: raster-path real-time GI that reuses the same SHaRC cache; picking it
+//!   also switches the renderer back to raster mode.
 //! - **Lighting / Tonemapping**: Reinhard, ACES, Passthrough.
 //! - **DLSS**: Off, Quality, Balanced, Performance, UltraPerformance, DLAA.
 //!
@@ -15,7 +18,7 @@
 //! - `Up` / `Down` arrows or `W`/`S`: Navigate parameter rows.
 //! - `Left` / `Right` arrows or `A`/`D`: Adjust value down/up.
 //! - `Space` / `Enter`: Toggle boolean / trigger action.
-//! - `1` / `2` / `3`: Quick select GI Mode (1: Reference, 2: SHaRC, 3: NRC).
+//! - `1` / `2` / `3` / `4`: Quick select GI Mode (1: Reference, 2: SHaRC, 3: NRC, 4: ReSTIR GI).
 //! - `T`: Cycle tonemapper (Reinhard -> ACES -> Passthrough).
 //! - `R`: Reset accumulation cache.
 //! - `V`: Toggle VSync.
@@ -129,7 +132,7 @@ impl SponzaTuningHook {
         match self.selected_index {
             0 => self.cycle_render_mode(),
             1 => {
-                // GI Mode: Off <-> Sharc <-> Nrc
+                // GI Mode: Off -> Sharc -> Restir -> Nrc -> Off
                 self.gi_mode = match self.gi_mode {
                     GiMode::Off => {
                         if increase {
@@ -140,22 +143,33 @@ impl SponzaTuningHook {
                     }
                     GiMode::Sharc => {
                         if increase {
-                            GiMode::Nrc
+                            GiMode::Restir
                         } else {
                             GiMode::Off
+                        }
+                    }
+                    GiMode::Restir => {
+                        if increase {
+                            GiMode::Nrc
+                        } else {
+                            GiMode::Sharc
                         }
                     }
                     GiMode::Nrc => {
                         if increase {
                             GiMode::Off
                         } else {
-                            GiMode::Sharc
+                            GiMode::Restir
                         }
                     }
                 };
-                // GI modes only exist in path tracing, so selecting one also
-                // leaves raster mode.
-                self.render_mode = RenderMode::PathTrace;
+                // Path-traced GI modes live in path tracing; ReSTIR GI is the
+                // raster-path technique, so it flips the mode the other way.
+                self.render_mode = if self.gi_mode == GiMode::Restir {
+                    RenderMode::Raster
+                } else {
+                    RenderMode::PathTrace
+                };
                 self.request_reset = true;
             }
             2 => {
@@ -371,6 +385,13 @@ impl SponzaTuningHook {
             }
             Key::Digit3 => {
                 self.gi_mode = GiMode::Nrc;
+                self.request_reset = true;
+                return KeyRoute::Consume;
+            }
+            // ReSTIR GI is a raster-path mode, so the key also leaves PT.
+            Key::Digit4 => {
+                self.gi_mode = GiMode::Restir;
+                self.render_mode = RenderMode::Raster;
                 self.request_reset = true;
                 return KeyRoute::Consume;
             }
@@ -647,6 +668,7 @@ impl FrameHook for SponzaTuningHook {
                 let gi_str = match self.gi_mode {
                     GiMode::Off => "Reference (PT)",
                     GiMode::Sharc => "SHaRC (RTXGI)",
+                    GiMode::Restir => "ReSTIR GI (raster)",
                     GiMode::Nrc => "NRC (Neural)",
                 };
 
@@ -758,6 +780,7 @@ impl FrameHook for SponzaTuningHook {
                 let gi_short = match self.gi_mode {
                     GiMode::Off => "Reference",
                     GiMode::Sharc => "SHaRC",
+                    GiMode::Restir => "ReSTIR",
                     GiMode::Nrc => "NRC",
                 };
                 let mode_short = match self.render_mode {
@@ -766,7 +789,7 @@ impl FrameHook for SponzaTuningHook {
                     _ => "Sprites2D",
                 };
                 let status = format!(
-                    "[F1/Tab] Tuning Panel | Mode: {mode_short} [M] | GI: {gi_short} | Bounces: {} | {:.0} FPS ({:.1} ms) | Samples: {} | [1] Ref [2] SHaRC [3] NRC",
+                    "[F1/Tab] Tuning Panel | Mode: {mode_short} [M] | GI: {gi_short} | Bounces: {} | {:.0} FPS ({:.1} ms) | Samples: {} | [1] Ref [2] SHaRC [3] NRC [4] ReSTIR",
                     self.bounces, fps, ms, samples
                 );
                 if let Some(t) = world.get_mut::<Text>(stext) {

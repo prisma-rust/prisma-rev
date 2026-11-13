@@ -12,6 +12,7 @@ pub mod post;
 pub mod pt_reference;
 pub mod pt_render;
 pub mod pt_sharc_train;
+pub mod restir_gi;
 pub mod rt_preview;
 pub mod rt_render;
 pub mod scene_frag;

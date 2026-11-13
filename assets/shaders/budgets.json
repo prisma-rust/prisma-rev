@@ -91,6 +91,16 @@
       "descriptors": 22,
       "push_constant_bytes": 176
     },
+    "restir_gi": {
+      "sampled_images": 7,
+      "sampled_image_arrays": 1,
+      "samplers": 2,
+      "uniform_buffers": 1,
+      "storage_buffers": 11,
+      "acceleration_structures": 1,
+      "descriptors": 23,
+      "push_constant_bytes": 0
+    },
     "rt_preview": {
       "sampled_images": 0,
       "sampled_image_arrays": 1,
@@ -112,13 +122,13 @@
       "push_constant_bytes": 4
     },
     "scene_frag": {
-      "sampled_images": 6,
+      "sampled_images": 7,
       "sampled_image_arrays": 1,
       "samplers": 2,
       "uniform_buffers": 2,
       "storage_buffers": 2,
       "acceleration_structures": 0,
-      "descriptors": 13,
+      "descriptors": 14,
       "push_constant_bytes": 128
     },
     "shadow_depth": {

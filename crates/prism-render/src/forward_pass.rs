@@ -24,8 +24,8 @@ use crate::pipeline::{blend_factor, blend_operation, cull_flags, GraphicsPipelin
 use crate::render_graph::SHADOW_MAP_H;
 use crate::render_graph::{
     DrawState, GraphResources, PassInfo, PassKind, RenderContext, RenderGraphBuilder, RenderMode,
-    RenderPassNode, RenderSettings, ResourceHandle, ResourceType, ResourceUsage, FORWARD_COLOR_H,
-    FORWARD_DEPTH_H, FORWARD_NORMAL_H, FORWARD_VELOCITY_H,
+    RenderPassNode, RenderSettings, ResourceHandle, ResourceType, ResourceUsage, FORWARD_ALBEDO_H,
+    FORWARD_COLOR_H, FORWARD_DEPTH_H, FORWARD_NORMAL_H, FORWARD_VELOCITY_H,
 };
 use crate::shader;
 use crate::shader_bindings::{mesh_vert, scene_frag};
@@ -168,6 +168,11 @@ pub struct ForwardPass {
     /// #883 Phase 2: screen-space motion vectors (SV_Target2). RGBA16F keeps
     /// linear sampling universally available; only .xy are used.
     velocity_format: vk::Format,
+    /// Format of the albedo + perceptual-roughness MRT attachment (SV_Target3).
+    /// RGB = base color (post texture, pre lighting), A = perceptual roughness.
+    /// Written by the scene fragment shader and read by RestirGiPass to
+    /// demodulate / re-modulate indirect diffuse.
+    albedo_format: vk::Format,
     /// Bindless handle for the BRDF LUT (registered in the bindless texture table).
     brdf_handle: u32,
     /// Byte stride between camera slots in the per-frame UBO (#461).
@@ -197,6 +202,9 @@ pub struct ForwardPass {
     normal_images: Vec<Option<crate::render_pass::NormalImage>>,
     /// One screen-space motion-vector image per swapchain image (#883 Phase 2).
     velocity_images: Vec<Option<crate::render_pass::NormalImage>>,
+    /// One albedo + roughness image per swapchain image (MRT SV_Target3).
+    /// Same per-slot lifetime as the other G-buffer attachments.
+    albedo_images: Vec<Option<crate::render_pass::NormalImage>>,
     /// Cached image_index validity markers (one per slot). `set_target` uses
     /// `framebuffers[idx].is_some()` as the "current" check; this field is
     /// kept for parity with the old swapchain-view tracking pattern.
@@ -217,6 +225,7 @@ pub struct ForwardPass {
     out_depth_h: ResourceHandle,
     out_normal_h: ResourceHandle,
     out_velocity_h: ResourceHandle,
+    out_albedo_h: ResourceHandle,
     extent: vk::Extent2D,
     render_pass: Option<vk::RenderPass>,
     /// 主通道管线缓存：按 [`DrawState`]（剔除 / 深度写 / 混合）各一份。
@@ -277,6 +286,10 @@ pub struct ForwardPass {
     /// The AO view currently bound to each frame-in-flight's AO descriptor
     /// set. Tracked so we skip redundant descriptor rewrites.
     ao_views: Vec<vk::ImageView>,
+    /// set 4 binding 1 - previous-frame ReSTIR GI (RGBA16F, kept in
+    /// `VK_IMAGE_LAYOUT_GENERAL` by the RestirGi pass). Tracked per
+    /// frame-in-flight exactly like `ao_views`.
+    gi_views: Vec<vk::ImageView>,
     /// Last time the AO_PROBE debug line in `set_ao` was logged; throttled to
     /// once per second so it doesn't flood the log at frame rate.
     last_probe_log: Instant,
@@ -317,6 +330,9 @@ impl ForwardPass {
             // channel unused (shader writes 0).
             normal_format: vk::Format::R16G16B16A16_SFLOAT,
             velocity_format: vk::Format::R16G16B16A16_SFLOAT,
+            // RGB = base color, A = perceptual roughness. RGBA16F keeps the
+            // same sampling / format support as the other G-buffer targets.
+            albedo_format: vk::Format::R16G16B16A16_SFLOAT,
             brdf_handle: u32::MAX,
             camera_stride: 0,
             framebuffers: Vec::new(),
@@ -326,12 +342,14 @@ impl ForwardPass {
             depth_capture_frame: None,
             normal_images: Vec::new(),
             velocity_images: Vec::new(),
+            albedo_images: Vec::new(),
             target_views: Vec::new(),
             image_count: 0,
             out_color_h: ResourceHandle::INVALID,
             out_depth_h: ResourceHandle::INVALID,
             out_normal_h: ResourceHandle::INVALID,
             out_velocity_h: ResourceHandle::INVALID,
+            out_albedo_h: ResourceHandle::INVALID,
             extent: vk::Extent2D {
                 width: 0,
                 height: 0,
@@ -362,6 +380,7 @@ impl ForwardPass {
             ao_sampler: vk::Sampler::null(),
             ao_views: Vec::new(),
             last_probe_log: Instant::now(),
+            gi_views: Vec::new(),
             gi_descriptor_set: vk::DescriptorSet::null(),
             gi_layout: vk::DescriptorSetLayout::null(),
             skybox: SkyboxPass::new(vk::DescriptorSet::null(), vk::DescriptorSetLayout::null()),
@@ -452,6 +471,7 @@ impl ForwardPass {
             self.depth_images = (0..image_count).map(|_| None).collect();
             self.normal_images = (0..image_count).map(|_| None).collect();
             self.velocity_images = (0..image_count).map(|_| None).collect();
+            self.albedo_images = (0..image_count).map(|_| None).collect();
         }
 
         // Build this image's framebuffer + color + depth + normal if not
@@ -497,6 +517,16 @@ impl ForwardPass {
             }
             self.velocity_images[idx] = Some(velocity_image);
 
+            // Albedo + perceptual roughness MRT image (SV_Target3), consumed by
+            // the ReSTIR GI pass.
+            let albedo_image =
+                crate::render_pass::NormalImage::new(context, extent, self.albedo_format)
+                    .context("ForwardPass: create albedo image")?;
+            if let Some(mut old) = self.albedo_images[idx].take() {
+                unsafe { old.destroy(device) };
+            }
+            self.albedo_images[idx] = Some(albedo_image);
+
             // Destroy the old framebuffer for this slot BEFORE creating the
             // new one (order doesn't matter for validation here since both
             // reference the same slot, but destroy-old-first is tidy).
@@ -508,8 +538,15 @@ impl ForwardPass {
             let depth = self.depth_images[idx].as_ref().unwrap();
             let normal = self.normal_images[idx].as_ref().unwrap();
             let velocity = self.velocity_images[idx].as_ref().unwrap();
-            // 渲染 pass 附件 order: 颜色 深度 法线 速度
-            let attachments = [color.view, depth.view, normal.view, velocity.view];
+            let albedo = self.albedo_images[idx].as_ref().unwrap();
+            // 渲染 pass 附件 order: 颜色 深度 法线 速度 反照率
+            let attachments = [
+                color.view,
+                depth.view,
+                normal.view,
+                velocity.view,
+                albedo.view,
+            ];
             let fb = unsafe {
                 device.create_framebuffer(
                     &vk::FramebufferCreateInfo::default()
@@ -564,6 +601,11 @@ impl ForwardPass {
         for velocity in self.velocity_images.drain(..).flatten() {
             let mut v = velocity;
             unsafe { v.destroy(device) };
+        }
+        // Then albedo + roughness MRT images.
+        for albedo in self.albedo_images.drain(..).flatten() {
+            let mut a = albedo;
+            unsafe { a.destroy(device) };
         }
         self.target_views.clear();
         self.extent = vk::Extent2D {
@@ -658,6 +700,7 @@ impl ForwardPass {
         }
         self.ao_descriptor_sets.clear();
         self.ao_views.clear();
+        self.gi_views.clear();
 
         // set 5 (GI probe volume) is borrowed from SceneScope — not destroyed here.
         self.gi_descriptor_set = vk::DescriptorSet::null();
@@ -1104,11 +1147,21 @@ impl ForwardPass {
         // the GTAO pass's double-buffered view for the frame the scene reads).
         // Here we only create the layout + pool + sampler + descriptor set; the
         // image_info write happens in `set_ao` once a view is available.
-        let ao_bindings = [vk::DescriptorSetLayoutBinding::default()
-            .binding(scene_frag::AO_TEX_BINDING)
-            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
-            .descriptor_count(1)
-            .stage_flags(vk::ShaderStageFlags::FRAGMENT)];
+        // Binding 0 is the GTAO visibility texture; binding 1 is the
+        // previous-frame ReSTIR GI signal. Both are written by per-frame
+        // setters (`set_ao` / `set_gi_view`) once the producing pass has run.
+        let ao_bindings = [
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(scene_frag::AO_TEX_BINDING)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(scene_frag::GI_TEX_BINDING)
+                .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::FRAGMENT),
+        ];
         let ao_layout = unsafe {
             device.create_descriptor_set_layout(
                 &vk::DescriptorSetLayoutCreateInfo::default().bindings(&ao_bindings),
@@ -1157,7 +1210,7 @@ impl ForwardPass {
                     .max_sets(ao_fif)
                     .pool_sizes(&[vk::DescriptorPoolSize {
                         ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                        descriptor_count: ao_fif,
+                        descriptor_count: ao_fif * 2,
                     }]),
                 None,
             )
@@ -1180,6 +1233,7 @@ impl ForwardPass {
         self.ao_sampler = ao_sampler;
         self.ao_descriptor_sets = ao_sets;
         self.ao_views = vec![vk::ImageView::null(); ao_fif as usize];
+        self.gi_views = vec![vk::ImageView::null(); ao_fif as usize];
         // The actual image_info write happens in `set_ao` once the GTAO pass
         // produces its first AO view. Until then the descriptors point at null;
         // `PBR_FLAG_AO` is off by default so nothing samples it.
@@ -1230,6 +1284,38 @@ impl ForwardPass {
         let write = vk::WriteDescriptorSet::default()
             .dst_set(self.ao_descriptor_sets[i])
             .dst_binding(scene_frag::AO_TEX_BINDING)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .image_info(std::slice::from_ref(&image_info));
+        unsafe { device.update_descriptor_sets(&[write], &[]) };
+    }
+
+    /// Update the set 4 binding 1 descriptor for `frame_index` to point at
+    /// `view`, the previous frame's ReSTIR GI signal.
+    ///
+    /// The RestirGi pass keeps its ping-pong images in
+    /// `VK_IMAGE_LAYOUT_GENERAL`, so the descriptor declares that layout
+    /// rather than SHADER_READ_ONLY_OPTIMAL. Passing a null view leaves the
+    /// binding unbound, which is safe because the shader only samples it when
+    /// the push constant asks for the screen-space path.
+    pub fn set_gi_view(&mut self, device: &ash::Device, frame_index: u32, view: vk::ImageView) {
+        if self.gi_views.is_empty() {
+            return;
+        }
+        let i = (frame_index as usize) % self.gi_views.len();
+        if view == self.gi_views[i] {
+            return;
+        }
+        self.gi_views[i] = view;
+        if view == vk::ImageView::null() {
+            return;
+        }
+        let image_info = vk::DescriptorImageInfo::default()
+            .image_view(view)
+            .sampler(self.ao_sampler)
+            .image_layout(vk::ImageLayout::GENERAL);
+        let write = vk::WriteDescriptorSet::default()
+            .dst_set(self.ao_descriptor_sets[i])
+            .dst_binding(scene_frag::GI_TEX_BINDING)
             .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
             .image_info(std::slice::from_ref(&image_info));
         unsafe { device.update_descriptor_sets(&[write], &[]) };
@@ -1316,6 +1402,23 @@ impl ForwardPass {
             .get(image_index as usize)
             .and_then(|v| v.as_ref())
             .map(|v| v.image)
+    }
+
+    /// Borrow the albedo + roughness MRT view for image_index. Consumed by the
+    /// ReSTIR GI pass (demodulation + temporal validation).
+    pub fn albedo_view(&self, image_index: u32) -> Option<vk::ImageView> {
+        self.albedo_images
+            .get(image_index as usize)
+            .and_then(|a| a.as_ref())
+            .map(|a| a.view)
+    }
+
+    /// Borrow the albedo + roughness image handle for image_index.
+    pub fn albedo_image(&self, image_index: u32) -> Option<vk::Image> {
+        self.albedo_images
+            .get(image_index as usize)
+            .and_then(|a| a.as_ref())
+            .map(|a| a.image)
     }
 
     /// The full-resolution extent the scene was rendered at. The GTAO pass
@@ -1596,7 +1699,24 @@ impl ForwardPass {
             .attachment(3)
             .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
 
-        let color_refs = [color_ref, normal_ref, velocity_ref];
+        // 附件 4: albedo + perceptual roughness (SV_Target3). Written every frame
+        // by the scene fragment shader; read by the ReSTIR GI pass.
+        let albedo_attachment = vk::AttachmentDescription::default()
+            .format(self.albedo_format)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            // 同 #972。
+            .load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+
+        let albedo_ref = vk::AttachmentReference::default()
+            .attachment(4)
+            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+
+        let color_refs = [color_ref, normal_ref, velocity_ref, albedo_ref];
         let subpass = vk::SubpassDescription::default()
             .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
             .color_attachments(&color_refs)
@@ -1624,6 +1744,7 @@ impl ForwardPass {
             depth_attachment,
             normal_attachment,
             velocity_attachment,
+            albedo_attachment,
         ];
         let rp_create_info = vk::RenderPassCreateInfo::default()
             .attachments(&attachments)
@@ -2060,10 +2181,22 @@ impl RenderPassNode for ForwardPass {
                 sample_count: vk::SampleCountFlags::TYPE_1,
             },
         );
+        graph.create_resource_at(
+            FORWARD_ALBEDO_H,
+            ResourceType::ColorAttachment {
+                format: self.albedo_format,
+                extent: vk::Extent2D {
+                    width: 1,
+                    height: 1,
+                },
+                sample_count: vk::SampleCountFlags::TYPE_1,
+            },
+        );
         self.out_depth_h = FORWARD_DEPTH_H;
         self.out_normal_h = FORWARD_NORMAL_H;
         self.out_color_h = FORWARD_COLOR_H;
         self.out_velocity_h = FORWARD_VELOCITY_H;
+        self.out_albedo_h = FORWARD_ALBEDO_H;
 
         // Declare read edge for directional shadow map sampled in fragment shader (set 3).
         // `shadows` 关闭时图里没有 ShadowMapPass，这个 handle 无人写入，
@@ -2108,6 +2241,12 @@ impl RenderPassNode for ForwardPass {
             stage: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
             layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
         });
+        graph.write_usage(ResourceUsage {
+            handle: FORWARD_ALBEDO_H,
+            access: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+            stage: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        });
     }
 
     fn execute(&mut self, ctx: &RenderContext, resources: &mut GraphResources) -> Result<()> {
@@ -2120,6 +2259,7 @@ impl RenderPassNode for ForwardPass {
         // #613：内部渲染分辨率开启时目标小于交换链。
         self.ensure_target(ctx.device, ctx.context, ctx.image_index, ctx.render_extent)?;
         self.set_ao(ctx.device, ctx.frame_index, ctx.frame.ao_view);
+        self.set_gi_view(ctx.device, ctx.frame_index, ctx.frame.gi_view);
         self.update_lights(ctx.device, ctx.frame_index, ctx.frame.lights)?;
 
         self.ensure_render_pass(ctx.context)?;
@@ -2512,6 +2652,9 @@ impl RenderPassNode for ForwardPass {
                             splat_slot2: item.splat_slots[2],
                             splat_slot3: item.splat_slots[3],
                             splat_tiling: item.splat_tiling,
+                            // 1 = sample the screen-space ReSTIR GI signal
+                            // (set 4 binding 1); 0 = baked probe volume / IBL.
+                            gi_mode: u32::from(ctx.frame.gi_view != vk::ImageView::null()),
                         };
                         ctx.device.cmd_push_constants(
                             ctx.cmd,
@@ -2852,6 +2995,10 @@ impl RenderPassNode for ForwardPass {
             resources.set_image_view(self.out_velocity_h, v);
             resources.set_image(self.out_velocity_h, i);
         }
+        if let (Some(v), Some(i)) = (self.albedo_view(idx), self.albedo_image(idx)) {
+            resources.set_image_view(self.out_albedo_h, v);
+            resources.set_image(self.out_albedo_h, i);
+        }
 
         log::trace!(
             "ForwardPass: rendered {} draws into {}x{} ({} in list)",
@@ -2880,6 +3027,7 @@ impl RenderPassNode for ForwardPass {
                 self.out_normal_h,
                 self.out_color_h,
                 self.out_velocity_h,
+                self.out_albedo_h,
             ],
         }
     }
@@ -2951,7 +3099,7 @@ impl Drop for ForwardPass {
 /// 附件 0 按 材质状态（`_SrcBlend` / `_DstBlend` / `_BlendOp`）配置；
 /// 默认值 `One`/`Zero`/`Add` 表示不透明，此时直接关掉混合。附件 1 永远不混合
 /// （视图空间法线需要原样写入）。
-fn color_blend_attachments(state: DrawState) -> [vk::PipelineColorBlendAttachmentState; 3] {
+fn color_blend_attachments(state: DrawState) -> [vk::PipelineColorBlendAttachmentState; 4] {
     let mut color = vk::PipelineColorBlendAttachmentState::default()
         .color_write_mask(vk::ColorComponentFlags::RGBA);
     if state.blends() {
@@ -2973,6 +3121,10 @@ fn color_blend_attachments(state: DrawState) -> [vk::PipelineColorBlendAttachmen
         // Motion vectors are per-fragment and overwrite the previous value.
         vk::PipelineColorBlendAttachmentState::default()
             .color_write_mask(vk::ColorComponentFlags::R | vk::ColorComponentFlags::G)
+            .blend_enable(false),
+        // Albedo + roughness: opaque surface properties, never blended.
+        vk::PipelineColorBlendAttachmentState::default()
+            .color_write_mask(vk::ColorComponentFlags::RGBA)
             .blend_enable(false),
     ]
 }

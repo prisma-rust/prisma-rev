@@ -933,6 +933,26 @@
             }
         },
         {
+            "name": "giTex",
+            "binding": {"kind": "descriptorTableSlot", "space": 4, "index": 1},
+            "type": {
+                "kind": "resource",
+                "baseShape": "texture2D",
+                "combined": true,
+                "resultType": {
+                    "kind": "vector",
+                    "elementCount": 4,
+                    "elementType": {
+                        "kind": "scalar",
+                        "scalarType": "float32"
+                    }
+                },
+                "sizes": [
+                    {"kind": "descriptorTableSlot", "value": 1}
+                ]
+            }
+        },
+        {
             "name": "probeVolume",
             "binding": {"kind": "descriptorTableSlot", "space": 5, "index": 0},
             "type": {
@@ -1253,6 +1273,17 @@
                                 ]
                             },
                             "binding": {"kind": "uniform", "offset": 116, "size": 4, "elementStride": 0}
+                        },
+                        {
+                            "name": "gi_mode",
+                            "type": {
+                                "kind": "scalar",
+                                "scalarType": "uint32",
+                                "sizes": [
+                                    {"kind": "uniform", "value": 4, "alignment": 4}
+                                ]
+                            },
+                            "binding": {"kind": "uniform", "offset": 120, "size": 4, "elementStride": 0}
                         }
                     ],
                     "sizes": [
@@ -1436,6 +1467,17 @@
                                     ]
                                 },
                                 "binding": {"kind": "uniform", "offset": 116, "size": 4, "elementStride": 0}
+                            },
+                            {
+                                "name": "gi_mode",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint32",
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 4, "alignment": 4}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 120, "size": 4, "elementStride": 0}
                             }
                         ],
                         "sizes": [
@@ -2385,6 +2427,26 @@
                 }
             },
             {
+                "name": "giTex",
+                "binding": {"kind": "descriptorTableSlot", "space": 4, "index": 1},
+                "type": {
+                    "kind": "resource",
+                    "baseShape": "texture2D",
+                    "combined": true,
+                    "resultType": {
+                        "kind": "vector",
+                        "elementCount": 4,
+                        "elementType": {
+                            "kind": "scalar",
+                            "scalarType": "float32"
+                        }
+                    },
+                    "sizes": [
+                        {"kind": "descriptorTableSlot", "value": 1}
+                    ]
+                }
+            },
+            {
                 "name": "probeVolume",
                 "binding": {"kind": "descriptorTableSlot", "space": 5, "index": 0},
                 "type": {
@@ -2705,6 +2767,17 @@
                                     ]
                                 },
                                 "binding": {"kind": "uniform", "offset": 116, "size": 4, "elementStride": 0}
+                            },
+                            {
+                                "name": "gi_mode",
+                                "type": {
+                                    "kind": "scalar",
+                                    "scalarType": "uint32",
+                                    "sizes": [
+                                        {"kind": "uniform", "value": 4, "alignment": 4}
+                                    ]
+                                },
+                                "binding": {"kind": "uniform", "offset": 120, "size": 4, "elementStride": 0}
                             }
                         ],
                         "sizes": [
@@ -2888,6 +2961,17 @@
                                         ]
                                     },
                                     "binding": {"kind": "uniform", "offset": 116, "size": 4, "elementStride": 0}
+                                },
+                                {
+                                    "name": "gi_mode",
+                                    "type": {
+                                        "kind": "scalar",
+                                        "scalarType": "uint32",
+                                        "sizes": [
+                                            {"kind": "uniform", "value": 4, "alignment": 4}
+                                        ]
+                                    },
+                                    "binding": {"kind": "uniform", "offset": 120, "size": 4, "elementStride": 0}
                                 }
                             ],
                             "sizes": [
@@ -3218,7 +3302,7 @@
             ],
             "result": {
                 "stage": "fragment",
-                "binding": {"kind": "varyingOutput", "index": 0, "count": 3},
+                "binding": {"kind": "varyingOutput", "index": 0, "count": 4},
                 "type": {
                     "kind": "struct",
                     "name": "SceneOutput",
@@ -3275,10 +3359,28 @@
                             "binding": {"kind": "varyingOutput", "index": 2},
                             "semanticName": "SV_TARGET",
                             "semanticIndex": 2
+                        },
+                        {
+                            "name": "albedoRoughness",
+                            "type": {
+                                "kind": "vector",
+                                "elementCount": 4,
+                                "elementType": {
+                                    "kind": "scalar",
+                                    "scalarType": "float32"
+                                },
+                                "sizes": [
+                                    {"kind": "varyingOutput", "value": 1}
+                                ]
+                            },
+                            "stage": "fragment",
+                            "binding": {"kind": "varyingOutput", "index": 3},
+                            "semanticName": "SV_TARGET",
+                            "semanticIndex": 3
                         }
                     ],
                     "sizes": [
-                        {"kind": "varyingOutput", "value": 3}
+                        {"kind": "varyingOutput", "value": 4}
                     ]
                 }
             },
@@ -3326,6 +3428,10 @@
                 {
                     "name": "aoTex",
                     "binding": {"kind": "descriptorTableSlot", "space": 4, "index": 0, "used": 1}
+                },
+                {
+                    "name": "giTex",
+                    "binding": {"kind": "descriptorTableSlot", "space": 4, "index": 1, "used": 1}
                 },
                 {
                     "name": "probeVolume",

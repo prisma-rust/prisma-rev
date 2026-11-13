@@ -10,7 +10,7 @@
 pub const ENTRY_FRAGMENT_MAIN: &str = "fragmentMain"; // stage: FRAGMENT
 
 /// Push-constant block size in bytes (reflected).
-pub const PUSH_CONSTANT_SIZE: u32 = 120;
+pub const PUSH_CONSTANT_SIZE: u32 = 124;
 
 // --- descriptor set 0 ---
 pub const FRAME_SET: u32 = 0;
@@ -43,6 +43,8 @@ pub const SHADOW_SAMPLER_BINDING: u32 = 1; // COMBINED_IMAGE_SAMPLER
 // --- descriptor set 4 ---
 pub const AO_TEX_SET: u32 = 4;
 pub const AO_TEX_BINDING: u32 = 0; // COMBINED_IMAGE_SAMPLER
+pub const GI_TEX_SET: u32 = 4;
+pub const GI_TEX_BINDING: u32 = 1; // COMBINED_IMAGE_SAMPLER
 
 // --- descriptor set 5 ---
 pub const PROBE_VOLUME_SET: u32 = 5;
@@ -53,7 +55,7 @@ pub const PROBE_INFO_BINDING: u32 = 1; // UNIFORM_BUFFER
 /// Push-constant struct (auto-generated from Slang `PbrBindlessPush`).
 ///
 /// Field offsets are the reflected std140 ones — alignment holes are emitted as
-/// explicit `_pad_*` fillers, so `size_of` is 120 bytes and every field sits
+/// explicit `_pad_*` fillers, so `size_of` is 124 bytes and every field sits
 /// where the shader expects it.
 #[repr(C)]
 #[derive(Clone, Copy, Default, ::bytemuck::Pod, ::bytemuck::Zeroable)]
@@ -88,4 +90,6 @@ pub struct PbrBindlessPush {
     pub splat_slot3: u32,
     /// offset 116, size 4
     pub splat_tiling: f32,
+    /// offset 120, size 4
+    pub gi_mode: u32,
 }

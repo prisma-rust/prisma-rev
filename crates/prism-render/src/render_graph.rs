@@ -194,6 +194,8 @@ pub enum PassKind {
     Rt,
     /// Qualcomm Adreno Neural Fusion compute pass (`AnfPass`).
     Anf,
+    /// Screen-space ReSTIR indirect diffuse (`RestirGiPass`).
+    RestirGi,
     /// Unrecognized pass future / experimental).
     #[default]
     Unknown,
@@ -266,6 +268,12 @@ pub enum GiMode {
     Off,
     /// NVIDIA RTXGI SHARC (Spatially Hashed Radiance Cache).
     Sharc,
+    /// Screen-space ReSTIR GI on the raster path: trace secondary rays from
+    /// the G-buffer, reuse reservoirs in space and time, and terminate the
+    /// bounce in the SHARC cache when it is available. Independent of the path
+    /// tracer; needs the `restir_gi` feature plus `VK_KHR_ray_query`, and
+    /// falls back to `Off` when the device cannot trace rays.
+    Restir,
     /// NVIDIA Neural Radiance Cache.
     Nrc,
 }
@@ -325,6 +333,26 @@ pub struct RenderSettings {
     pub sharc_accumulation_frame_num: u32,
     /// SHARC stale frames before eviction.
     pub sharc_stale_frame_num: u32,
+
+    /// ReSTIR GI internal resolution scale: 0.5 = half res (default),
+    /// 1.0 = full res. The pass traces and resamples at this resolution and
+    /// the forward pass bilinearly upsamples the result.
+    pub restir_gi_scale: f32,
+    /// Secondary rays traced per GI pixel per frame (1 = one ray, cheap;
+    /// 2-4 raises quality linearly in cost).
+    pub restir_gi_rays_per_pixel: u32,
+    /// Spatial resampling taps per pixel (0 disables the spatial reuse).
+    pub restir_gi_spatial_samples: u32,
+    /// Frames a reservoir may survive before it is dropped (0 = reuse
+    /// forever). Guards against stale history after disocclusion.
+    pub restir_gi_max_history: u32,
+    /// Merge the previous frame's reservoir into this frame's samples.
+    pub restir_gi_temporal_reuse: bool,
+    /// Merge neighbour reservoirs inside the current frame.
+    pub restir_gi_spatial_reuse: bool,
+    /// Maximum secondary ray distance in world units; longer hits fall back to
+    /// the environment, which keeps the trace bounded for the cache lookup.
+    pub restir_gi_max_secondary_dist: f32,
 
     /// DLSS upscaling mode.
     pub dlss_mode: DlssMode,
@@ -405,6 +433,13 @@ impl Default for RenderSettings {
             sharc_downscale_factor: 5,
             sharc_accumulation_frame_num: 20,
             sharc_stale_frame_num: 60,
+            restir_gi_scale: 0.5,
+            restir_gi_rays_per_pixel: 1,
+            restir_gi_spatial_samples: 5,
+            restir_gi_max_history: 20,
+            restir_gi_temporal_reuse: true,
+            restir_gi_spatial_reuse: true,
+            restir_gi_max_secondary_dist: 30.0,
             dlss_mode: DlssMode::Off,
             shadow_mode: ShadowMode::Auto,
             shadow_map_size: crate::SHADOW_MAP_SIZE,
@@ -1170,6 +1205,10 @@ pub struct GraphFrame<'a> {
     /// `GtaoPass` last frame. Forwarded via `GraphFrame` so the graph, not
     /// `GraphRenderer`, owns the cross-pass wiring.
     pub ao_view: vk::ImageView,
+    /// Previous-frame ReSTIR GI indirect diffuse (1-frame latency: the forward
+    /// pass reads the result `RestirGiPass` wrote last frame). `null` means GI
+    /// is off, and the forward pass falls back to the baked probe volume.
+    pub gi_view: vk::ImageView,
     /// Tonemap mode for `PostPass` (Reinhard / ACES / ...). Forwarded so
     /// `PostPass::execute` reads it from the graph context.
     pub tonemap_mode: u32,

@@ -85,7 +85,7 @@
 | 模块化管线 | `prism-render/src/render_graph.rs`（`RenderPassNode` 图）+ `forward_pass.rs` / `shadow_map_pass.rs` / `skybox_pass.rs`。**现状（2026-08-21）**：`RenderGraph::execute()` 统一驱动四个 pass（`ShadowMapPass` -> `ForwardPass` -> `GtaoPass` -> `PostPass`，按注册顺序线性执行）。passes 通过 `read_usage` / `write_usage` 声明图边依赖，graph 据此自动插入跨 pass 的 `vkCmdPipelineBarrier`（layout cache 按 `(handle, image_index)` 跨帧持久，`recreate_swapchain` 时 `reset_layouts`）。跨帧延迟边（GTAO 双缓冲 AO 回喂）与 swapchain->`PRESENT_SRC_KHR` 保留手动，标注为图边界特例。环检测已实现（`validate_edges`），执行顺序不重排（接线顺序见 `GraphRenderer::new`）。`GraphRenderer::prepare` 已接入 `render_system`/`render_runner` 五阶段链（不再空转），资源生命周期区间已声明，TBDR 内存 aliasing 待下一步扩展。|
 | bindless / 全平台统一 | `prism-render/src/bindless.rs`（分离 SRV + 全局 sampler 表） |
 | 资源管理解耦 | 职责拆成三个 crate：`prism-cooker`（Import→Cook，仅构建期）、`prism-scene`（组件 schema + RSCN v4）、`prism-asset`（Package→Runtime，`.pak` + `ResourceManager`）。引擎侧 `GpuAssetResolver` 持 `ResourceManager`，用 `load_with_deps` 从 `.pak` 懒加载，再经 `GraphRenderer::apply_asset_requests` 在渲染线程上传；运行时链路不依赖 cooker。 |
-| 移动端 GI | **Baked probe-volume GI**（2 阶 SH，9 系数 × RGB，`R32G32B32A32_SFLOAT` 3D texture；float16 仅是后续可选压缩），非实时 SHARC。设计见 §6。SHARC 实时 slang 已移除，不再恢复（移动端跑不动每帧 ray 填 cache）。|
+| 移动端 GI | **Baked probe-volume GI**（2 阶 SH，9 系数 × RGB，`R32G32B32A32_SFLOAT` 3D texture；float16 仅是后续可选压缩），设计见 §6。移动端仍不跑实时 SHARC（跑不动每帧 ray 填 cache）。桌面侧另有两条独立于 baked 的实时路径：PT + SHARC（`gi_mode = Sharc`）与光栅 ReSTIR GI（`gi_mode = Restir`，见 §6.8）。|
 | 阴影 / RT | 光栅化阴影贴图：`ShadowMapPass`（深度预渲染，见 `shadow_depth.slang`）+ `ForwardPass`（comparison sampler 采样，见 `scene_frag.slang`） |
 | 能力探测 | `prism-render/src/capabilities.rs`（集中探测，扩展中） |
 | 帧生命周期 | `GraphRenderer` 已提供 `begin_frame` → `prepare` → `execute` → `present` → `end_frame` 阶段（2026-08-21 起 `prepare` 已在 `render_system` 与 `render_runner::render_one_frame` 中实际调用，不再空转）；旧 `render()` 仅作为兼容门面。`prepare` 当前实现脏标记日志与输入校验，下一步扩展在此调度批量上传。细粒度 Runtime/Plugin 拆分仍待 PR-L2。 |
@@ -140,17 +140,23 @@
 ### 6.3 Pass 拓扑（重构后）
 
 ```
-ShadowMapPass → ForwardPass → GtaoPass → PostPass
-   (图边)         (图边)       (图边)
+ShadowMapPass → ForwardPass → GtaoPass → RestirGiPass → PostPass
+   (图边)         (图边)       (图边)        (图边)
 ```
 
-- GI 不是独立 pass：是 `ForwardPass` 内部一个 `if (flag(PBR_FLAG_GI))` 分支，采样 probe volume。
+- **baked GI 不是独立 pass**：是 `ForwardPass` 内部一个 `if (flag(PBR_FLAG_GI))` 分支，采样 probe volume。
+- **实时 ReSTIR GI 是独立 pass**（`RestirGiPass`，见 §6.8）：它要读 G-buffer 追二次射线，塞进 `ForwardPass` 就变成片元里做 ray query，所以单独成节点；`ForwardPass` 只在下一帧按 `gi_mode` 采样它写出的屏幕空间信号。
 - 图边契约：
   - `ShadowMapPass` 写 `shadow_map`（depth） → `ForwardPass` 读。
   - `ForwardPass` 写 `hdr_color` / `normal_mrt` / `depth`（交换链级，按 image_index） →
     `GtaoPass` 读 depth+normal；`PostPass` 读 hdr_color。
   - `GtaoPass` 写 `ao[frame]`（帧级双缓冲） → `ForwardPass`（下一帧读，`ao[(frame+1)%2]`，1-frame latency）。
     **跨帧依赖由 `GtaoPass::setup` 声明"读上一帧 AO / 写本帧 AO"，图据此不把 GTAO 排在它自己读的那个 slot 前面**；首帧上游 view 为 null，shader 不采样（PBR_FLAG_AO 默认 off）。
+  - `ForwardPass` 写 `albedo_roughness`（`SV_Target3`：rgb = base color，a = perceptual roughness） →
+    `RestirGiPass` 读，用于对间接漫反射做 demodulation。
+  - `RestirGiPass` 写 `restir_gi_color`（帧级双缓冲，`restir_gi_scale` 决定分辨率） → `ForwardPass`（下一帧读，1-frame latency，与 AO 同形）。
+    跨帧延迟边同样是"图边声明 + pass 内手工屏障"：`gi_view` 为 null 时 push constant `gi_mode = 0`，shader 退回 probe volume。
+  - `RestirGiPass` 与 `PathTracePass` 是 SHARC 世界空间缓存的**两个平级消费者**：`gi_mode = Sharc` 时缓存由 PT 训练、PT 查询；`gi_mode = Restir` 时由 `RestirGiPass` 自己 deposit 并查询，PT 不参与。
 
 ### 6.4 Baked GI 数据规格（PR-5 更新）
 
@@ -198,6 +204,18 @@ ShadowMapPass → ForwardPass → GtaoPass → PostPass
 
 > **顺序原则**：PR-1/PR-2 先把图接口按"消费者（GI）需求"定下来（§6.1 三类生命周期），PR-3 才真正接入 GI。
 > 不在 PR-1 时空改接口猜 GI 需求（避免第二遍返工）。
+
+### 6.8 实时 ReSTIR GI（光栅路径，独立于 PT）
+
+> 目标：不打开路径追踪也能拿到实时间接漫反射；SHARC 世界空间缓存复用，但**训练者换成光栅 GI 自己**。
+
+- **触发条件**：`RenderSettings::gi_mode = GiMode::Restir` + `RenderMode::Raster` + `prism-render/restir_gi` feature + 设备支持 `VK_KHR_ray_query`。任一不满足即退化为 baked probe volume（`ForwardPass` 的 `gi_mode` push constant 为 0），不报错、不改图结构。
+- **数据流**：`ForwardPass` 的 G-buffer（depth / view-normal / albedo+roughness / velocity）→ `restir_gi.slang` 在 `restir_gi_scale`（默认 0.5）分辨率下重建世界位置，按余弦分布追 `restir_gi_rays_per_pixel` 条二次射线 → 命中点做 NEE + 环境光，miss 写天空 → 时间复用（velocity 重投影 + 深度校验，`restir_gi_max_history` 封顶）+ 空间复用（`restir_gi_spatial_samples` 个邻居）→ 输出 **E(n)/π**（不是出射辐亮度），`ForwardPass` 下一帧按 `kd · albedo · signal` 合成。
+- **/π 约定**：输出与 probe volume 的 `EvalSH9Irradiance / π` 同量纲，所以 `scene_frag.slang` 两条 GI 路径共用同一行合成公式；ReSTIR 分支只替换信号源，specular 仍走 prefiltered env cubemap。
+- **SHARC 复用**：`RestirGiPass` 通过 `set_sharc_buffers()` 拿到与 PT 相同的三个持久缓冲（hash entries / accumulation / resolved），在 `restir_gi.slang` 内做 `SharcInit` / `SharcUpdateHit` / `SharcUpdateMiss` / `SharcGetCachedRadiance`。射线命中已收敛体素时直接取缓存辐亮度并提前终止。缓存的 clear / resolve 仍由 `GraphRenderer` 的共享编排驱动（`SharcTargets` + `SharcResolvePass`），两个消费者只在"谁训练"上互斥。
+- **几何来源**：`RestirGiPass::set_geometry()` 接收与 PT 同形的 `PtGeometryInstance`（`bake_common`），内部 `build_pt_scene()` 建 BLAS/TLAS；`GraphRenderer::prepare` 在 `gi_mode = Restir` 且 pass 尚无几何时调用 `sync_restir_gi_geometry()`，与 `sync_pt_geometry()` 共用 `collect_rt_instances()` 的世界空间顶点变换。
+- **开关**：`restir_gi_scale`（分辨率倍率）、`restir_gi_rays_per_pixel`、`restir_gi_spatial_samples`、`restir_gi_max_history`、`restir_gi_temporal_reuse`、`restir_gi_spatial_reuse`、`restir_gi_max_secondary_dist`，逐字段经 `prism-engine::render_settings` → `prism-app::render_runner` 透传。
+- **不变量**：`RestirGiPass` 只声明图边（读 4 个 G-buffer、写 `restir_gi_color`），不碰 `ForwardPass` 的附件；关掉 feature 时 `ForwardPass` 的 set 4 binding 1 保持 null，push constant `gi_mode` 恒 0。
 
 *相关文档：`docs/lessons-learned.md`（§21/§29 framebuffer 销毁顺序、§30 CI 漂移）。*
 
@@ -1176,7 +1194,8 @@ cp target/release/template /tmp/p && strip /tmp/p && ls -l /tmp/p   # strip 后�
 | 砖块 | feature | 默认 | 关掉后省什么 |
 |---|---|---|---|
 | 路径追踪 | `prism-render/pathtrace` | on | `pt_pass.rs`（~1.6k 行）+ 累积/BLAS-TLAS 资源 |
-| RTXGI (SHARC) | `prism-render/rtxgi`（依赖 `pathtrace`） | on | NVIDIA RTXGI SHARC v1.6 世界空间辐射缓存（`sharc.rs` + resolve 计算管线 + 3 个持久 GPU 缓冲）。**默认开**：不拉新依赖，且是路径追踪之上唯一的实时 GI 加速；关掉 = 只剩纯 PT（仍设 `gi_mode = Sharc` 时退化为纯 PT 并 warn 一次） |
+| RTXGI (SHARC) | `prism-render/rtxgi` | on | NVIDIA RTXGI SHARC v1.6 世界空间辐射缓存（`sharc.rs` + resolve 计算管线 + 3 个持久 GPU 缓冲）。**默认开**：不拉新依赖。**不再依赖 `pathtrace`**：缓存有两个平级消费者——PT 训练/查询（`gi_mode = Sharc`）与光栅 ReSTIR GI 自己 deposit/查询（`gi_mode = Restir`，见 §6.8）。关掉 = 两条实时 GI 路径都退化为 baked probe volume（并 warn 一次） |
+| ReSTIR GI（光栅） | `prism-render/restir_gi`（依赖 `rtxgi`） | on | `restir_gi.rs` + `restir_gi.slang`（~1.2k 行 Rust + ~590 行 slang）+ 双缓冲 GI 图 + reservoir 缓冲。**不依赖 `pathtrace`**：只要求 `VK_KHR_ray_query`，无 RT 管线的设备也能跑；缺 ray query 时 `gi_mode = Restir` 退回 baked probe volume 并 warn 一次 |
 | NRC | `prism-render/nrc`（依赖 `pathtrace`） | off | NVIDIA Neural Radiance Cache 接入 |
 | DLSS | `prism-render/dlss` | off | NVIDIA Streamline / DLSS 超分辨率与光线重构接入 |
 | 音频 | `prism-app/audio` + `prism-engine/audio` | off | cpal + firewheel + symphonia（~60 crate，−3.1 MB） |

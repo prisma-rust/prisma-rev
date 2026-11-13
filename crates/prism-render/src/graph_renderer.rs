@@ -638,6 +638,31 @@ impl GraphRenderer {
             )
             .context("ForwardPass: set_resources")?;
 
+        // ReSTIR GI pass (raster path, independent of the path tracer). It
+        // builds its own BLAS/TLAS from the draw list and traces secondary
+        // rays with ray queries, so it only exists when the device can do
+        // that; otherwise `gi_mode = Restir` falls back to the baked probe
+        // volume and the warning below says why.
+        #[cfg(feature = "restir_gi")]
+        let restir_gi_pass = if context.rt_caps.has_ray_query() {
+            let mut pass = crate::restir_gi::RestirGiPass::new();
+            pass.set_resources(
+                bindless.set,
+                bindless.layout,
+                ibl.descriptor_set,
+                ibl.descriptor_set_layout,
+                materials_buffer,
+            );
+            log::info!("RestirGiPass registered in render graph");
+            Some(pass)
+        } else {
+            log::warn!(
+                "`restir_gi` 已编译但设备不支持 VK_KHR_ray_query：\
+                 gi_mode = Restir 退回 baked probe volume"
+            );
+            None
+        };
+
         // GTAO pass half-resolution screen-space 环境光遮蔽 Runs after ForwardPass
         // every frame and produces a double-buffered R8 AO texture the scene
         // samples (1-frame latency) to attenuate IBL diffuse + specular.
@@ -730,6 +755,12 @@ impl GraphRenderer {
         #[cfg(feature = "gtao")]
         graph.add_pass(Box::new(gtao_pass));
         graph.add_pass(Box::new(anf_pass));
+        // ReSTIR GI reads the forward G-buffer this frame and publishes the
+        // signal the forward pass samples on the next one.
+        #[cfg(feature = "restir_gi")]
+        if let Some(pass) = restir_gi_pass {
+            graph.add_pass(Box::new(pass));
+        }
         graph.add_pass(Box::new(rt_scheduler));
         #[cfg(feature = "pathtrace")]
         if let Some(pt) = pt_pass {
@@ -850,6 +881,24 @@ impl GraphRenderer {
     #[cfg(not(feature = "gtao"))]
     fn ao_view(&mut self, _frame: u32) -> vk::ImageView {
         self.dummy_ao.view()
+    }
+
+    /// 场景 pass 要采样的「上一帧 ReSTIR GI 间接漫反射」视图。
+    ///
+    /// 与 AO 同构：`RestirGiPass` 双缓冲，本帧写 A、下一帧采样 A，所以取
+    /// `gi_view()` 返回的「最近一次已写完」的视图。pass 未注册或本帧未分派
+    /// 时返回 null，前向 pass 会退回 baked probe volume。
+    #[cfg(feature = "restir_gi")]
+    fn gi_view(&mut self) -> vk::ImageView {
+        self.graph
+            .pass_mut::<crate::restir_gi::RestirGiPass>()
+            .map(|pass| pass.gi_view())
+            .unwrap_or_else(vk::ImageView::null)
+    }
+
+    #[cfg(not(feature = "restir_gi"))]
+    fn gi_view(&mut self) -> vk::ImageView {
+        vk::ImageView::null()
     }
 
     /// 离屏渲染目标的尺寸（无窗口宿主模式）；有交换链时返回 `None`。
@@ -1114,6 +1163,24 @@ impl GraphRenderer {
             )
             .context("ForwardPass::set_resources (headless)")?;
 
+        // Same ReSTIR GI pass as the windowed path; the offscreen extent is
+        // resolved lazily from `ctx.render_extent` on the first dispatch.
+        #[cfg(feature = "restir_gi")]
+        let restir_gi_pass = if context.rt_caps.has_ray_query() {
+            let mut pass = crate::restir_gi::RestirGiPass::new();
+            pass.set_resources(
+                bindless.set,
+                bindless.layout,
+                ibl.descriptor_set,
+                ibl.descriptor_set_layout,
+                materials_buffer,
+            );
+            log::info!("RestirGiPass registered in render graph (headless)");
+            Some(pass)
+        } else {
+            None
+        };
+
         let frame_count = 2u32;
         // Headless contexts do not enable `VK_KHR_swapchain`, so the offscreen
         // image must never end a render pass in `PRESENT_SRC_KHR`; it stays a
@@ -1187,6 +1254,10 @@ impl GraphRenderer {
         #[cfg(feature = "gtao")]
         graph.add_pass(Box::new(gtao_pass));
         graph.add_pass(Box::new(anf_pass));
+        #[cfg(feature = "restir_gi")]
+        if let Some(pass) = restir_gi_pass {
+            graph.add_pass(Box::new(pass));
+        }
         graph.add_pass(Box::new(rt_scheduler));
         #[cfg(feature = "pathtrace")]
         if let Some(pt) = pt_pass {
@@ -2810,7 +2881,104 @@ impl GraphRenderer {
                 self.sync_pt_geometry(input.draw_items)?;
             }
         }
+        // The ReSTIR GI pass traces the same world-space scene, but it runs in
+        // raster mode, where nothing else uploads geometry. Build its own copy
+        // of the acceleration structures from the same draw list.
+        #[cfg(feature = "restir_gi")]
+        if input.render_mode == crate::render_graph::RenderMode::Raster
+            && self.settings.gi_mode == crate::render_graph::GiMode::Restir
+        {
+            let needs_geom = self
+                .graph
+                .pass_ref::<crate::restir_gi::RestirGiPass>()
+                .map(|pass| !pass.has_geometry())
+                .unwrap_or(false);
+            if needs_geom && !input.draw_items.is_empty() {
+                self.sync_restir_gi_geometry(input.draw_items)?;
+            }
+        }
         Ok(())
+    }
+
+    /// Build the ReSTIR GI ray-tracing scene from the draw list.
+    ///
+    /// Mirrors [`Self::sync_pt_geometry`] but targets [`crate::restir_gi::RestirGiPass`]:
+    /// the GI pass owns its acceleration structures so it stays independent of
+    /// the path tracer (it must work with `pathtrace` compiled out).
+    #[cfg(feature = "restir_gi")]
+    pub fn sync_restir_gi_geometry(
+        &mut self,
+        draw_items: &[crate::render_graph::DrawItem],
+    ) -> anyhow::Result<()> {
+        let instances = self.collect_rt_instances(draw_items);
+        if instances.is_empty() {
+            log::debug!("sync_restir_gi_geometry: no CPU geometry found in draw_items");
+            return Ok(());
+        }
+        if let Some(pass) = self.graph.pass_mut::<crate::restir_gi::RestirGiPass>() {
+            pass.set_geometry(&self.runtime.context, self.runtime.command_pool, &instances)?;
+        }
+        Ok(())
+    }
+
+    /// Build world-space ray-tracing instances from the draw list.
+    ///
+    /// Mirrors the instance construction inside [`Self::sync_pt_geometry`] so the
+    /// ReSTIR GI pass sees exactly the same geometry (same vertex transform, same
+    /// index slice, same material slot and alpha semantics) as the path tracer.
+    #[cfg(feature = "restir_gi")]
+    fn collect_rt_instances(
+        &self,
+        draw_items: &[crate::render_graph::DrawItem],
+    ) -> Vec<crate::bake_common::PtGeometryInstance> {
+        let mut instances = Vec::new();
+        for item in draw_items {
+            let Some((verts, indices)) = self.mesh_manager.get_cpu_geometry(item.mesh) else {
+                continue;
+            };
+            let model = &item.model;
+            let world_vertices: Vec<crate::mesh::Vertex> = verts
+                .iter()
+                .map(|v| {
+                    let p = crate::math::transform_point(model, v.position);
+                    let n = crate::math::transform_vector_normalized(model, v.normal);
+                    let t = crate::math::transform_vector_normalized(
+                        model,
+                        [v.tangent[0], v.tangent[1], v.tangent[2]],
+                    );
+                    crate::mesh::Vertex {
+                        position: p,
+                        normal: n,
+                        color: v.color,
+                        uv: v.uv,
+                        tangent: [t[0], t[1], t[2], v.tangent[3]],
+                    }
+                })
+                .collect();
+            let sub_indices: Vec<u32> = match item.index_count {
+                Some(count) => {
+                    let start = item.index_start as usize;
+                    let count = count as usize;
+                    if start + count <= indices.len() {
+                        indices[start..start + count].to_vec()
+                    } else {
+                        indices.to_vec()
+                    }
+                }
+                None => indices.to_vec(),
+            };
+            let material_slot = item.material.unwrap_or(0);
+            let opaque = item
+                .material
+                .is_some_and(|_| self.material_manager.is_opaque_slot(material_slot));
+            instances.push(crate::bake_common::PtGeometryInstance {
+                vertices: world_vertices,
+                indices: sub_indices,
+                material_slot,
+                opaque,
+            });
+        }
+        instances
     }
 
     /// Upload world-space geometry from draw_items into PathTracePass.
@@ -3110,6 +3278,9 @@ impl GraphRenderer {
                 forward.set_depth_readback(capture);
             }
             let ao_view = self.ao_view(frame as u32);
+            // 上一帧 ReSTIR GI 输出（1 帧延迟）。pass 未注册 / 未分派时为 null，
+            // 前向 pass 的 `gi_mode` push constant 随之为 0，退回 probe volume。
+            let gi_view = self.gi_view();
             let offscreen_views = self.offscreen.as_ref().map(|o| [o.image_view()]);
             let swapchain_views: &[vk::ImageView] = match (&self.swapchain, &offscreen_views) {
                 (Some(sw), _) => sw.views.as_slice(),
@@ -3175,6 +3346,7 @@ impl GraphRenderer {
                 view_proj_jitter: self.taa_jitter_ndc,
                 lights,
                 ao_view,
+                gi_view,
                 tonemap_mode,
                 aa_mode,
                 debug_rt,
@@ -3209,10 +3381,19 @@ impl GraphRenderer {
                 .map(|item| (item.entity_id, item.model))
                 .collect();
 
+            // SHaRC has two independent consumers now: the path tracer (trains
+            // the cache, then queries it) and the ReSTIR GI pass (deposits and
+            // queries while tracing its secondary rays, no path tracer involved).
+            // Both need the same clear / resolve bookkeeping, so the gate below
+            // covers either mode instead of hard-coding the path-traced one.
             #[cfg(feature = "rtxgi")]
-            if self.settings.gi_mode == crate::render_graph::GiMode::Sharc
-                && *render_mode == RenderMode::PathTrace
-            {
+            let sharc_active = match self.settings.gi_mode {
+                crate::render_graph::GiMode::Sharc => *render_mode == RenderMode::PathTrace,
+                crate::render_graph::GiMode::Restir => *render_mode == RenderMode::Raster,
+                _ => false,
+            };
+            #[cfg(feature = "rtxgi")]
+            if sharc_active {
                 // The hash map is sized when it is allocated, so a capacity
                 // change has to rebuild the buffers. Voxel keys are meaningless
                 // across a resize, so the rebuilt cache starts cleared.
@@ -3306,14 +3487,18 @@ impl GraphRenderer {
                     self.settings.sharc_enable_clear = false;
                 }
 
-                // Hand the cache buffers to the path tracer before anything is
+                // Hand the cache buffers to their consumers before anything is
                 // dispatched: the trainer below needs them bound, and the
-                // consumer only reads the resolved cache.
-                #[cfg(feature = "rtxgi")]
+                // consumers only read the resolved cache.
+                #[cfg(all(feature = "rtxgi", any(feature = "pathtrace", feature = "restir_gi")))]
                 {
                     let (hash_entries, accumulation, resolved, capacity) =
                         match (&self.sharc_targets, self.settings.gi_mode) {
-                            (Some(targets), crate::render_graph::GiMode::Sharc) => (
+                            (
+                                Some(targets),
+                                crate::render_graph::GiMode::Sharc
+                                | crate::render_graph::GiMode::Restir,
+                            ) => (
                                 Some(targets.hash_entries_buffer),
                                 Some(targets.accumulation_buffer),
                                 Some(targets.resolved_buffer),
@@ -3321,8 +3506,16 @@ impl GraphRenderer {
                             ),
                             _ => (None, None, None, 0),
                         };
+                    // `rtxgi` no longer implies `pathtrace` (the path tracer is
+                    // one optional consumer of the cache, not a dependency).
+                    #[cfg(feature = "pathtrace")]
                     if let Some(pt) = self.graph.pass_mut::<PathTracePass>() {
                         pt.set_sharc_buffers(hash_entries, accumulation, resolved, capacity);
+                    }
+                    // The ReSTIR GI pass queries the same cache from raster mode.
+                    #[cfg(feature = "restir_gi")]
+                    if let Some(gi) = self.graph.pass_mut::<crate::restir_gi::RestirGiPass>() {
+                        gi.set_sharc_buffers(hash_entries, accumulation, resolved, capacity);
                     }
                 }
                 // 设了 `gi_mode = Sharc` 却没编 `rtxgi`：退化为纯路径追踪，但必须说清楚
@@ -3359,10 +3552,16 @@ impl GraphRenderer {
                 // Standalone training stage. The consumer no longer deposits,
                 // so the cache is trained here at its own resolution and then
                 // resolved before the path trace reads it.
-                if crate::sharc::training_enabled(
-                    self.settings.sharc_enable_update,
-                    self.settings.sharc_enable_resolve,
-                ) {
+                // Only the path tracer needs a standalone trainer: in raster mode
+                // the ReSTIR GI pass deposits into the cache itself while tracing
+                // its secondary rays (its `sharc_params.z` carries the update flag).
+                #[cfg(feature = "pathtrace")]
+                if *render_mode == RenderMode::PathTrace
+                    && crate::sharc::training_enabled(
+                        self.settings.sharc_enable_update,
+                        self.settings.sharc_enable_resolve,
+                    )
+                {
                     let train_extent = PathTracePass::training_extent(
                         render_extent,
                         self.settings.sharc_downscale_factor,

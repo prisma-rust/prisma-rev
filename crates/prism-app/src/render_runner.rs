@@ -551,6 +551,13 @@ fn render_one_frame(
         renderer_settings.sharc_downscale_factor = settings.sharc_downscale_factor;
         renderer_settings.sharc_accumulation_frame_num = settings.sharc_accumulation_frame_num;
         renderer_settings.sharc_stale_frame_num = settings.sharc_stale_frame_num;
+        renderer_settings.restir_gi_scale = settings.restir_gi_scale;
+        renderer_settings.restir_gi_rays_per_pixel = settings.restir_gi_rays_per_pixel;
+        renderer_settings.restir_gi_spatial_samples = settings.restir_gi_spatial_samples;
+        renderer_settings.restir_gi_max_history = settings.restir_gi_max_history;
+        renderer_settings.restir_gi_temporal_reuse = settings.restir_gi_temporal_reuse;
+        renderer_settings.restir_gi_spatial_reuse = settings.restir_gi_spatial_reuse;
+        renderer_settings.restir_gi_max_secondary_dist = settings.restir_gi_max_secondary_dist;
     }
 
     let ctx = match renderer.begin_frame()? {

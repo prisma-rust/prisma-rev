@@ -88,6 +88,8 @@ pub mod render_graph_report;
 pub mod render_pass;
 pub mod render_runtime;
 pub mod render_texture;
+#[cfg(feature = "restir_gi")]
+pub mod restir_gi;
 pub mod rt_pass;
 pub mod rt_scheduler;
 pub mod scene_scope;
@@ -162,6 +164,8 @@ pub use render_graph::{
     SPRITE_LIGHT_DIRECTIONAL, SPRITE_LIGHT_MAX, SPRITE_LIGHT_POINT,
 };
 pub use render_pass::{DepthImage, Framebuffers, NormalImage, RenderPass};
+#[cfg(feature = "restir_gi")]
+pub use restir_gi::{RestirGiFrame, RestirGiPass, RestirGiReservoir, RESERVOIR_BYTES};
 pub use shader::load_shader_module;
 #[cfg(feature = "shadows")]
 pub use shadow_map_pass::ShadowMapPass;
