@@ -15,6 +15,51 @@ use crate::context::VulkanContext;
 
 pub const DEFAULT_SHARC_CAPACITY: u32 = 1024 * 1024; // 1M entries (~40MB GPU memory)
 
+/// Whether the training dispatch should run this frame.
+///
+/// `SharcResolveEntry` in `assets/shaders/slang/sharc/sharc_common.slang` is the
+/// only place that normalises the accumulation counts and clears the
+/// accumulation buffer. Training with resolve disabled keeps adding to the same
+/// `u32` counters while nothing consumes or resets them, so the counts saturate
+/// and the cache ends up carrying unbounded radiance.
+pub const fn training_enabled(update: bool, resolve: bool) -> bool {
+    update && resolve
+}
+
+/// Why the world-space SHaRC cache stopped describing the scene.
+///
+/// The cache has two lifetimes (repair spec §8). The *screen* history —
+/// accumulation, motion vectors — is invalidated by camera motion and by extent
+/// changes. The *world* cache survives both of those: it stores radiance in
+/// world space, so a moving camera only reprojects it. What it cannot survive
+/// is the radiance field itself changing, which is what this struct records.
+///
+/// The host fills this in from its dirty flags and from the lifecycle hooks on
+/// `crate::GraphRenderer` and from the frame's dirty dispatch plan;
+/// `crate::GraphRenderer::execute` folds it into the per-frame clear decision and
+/// then resets it to `Self::default`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SharcInvalidation {
+    /// Geometry or material semantics changed: a scene was unloaded, a mesh or
+    /// material slot was released, or the host called
+    /// `crate::GraphRenderer::invalidate_pt_geometry`.
+    pub geometry: bool,
+    /// The directional or a local light changed. Spec §8 asks for a hard clear
+    /// here; a bounded refresh would need per-voxel timestamps the cache does
+    /// not carry yet.
+    pub lights: bool,
+    /// The sky/IBL environment changed, so the illumination the cache was
+    /// trained against is gone.
+    pub sky: bool,
+}
+
+impl SharcInvalidation {
+    /// Whether any reason is recorded, i.e. the cache must be cleared.
+    pub const fn any(&self) -> bool {
+        self.geometry || self.lights || self.sky
+    }
+}
+
 /// The three persistent GPU buffers used by RTXGI SHARC.
 pub struct SharcTargets {
     pub capacity: u32,
@@ -290,6 +335,35 @@ mod tests {
             56
         );
         assert_eq!(std::mem::offset_of!(SharcResolvePush, pad), 60);
+    }
+
+    #[test]
+    fn test_training_requires_resolve() {
+        assert!(training_enabled(true, true));
+        assert!(!training_enabled(true, false));
+        assert!(!training_enabled(false, true));
+        assert!(!training_enabled(false, false));
+    }
+
+    #[test]
+    fn test_sharc_invalidation_any() {
+        assert!(!SharcInvalidation::default().any());
+        for reason in [
+            SharcInvalidation {
+                geometry: true,
+                ..Default::default()
+            },
+            SharcInvalidation {
+                lights: true,
+                ..Default::default()
+            },
+            SharcInvalidation {
+                sky: true,
+                ..Default::default()
+            },
+        ] {
+            assert!(reason.any(), "{reason:?} should count as an invalidation");
+        }
     }
 
     #[test]

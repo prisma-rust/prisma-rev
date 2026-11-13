@@ -343,6 +343,28 @@ pub struct GraphRenderer {
     sharc_targets: Option<crate::sharc::SharcTargets>,
     #[cfg(feature = "rtxgi")]
     sharc_resolve: Option<crate::sharc::SharcResolvePass>,
+    /// Reasons the world-space SHaRC cache no longer describes the scene.
+    ///
+    /// Filled in by the lifecycle hooks ([`Self::invalidate_pt_geometry`],
+    /// [`Self::set_environment`], asset release/upload) and by the frame's
+    /// [`DirtyDispatchPlan`]; consumed by `execute`, which clears the cache
+    /// buffers and then resets this to the default.
+    #[cfg(feature = "rtxgi")]
+    sharc_invalidation: crate::sharc::SharcInvalidation,
+    /// How many times the world-space SHaRC cache has been cleared since the
+    /// renderer was created (initial allocation included). Lifecycle tests use
+    /// it to observe that an invalidation actually reached the cache.
+    #[cfg(feature = "rtxgi")]
+    sharc_clear_count: u64,
+    /// The voxel scale the cache was last trained against.
+    ///
+    /// The hash key is derived from world position through
+    /// `sceneScale` (`sharc_hash_grid.slang`), so changing the scale redefines
+    /// which voxel a position lands in without moving any world-space radiance:
+    /// every stored entry becomes a key/value mismatch, which §8 calls a cache
+    /// format change and wants cleared.
+    #[cfg(feature = "rtxgi")]
+    sharc_cache_scene_scale: Option<f32>,
     /// ECS UI 叠加 (GPU-only) — quads + fontdue glyph text, rendered on 顶部
     /// of the ForwardPass 输出 (below the external overlay). Created lazily
     /// on the 渲染 线程 when the 引擎 sends UI 命令
@@ -760,6 +782,12 @@ impl GraphRenderer {
             sharc_targets: None,
             #[cfg(feature = "rtxgi")]
             sharc_resolve: None,
+            #[cfg(feature = "rtxgi")]
+            sharc_invalidation: crate::sharc::SharcInvalidation::default(),
+            #[cfg(feature = "rtxgi")]
+            sharc_clear_count: 0,
+            #[cfg(feature = "rtxgi")]
+            sharc_cache_scene_scale: None,
             #[cfg(feature = "ui")]
             ui_overlay: None,
             #[cfg(feature = "ui")]
@@ -1216,6 +1244,12 @@ impl GraphRenderer {
             sharc_targets: None,
             #[cfg(feature = "rtxgi")]
             sharc_resolve: None,
+            #[cfg(feature = "rtxgi")]
+            sharc_invalidation: crate::sharc::SharcInvalidation::default(),
+            #[cfg(feature = "rtxgi")]
+            sharc_clear_count: 0,
+            #[cfg(feature = "rtxgi")]
+            sharc_cache_scene_scale: None,
             #[cfg(feature = "ui")]
             ui_overlay: None,
             #[cfg(feature = "ui")]
@@ -1626,6 +1660,12 @@ impl GraphRenderer {
         // 销毁旧 IBL（不销毁共享 布局）后接管新的。
         self.ibl.destroy();
         self.ibl = new_ibl;
+        // 天空/IBL 是辐射缓存训练时的入射光来源；换了环境，旧体素里的辐射
+        // 就不再属于这个场景（repair spec §8）。
+        #[cfg(feature = "rtxgi")]
+        {
+            self.sharc_invalidation.sky = true;
+        }
         Ok(())
     }
 
@@ -1766,6 +1806,14 @@ impl GraphRenderer {
             }
         }
         log::debug!("release_assets: freed {freed} GPU resource(s)");
+        // Released meshes/materials mean the geometry (or its shading) that the
+        // world-space cache was trained on no longer exists.
+        if freed > 0 {
+            #[cfg(feature = "rtxgi")]
+            {
+                self.sharc_invalidation.geometry = true;
+            }
+        }
     }
 
     /// 暂存资产上传请求，由下一次 `prepare` 统一批量执行（DESIGN §9 / #1157）。
@@ -2863,11 +2911,38 @@ impl GraphRenderer {
         Ok(())
     }
 
+    /// Number of times the world-space SHaRC cache has been cleared since the
+    /// renderer was created, including the initial allocation.
+    ///
+    /// The cache itself is fully device-local, so this counter is how the
+    /// lifecycle tests (and the editor's diagnostics) observe that an
+    /// invalidation reason reached the cache.
+    #[cfg(feature = "rtxgi")]
+    pub fn sharc_clear_count(&self) -> u64 {
+        self.sharc_clear_count
+    }
+
+    /// Whether a SHaRC invalidation reason is queued for the next frame the
+    /// cache is used. Reasons raised while the cache is idle (raster mode, or
+    /// `gi_mode != Sharc`) stay pending until then.
+    #[cfg(feature = "rtxgi")]
+    pub fn sharc_invalidation_pending(&self) -> bool {
+        self.sharc_invalidation.any()
+    }
+
     /// Invalidate path-tracing geometry, forcing a rebuild on next frame.
+    ///
+    /// Also drops the world-space SHaRC cache: it stores radiance keyed by
+    /// world position, so replacing the geometry leaves radiance that no
+    /// longer belongs to any surface (repair spec §8).
     pub fn invalidate_pt_geometry(&mut self) {
         #[cfg(feature = "pathtrace")]
         if let Some(pt) = self.graph.pass_mut::<PathTracePass>() {
             pt.invalidate_geometry();
+        }
+        #[cfg(feature = "rtxgi")]
+        {
+            self.sharc_invalidation.geometry = true;
         }
     }
 
@@ -2928,10 +3003,33 @@ impl GraphRenderer {
             shadows_enabled,
             ui_overlay,
             show_grid,
-            dispatch_plan: _,
+            dispatch_plan,
         } = input;
         #[cfg(not(feature = "ui"))]
         let _ = ui_overlay;
+        // Fold this frame's dirty plan into the SHaRC world-cache invalidation.
+        //
+        // `instances_dirty` is deliberately *not* consulted: the draw list is
+        // rebuilt every frame after frustum and shadow-caster culling, so its
+        // content (and therefore its signature) changes whenever the camera
+        // moves. The cache keys on world position and only needs reprojection
+        // for that. Genuine geometry changes reach us through
+        // `mesh_releases`/`material_releases` here and through
+        // [`Self::invalidate_pt_geometry`] on scene unload.
+        #[cfg(feature = "rtxgi")]
+        if let Some(plan) = dispatch_plan {
+            if plan.lights_dirty {
+                self.sharc_invalidation.lights = true;
+            }
+            if plan.sky_dirty {
+                self.sharc_invalidation.sky = true;
+            }
+            if plan.mesh_releases > 0 || plan.material_releases > 0 {
+                self.sharc_invalidation.geometry = true;
+            }
+        }
+        #[cfg(not(feature = "rtxgi"))]
+        let _ = dispatch_plan;
         // #883 Phase 2: frame_data is copied so we can inject the previous
         // unjittered view-projection without mutating the caller's value.
         let mut frame_data = **frame_data;
@@ -3155,9 +3253,38 @@ impl GraphRenderer {
                     }
                 }
 
-                if needs_init_clear || self.settings.sharc_enable_clear {
+                // Consume the recorded lifecycle reasons. A reason that could
+                // not be serviced because SHaRC is idle this frame stays
+                // pending until the cache is used again, which is exactly when
+                // the stale voxels would become visible.
+                let invalidation = std::mem::take(&mut self.sharc_invalidation);
+                if invalidation.any() {
+                    log::debug!(
+                        "RTXGI SHARC cache invalidated: geometry={} lights={} sky={}",
+                        invalidation.geometry,
+                        invalidation.lights,
+                        invalidation.sky
+                    );
+                }
+                // A voxel-scale change redefines the hash key for every world
+                // position, so the surviving entries describe the wrong voxels
+                // (repair spec §8: cache format changes clear).
+                let scale = self.settings.sharc_scene_scale;
+                let scale_changed = self
+                    .sharc_cache_scene_scale
+                    .is_some_and(|previous| previous != scale);
+                self.sharc_cache_scene_scale = Some(scale);
+                if scale_changed {
+                    log::info!("RTXGI SHARC voxel scale changed to {scale}; clearing the cache");
+                }
+                if needs_init_clear
+                    || invalidation.any()
+                    || scale_changed
+                    || self.settings.sharc_enable_clear
+                {
                     if let Some(targets) = &self.sharc_targets {
                         targets.clear(device, cmd);
+                        self.sharc_clear_count += 1;
                         // Pipeline barrier: TRANSFER_WRITE -> SHADER_READ | SHADER_WRITE
                         let barrier = vk::MemoryBarrier::default()
                             .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
@@ -3215,10 +3342,27 @@ impl GraphRenderer {
                     }
                 }
 
+                // Resolve is the only stage that normalises the accumulation
+                // counts (see `crate::sharc::training_enabled`). Training with
+                // resolve disabled would keep adding to counters that nothing
+                // resets, so it is skipped and the reason is logged once.
+                if self.settings.sharc_enable_update && !self.settings.sharc_enable_resolve {
+                    static TRAIN_WITHOUT_RESOLVE_WARNED: std::sync::Once = std::sync::Once::new();
+                    TRAIN_WITHOUT_RESOLVE_WARNED.call_once(|| {
+                        log::warn!(
+                            "sharc_enable_update is set but sharc_enable_resolve is not; \
+                             training is skipped because resolve owns the accumulation \
+                             counters. Enable sharc_enable_resolve to train the cache."
+                        );
+                    });
+                }
                 // Standalone training stage. The consumer no longer deposits,
                 // so the cache is trained here at its own resolution and then
                 // resolved before the path trace reads it.
-                if self.settings.sharc_enable_update {
+                if crate::sharc::training_enabled(
+                    self.settings.sharc_enable_update,
+                    self.settings.sharc_enable_resolve,
+                ) {
                     let train_extent = PathTracePass::training_extent(
                         render_extent,
                         self.settings.sharc_downscale_factor,
@@ -3247,7 +3391,16 @@ impl GraphRenderer {
                     }
                 }
 
-                if self.settings.sharc_enable_resolve {
+                // The timer borrow and the target borrows both take `self`, so
+                // the interval is opened and closed outside the `if let` that
+                // borrows the targets.
+                if self.settings.sharc_enable_resolve
+                    && self.sharc_targets.is_some()
+                    && self.sharc_resolve.is_some()
+                {
+                    if let Some(timer) = self.gpu_timer.as_mut() {
+                        timer.begin_pass(device, cmd, frame as u32, "SharcResolve");
+                    }
                     if let (Some(targets), Some(resolve)) =
                         (&self.sharc_targets, &self.sharc_resolve)
                     {
@@ -3310,6 +3463,9 @@ impl GraphRenderer {
                                 &[],
                             );
                         }
+                    }
+                    if let Some(timer) = self.gpu_timer.as_mut() {
+                        timer.end_pass(device, cmd, frame as u32);
                     }
                 }
             }

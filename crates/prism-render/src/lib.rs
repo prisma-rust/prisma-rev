@@ -166,7 +166,9 @@ pub use shader::load_shader_module;
 #[cfg(feature = "shadows")]
 pub use shadow_map_pass::ShadowMapPass;
 #[cfg(feature = "rtxgi")]
-pub use sharc::{SharcResolvePass, SharcResolvePush, SharcTargets, DEFAULT_SHARC_CAPACITY};
+pub use sharc::{
+    SharcInvalidation, SharcResolvePass, SharcResolvePush, SharcTargets, DEFAULT_SHARC_CAPACITY,
+};
 pub use skybox_pass::SkyboxSettings;
 pub use sprite_pass::SpritePass;
 pub use suballocator::{MemorySuballocator, StagingArena, Suballocation, SuballocatorStats};

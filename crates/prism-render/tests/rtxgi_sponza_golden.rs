@@ -423,21 +423,20 @@ fn test_sponza_rtxgi_real_render_and_comparison() {
     let pt_sharc_on_path = out_dir.join("sponza_pt_sharc_on.actual.png");
     save_png(&pt_sharc_on_path, &pt_sharc_on_pixels, SIZE).expect("save pt sharc on png");
 
-    // Training is its own stage: it must show up as a GPU interval of its own,
-    // separate from the consumer pass. The SHaRC graph work is behind the
-    // `rtxgi` feature, so this only applies to builds that enable it.
+    // Training and resolve are their own stages: each must show up as a GPU
+    // interval of its own, separate from the consumer pass. The SHaRC graph
+    // work is behind the `rtxgi` feature, so this only applies to builds that
+    // enable it.
     if cfg!(feature = "rtxgi") {
         let timings = renderer.gpu_timings().clone();
         if timings.supported {
-            assert!(
-                timings.passes.iter().any(|p| p.name == "SharcTrain"),
-                "training stage missing from GPU timings: {:?}",
-                timings
-                    .passes
-                    .iter()
-                    .map(|p| p.name.as_str())
-                    .collect::<Vec<_>>()
-            );
+            let names: Vec<&str> = timings.passes.iter().map(|p| p.name.as_str()).collect();
+            for stage in ["SharcTrain", "SharcResolve"] {
+                assert!(
+                    names.contains(&stage),
+                    "{stage} stage missing from GPU timings: {names:?}"
+                );
+            }
         }
     }
 

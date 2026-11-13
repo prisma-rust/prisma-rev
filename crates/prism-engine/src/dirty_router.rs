@@ -112,9 +112,15 @@ impl DirtyRouter {
                 || prev.inv_projection != new.inv_projection
                 || prev.proj22 != new.proj22
                 || prev.proj32 != new.proj32,
+            // `light_view_proj` is deliberately not compared: the shadow
+            // cascade matrix is derived from the camera eye
+            // (`shadow_cascade_matrices` in `crate::render_system`), so any
+            // camera motion changes it. Treating that as a lighting change
+            // would clear the world-space SHaRC cache whenever the player
+            // walks, while the cache keys on world position and only needs
+            // reprojection when the camera moves (repair spec §8).
             directional_light: prev.light_direction != new.light_direction
-                || prev.light_color != new.light_color
-                || prev.light_view_proj != new.light_view_proj,
+                || prev.light_color != new.light_color,
             point_lights: prev.lights != new.lights || prev.pt_lights.len() != new.pt_lights.len(),
             exposure: (prev.exposure - new.exposure).abs() > f32::EPSILON
                 || prev.has_camera != new.has_camera,
@@ -263,5 +269,43 @@ mod tests {
         assert!(plan.emissive_table_dirty);
         assert!(plan.pt_accum_dirty);
         assert!(plan.has_work());
+    }
+
+    #[test]
+    fn camera_motion_does_not_dirty_lights() {
+        let mut router = DirtyRouter::new();
+        let mut changes = SceneChanges::default();
+        // First frame: every flag starts dirty.
+        let first = router.update(&changes);
+        assert!(first.camera && first.directional_light && first.point_lights);
+
+        // A moving camera also moves the shadow cascade matrix (it is derived
+        // from the camera eye), so `light_view_proj` changes as well. Only the
+        // camera flag may light up: the world-space SHaRC cache keys on world
+        // position and merely reprojects on camera motion.
+        changes.eye = glam::Vec3::new(4.0, 1.0, 0.0);
+        changes.view_proj = glam::Mat4::from_translation(changes.eye);
+        changes.light_view_proj = glam::Mat4::from_translation(changes.eye);
+
+        let flags = router.update(&changes);
+        assert!(flags.camera, "camera motion must still be reported");
+        assert!(
+            !flags.directional_light,
+            "a camera-derived shadow matrix must not count as a lighting change"
+        );
+        assert!(!flags.point_lights);
+    }
+
+    #[test]
+    fn light_edits_dirty_the_light_flags() {
+        let mut router = DirtyRouter::new();
+        let mut changes = SceneChanges::default();
+        let _ = router.update(&changes);
+
+        changes.light_direction = glam::Vec4::new(0.0, 1.0, 0.0, 2.0);
+        assert!(router.update(&changes).directional_light);
+
+        changes.light_color = glam::Vec4::new(0.2, 0.4, 0.6, 0.1);
+        assert!(router.update(&changes).directional_light);
     }
 }
