@@ -131,7 +131,7 @@ scripts/build-android-game.sh     一条命令打包任意工程
 | `Duplicate class kotlin.collections.jdk8.*` | appcompat 带进 kotlin-stdlib-jdk7/jdk8 1.6.21 | `implementation(platform("org.jetbrains.kotlin:kotlin-bom:1.9.25"))` |
 | APK 突然多出 ~200 MB | 换 `.so` 后增量打包留空洞 | 打包前 `clean`（脚本已默认 clean） |
 | `-laaudio not found` | API level < 26 | API level 取 `max(minSdk, 26)` |
-| 编译报 `include_bytes!` 找不到 `.spv` | `.spv` 不入库 | 桌面机编一次，或从 CI `spirv` artifact 下载 |
+| 编译报 `include_bytes!` 找不到 `.spv` | `.spv` 已入库，多半是被删/没同步 | `git checkout -- assets/shaders`；确实要重编用 `compile.sh` |
 | `aapt2: cannot execute binary` / `Exec format error` | 主机不是 x86_64 | 见 [android-arm64.md](android-arm64.md) |
 
 ## 7. 新工程接 Android（#598）

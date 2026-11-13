@@ -23,7 +23,7 @@ cargo run -p prism-editor-egui
 前置条件：
 
 - 桌面 Vulkan 设备（Windows / Linux；Android 需要额外的 winit 后端口径，暂未接）；
-- 已编译的着色器：`bash assets/shaders/compile.sh`（`.spv` 不入库）；
+- 已编译的着色器：`.spv` 已入库，克隆后就有；改了 `assets/shaders/slang/*.slang` 再跑 `bash assets/shaders/compile.sh`；
 - 项目根（含 `assets/`）可从 cwd 或上级目录找到；找不到时用 `editor/public/demo.json`
   的只读 fixture 起界面。
 

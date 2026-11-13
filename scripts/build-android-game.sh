@@ -127,10 +127,10 @@ export RANLIB_aarch64_linux_android="${RANLIB_aarch64_linux_android:-ranlib}"
 
 printf 'sdk.dir=%s\n' "$SDK" > "$ANDROID_DIR/local.properties"
 
-# ---- shader 产物（.spv 不入库）--------------------------------------------
+# ---- shader 产物（.spv 已入库，正常不会缺）--------------------------------
 if ! ls "$ROOT"/assets/shaders/*.spv >/dev/null 2>&1 && ! ls "$ROOT"/assets/shaders/slang/*.spv >/dev/null 2>&1; then
-    echo "缺少 .spv：先在有 slangc 的机器上 bash assets/shaders/compile.sh，" >&2
-    echo "或从 CI 的 spirv artifact 下载（见 docs/build-guide-termux.md §3）。" >&2
+    echo "缺少 .spv：它们已入库，先 git checkout -- assets/shaders 恢复；" >&2
+    echo "确实要重新生成时用 bash assets/shaders/compile.sh（见 docs/build-guide-termux.md §3）。" >&2
     exit 1
 fi
 

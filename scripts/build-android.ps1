@@ -118,9 +118,9 @@ Write-Host "cargo-ndk platform (API level): $apiLevel  (manifest minSdk = $minSd
 
 # ---- Shaders ---------------------------------------------------------------
 
-# .spv files are include_bytes!-ed at compile time and gitignored; make sure
-# they exist before building (Android hosts have no slangc — compile on a
-# desktop/CI host first, or fetch the CI `spirv` artifact).
+# .spv files are committed and include_bytes!-ed at compile time, so they are
+# normally already present. Recompile only when slangc is available; otherwise
+# use the committed bytecode (Android hosts have no slangc).
 if (Get-Command slangc -ErrorAction SilentlyContinue) {
     Write-Host "Compiling shaders..."
     bash (Join-Path $ProjectRoot "assets\shaders\compile.sh")
@@ -128,7 +128,7 @@ if (Get-Command slangc -ErrorAction SilentlyContinue) {
     $spv = Get-ChildItem (Join-Path $ProjectRoot "assets\shaders\*.spv") -ErrorAction SilentlyContinue
     if (-not $spv) {
         Write-Warning "No .spv files found and slangc is unavailable."
-        Write-Warning "Compile shaders on a desktop host first, or download the CI spirv artifact."
+        Write-Warning "They are committed: restore them with `git checkout -- assets/shaders`."
         exit 1
     }
     Write-Host "Using prebuilt .spv ($($spv.Count) files)."

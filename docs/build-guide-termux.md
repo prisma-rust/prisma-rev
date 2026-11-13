@@ -133,7 +133,7 @@ cargo ndk -P 26 -t arm64-v8a -o <输出目录> build
 | 症状 | 原因 | 解决 |
 |---|---|---|
 | git pull/push 卡死超时 | Termux IPv6 连不上 github.com | `git config --global http.version HTTP/1.1` |
-| 编译报 include_bytes 找不到 .spv | .spv 不入库，本地没有 | 走第 3 节 CI 下载 |
+| 编译报 include_bytes 找不到 .spv | .spv 已入库，多半被删了 | `git checkout -- assets/shaders`（或走第 3 节重新生成） |
 | CI binding drift job 红 | 改了 shader 没重跑 bindgen | 3b 重生成并提交 |
 | `mem::zeroed` 编译/运行报 invalid_value | ash::Device 含函数指针 | 测试构造用 `MaybeUninit` + `#[allow(invalid_value)]` |
 | clippy 报 manual is_multiple_of | Rust 新版 API | 用 `.is_multiple_of(n)` |
