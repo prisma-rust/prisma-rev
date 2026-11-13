@@ -5,7 +5,7 @@
 ## 架构与设计原则
 
 1. **架构硬隔离**：
-   - 渲染管线改动与 RTXGI 核心实现全部归属引擎层（`crates/prism-render` / `crates/prism-engine` / `crates/prism-app`），通过 Cargo features (`rtxgi`, `nrc`, `dlss`) 模块化开关编译。
+   - 渲染管线改动与 RTXGI 核心实现全部归属引擎层（`crates/prism-render` / `crates/prism-engine` / `crates/prism-app`），通过 Cargo features 模块化开关编译。当前只有 `rtxgi`（SHARC）有实现，`nrc` / `dlss` 是预留开关，见「实现范围与未接入功能」。
    - 用户项目（`projects/sponza`）保持纯净（UI-framework-free），不引入第三方 UI 框架，通过引擎公开的 `FrameHook` 挂载测试调参 UI，只消费引擎暴露的设置与 API。
 2. **双构建形态支持**：
    - `player`（默认）：静态玩家形态，链接引擎，构建桌面测试二进制或 Android JNI 库。
@@ -49,7 +49,7 @@ cargo run --manifest-path projects/sponza/Cargo.toml --no-default-features --fea
 | `Up` / `Down` 或 `W` / `S` | 上下选择要调节的参数行 |
 | `Left` / `Right` 或 `A` / `D` | 减少 / 增加选中参数的值 |
 | `Space` / `Enter` | 切换布尔开关或执行动作 |
-| `1` / `2` / `3` | 快速切换 GI 模式：`1` = Reference (纯 PT), `2` = SHaRC (RTXGI), `3` = NRC |
+| `1` / `2` / `3` | 快速切换 GI 模式：`1` = Reference (纯 PT), `2` = SHaRC (RTXGI), `3` = NRC（占位，暂无实现） |
 | `T` | 循环切换色调映射算子（Reinhard → ACES → Passthrough） |
 | `R` | 手动触发路径追踪累积缓存重置 |
 | `V` | 切换垂直同步 (VSync) |
@@ -57,7 +57,7 @@ cargo run --manifest-path projects/sponza/Cargo.toml --no-default-features --fea
 ### 2. 核心调参参数
 
 - **Path Tracing**:
-  - `GI Mode`: 全局光照算法选择（`Reference` 纯蒙特卡洛积分 / `SHaRC` 空间哈希辐射缓存 / `NRC` 神经网络缓存）。
+  - `GI Mode`: 全局光照算法选择（`Reference` 纯蒙特卡洛积分 / `SHaRC` 空间哈希辐射缓存 / `NRC` 神经网络缓存，占位未接）。实际生效的只有 `Reference` 与 `SHaRC`。
   - `Max Bounces`: 路径最大弹射次数（1..24，默认 4）。
   - `Ray Max Dist`: 射线最远追踪距离（100..5000）。
   - `Tonemapper`: 色调映射模式（ACES / Reinhard / Passthrough）。
@@ -71,5 +71,25 @@ cargo run --manifest-path projects/sponza/Cargo.toml --no-default-features --fea
   - `Downscale Factor`: 稀疏更新降采样比例（默认 5，即约 4% 像素参与更新）。
   - `Accum Frame Num`: 时域累积平滑窗口帧数（1..120，默认 20）。
   - `Stale Frame Num`: 缓存槽位最大陈旧淘汰帧数（1..120，默认 60）。
-- **DLSS**:
-  - `DLSS Mode`: 深度学习超分辨率模式（Off / Quality / Balanced / Performance / Ultra Performance / DLAA）。
+- **DLSS**（占位，暂无实现）:
+  - `DLSS Mode`: 深度学习超分辨率模式（Off / Quality / Balanced / Performance / Ultra Performance / DLAA）。切换只更新枚举值，不改变渲染结果。
+
+## 实现范围与未接入功能
+
+对齐目标是 RTXGI v2.9.0。该版本已把 DDGI 拆到独立的 RTXGI-DDGI 仓库，主线是
+**世界空间辐射缓存 SHARC**，不是探针辐照度体积。当前接入情况：
+
+| 功能 | 状态 | 说明 |
+| :--- | :--- | :--- |
+| Reference 纯路径追踪 | 已接入 | 蒙特卡洛积分，无辐射缓存。 |
+| SHARC (`rtxgi`) | 已接入 | 哈希网格 + 时域累积 + `resolve`，已接进路径追踪积分器的弹射循环。 |
+| 直方图自动曝光 | 已接入 | 移植自 RTXGI `AutoExposure.hlsl`，256 档对数亮度直方图。 |
+| DDGI | 未接入 | 不在 RTXGI v2.9.0 内；引擎侧的探针表示保留在 `crates/prism-render/src/gi.rs`，但尚无烘焙数据加载路径。 |
+| NRC (`nrc`) | 未接入 | NVIDIA Neural Radiance Cache 是闭源的 Tensor Core 二进制 SDK，既未内置也不可再分发，没有可链接的实现。 |
+| DLSS / Streamline / NGX (`dlss`) | 未接入 | 需要 NVIDIA Streamline SDK 与驱动侧分发许可，不在依赖树内；仓库内也没有降噪器或超分器。 |
+
+因此：
+
+- `nrc` / `dlss` Cargo features 目前是空开关，没有任何 `#[cfg(feature = "nrc")]` / `#[cfg(feature = "dlss")]` 实现；`dlss_mode` 在渲染管线里也没有读取点。
+- 调参 UI 的 `NRC (Neural)`、`DLSS Mode` 各项以及快捷键 `3` 只是枚举占位，切换后不会改变渲染输出。
+- NVIDIA 参考图经过了 NRD 降噪与 DLSS Ray Reconstruction，本仓库输出是未降噪的原始累积，噪点与亮度分布不能逐像素对比。
