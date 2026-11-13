@@ -958,13 +958,14 @@ impl RenderPassNode for PostPass {
         } else {
             None
         };
-        // TAA output (#883) takes precedence in the raster path when enabled and ANF is off.
-        let taa_view =
-            if ctx.settings.taa && !is_pt && ctx.frame.debug_rt == 0 && anf_view.is_none() {
-                resources.published_view(TAA_COLOR_H)
-            } else {
-                None
-            };
+        // TAA output (#883) takes precedence when enabled and ANF is off. In
+        // path-trace mode the temporal resolve consumes the traced image and its
+        // guides, so the resolved image replaces PT_COLOR_H here.
+        let taa_view = if ctx.settings.taa && ctx.frame.debug_rt == 0 && anf_view.is_none() {
+            resources.published_view(TAA_COLOR_H)
+        } else {
+            None
+        };
         let (handle, image_layout) = if anf_view.is_some() {
             (ANF_COLOR_H, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
         } else if taa_view.is_some() {

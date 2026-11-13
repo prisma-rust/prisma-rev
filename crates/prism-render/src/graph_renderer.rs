@@ -696,7 +696,7 @@ impl GraphRenderer {
         let rt_scheduler = crate::rt_scheduler::RenderTextureScheduler::new(&context);
 
         // Register all passes into the graph in execution order.
-        // Shadow -> Scene -> GTAO -> RenderTextures -> PathTrace -> Post.
+        // Shadow -> Scene -> GTAO -> RenderTextures -> PathTrace -> Resolve -> Post.
         graph.add_pass(Box::new(forward_pass));
         // 启动路径：同步 per-swapchain-image 槽位数。`ForwardPass::execute` 的
         // `ensure_target` 按 `image_count` 建 framebuffer，`recreate_swapchain`
@@ -707,13 +707,16 @@ impl GraphRenderer {
         }
         #[cfg(feature = "gtao")]
         graph.add_pass(Box::new(gtao_pass));
-        graph.add_pass(Box::new(taa_pass));
         graph.add_pass(Box::new(anf_pass));
         graph.add_pass(Box::new(rt_scheduler));
         #[cfg(feature = "pathtrace")]
         if let Some(pt) = pt_pass {
             graph.add_pass(Box::new(pt));
         }
+        // The temporal resolve runs after the path tracer so it can consume the
+        // traced image and its guides in path-trace mode (#883 follow-up). In the
+        // raster path it still resolves the forward pass output.
+        graph.add_pass(Box::new(taa_pass));
         graph.add_pass(Box::new(auto_exposure));
         graph.add_pass(Box::new(post_pass));
 
@@ -1155,13 +1158,14 @@ impl GraphRenderer {
         }
         #[cfg(feature = "gtao")]
         graph.add_pass(Box::new(gtao_pass));
-        graph.add_pass(Box::new(taa_pass));
         graph.add_pass(Box::new(anf_pass));
         graph.add_pass(Box::new(rt_scheduler));
         #[cfg(feature = "pathtrace")]
         if let Some(pt) = pt_pass {
             graph.add_pass(Box::new(pt));
         }
+        // Same ordering as the windowed path: resolve after the tracer.
+        graph.add_pass(Box::new(taa_pass));
         graph.add_pass(Box::new(auto_exposure));
         graph.add_pass(Box::new(post_pass));
         if let Some(post_pass) = graph.pass_mut::<crate::post::PostPass>() {

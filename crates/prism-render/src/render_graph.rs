@@ -53,6 +53,14 @@ pub const FORWARD_VELOCITY_H: ResourceHandle = ResourceHandle(1006);
 /// ANF-upscaled full-resolution HDR color (#1161). Written by `AnfPass`,
 /// read by `PostPass` instead of `FORWARD_COLOR_H` / `TAA_COLOR_H` when ANF is active.
 pub const ANF_COLOR_H: ResourceHandle = ResourceHandle(1007);
+/// Path-tracer NDC depth ([0,1], same convention as the raster depth buffer).
+/// Written by `PathTracePass` as a storage+sampled image and consumed by
+/// `TaaPass` as the reprojection guide while `render_mode == PathTrace`.
+pub const PT_DEPTH_H: ResourceHandle = ResourceHandle(1008);
+/// Path-tracer screen-space motion vectors in UV units (same convention as
+/// `FORWARD_VELOCITY_H`: `current_uv - previous_uv`). Written by
+/// `PathTracePass` and consumed by `TaaPass`.
+pub const PT_VELOCITY_H: ResourceHandle = ResourceHandle(1009);
 
 impl ResourceHandle {
     pub const INVALID: ResourceHandle = ResourceHandle(u32::MAX);

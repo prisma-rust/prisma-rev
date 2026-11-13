@@ -26,10 +26,25 @@ use crate::descriptor::{PtAnalyticLight, ReSTIRReservoir, PT_LIGHT_MAX};
 use crate::math::mat_inverse;
 use crate::render_graph::{
     GraphResources, PassInfo, PassKind, RenderContext, RenderGraphBuilder, RenderPassNode,
-    RenderSettings, ResourceType, ResourceUsage, PT_COLOR_H,
+    RenderSettings, ResourceType, ResourceUsage, PT_COLOR_H, PT_DEPTH_H, PT_VELOCITY_H,
 };
 use crate::shader;
 use crate::shader_bindings;
+
+/// Camera state the guide write needs (set 0 binding 17).
+///
+/// `view_proj` is this frame's jittered world→clip transform, used to derive the
+/// NDC depth of the primary hit. `prev_view_proj` is the previous frame's
+/// *unjittered* transform: reprojecting the current hit with it yields the UV the
+/// surface occupied last frame, which is the motion vector TAA/DLSS-RR expects.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
+struct PtGuides {
+    view_proj: [[f32; 4]; 4],
+    prev_view_proj: [[f32; 4]; 4],
+}
+
+const _: () = assert!(std::mem::size_of::<PtGuides>() == 128);
 
 /// GPU push-constant block size for PtPush (std140 rounds to 16-byte boundary).
 /// The auto-generated `shader_bindings::pt_render::PtPush` reflects to 176
@@ -131,6 +146,27 @@ pub struct PathTracePass {
     output_image: vk::Image,
     output_view: vk::ImageView,
     output_memory: vk::DeviceMemory,
+
+    // Guide images written by the trace shader (set 0 bindings 15/16) and
+    // published as PT_DEPTH_H / PT_VELOCITY_H. They carry the primary-hit depth
+    // and screen-space motion the temporal resolve needs, which the raster
+    // G-buffer cannot supply in path-trace mode.
+    guide_depth_image: vk::Image,
+    guide_depth_view: vk::ImageView,
+    guide_depth_memory: vk::DeviceMemory,
+    guide_velocity_image: vk::Image,
+    guide_velocity_view: vk::ImageView,
+    guide_velocity_memory: vk::DeviceMemory,
+
+    // Guide camera state (binding 17) — HOST_VISIBLE constant buffer rewritten
+    // every dispatch with the current and previous frame view-projections.
+    guides_buffer: vk::Buffer,
+    guides_memory: vk::DeviceMemory,
+    guides_mapped: *mut u8,
+    // Previous frame's unjittered view-projection, remembered across frames so
+    // the motion vectors reproject against the camera the history was rendered
+    // with. Reset on resize, like the other accumulation state.
+    guide_prev_view_proj: Option<[[f32; 4]; 4]>,
 
     // Per-instance ray-traceable scene (combined vertex/index buffers,
     // per-instance BLAS, TLAS, instance_meta SSBO). Built once per scene by
@@ -287,6 +323,21 @@ impl PathTracePass {
                 vk::DescriptorType::STORAGE_BUFFER,
                 vk::ShaderStageFlags::COMPUTE,
             ), // SHARC resolved
+            b(
+                15,
+                vk::DescriptorType::STORAGE_IMAGE,
+                vk::ShaderStageFlags::COMPUTE,
+            ), // guideDepth (PT_DEPTH_H)
+            b(
+                16,
+                vk::DescriptorType::STORAGE_IMAGE,
+                vk::ShaderStageFlags::COMPUTE,
+            ), // guideVelocity (PT_VELOCITY_H)
+            b(
+                17,
+                vk::DescriptorType::UNIFORM_BUFFER,
+                vk::ShaderStageFlags::COMPUTE,
+            ), // guides (PtGuides camera state)
         ];
 
         // All bindings get UPDATE_AFTER_BIND + PARTIALLY_BOUND because
@@ -324,6 +375,16 @@ impl PathTracePass {
                 | vk::DescriptorBindingFlags::PARTIALLY_BOUND, // b13 sharcAccumulation
             vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
                 | vk::DescriptorBindingFlags::PARTIALLY_BOUND, // b14 sharcResolved
+            vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
+                | vk::DescriptorBindingFlags::PARTIALLY_BOUND, // b15 guideDepth
+            vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
+                | vk::DescriptorBindingFlags::PARTIALLY_BOUND, // b16 guideVelocity
+            // b17 guides is a persistent host-visible UBO: it is rewritten through
+            // the mapped pointer (not vkUpdateDescriptorSets), so it must NOT carry
+            // UPDATE_AFTER_BIND. Enabling that flag requires the
+            // descriptorBindingUniformBufferUpdateAfterBind device feature, which
+            // this renderer deliberately does not request.
+            vk::DescriptorBindingFlags::empty(), // b17 guides
         ];
         let mut flags_info =
             vk::DescriptorSetLayoutBindingFlagsCreateInfo::default().binding_flags(&binding_flags);
@@ -342,7 +403,11 @@ impl PathTracePass {
         let pool_sizes = [
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::STORAGE_IMAGE,
-                descriptor_count: 3,
+                descriptor_count: 5,
+            },
+            vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::UNIFORM_BUFFER,
+                descriptor_count: 1,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::STORAGE_BUFFER,
@@ -381,6 +446,61 @@ impl PathTracePass {
             .context("PathTracePass: sample count image")?;
         let (oi, ov, om) =
             make_pt_output_image(device, mem_props, 1, 1).context("PathTracePass: output image")?;
+        let (gdi, gdv, gdm) = make_guide_depth_image(device, mem_props, 1, 1)
+            .context("PathTracePass: guide depth")?;
+        let (gvi, gvv, gvm) = make_guide_velocity_image(device, mem_props, 1, 1)
+            .context("PathTracePass: guide velocity")?;
+
+        // Guide camera constant buffer (binding 17), rewritten every dispatch.
+        let guides_size = std::mem::size_of::<PtGuides>() as vk::DeviceSize;
+        let guides_buffer = unsafe {
+            device.create_buffer(
+                &vk::BufferCreateInfo::default()
+                    .size(guides_size)
+                    .usage(vk::BufferUsageFlags::UNIFORM_BUFFER)
+                    .sharing_mode(vk::SharingMode::EXCLUSIVE),
+                None,
+            )
+        }
+        .context("PathTracePass: create guides buffer")?;
+        let guides_reqs = unsafe { device.get_buffer_memory_requirements(guides_buffer) };
+        let guides_type = crate::render_pass::find_memory_type(
+            &context.physical_device_memory_properties,
+            guides_reqs.memory_type_bits,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        )
+        .context("PathTracePass: no suitable memory for guides buffer")?;
+        let guides_memory = unsafe {
+            device.allocate_memory(
+                &vk::MemoryAllocateInfo::default()
+                    .allocation_size(guides_reqs.size)
+                    .memory_type_index(guides_type),
+                None,
+            )
+        }
+        .context("PathTracePass: allocate guides memory")?;
+        unsafe { device.bind_buffer_memory(guides_buffer, guides_memory, 0) }
+            .context("PathTracePass: bind guides memory")?;
+        let guides_mapped = unsafe {
+            device.map_memory(guides_memory, 0, guides_size, vk::MemoryMapFlags::empty())
+        }
+        .context("PathTracePass: map guides memory")? as *mut u8;
+        unsafe {
+            ptr::write_bytes(guides_mapped, 0, guides_size as usize);
+        }
+        // Bind b17 once. The contents change every dispatch, but the descriptor
+        // itself never does, so it must not be part of the per-frame
+        // `update_ds` writes (see the comment there).
+        let guides_binding = vk::DescriptorBufferInfo::default()
+            .buffer(guides_buffer)
+            .offset(0)
+            .range(guides_size);
+        let guides_write = [vk::WriteDescriptorSet::default()
+            .dst_set(ds)
+            .dst_binding(17)
+            .descriptor_type(vk::DescriptorType::UNIFORM_BUFFER)
+            .buffer_info(std::slice::from_ref(&guides_binding))];
+        unsafe { device.update_descriptor_sets(&guides_write, &[]) };
 
         // Create persistent HOST_VISIBLE lights buffer for PtAnalyticLight[]
         let light_buf_size = (PT_LIGHT_MAX as vk::DeviceSize)
@@ -440,6 +560,16 @@ impl PathTracePass {
             output_image: oi,
             output_view: ov,
             output_memory: om,
+            guide_depth_image: gdi,
+            guide_depth_view: gdv,
+            guide_depth_memory: gdm,
+            guide_velocity_image: gvi,
+            guide_velocity_view: gvv,
+            guide_velocity_memory: gvm,
+            guides_buffer,
+            guides_memory,
+            guides_mapped,
+            guide_prev_view_proj: None,
             pt_scene: None,
             materials_buffer: None,
             lights_buffer,
@@ -742,10 +872,18 @@ impl PathTracePass {
             device.destroy_image_view(self.output_view, None);
             device.destroy_image(self.output_image, None);
             device.free_memory(self.output_memory, None);
+            device.destroy_image_view(self.guide_depth_view, None);
+            device.destroy_image(self.guide_depth_image, None);
+            device.free_memory(self.guide_depth_memory, None);
+            device.destroy_image_view(self.guide_velocity_view, None);
+            device.destroy_image(self.guide_velocity_image, None);
+            device.free_memory(self.guide_velocity_memory, None);
         }
         let (ai, av, am) = make_accum_image(device, mem_props, w, h)?;
         let (si, sv, sm) = make_sample_count_image(device, mem_props, w, h)?;
         let (oi, ov, om) = make_pt_output_image(device, mem_props, w, h)?;
+        let (gdi, gdv, gdm) = make_guide_depth_image(device, mem_props, w, h)?;
+        let (gvi, gvv, gvm) = make_guide_velocity_image(device, mem_props, w, h)?;
         self.accum_image = ai;
         self.accum_view = av;
         self.accum_memory = am;
@@ -755,9 +893,16 @@ impl PathTracePass {
         self.output_image = oi;
         self.output_view = ov;
         self.output_memory = om;
+        self.guide_depth_image = gdi;
+        self.guide_depth_view = gdv;
+        self.guide_depth_memory = gdm;
+        self.guide_velocity_image = gvi;
+        self.guide_velocity_view = gvv;
+        self.guide_velocity_memory = gvm;
         self.frame_counter = 0;
         self.prev_camera_pos = None;
         self.prev_view_proj = None;
+        self.guide_prev_view_proj = None;
         Ok(())
     }
 
@@ -922,7 +1067,14 @@ impl PathTracePass {
         let oi = vk::DescriptorImageInfo::default()
             .image_view(self.output_view)
             .image_layout(vk::ImageLayout::GENERAL);
-
+        // Guide images (b15/b16) are written as storage images in GENERAL and
+        // sampled later by the temporal resolve.
+        let gdi = vk::DescriptorImageInfo::default()
+            .image_view(self.guide_depth_view)
+            .image_layout(vk::ImageLayout::GENERAL);
+        let gvi = vk::DescriptorImageInfo::default()
+            .image_view(self.guide_velocity_view)
+            .image_layout(vk::ImageLayout::GENERAL);
         // Geometry buffers come from the PtScene (vertex/index/instance_meta).
         // The materials buffer is the shared RenderMaterialManager SSBO (wired
         // via set_material_resources), NOT the PtScene's placeholder buffer.
@@ -1051,6 +1203,22 @@ impl PathTracePass {
                 .dst_binding(9)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .buffer_info(std::slice::from_ref(&ebi)),
+            vk::WriteDescriptorSet::default()
+                .dst_set(self.ds)
+                .dst_binding(15)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .image_info(std::slice::from_ref(&gdi)),
+            vk::WriteDescriptorSet::default()
+                .dst_set(self.ds)
+                .dst_binding(16)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .image_info(std::slice::from_ref(&gvi)),
+            // b17 (guides UBO) is deliberately absent: it is written through the
+            // mapped pointer every dispatch, so the descriptor is bound exactly
+            // once in `new`. Re-writing it here would mark the set "updated while
+            // in flight", which is only legal with UPDATE_AFTER_BIND — and a
+            // UNIFORM_BUFFER binding cannot have that flag without
+            // `descriptorBindingUniformBufferUpdateAfterBind`.
         ];
         let mut writes = writes;
         if let Some((prev_bi, curr_bi)) = reservoir_bi.as_ref() {
@@ -1113,6 +1281,15 @@ impl PathTracePass {
             device.destroy_image_view(self.output_view, None);
             device.destroy_image(self.output_image, None);
             device.free_memory(self.output_memory, None);
+            device.destroy_image_view(self.guide_depth_view, None);
+            device.destroy_image(self.guide_depth_image, None);
+            device.free_memory(self.guide_depth_memory, None);
+            device.destroy_image_view(self.guide_velocity_view, None);
+            device.destroy_image(self.guide_velocity_image, None);
+            device.free_memory(self.guide_velocity_memory, None);
+            device.unmap_memory(self.guides_memory);
+            device.destroy_buffer(self.guides_buffer, None);
+            device.free_memory(self.guides_memory, None);
         }
         // PtScene drops its own vertex/index/meta/materials buffers + BLAS + TLAS.
         self.pt_scene = None;
@@ -1239,6 +1416,27 @@ impl PathTracePass {
         let inv_vp = mat_inverse(&ctx.frame.view_proj);
         let params_w = pack_pt_params(frame_counter, reset, ctx.frame.camera_orthographic);
 
+        // Guide camera state. The depth row only needs this frame transform, so
+        // it keeps the jitter; the motion vectors reproject against the previous
+        // frame's unjittered matrix so they measure surface movement instead of
+        // the sub-pixel jitter offset.
+        let mut unjittered = ctx.frame.view_proj;
+        unjittered[3][0] -= ctx.frame.view_proj_jitter[0];
+        unjittered[3][1] -= ctx.frame.view_proj_jitter[1];
+        let prev_view_proj = self.guide_prev_view_proj.unwrap_or(unjittered);
+        let guides = PtGuides {
+            view_proj: ctx.frame.view_proj,
+            prev_view_proj,
+        };
+        unsafe {
+            ptr::copy_nonoverlapping(
+                &guides as *const PtGuides as *const u8,
+                self.guides_mapped,
+                std::mem::size_of::<PtGuides>(),
+            );
+        }
+        self.guide_prev_view_proj = Some(unjittered);
+
         let mut camera_pos = ctx.frame.camera_pos;
         camera_pos[3] = ctx.frame.exposure;
         let push = shader_bindings::pt_render::PtPush {
@@ -1311,6 +1509,43 @@ impl RenderPassNode for PathTracePass {
             // is emitted manually inside `execute`.
             layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
         });
+        // Temporal-reprojection guides. Same rationale as PT_COLOR_H: declared
+        // with the layout the consumer (TaaPass) samples them in, so a skipped
+        // pass leaves the tracker consistent.
+        graph.create_resource_at(
+            PT_DEPTH_H,
+            ResourceType::StorageImage {
+                format: vk::Format::R32_SFLOAT,
+                extent: vk::Extent3D {
+                    width: 1,
+                    height: 1,
+                    depth: 1,
+                },
+            },
+        );
+        graph.write_usage(ResourceUsage {
+            handle: PT_DEPTH_H,
+            access: vk::AccessFlags::SHADER_WRITE,
+            stage: vk::PipelineStageFlags::COMPUTE_SHADER,
+            layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        });
+        graph.create_resource_at(
+            PT_VELOCITY_H,
+            ResourceType::StorageImage {
+                format: vk::Format::R32G32_SFLOAT,
+                extent: vk::Extent3D {
+                    width: 1,
+                    height: 1,
+                    depth: 1,
+                },
+            },
+        );
+        graph.write_usage(ResourceUsage {
+            handle: PT_VELOCITY_H,
+            access: vk::AccessFlags::SHADER_WRITE,
+            stage: vk::PipelineStageFlags::COMPUTE_SHADER,
+            layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        });
     }
 
     fn execute(
@@ -1341,10 +1576,16 @@ impl RenderPassNode for PathTracePass {
         // Resize ReSTIR reservoir ping-pong buffers if needed
         self.ensure_reservoir_buffers(device, &ctx.context, w, h);
 
-        // Camera detection
+        // Camera detection. Compared against the unjittered transform: with TAA
+        // enabled the projection changes every frame by a sub-pixel offset, and
+        // treating that as camera motion would reset the accumulation every frame
+        // and leave the tracer stuck at one sample per pixel.
         let cam_pos = ctx.frame.camera_pos;
         let cam_xyz = [cam_pos[0], cam_pos[1], cam_pos[2]];
-        let inv_vp = mat_inverse(&ctx.frame.view_proj);
+        let mut unjittered_vp = ctx.frame.view_proj;
+        unjittered_vp[3][0] -= ctx.frame.view_proj_jitter[0];
+        unjittered_vp[3][1] -= ctx.frame.view_proj_jitter[1];
+        let inv_vp = mat_inverse(&unjittered_vp);
         // Reset on camera motion, explicit accum-dirty (geometry), or the
         // directional-light accumulation-dirty flag from the frame (intensity,
         // color, or direction changed). Cleared after one frame in both cases.
@@ -1451,6 +1692,49 @@ impl RenderPassNode for PathTracePass {
             );
         }
 
+        // Barrier: guides → GENERAL (compute write). Both are written by the
+        // same dispatch, so one barrier array covers them; UNDEFINED as the old
+        // layout is always legal (same reasoning as PT_COLOR_H above).
+        let guide_to_gen = [
+            vk::ImageMemoryBarrier::default()
+                .image(self.guide_depth_image)
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::GENERAL)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .src_access_mask(vk::AccessFlags::empty())
+                .dst_access_mask(vk::AccessFlags::SHADER_WRITE),
+            vk::ImageMemoryBarrier::default()
+                .image(self.guide_velocity_image)
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::GENERAL)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .src_access_mask(vk::AccessFlags::empty())
+                .dst_access_mask(vk::AccessFlags::SHADER_WRITE),
+        ];
+        unsafe {
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &guide_to_gen,
+            );
+        }
+
         self.record_dispatch(ctx, w, h, self.frame_counter, reset, false)?;
 
         // Post-dispatch barrier: PT_COLOR_H GENERAL → SHADER_READ_ONLY_OPTIMAL
@@ -1482,14 +1766,61 @@ impl RenderPassNode for PathTracePass {
             );
         }
 
+        // Post-dispatch barrier: guides GENERAL → SHADER_READ_ONLY_OPTIMAL so the
+        // temporal resolve can sample them. Declared as a write edge with that
+        // final layout, so the graph does not need to transition them again.
+        let guide_to_read = [
+            vk::ImageMemoryBarrier::default()
+                .image(self.guide_depth_image)
+                .old_layout(vk::ImageLayout::GENERAL)
+                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ),
+            vk::ImageMemoryBarrier::default()
+                .image(self.guide_velocity_image)
+                .old_layout(vk::ImageLayout::GENERAL)
+                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ),
+        ];
+        unsafe {
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &guide_to_read,
+            );
+        }
+
         // Advance reservoir swap index for next frame
         self.reservoir_swap = (self.reservoir_swap + 1) & 1;
 
         self.frame_counter = self.frame_counter.wrapping_add(1);
 
-        // Publish for PostPass
+        // Publish for PostPass and the temporal resolve
         resources.set_image_view(PT_COLOR_H, self.output_view);
         resources.set_image(PT_COLOR_H, self.output_image);
+        resources.set_image_view(PT_DEPTH_H, self.guide_depth_view);
+        resources.set_image(PT_DEPTH_H, self.guide_depth_image);
+        resources.set_image_view(PT_VELOCITY_H, self.guide_velocity_view);
+        resources.set_image(PT_VELOCITY_H, self.guide_velocity_image);
 
         log::trace!(
             "PathTracePass: dispatch {}×{} reset={} frame={}",
@@ -1507,7 +1838,7 @@ impl RenderPassNode for PathTracePass {
             name: self.name().to_string(),
             kind: PassKind::Pt,
             inputs: Vec::new(),
-            outputs: vec![PT_COLOR_H],
+            outputs: vec![PT_COLOR_H, PT_DEPTH_H, PT_VELOCITY_H],
         }
     }
 
@@ -1580,6 +1911,42 @@ fn make_pt_output_image(
         vk::ImageUsageFlags::STORAGE
             | vk::ImageUsageFlags::TRANSFER_DST
             | vk::ImageUsageFlags::TRANSFER_SRC
+            | vk::ImageUsageFlags::SAMPLED,
+    )
+}
+
+fn make_guide_depth_image(
+    device: &ash::Device,
+    mem_props: &vk::PhysicalDeviceMemoryProperties,
+    w: u32,
+    h: u32,
+) -> anyhow::Result<(vk::Image, vk::ImageView, vk::DeviceMemory)> {
+    make_image(
+        device,
+        mem_props,
+        w,
+        h,
+        vk::Format::R32_SFLOAT,
+        vk::ImageUsageFlags::STORAGE
+            | vk::ImageUsageFlags::TRANSFER_DST
+            | vk::ImageUsageFlags::SAMPLED,
+    )
+}
+
+fn make_guide_velocity_image(
+    device: &ash::Device,
+    mem_props: &vk::PhysicalDeviceMemoryProperties,
+    w: u32,
+    h: u32,
+) -> anyhow::Result<(vk::Image, vk::ImageView, vk::DeviceMemory)> {
+    make_image(
+        device,
+        mem_props,
+        w,
+        h,
+        vk::Format::R32G32_SFLOAT,
+        vk::ImageUsageFlags::STORAGE
+            | vk::ImageUsageFlags::TRANSFER_DST
             | vk::ImageUsageFlags::SAMPLED,
     )
 }

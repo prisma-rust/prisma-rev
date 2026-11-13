@@ -22,6 +22,8 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use prism_render::descriptor::PtAnalyticLight;
+use prism_render::managers::material_manager::MaterialUploadInput;
 use prism_render::managers::MeshHandle;
 use prism_render::render_graph::PostGrade;
 use prism_render::{DrawItem, DrawState, FrameUBOData, GraphRenderer, RenderMode};
@@ -44,12 +46,20 @@ pub struct FrameOptions {
     /// Override the fixed camera position (default `[0, 0, 3]`) for tests that
     /// need two frames with different camera matrices (motion blur).
     pub camera_position: Option<[f32; 3]>,
+    /// Render mode for this frame. `PathTrace` additionally uploads the scene to
+    /// the path tracer, so a test can compare the traced image against raster.
+    pub render_mode: RenderMode,
 }
 
 /// One deterministic offscreen scene plus the real render graph.
 pub struct FrameHarness {
     renderer: GraphRenderer,
     mesh: MeshHandle,
+    /// Material slot used by path-trace frames. The raster path can draw with
+    /// no material (the pipeline has a default), but the path tracer samples the
+    /// material SSBO directly and slot 0 is an empty (black) slot, so traced
+    /// frames need a real registered material.
+    pt_material: u32,
     size: usize,
 }
 
@@ -76,9 +86,19 @@ impl FrameHarness {
         let mesh = renderer
             .register_mesh(&prism_render::primitives::builtin("box").expect("box mesh"))
             .expect("register box");
+        let material = renderer
+            .register_material(MaterialUploadInput {
+                base_color: [0.8, 0.8, 0.8, 1.0],
+                metallic: 0.0,
+                roughness: 0.6,
+                ..MaterialUploadInput::default()
+            })
+            .expect("register material");
+        let pt_material = renderer.material_slot(material).expect("material slot");
         Some(Self {
             renderer,
             mesh,
+            pt_material,
             size,
         })
     }
@@ -134,6 +154,52 @@ impl FrameHarness {
         let (view_proj, view) = camera_at(camera_position);
         let frame_data = frame_data(view_proj, view, self.size, camera_position);
 
+        // Path-traced frames resolve materials from the SSBO, so give the draw
+        // list the registered material instead of the raster default.
+        let pt_items: Vec<DrawItem> = if options.render_mode == RenderMode::PathTrace {
+            items
+                .iter()
+                .map(|item| DrawItem {
+                    material: Some(self.pt_material),
+                    ..*item
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let items = if pt_items.is_empty() {
+            items
+        } else {
+            pt_items.as_slice()
+        };
+
+        // The path tracer does not read the raster shadow/light path; without an
+        // analytic light the traced frame is pure ambient and reads back black.
+        // Mirror the frame's directional light so path-trace frames are lit.
+        let pt_lights = [PtAnalyticLight::directional(
+            [
+                frame_data.light_direction[0],
+                frame_data.light_direction[1],
+                frame_data.light_direction[2],
+            ],
+            [
+                frame_data.light_color[0],
+                frame_data.light_color[1],
+                frame_data.light_color[2],
+            ],
+        )];
+
+        // The path tracer traces its own acceleration structures, so the draw
+        // list has to be uploaded before the frame that consumes it.
+        if options.render_mode == RenderMode::PathTrace {
+            // The tracer reads the bindless material table, which the raster
+            // path fills lazily; flush it before uploading geometry.
+            self.renderer.flush_materials().expect("flush materials");
+            self.renderer
+                .sync_pt_geometry(items)
+                .expect("sync path-trace geometry");
+        }
+
         self.renderer
             .render(
                 items,
@@ -147,12 +213,12 @@ impl FrameHarness {
                 view_proj[2][2],
                 view_proj[3][2],
                 &[],
-                RenderMode::Raster,
-                0,
-                0.0,
-                0,
+                options.render_mode,
+                2,    // pt_max_bounces
+                10.0, // pt_ray_max_distance: the box sits 3 m out
+                0,    // pt_max_iterations: keep accumulating
                 1.0,
-                &[],
+                &pt_lights,
                 options.grade,
                 options.wireframe,
                 options.shaded_wireframe,

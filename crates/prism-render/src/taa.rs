@@ -24,7 +24,7 @@ use crate::pipeline::{GraphicsPipeline, PipelineDesc};
 use crate::render_graph::{
     GraphResources, PassInfo, PassKind, RenderContext, RenderGraphBuilder, RenderMode,
     RenderPassNode, RenderSettings, ResourceType, ResourceUsage, FORWARD_COLOR_H, FORWARD_DEPTH_H,
-    FORWARD_NORMAL_H, FORWARD_VELOCITY_H, TAA_COLOR_H,
+    FORWARD_NORMAL_H, FORWARD_VELOCITY_H, PT_COLOR_H, PT_DEPTH_H, PT_VELOCITY_H, TAA_COLOR_H,
 };
 use crate::render_pass::find_memory_type;
 use crate::shader;
@@ -357,6 +357,29 @@ impl RenderPassNode for TaaPass {
             stage: vk::PipelineStageFlags::FRAGMENT_SHADER,
             layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
         });
+        // Path-trace mode resolves the traced image, whose guides come from
+        // the path tracer rather than the raster G-buffer. Declared
+        // unconditionally: the graph skips a read barrier when the tracked
+        // layout already matches, and these handles are only published while the
+        // path tracer actually runs.
+        graph.read_usage(ResourceUsage {
+            handle: PT_COLOR_H,
+            access: vk::AccessFlags::SHADER_READ,
+            stage: vk::PipelineStageFlags::FRAGMENT_SHADER,
+            layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        });
+        graph.read_usage(ResourceUsage {
+            handle: PT_DEPTH_H,
+            access: vk::AccessFlags::SHADER_READ,
+            stage: vk::PipelineStageFlags::FRAGMENT_SHADER,
+            layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        });
+        graph.read_usage(ResourceUsage {
+            handle: PT_VELOCITY_H,
+            access: vk::AccessFlags::SHADER_READ,
+            stage: vk::PipelineStageFlags::FRAGMENT_SHADER,
+            layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        });
         graph.write_usage(ResourceUsage {
             handle: TAA_COLOR_H,
             access: vk::AccessFlags::SHADER_READ,
@@ -380,13 +403,23 @@ impl RenderPassNode for TaaPass {
             return Ok(());
         }
         self.recreate_target(ctx.context, ctx.render_extent)?;
-        let Some(color_view) = resources.published_view(FORWARD_COLOR_H) else {
+        // The path tracer renders its own image and publishes its own depth and
+        // motion guides, so resolve those instead of the raster G-buffer. The
+        // normal texture is only read for its alpha reactive flag, which the
+        // raster G-buffer still supplies in path-trace mode.
+        let is_pt = ctx.frame.render_mode == RenderMode::PathTrace;
+        let (color_handle, depth_handle, velocity_handle) = if is_pt {
+            (PT_COLOR_H, PT_DEPTH_H, PT_VELOCITY_H)
+        } else {
+            (FORWARD_COLOR_H, FORWARD_DEPTH_H, FORWARD_VELOCITY_H)
+        };
+        let Some(color_view) = resources.published_view(color_handle) else {
             return Ok(());
         };
-        let Some(depth_view) = resources.published_view(FORWARD_DEPTH_H) else {
+        let Some(depth_view) = resources.published_view(depth_handle) else {
             return Ok(());
         };
-        let Some(velocity_view) = resources.published_view(FORWARD_VELOCITY_H) else {
+        let Some(velocity_view) = resources.published_view(velocity_handle) else {
             return Ok(());
         };
         let Some(normal_view) = resources.published_view(FORWARD_NORMAL_H) else {

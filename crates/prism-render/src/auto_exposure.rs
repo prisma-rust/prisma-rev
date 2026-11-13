@@ -495,9 +495,10 @@ impl RenderPassNode for AutoExposurePass {
 
         // Meter whatever the tonemapper is about to display. Mirror
         // `PostPass`'s selection so the metered image and the displayed image
-        // are always the same one.
+        // are always the same one, including the temporal resolve that now also
+        // runs on the path-traced image.
         let is_pt = ctx.frame.render_mode == crate::render_graph::RenderMode::PathTrace;
-        let taa_view = if ctx.settings.taa && !is_pt && ctx.frame.debug_rt == 0 {
+        let taa_view = if ctx.settings.taa && ctx.frame.debug_rt == 0 {
             resources.published_view(TAA_COLOR_H)
         } else {
             None
