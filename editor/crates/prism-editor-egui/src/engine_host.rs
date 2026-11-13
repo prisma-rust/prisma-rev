@@ -711,14 +711,37 @@ impl EngineHost {
         self.last_tick = now;
 
         let mut run_fixed = 0u32;
-        if self.simulate && !self.paused {
-            self.accumulator += elapsed;
+        if self.simulate && fixed_tick_requested(self.paused, self.step_pending) {
             const FIXED_STEP: Duration = Duration::from_nanos(16_666_667);
+            if self.step_pending {
+                // A paused step advances exactly one simulation tick. Do not
+                // consume wall-clock time accumulated while the editor was idle.
+                self.accumulator = FIXED_STEP;
+            } else {
+                self.accumulator += elapsed;
+            }
+            if let Some(project) = self.project.as_mut() {
+                project.begin_frame(&self.input, [self.width as f32, self.height as f32], 0.0);
+            }
             while self.accumulator >= FIXED_STEP && run_fixed < 8 {
+                if let Some(project) = self.project.as_mut() {
+                    project.fixed_update(
+                        self.engine.world_mut(),
+                        &self.input,
+                        FIXED_STEP.as_secs_f32(),
+                        self.scene_generation,
+                        [self.width as f32, self.height as f32],
+                    );
+                }
                 self.engine
                     .fixed_update(FIXED_STEP.as_secs_f32(), &self.input);
                 self.accumulator -= FIXED_STEP;
                 run_fixed += 1;
+            }
+            let alpha = self.accumulator.as_secs_f32() / FIXED_STEP.as_secs_f32();
+            self.engine.set_interpolation_alpha(alpha);
+            if let Some(project) = self.project.as_mut() {
+                project.set_interpolation_alpha(alpha);
             }
         }
 
@@ -1039,6 +1062,10 @@ impl EngineHost {
     }
 }
 
+fn fixed_tick_requested(paused: bool, step_pending: bool) -> bool {
+    !paused || step_pending
+}
+
 /// 单步模拟使用的固定步长。
 fn xstep_dt() -> f32 {
     1.0 / 60.0
@@ -1091,6 +1118,13 @@ mod tests {
     #[test]
     fn simulation_step_uses_fixed_sixtieth_second() {
         assert!((xstep_dt() - 1.0 / 60.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn paused_step_requests_one_fixed_tick() {
+        assert!(fixed_tick_requested(true, true));
+        assert!(fixed_tick_requested(false, false));
+        assert!(!fixed_tick_requested(true, false));
     }
 
     /// #487：只把文档里真正存在的选中下标映射成实体 id；关闭时清空。

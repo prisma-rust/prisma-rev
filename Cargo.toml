@@ -24,6 +24,7 @@ members = [
     "crates/prism-anim-ik",
     "crates/prism-anim-retarget",
     "crates/prism-motion-matching",
+    "crates/prism-physics2d",
 ]
 # xtask (Slang reflection -> Rust binding codegen) is a build-time tool run only
 # on desktop/CI hosts that have slangc. Excluded so it never enters the default

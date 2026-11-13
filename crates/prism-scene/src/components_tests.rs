@@ -137,6 +137,27 @@ fn older_json_without_new_fields_uses_defaults() {
     assert!(!cam.orthographic);
 }
 
+#[test]
+fn virtual_camera_json_round_trips_and_fills_defaults() {
+    let camera = VirtualCamera2D {
+        target_name: "player".to_string(),
+        damping: [8.0, 4.0],
+        deadzone: [2.0, 1.0],
+        confiner: Some([0.0, 0.0, 320.0, 180.0]),
+        follow_offset: [0.0, 3.0],
+        pixel_snap: true,
+        pixels_per_unit: 16.0,
+    };
+    let json = serde_json::to_string(&camera).unwrap();
+    let back: VirtualCamera2D = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.target_name, "player");
+    assert_eq!(back.confiner, Some([0.0, 0.0, 320.0, 180.0]));
+    assert!(back.pixel_snap);
+    let old: VirtualCamera2D = serde_json::from_str("{}").unwrap();
+    assert!(old.target_name.is_empty());
+    assert_eq!(old.damping, [0.0, 0.0]);
+}
+
 // ---------------------------------------------------------------------------
 // Light
 // ---------------------------------------------------------------------------
@@ -506,6 +527,65 @@ fn sprite_world_size_uses_frame_or_texture_and_ppu() {
         ..SpriteRenderer::default()
     };
     assert_eq!(broken.world_size([100, 100]), [1.0, 1.0]);
+}
+
+#[test]
+fn sprite_and_collider_bounds_share_pivot_and_transform_scale() {
+    let transform = LocalTransform {
+        position: glam::Vec3::new(3.0, 4.0, 0.0),
+        scale: glam::Vec3::new(2.0, 3.0, 1.0),
+        ..LocalTransform::default()
+    };
+    let sprite = SpriteRenderer {
+        frame_size: [10, 20],
+        pixels_per_unit: 1.0,
+        pivot: [0.0, 0.0],
+        ..SpriteRenderer::default()
+    };
+    assert_eq!(
+        sprite.world_bounds(&transform, [10, 20]).unwrap(),
+        prism_physics2d::Aabb2::new(3.0, 4.0, 23.0, 64.0)
+    );
+
+    let collider = Collider2D {
+        offset: [1.0, -2.0],
+        half_extents: [2.0, 3.0],
+        ..Collider2D::default()
+    };
+    assert_eq!(
+        collider.world_bounds(&transform).unwrap(),
+        prism_physics2d::Aabb2::new(1.0, -11.0, 9.0, 7.0)
+    );
+}
+
+#[test]
+fn collider_bounds_accept_a_composed_parent_world_matrix() {
+    let parent = glam::Mat4::from_scale_rotation_translation(
+        glam::Vec3::new(2.0, 1.0, 1.0),
+        glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_2),
+        glam::Vec3::new(10.0, 20.0, 0.0),
+    );
+    let child = LocalTransform {
+        position: glam::Vec3::new(3.0, 4.0, 0.0),
+        ..LocalTransform::default()
+    };
+    let collider = Collider2D {
+        offset: [1.0, -2.0],
+        half_extents: [2.0, 1.0],
+        ..Collider2D::default()
+    };
+
+    let bounds = collider
+        .world_bounds_with_matrix(parent * child.to_model_matrix())
+        .unwrap();
+    for (actual, expected) in bounds
+        .min
+        .into_iter()
+        .chain(bounds.max)
+        .zip([7.0, 24.0, 9.0, 32.0])
+    {
+        assert!((actual - expected).abs() < 1e-5);
+    }
 }
 
 #[test]

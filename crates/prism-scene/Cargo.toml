@@ -15,6 +15,7 @@ group-ui = []
 
 [dependencies]
 prism-ecs = { path = "../prism-ecs" }
+prism-physics2d = { path = "../prism-physics2d" }
 prism-reflect = { path = "../prism-reflect" }
 prism-gfx = { path = "../prism-gfx" }
 # settings.ini dialect (shared with the legacy `scenes.toml` value reader).

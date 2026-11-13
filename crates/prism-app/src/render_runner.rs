@@ -290,6 +290,9 @@ pub fn render_thread_main(
         ) {
             Ok(presented) => {
                 consecutive_errors = 0;
+                if !presented {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
                 presented
             }
             Err(e) => {

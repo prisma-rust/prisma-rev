@@ -1,0 +1,9 @@
+{
+  "scenes": [
+    {
+      "name": "well",
+      "path": "scenes/well.rscn",
+      "enabled": true
+    }
+  ]
+}
