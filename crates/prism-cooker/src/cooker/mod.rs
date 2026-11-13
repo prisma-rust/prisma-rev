@@ -1084,19 +1084,19 @@ const MATERIAL_SCALAR_SIZE: usize = MATERIAL_SCALAR_COUNT * 4;
 /// ```
 pub struct MaterialCooker;
 
+/// Decoded RMATI intermediate: scalars, alpha block, then the five texture paths.
+type IntermediateMaterial = (
+    [f32; MATERIAL_SCALAR_COUNT],
+    MaterialAlphaMode,
+    f32,
+    [Option<String>; 5],
+);
+
 impl MaterialCooker {
     /// Parse the RMATI header + scalars + alpha block + 5 texture path records.
     ///
-    /// Returns `(scalars, alpha_mode, alpha_cutoff, tex_paths)` or `None` on
-    /// malformed input or a version this build does not write.
-    fn parse_intermediate(
-        data: &[u8],
-    ) -> Option<(
-        [f32; MATERIAL_SCALAR_COUNT],
-        MaterialAlphaMode,
-        f32,
-        [Option<String>; 5],
-    )> {
+    /// Returns `None` on malformed input or a version this build does not write.
+    fn parse_intermediate(data: &[u8]) -> Option<IntermediateMaterial> {
         // Header: magic(5) + version(1) + scalars(72) = 78 bytes minimum.
         const MAGIC_LEN: usize = 5;
         let scalars_end = MAGIC_LEN + 1 + MATERIAL_SCALAR_SIZE;

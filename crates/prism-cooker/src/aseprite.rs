@@ -297,11 +297,9 @@ impl AsepriteDocument {
 
         let has_pivot = (flags & 2) != 0;
 
-        for _ in 0..keys_count {
-            if pos + 20 > chunk_data.len() {
-                break;
-            }
-            let _frame_number = u32::from_le_bytes(chunk_data[pos..pos + 4].try_into().unwrap());
+        // Only the first key is read: the runtime slice format stores a single
+        // rect per slice, so the remaining keys of a multi-key slice are ignored.
+        if keys_count > 0 && pos + 20 <= chunk_data.len() {
             let x = i32::from_le_bytes(chunk_data[pos + 4..pos + 8].try_into().unwrap());
             let y = i32::from_le_bytes(chunk_data[pos + 8..pos + 12].try_into().unwrap());
             let w = u32::from_le_bytes(chunk_data[pos + 12..pos + 16].try_into().unwrap()) as i32;
@@ -317,18 +315,16 @@ impl AsepriteDocument {
                 let px = i32::from_le_bytes(chunk_data[pos..pos + 4].try_into().unwrap()) as f32;
                 let py =
                     i32::from_le_bytes(chunk_data[pos + 4..pos + 8].try_into().unwrap()) as f32;
-                pos += 8;
                 Some([px, py])
             } else {
                 None
             };
 
             slices.push(Anim2DSlice {
-                name: name.clone(),
+                name,
                 bounds: [x, y, w, h],
                 pivot,
             });
-            break;
         }
     }
 
@@ -441,14 +437,14 @@ mod tests {
             duration_ms: 100,
             width: 16,
             height: 16,
-            rgba: vec![255, 0, 0, 255].repeat(16 * 16),
+            rgba: [255, 0, 0, 255].repeat(16 * 16),
         };
         let frame1 = AsepriteFrame {
             index: 1,
             duration_ms: 120,
             width: 16,
             height: 16,
-            rgba: vec![0, 255, 0, 255].repeat(16 * 16),
+            rgba: [0, 255, 0, 255].repeat(16 * 16),
         };
 
         let tag = Anim2DTag {

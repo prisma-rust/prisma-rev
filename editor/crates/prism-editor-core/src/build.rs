@@ -441,7 +441,8 @@ version = \"0.1.0\"
         assert!(plan.steps[0].args.iter().any(|arg| arg == "--release"));
         assert_eq!(
             plan.copies[0].from,
-            root.join("projects/template/target/release").join(exe_name())
+            root.join("projects/template/target/release")
+                .join(exe_name())
         );
         assert_eq!(plan.output_dir, out);
     }

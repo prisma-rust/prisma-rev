@@ -229,16 +229,12 @@ impl Rect {
 }
 
 struct MaxRectsBin {
-    width: u32,
-    height: u32,
     free_rects: Vec<Rect>,
 }
 
 impl MaxRectsBin {
     fn new(width: u32, height: u32) -> Self {
         Self {
-            width,
-            height,
             free_rects: vec![Rect {
                 x: 0,
                 y: 0,
@@ -359,7 +355,6 @@ impl MaxRectsBin {
 // ---------------------------------------------------------------------------
 
 struct PreparedSprite {
-    index: usize,
     name: String,
     original_size: [u32; 2],
     trimmed_offset: [i32; 2],
@@ -411,8 +406,7 @@ pub fn pack_atlas(
 
     let mut prepared: Vec<PreparedSprite> = sprites
         .iter()
-        .enumerate()
-        .map(|(index, s)| {
+        .map(|s| {
             let (tw, th, offset, trimmed_rgba) = if options.trim_alpha {
                 trim_transparent_pixels(s.width, s.height, &s.rgba, options.alpha_threshold)
             } else {
@@ -423,7 +417,6 @@ pub fn pack_atlas(
             let slot_h = th + extrude * 2 + padding;
 
             PreparedSprite {
-                index,
                 name: s.name.clone(),
                 original_size: [s.width, s.height],
                 trimmed_offset: offset,
@@ -466,9 +459,8 @@ pub fn pack_atlas(
         }
     }
 
-    let mut placements = Vec::new();
-
-    loop {
+    // Grow the atlas until every slot fits, then keep that placement.
+    let placements = loop {
         let mut bin = MaxRectsBin::new(current_w, current_h);
         let mut candidate_placements = Vec::with_capacity(prepared.len());
         let mut all_fit = true;
@@ -484,8 +476,7 @@ pub fn pack_atlas(
         }
 
         if all_fit {
-            placements = candidate_placements;
-            break;
+            break candidate_placements;
         }
 
         if current_w <= current_h && current_w * 2 <= options.max_size {
@@ -500,7 +491,7 @@ pub fn pack_atlas(
                 options.max_size, options.max_size
             )));
         }
-    }
+    };
 
     let atlas_w = current_w;
     let atlas_h = current_h;
@@ -625,8 +616,8 @@ mod tests {
 
     #[test]
     fn test_pack_atlas_basic_and_extrusion() {
-        let sprite_a_pixels = vec![255, 0, 0, 255].repeat(16 * 16);
-        let sprite_b_pixels = vec![0, 255, 0, 255].repeat(32 * 16);
+        let sprite_a_pixels = [255, 0, 0, 255].repeat(16 * 16);
+        let sprite_b_pixels = [0, 255, 0, 255].repeat(32 * 16);
 
         let input = vec![
             RawSpriteInput::new("sprite_a", 16, 16, sprite_a_pixels),
