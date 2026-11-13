@@ -68,6 +68,8 @@ pub struct Engine {
     interpolation_alpha: f32,
     /// 主线程定时器服务（每帧 tick）。
     timer: crate::util::timer::TimerService,
+    /// 秒数，「无场景」占位画面的滚动动画用。只在占位画面显示时累加。
+    no_scene_time: f32,
 }
 
 impl Engine {
@@ -100,6 +102,7 @@ impl Engine {
             frame_input_prepared: false,
             interpolation_alpha: 0.0,
             timer: crate::util::timer::TimerService::new(),
+            no_scene_time: 0.0,
         }
     }
 
@@ -533,6 +536,13 @@ impl Engine {
         // 用户 system 在本 tick 里通过 `GameWorld::draw_quad` 提交的四边形排在
         // `ui::render` 之后，这里补一次合并，否则静态 Player 会晚一帧（#1048）。
         crate::ui::merge_external_quads(&mut self.world);
+
+        // 「没有场景」占位画面：只在启动清单一个可解析场景都没有时出现（通常
+        // 是 `.pak` 没打）。走现有 UI 通道，不加 pass、不动 clear color。
+        if self.scene.is_missing_scene() {
+            self.no_scene_time += dt.max(0.0);
+            crate::ui::push_no_scene_screen_into(&mut self.world, self.no_scene_time);
+        }
 
         // ── 世界矩阵传播（模拟步末尾）────────────────────────────
         // 用户 system 在本 tick 里 spawn 的实体/改过的 `LocalTransform` 必须

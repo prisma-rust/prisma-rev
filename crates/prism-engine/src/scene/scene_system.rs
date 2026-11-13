@@ -38,6 +38,9 @@ pub struct SceneManager {
     /// 场景代数：每次成功切换 / 卸载都递增。项目模块靠它判断缓存的实体句柄
     /// 是否已经失效（`prism-project-api` 的 `scene_generation`）。
     generation: u64,
+    /// 启动时 manifest 一个可解析场景都没给出（`.pak` 没打、或清单里没有）。
+    /// 只由 manifest 加载路径置位；显式 `unload` / 编辑器载入 JSON 不算。
+    missing_scene: bool,
 }
 
 /// 当前场景环境资源的中性读取接口。
@@ -322,8 +325,16 @@ impl SceneManager {
             current_scene_name: None,
             current_scene_path: None,
             environment_bytes: None,
+            missing_scene: false,
             generation: 0,
         }
+    }
+
+    /// 启动时没有任何可解析场景（通常是 `assets/*.pak` 没打）。
+    ///
+    /// 渲染侧用它决定是否画「无场景」占位画面；clear color 语义不受影响。
+    pub fn is_missing_scene(&self) -> bool {
+        self.missing_scene
     }
 
     /// 当前场景名；尚未从 manifest 加载任何场景时为 `None`。
@@ -445,6 +456,7 @@ impl SceneManager {
             Ok(m) => m,
             Err(e) => {
                 log::warn!("scene manifest parse error: {e}");
+                self.missing_scene = true;
                 return None;
             }
         };
@@ -558,6 +570,7 @@ impl SceneManager {
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|_| "<unknown>".into());
                 log::warn!("no assets/scenes.json found (cwd={cwd}); no scene will be loaded");
+                self.missing_scene = true;
                 return None;
             }
         };
@@ -565,6 +578,7 @@ impl SceneManager {
             Ok(t) => t,
             Err(e) => {
                 log::warn!("failed to read scene manifest {:?}: {e}", manifest_path);
+                self.missing_scene = true;
                 return None;
             }
         };
@@ -573,6 +587,7 @@ impl SceneManager {
             Ok(m) => m,
             Err(e) => {
                 log::warn!("scene manifest parse error: {e}");
+                self.missing_scene = true;
                 return None;
             }
         };
@@ -633,12 +648,13 @@ impl SceneManager {
                 }
             }
         }
+        self.missing_scene = true;
         let assets = match crate::asset_paths::asset_dir() {
             Some(dir) => dir.display().to_string(),
             None => "<no assets/ directory found>".to_string(),
         };
         log::error!(
-            "no resolvable scene: the window will only show the clear colour. Scene bytes are \
+            "no resolvable scene: the window shows the no-scene placeholder. Scene bytes are \
              read from `.pak` only (no disk fallback) — run `build-scenes` from the directory \
              that owns `assets/` ({assets}), then restart (see scripts/dev.sh)"
         );
@@ -663,6 +679,7 @@ impl SceneManager {
     ) -> usize {
         let unloaded = unload_scene_members(world, Some(inst.scene_id));
         self.current_scene_name = Some(name.to_owned());
+        self.missing_scene = false;
         self.current_scene_path = Some(path.to_owned());
         // IBL 按场景解析：切换后不能继续复用上一个场景注入的字节，
         // 否则旧 HDR 会盖住新场景的天空盒。
