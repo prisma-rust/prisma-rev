@@ -1507,6 +1507,7 @@ dependencies = [
  "prism-asset",
  "prism-ecs",
  "prism-ini",
+ "prism-physics2d",
  "prism-project-api",
  "prism-reflect",
  "prism-render",
@@ -1524,6 +1525,7 @@ dependencies = [
  "log",
  "prism-ecs",
  "prism-engine",
+ "prism-physics2d",
  "prism-project-api",
  "prism-reflect",
  "prism-scene",
@@ -1544,6 +1546,10 @@ version = "0.1.0"
 dependencies = [
  "log",
 ]
+
+[[package]]
+name = "prism-physics2d"
+version = "0.1.0"
 
 [[package]]
 name = "prism-platform"
@@ -1608,6 +1614,7 @@ dependencies = [
  "prism-ecs",
  "prism-gfx",
  "prism-ini",
+ "prism-physics2d",
  "prism-reflect",
  "serde",
  "serde_json",
