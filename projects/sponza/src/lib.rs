@@ -34,6 +34,9 @@ pub fn build_app() -> prism_app::App {
             settings.pt_max_bounces = 4;
             settings.pt_max_iterations = 0;
             settings.pt_ray_max_distance = 1000.0;
+            // Sponza 的光照跨度大（室外天光 vs 走廊只剩间接光），打开直方图
+            // 自动曝光；引擎默认关，其他项目保持固定曝光。
+            settings.auto_exposure = true;
             // PBR component isolator, same masks the Digit1..0 / Shift+Digit
             // shortcuts set. Bit order matches `PBR_FLAG_NAMES`.
             if let Ok(flags) = std::env::var("SPONZA_DEBUG_FLAGS") {

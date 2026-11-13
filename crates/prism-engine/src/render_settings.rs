@@ -72,6 +72,12 @@ pub struct RenderSettings {
     /// PostPass debug render-target viewer (Tab cycles). 0 = normal tonemapped
     /// HDR, 1 = linearized depth, 2 = view-space normal.
     pub debug_rt: u32,
+    /// 直方图自动曝光测光（默认关）。
+    ///
+    /// 关闭时 `AutoExposurePass` 写入零亮度，色调映射读到 0 就是增益 1.0，
+    /// 画面与引入自动曝光之前完全一致；打开后按屏幕实际亮度收敛到
+    /// `AUTO_EXPOSURE_KEY`（0.18 中灰）。
+    pub auto_exposure: bool,
     /// 遮挡剔除（#1007）：用上一帧的粗深度剔掉被完全挡住的绘制项。
     ///
     /// 默认关。开启后画面应保持一致（保守测试 + 一帧延迟），只是少提交
@@ -250,6 +256,7 @@ impl Default for RenderSettings {
             tonemap_mode: 0,
             aa_mode: 0,
             debug_rt: 0,
+            auto_exposure: false,
             occlusion_culling: false,
             wireframe: false,
             shaded_wireframe: false,

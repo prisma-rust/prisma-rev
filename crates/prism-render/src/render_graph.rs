@@ -339,6 +339,12 @@ pub struct RenderSettings {
     pub taa: bool,
     /// History blend weight for TAA, clamped to `0..=0.95`; 0 = current frame.
     pub taa_strength: f32,
+
+    /// Histogram auto-exposure metering (default off).
+    ///
+    /// Off keeps the pre-metering image: `AutoExposurePass` writes a zero
+    /// adapted luminance, which the tonemapper reads as a no-op gain of 1.0.
+    pub auto_exposure: bool,
     /// 内部渲染分辨率 `[宽度, 高度]`（#613）；`[0, 0]` = 关闭。
     ///
     /// 开启后场景（网格 / 2D 精灵 / 瓦片 / 粒子 / PT）按这个尺寸渲染，
@@ -383,6 +389,7 @@ impl Default for RenderSettings {
             pt_max_iterations: 0,
             taa: false,
             taa_strength: 0.9,
+            auto_exposure: false,
             internal_resolution: [0, 0],
             internal_scale_mode: InternalScaleMode::Stretch,
             anf_sr: false,

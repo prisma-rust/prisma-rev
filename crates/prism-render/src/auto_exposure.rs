@@ -470,6 +470,29 @@ impl RenderPassNode for AutoExposurePass {
         ctx: &RenderContext,
         resources: &mut GraphResources,
     ) -> anyhow::Result<()> {
+        // Metering is opt-in. Off writes a zero adapted luminance, which the
+        // tonemapper's `auto_exposure()` reads as "no metering" and turns into
+        // a gain of 1.0, so the image matches the pre-auto-exposure pipeline.
+        if !ctx.settings.auto_exposure {
+            unsafe {
+                ctx.device
+                    .cmd_fill_buffer(ctx.cmd, self.buffers.luminance, 0, 4, 0);
+                let to_fragment = vk::MemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ);
+                ctx.device.cmd_pipeline_barrier(
+                    ctx.cmd,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::PipelineStageFlags::FRAGMENT_SHADER,
+                    vk::DependencyFlags::empty(),
+                    std::slice::from_ref(&to_fragment),
+                    &[],
+                    &[],
+                );
+            }
+            return Ok(());
+        }
+
         // Meter whatever the tonemapper is about to display. Mirror
         // `PostPass`'s selection so the metered image and the displayed image
         // are always the same one.

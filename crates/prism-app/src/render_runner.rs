@@ -536,6 +536,7 @@ fn render_one_frame(
     // `GraphRenderer::settings_mut()`.
     {
         let renderer_settings = renderer.settings_mut();
+        renderer_settings.auto_exposure = settings.auto_exposure;
         renderer_settings.gi_mode = settings.gi_mode;
         renderer_settings.sharc_scene_scale = settings.sharc_scene_scale;
         renderer_settings.sharc_enable_update = settings.sharc_enable_update;
