@@ -629,15 +629,25 @@ impl GraphRenderer {
         let taa_pass =
             crate::taa::TaaPass::new(&context, swapchain.extent).context("TaaPass::new")?;
 
-        // PostPass parameters: 2 in-flight frames = 2 descriptor sets.
-        let frame_count = 2u32;
-        let post_pass = crate::post::PostPass::new(
+        // PostPass parameters: one descriptor set per swapchain image. The sets
+        // are picked by `image_index`, so allocating fewer than the swapchain
+        // has would make two images share a set and rewrite a descriptor the
+        // GPU may still be reading.
+        let frame_count = swapchain.views.len() as u32;
+        let mut post_pass = crate::post::PostPass::new(
             &context,
             color_format,
             frame_count,
             vk::ImageLayout::PRESENT_SRC_KHR,
         )
         .context("PostPass::new")?;
+
+        // AutoExposurePass meters the HDR image PostPass is about to tonemap and
+        // publishes the adapted luminance PostPass divides AUTO_EXPOSURE_KEY by.
+        // Registered ahead of PostPass so the ordering falls out of the graph.
+        let auto_exposure = crate::auto_exposure::AutoExposurePass::new(&context, frame_count)
+            .context("AutoExposurePass::new")?;
+        post_pass.set_adapted_luminance(&context.device, auto_exposure.luminance_buffer());
 
         // PathTracePass — real-time path tracing compute pass.
         // Registered when hardware acceleration structures are supported;
@@ -685,6 +695,7 @@ impl GraphRenderer {
         if let Some(pt) = pt_pass {
             graph.add_pass(Box::new(pt));
         }
+        graph.add_pass(Box::new(auto_exposure));
         graph.add_pass(Box::new(post_pass));
 
         // per-pass GPU 计时（#518）：设备不支持时间戳时是 `None`（面板回退到 CPU 墙钟）。
@@ -1050,13 +1061,20 @@ impl GraphRenderer {
         // Headless contexts do not enable `VK_KHR_swapchain`, so the offscreen
         // image must never end a render pass in `PRESENT_SRC_KHR`; it stays a
         // color attachment until something explicitly transitions it.
-        let post_pass = crate::post::PostPass::new(
+        let mut post_pass = crate::post::PostPass::new(
             &context,
             color_format,
             frame_count,
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
         )
         .context("PostPass::new (headless)")?;
+
+        // AutoExposurePass meters the HDR image PostPass is about to tonemap and
+        // publishes the adapted luminance PostPass divides AUTO_EXPOSURE_KEY by.
+        // Registered ahead of PostPass so the ordering falls out of the graph.
+        let auto_exposure = crate::auto_exposure::AutoExposurePass::new(&context, frame_count)
+            .context("AutoExposurePass::new (headless)")?;
+        post_pass.set_adapted_luminance(&context.device, auto_exposure.luminance_buffer());
 
         // `gtao` feature 关闭时 set 4 退化为 1×1 白色（无遮蔽）。
         #[cfg(feature = "gtao")]
@@ -1112,6 +1130,7 @@ impl GraphRenderer {
         if let Some(pt) = pt_pass {
             graph.add_pass(Box::new(pt));
         }
+        graph.add_pass(Box::new(auto_exposure));
         graph.add_pass(Box::new(post_pass));
         if let Some(post_pass) = graph.pass_mut::<crate::post::PostPass>() {
             post_pass.set_target(
@@ -3624,6 +3643,16 @@ impl GraphRenderer {
         // set, sampler).
         if let Some(post) = self.graph.pass_mut::<crate::post::PostPass>() {
             post.destroy(device);
+        }
+
+        // Destroy AutoExposurePass (histogram/luminance buffers, descriptor
+        // pool, sampler). Must run before `self.graph.destroy`, which drops the
+        // pass objects themselves.
+        if let Some(auto_exposure) = self
+            .graph
+            .pass_mut::<crate::auto_exposure::AutoExposurePass>()
+        {
+            auto_exposure.destroy(device);
         }
 
         // Destroy PathTracePass (accumulation images, geometry buffers,

@@ -54,6 +54,29 @@ struct MotionBlurData
 [[vk::binding(3, 0)]]
 ConstantBuffer<MotionBlurData> motion;
 
+// ---- set 0, binding 4 - adapted luminance from AutoExposurePass ----
+// One R32_UINT holding a float bit pattern: the scene luminance that maps to
+// middle grey. It reads as zero until the metering pass has run at least once,
+// and zero leaves the image untouched (see `auto_exposure` below). This is the
+// same buffer layout RTXGI's tonemapper consumes, so a future DLSS integration
+// can share it.
+[[vk::binding(4, 0)]]
+StructuredBuffer<uint> adaptedLuminance;
+
+// Scene luminance mapped to middle grey (RTXGI `AUTO_EXPOSURE_KEY`).
+static const float AUTO_EXPOSURE_KEY = 0.18;
+
+// Exposure gain from the metered luminance. Returns 1 (a no-op) until the
+// metering pass has written a usable value, and for non-finite input so a
+// broken frame cannot blow out the whole image.
+float auto_exposure()
+{
+    const float adapted = asfloat(adaptedLuminance[0]);
+    if (!isfinite(adapted) || adapted <= 0.0)
+        return 1.0;
+    return AUTO_EXPOSURE_KEY / adapted;
+}
+
 // Push constants: tonemap operator selector (matches `tonemapMode` in FrameUBO).
 //
 // `aaMode` selects the anti-aliasing path applied after tonemapping:
@@ -339,6 +362,11 @@ float3 shade(float2 uv)
         hdr = applyMotionBlur(uv, hdr);
     if (pc.bloomIntensity > 0.0)
         hdr += bloom(uv) * pc.bloomIntensity;
+    // Automatic exposure. The scene shaders already applied the camera's manual
+    // exposure, which the metering pass divides back out, so this gain is
+    // purely the difference between the metered scene luminance and middle
+    // grey. It runs before the tonemap so the curve sees properly exposed HDR.
+    hdr *= auto_exposure();
     return grade(saturate(tonemap(hdr)));
 }
 

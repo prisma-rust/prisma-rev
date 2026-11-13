@@ -35,6 +35,8 @@ pub mod acceleration_structure;
 /// 主线程(CPU) ↔ 渲染线程(GPU) 资产解析请求/结果桥接类型。
 pub mod asset_bridge;
 pub mod asset_decoders;
+/// 自动曝光（亮度直方图 + 适应），移植自 RTXGI `AutoExposurePass`。
+pub mod auto_exposure;
 pub mod bake_common;
 pub mod batch;
 pub mod bindless;

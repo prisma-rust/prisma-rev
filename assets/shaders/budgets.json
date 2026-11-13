@@ -1,6 +1,16 @@
 {
   "version": 1,
   "shaders": {
+    "auto_exposure": {
+      "sampled_images": 1,
+      "sampled_image_arrays": 0,
+      "samplers": 0,
+      "uniform_buffers": 0,
+      "storage_buffers": 2,
+      "acceleration_structures": 0,
+      "descriptors": 3,
+      "push_constant_bytes": 48
+    },
     "gizmo": {
       "sampled_images": 0,
       "sampled_image_arrays": 0,
@@ -46,9 +56,9 @@
       "sampled_image_arrays": 0,
       "samplers": 0,
       "uniform_buffers": 1,
-      "storage_buffers": 0,
+      "storage_buffers": 1,
       "acceleration_structures": 0,
-      "descriptors": 4,
+      "descriptors": 5,
       "push_constant_bytes": 88
     },
     "pt_render": {

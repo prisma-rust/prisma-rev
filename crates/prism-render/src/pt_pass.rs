@@ -897,21 +897,32 @@ impl PathTracePass {
             .buffer(curr_buf)
             .offset(0)
             .range(vk::WHOLE_SIZE);
-        // SHARC cache buffers. When the cache is inactive these stay null but
-        // the writes are still recorded; the shader never dereferences them
-        // because `sharc_enabled` is 0 in that case.
-        let hash_bi = vk::DescriptorBufferInfo::default()
-            .buffer(self.sharc_hash_entries.unwrap_or(vk::Buffer::null()))
-            .offset(0)
-            .range(vk::WHOLE_SIZE);
-        let accum_bi = vk::DescriptorBufferInfo::default()
-            .buffer(self.sharc_accumulation.unwrap_or(vk::Buffer::null()))
-            .offset(0)
-            .range(vk::WHOLE_SIZE);
-        let resolved_bi = vk::DescriptorBufferInfo::default()
-            .buffer(self.sharc_resolved.unwrap_or(vk::Buffer::null()))
-            .offset(0)
-            .range(vk::WHOLE_SIZE);
+        // SHARC cache buffers. The writes are only recorded when the cache is
+        // active: `nullDescriptor` is not enabled, so binding a null handle
+        // would be a validation error. Leaving the binding unwritten is legal
+        // because the set layout carries PARTIALLY_BOUND, and the shader never
+        // dereferences it while `sharc_enabled` is 0.
+        let sharc_bi = match (
+            self.sharc_hash_entries,
+            self.sharc_accumulation,
+            self.sharc_resolved,
+        ) {
+            (Some(hash), Some(accum), Some(resolved)) => Some((
+                vk::DescriptorBufferInfo::default()
+                    .buffer(hash)
+                    .offset(0)
+                    .range(vk::WHOLE_SIZE),
+                vk::DescriptorBufferInfo::default()
+                    .buffer(accum)
+                    .offset(0)
+                    .range(vk::WHOLE_SIZE),
+                vk::DescriptorBufferInfo::default()
+                    .buffer(resolved)
+                    .offset(0)
+                    .range(vk::WHOLE_SIZE),
+            )),
+            _ => None,
+        };
 
         let writes = vec![
             vk::WriteDescriptorSet::default()
@@ -969,22 +980,19 @@ impl PathTracePass {
                 .dst_binding(11)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .buffer_info(std::slice::from_ref(&curr_bi)),
-            vk::WriteDescriptorSet::default()
-                .dst_set(self.ds)
-                .dst_binding(12)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(std::slice::from_ref(&hash_bi)),
-            vk::WriteDescriptorSet::default()
-                .dst_set(self.ds)
-                .dst_binding(13)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(std::slice::from_ref(&accum_bi)),
-            vk::WriteDescriptorSet::default()
-                .dst_set(self.ds)
-                .dst_binding(14)
-                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                .buffer_info(std::slice::from_ref(&resolved_bi)),
         ];
+        let mut writes = writes;
+        if let Some((hash_bi, accum_bi, resolved_bi)) = sharc_bi.as_ref() {
+            for (binding, info) in [(12u32, hash_bi), (13, accum_bi), (14, resolved_bi)] {
+                writes.push(
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(self.ds)
+                        .dst_binding(binding)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .buffer_info(std::slice::from_ref(info)),
+                );
+            }
+        }
         unsafe {
             device.update_descriptor_sets(&writes, &[]);
         }

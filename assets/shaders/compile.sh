@@ -340,6 +340,16 @@ emit_reflection pt_render ptMain compute
 # has the entry point `main` and fails pipeline creation with ERROR_UNKNOWN.
 compile_stage sharc/sharc_resolve resolveMain compute sharc_resolve
 
+# auto_exposure: luminance metering for the tonemapper (two dispatches, one
+# source file). Ported from RTXGI `Samples/Shared/Shaders/AutoExposure.hlsl`.
+# `luminanceHistogram` builds a log2 histogram (one 16x16 group per tile),
+# `exposureAdaptation` reduces it to the adapted luminance the tonemapper
+# divides `AUTO_EXPOSURE_KEY` by. The output filenames carry a stage suffix
+# because the two entry points become two separate .spv files.
+compile_stage auto_exposure luminanceHistogram compute auto_exposure_hist
+compile_stage auto_exposure exposureAdaptation compute auto_exposure_adapt
+emit_reflection auto_exposure luminanceHistogram compute exposureAdaptation compute
+
 # harness_copy: tiny compute kernel for the reusable GPU shader harness test
 # (`crates/prism-render/tests/shader_harness_gpu.rs`). No bindless state.
 compile_stage harness_copy main compute

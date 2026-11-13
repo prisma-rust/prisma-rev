@@ -3,6 +3,7 @@
 //   ../../assets/shaders/reflection ../../crates/prism-render/src/shader_bindings`
 #![allow(dead_code, non_snake_case)]
 
+pub mod auto_exposure;
 pub mod gizmo;
 pub mod gtao;
 pub mod mesh_vert;
