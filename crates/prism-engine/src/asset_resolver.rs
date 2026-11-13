@@ -463,8 +463,9 @@ impl GpuAssetResolver {
         let paks = crate::asset_paths::pak_files_in(&asset_dir);
         if paks.is_empty() {
             log::warn!(
-                "resource package unavailable: no `.pak` in {}; \
-                 scene assets cannot load (run `build-scenes`)",
+                "resource package unavailable: no `.pak` in {}; scene assets cannot load. \
+                 Run `build-scenes` from the directory that owns `assets/` \
+                 (or use `scripts/dev.sh <project>`), then restart.",
                 asset_dir.display()
             );
             return;

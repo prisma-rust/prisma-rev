@@ -633,9 +633,17 @@ impl SceneManager {
                 }
             }
         }
-        log::warn!("no resolvable scene in manifest; no scene will be loaded");
+        let assets = match crate::asset_paths::asset_dir() {
+            Some(dir) => dir.display().to_string(),
+            None => "<no assets/ directory found>".to_string(),
+        };
+        log::error!(
+            "no resolvable scene: the window will only show the clear colour. Scene bytes are \
+             read from `.pak` only (no disk fallback) — run `build-scenes` from the directory \
+             that owns `assets/` ({assets}), then restart (see scripts/dev.sh)"
+        );
         if let Some(name) = scene_name {
-            log::warn!("requested scene '{name}' was not found in the manifest");
+            log::error!("requested scene '{name}' was not found in the manifest");
         }
         None
     }

@@ -322,6 +322,12 @@ The user project's dependency chain must stay **UI-framework-free and editor-fre
     再按 `projects/prisma/target/{debug,release}/prisma[.exe]`（开发布局，仓库根由 exe 所在目录逐级向上找
     `projects/prisma/Cargo.toml`）；`PRISMREV_GAME_BIN` 可覆盖（指向不存在的文件直接报错，不回退）。
     已有存活子进程时拒绝再起第二个，避免同时开两个游戏实例。
+- 跑用户项目前**必须先有 `assets/scenes.pak`**：运行时只从 `.pak` 读场景（没有磁盘回退），
+  缺包时窗口只有清屏色（`[0.5, 0.5, 0.5]` 灰）且只在日志里报一条 `no resolvable scene`。
+  项目自己有 `assets/scenes.json` 时（`projects/sponza`）在**项目目录**里跑 `build-scenes`；
+  没有自己 assets 的（`projects/prisma`）用仓库根的。封装好的入口：
+  `bash scripts/dev.sh [project] [--release] [--skip-scenes] [--shaders]`，
+  Windows 用 `scripts/dev.ps1`。
 - Editor: `cd editor && cargo run -p prism-editor-egui` — Rust + egui + ash; needs Vulkan
   and compiled `.spv`. Data-layer tests: `cargo test --manifest-path editor/Cargo.toml`.
 - Checks: `cargo check -p prism-render`, `cargo build`, `cargo test`.

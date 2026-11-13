@@ -15,6 +15,17 @@
 
 ## 运行方式
 
+> **别直接 `cargo run`**：运行时只从 `assets/scenes.pak` 读场景，没有磁盘回退。
+> 缺包时窗口只显示清屏色（0.5 灰），日志里只有一条 `no resolvable scene`。
+
+从仓库根一条命令搞定（打场景包 + 启动）：
+
+```bash
+bash scripts/dev.sh sponza
+```
+
+下面是手动分步。
+
 ### 1. 资源构建
 
 `scenes.pak` 是生成产物（不入库），首次运行前必须在项目目录里打包一次：
