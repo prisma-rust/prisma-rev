@@ -1017,3 +1017,20 @@ Rust 的 `include_bytes!` 宏将二进制数据嵌入到只读数据段（`.roda
 **教训**：
 - 涉及着色器矩阵排布问题时，切勿通过反复加减 `transpose()` 盲猜，必须直接反汇编对应的 `.spv` 文件查看具体指令。
 - 只有准确比对着色器内部的内存修饰（`RowMajor`/`ColMajor`）与矢量乘法指令（`OpVectorTimesMatrix` / `OpMatrixTimesVector`），才能正确推导 Host 侧需要传递的数据格式。
+
+## 调查纪律案例：Sponza 相机移动与 M 键（先读调用点，禁止跨 crate 考古）
+
+**问题**：锁定鼠标后 WASD 不按锁定状态生效，`M` 键完全没反应。
+
+**真实翻车复盘与反思**：
+- **错误排查路径**：先 `git blame` 翻提交历史、读 winit 0.30 的 `refresh_os_cursor` 实现、写 PowerShell 探 `GetClipCursor`、后台跑 `sponza.exe` 抓日志、反复压缩上下文。这些没有一条改变了结论，只是把一个简单的条件判断问题拖成了跨 crate 的盲目考古。
+- **正确定位仅需三步**（每步只读一个函数，通过 grep 命中的调用点直接看代码）：
+  1. `projects/sponza/src/tuning_ui.rs` 的 `on_key_pressed` → `Key::Other(VK_M) if !self.locked`，而窗口一拿到焦点就自动锁定，导致该键在游戏运行时永远无法被接收。
+  2. `crates/prism-engine/src/scene/systems/camera.rs` 的 `camera_controller_system` → `look_active` 只挡了 WASD，鼠标看向还留了 `|| 右键` 后门。
+  3. `crates/prism-platform/src/window.rs` 的 `grab_pointer` → 抓取失败只 `log::warn`，照样把 `locked` 置 `true`，导致「锁定」可能处于虚假状态。
+- **状态单真值教训**：指针锁定曾经分散在平台窗口原子量、`InputManager::pointer_locked`、项目钩子自身 `self.locked` 三份状态中，各处分别更新必然出现不同步。**决定「谁接管输入」的关键状态，真值只能在平台层唯一存在，其它消费方每帧同步读取**（如 `InputManager::sync_pointer_lock`）。
+
+**教训**：
+- bug 报告里的行为在代码里几乎总对应一个 `if` 条件或一次状态写入。代码里已经写死的事实，严禁通过探针、blame 或翻外部 crate 源码去反复“证明”。
+- 一个 bug 只读它经过的那条链路；grep 命中的文件读完就停，不要横向全库漫游扫第二遍。
+- 状态类 bug 必须首先确认系统内该布尔值是否存在多份拷贝与缓存。

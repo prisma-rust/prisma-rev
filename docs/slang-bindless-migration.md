@@ -95,6 +95,23 @@ Flags：`PARTIALLY_BOUND | UPDATE_AFTER_BIND | VARIABLE_DESCRIPTOR_COUNT`，配�
 
 ---
 
+## 三、代码生成与资源预算规范
+
+### 1. Push Constant 内存布局与对齐填充
+
+- **强类型推导**：所有 push-constant 结构体定义必须由 `xtask shader-bindgen` 读取 `assets/shaders/reflection/*.json` 自动生成，严禁手写 `#[repr(C)]` 镜像。
+- **std140 对齐洞显式占位**：代码生成器强制将每个字段定位在反射记录的 `offset` 上。std140 规范产生的内存空洞被显式生成为 `_pad_<offset>: [u8; N]` 字段，从而确保 Rust 的 `size_of` 及各字段 offset 与着色器端严格逐字节匹配。
+- **类型安全转换**：生成的结构体自动 derive `bytemuck::Pod` 与 `bytemuck::Zeroable`，上传时使用 `bytemuck::bytes_of(&push)`，严禁裸指针与未安全检查的切片强转。
+- **代码生成器实现原则**：`xtask shader_bindgen` 使用标准的 `std::fmt` 字符串格式化而非 `syn` / `quote`，以避免向 xtask 依赖树引入重量级 proc-macro 依赖，极大加快工具链构建速度。
+
+### 2. 着色器资源预算与棘轮监控（budgets.json）
+
+- `assets/shaders/budgets.json` 记录并锁定每个着色器模块的资源上限（采样器、采样纹理数组、UBO、SSBO、加速结构、描述符总数及 push constant 字节数）。
+- `crates/xtask/src/shader_budget.rs`（`shader-budget`）汇总实际反射用量并对比预算表。改动着色器若超出预算即触发构建与 PR 失败。
+- 预算表具有棘轮属性（Ratchet）：仅在架构决策确认需要扩展资源时，通过 `cargo run --bin shader-budget -- --write-budget` 同步更新，并在 PR 审查中显式体现配额变化。
+
+---
+
 ## 验证状态（迁移当时，Termux/aarch64 快照）
 - `cargo check -p prism-render` ✅
 - `cargo test -p prism-render --lib` ✅ 25 passed
