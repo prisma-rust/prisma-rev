@@ -28,9 +28,15 @@ bash scripts/dev.sh sponza
 
 ### 1. 资源构建
 
-`scenes.pak` 是生成产物（不入库），首次运行前必须在项目目录里打包一次：
+`scenes.pak` 是生成产物（不入库），首次运行或修改场景文档后必须打包：
 
 ```powershell
+# 一键脚本（位于 projects/sponza/ 目录下）：
+.\rebuild-pak.ps1        # PowerShell
+.\rebuild-pak.bat        # CMD / 双击
+./rebuild-pak.sh         # Linux / macOS / Git Bash
+
+# 或原生 Cargo 命令：
 cargo run -q --manifest-path ../../Cargo.toml -p prism-build-pipeline -- build-scenes
 ```
 
@@ -76,13 +82,13 @@ cargo run --no-default-features --features player
 | `Space` / `Enter` | 切换布尔开关或执行动作 |
 | `1` / `2` / `3` / `4` | 快速切换 GI 模式：`1` = Reference (纯 PT), `2` = SHaRC, `3` = NRC（占位，暂无实现）, `4` = ReSTIR GI（光栅，复用同一个 SHaRC 缓存） |
 | `T` | 循环切换色调映射算子（Reinhard → ACES → Passthrough） |
-| `M` | 在光栅与路径追踪之间切换（会重置路径追踪累积；仅在未锁定鼠标时生效） |
-| `R` | 手动触发路径追踪累积缓存重置（仅在未锁定鼠标时生效） |
-| `V` | 切换垂直同步 (VSync)（仅在未锁定鼠标时生效） |
+| `M` | 在光栅与路径追踪之间切换（会重置路径追踪累积） |
+| `R` | 手动触发路径追踪累积缓存重置 |
+| `V` | 切换垂直同步 (VSync) |
 
 窗口拿到焦点即锁定鼠标（相机接管键鼠，`Esc` 解锁；点击画面也会锁定，切出去再切回来会自动恢复锁定）。**锁定态下面板自动收起**；`W` / `S` / `A` / `D` 严格按锁定状态分流，任何时刻只有一个消费者：锁定时只归相机（面板收着也不会被翻动），解锁时只翻面板菜单（相机不动）。想看参数按 `F1` / `Tab` 把面板叫回来，此时菜单用 `Up` / `Down` / `Left` / `Right` 导航。
 
-`M` / `R` / `V` 三个功能键只在**未锁定**鼠标时响应（锁定后归相机），`F1` / `Tab` / `1` / `2` / `3` / `4` 任何状态都可用。
+`M` / `R` / `V` 三个功能键和 `F1` / `Tab` / `1` / `2` / `3` / `4` 一样任何状态都可用——相机只吃 `W` / `A` / `S` / `D` / `Q` / `E` / `Space` / `Ctrl` / `Shift`，这三个键不参与走位，锁定与否都不该屏蔽它们。
 
 ### 2. 核心调参参数
 

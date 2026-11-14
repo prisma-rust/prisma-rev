@@ -35,8 +35,8 @@ use crate::context::VulkanContext;
 use crate::pipeline::{GraphicsPipeline, PipelineDesc};
 use crate::render_graph::{
     GraphResources, PassInfo, PassKind, RenderContext, RenderGraphBuilder, RenderMode,
-    RenderPassNode, RenderSettings, ResourceUsage, FORWARD_DEPTH_H, FORWARD_NORMAL_H,
-    FORWARD_VELOCITY_H,
+    RenderPassNode, RenderSettings, ResourceType, ResourceUsage, FORWARD_DEPTH_H, FORWARD_NORMAL_H,
+    FORWARD_VELOCITY_H, GTAO_AO_H,
 };
 use crate::render_pass::find_memory_type;
 use crate::shader;
@@ -936,6 +936,20 @@ impl RenderPassNode for GtaoPass {
             stage: vk::PipelineStageFlags::FRAGMENT_SHADER,
             layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
         });
+        graph.create_resource_at(
+            GTAO_AO_H,
+            ResourceType::ColorAttachment {
+                format: vk::Format::R8_UNORM,
+                extent: self.extent(),
+                sample_count: vk::SampleCountFlags::TYPE_1,
+            },
+        );
+        graph.write_usage(ResourceUsage {
+            handle: GTAO_AO_H,
+            access: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+            stage: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        });
     }
 
     fn execute(
@@ -1034,6 +1048,8 @@ impl RenderPassNode for GtaoPass {
         };
         self.execute(ctx.device, ctx.cmd, ctx.frame_index, &inputs, &push)?;
         self.history_valid[i] = true;
+        resources.set_image_view(GTAO_AO_H, self.ao_views[i]);
+        resources.set_image(GTAO_AO_H, self.ao_images[i]);
         Ok(())
     }
 
@@ -1046,7 +1062,7 @@ impl RenderPassNode for GtaoPass {
             inputs: vec![FORWARD_DEPTH_H, FORWARD_NORMAL_H, FORWARD_VELOCITY_H],
             // 环境光遮蔽 is consumed by ForwardPass via `set_ao` (1-frame 延迟 not a
             // graph edge - surfaced as a note by the viz instead.
-            outputs: Vec::new(),
+            outputs: vec![GTAO_AO_H],
         }
     }
 

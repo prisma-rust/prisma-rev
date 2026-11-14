@@ -772,14 +772,19 @@ void ptMain(uint3 tid : SV_DispatchThreadID)
                 // The cached value already contains this vertex's direct lighting
                 // and the remaining bounces, so a hit must not additionally pay
                 // for the sun shadow ray and BRDF evaluation below.
+                // The trainer keys its deposits on the same record, so it has to
+                // be filled for the update variant too -- not only where the
+                // consumer queries the cache.
                 SharcHitData sharc_hit;
-                if (sharc_on)
+                if (sharc_on || sharc_update)
                 {
                     sharc_hit.positionWorld = hp;
                     float3 sharc_normal = gn;
                     if (dot(sharc_normal, dir) > 0.0) sharc_normal = -sharc_normal;
                     sharc_hit.normalWorld = sharc_normal;
-
+                }
+                if (sharc_on)
+                {
                     // Only trust the cache once a path segment is longer than
                     // the voxel it lands in and its roughness footprint covers
                     // that voxel; otherwise the lookup is aliased.

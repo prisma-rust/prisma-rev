@@ -12,6 +12,11 @@ use std::ffi::CString;
 use crate::buffer::create_buffer;
 use crate::compute::ComputePipeline;
 use crate::context::VulkanContext;
+use crate::render_graph::{
+    GiMode, GraphResources, PassInfo, PassKind, RenderContext, RenderGraphBuilder, RenderMode,
+    RenderPassNode, RenderSettings, ResourceType, ResourceUsage, SHARC_ACCUMULATION_H,
+    SHARC_HASH_ENTRIES_H, SHARC_RESOLVED_H,
+};
 
 pub const DEFAULT_SHARC_CAPACITY: u32 = 1024 * 1024; // 1M entries (~40MB GPU memory)
 
@@ -305,6 +310,222 @@ impl SharcResolvePass {
         unsafe {
             device.destroy_descriptor_pool(self.ds_pool, None);
             device.destroy_descriptor_set_layout(self.ds_layout, None);
+        }
+    }
+}
+
+/// Whether the SHaRC cache is in use for this frame.
+///
+/// The cache has two consumers: the path tracer (trains it, then queries it)
+/// and the raster ReSTIR GI pass (terminates its bounces in it). Neither exists
+/// in the other mode, so the resolve has to run under exactly this predicate.
+pub fn sharc_active(gi_mode: GiMode, render_mode: RenderMode) -> bool {
+    match gi_mode {
+        GiMode::Sharc => render_mode == RenderMode::PathTrace,
+        GiMode::Restir => render_mode == RenderMode::Raster,
+        _ => false,
+    }
+}
+
+/// SHaRC accumulation resolve as a graph node.
+///
+/// The resolve reads what the training dispatch deposited and writes the
+/// resolved cache the consumers query, so it has to be an ordered graph step
+/// rather than a call buried inside the frame recorder (repair spec §4: no
+/// invisible training or resolve outside the graph).
+///
+/// [`SharcTargets`] stay owned by `GraphRenderer`, which allocates and clears
+/// them; the node only borrows them through the descriptor set it builds in
+/// [`Self::set_targets`].
+pub struct SharcResolveNode {
+    pass: Option<SharcResolvePass>,
+    capacity: u32,
+    prev_camera_pos: Option<[f32; 4]>,
+    dispatches: u64,
+}
+
+impl SharcResolveNode {
+    pub fn new() -> Self {
+        Self {
+            pass: None,
+            capacity: 0,
+            prev_camera_pos: None,
+            dispatches: 0,
+        }
+    }
+
+    /// Bind the resolve to a (re)allocated cache. Replaces any previous
+    /// descriptor set, so this is also the "capacity changed" path.
+    pub fn set_targets(
+        &mut self,
+        context: &VulkanContext,
+        targets: &SharcTargets,
+    ) -> anyhow::Result<()> {
+        let pass = SharcResolvePass::new(context, targets)?;
+        self.pass = Some(pass);
+        self.capacity = targets.capacity;
+        self.prev_camera_pos = None;
+        Ok(())
+    }
+
+    /// Drop the descriptor set and the cache size; used when the targets are
+    /// reallocated or the renderer shuts down.
+    pub fn clear(&mut self, device: &ash::Device) {
+        if let Some(mut pass) = self.pass.take() {
+            pass.destroy(device);
+        }
+        self.capacity = 0;
+        self.prev_camera_pos = None;
+    }
+
+    /// Whether a resolve is currently bound to a cache.
+    pub fn is_bound(&self) -> bool {
+        self.pass.is_some() && self.capacity > 0
+    }
+
+    /// Forget the previous camera position.
+    ///
+    /// The resolve reprojects cached radiance through the camera delta, so a
+    /// stale pair after a swapchain rebuild would smear a frame across the
+    /// resize. Dropping the history makes the next resolve a no-op reprojection.
+    pub fn reset_history(&mut self) {
+        self.prev_camera_pos = None;
+    }
+
+    /// How many frames actually recorded a resolve dispatch.
+    pub fn dispatches(&self) -> u64 {
+        self.dispatches
+    }
+}
+
+impl Default for SharcResolveNode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RenderPassNode for SharcResolveNode {
+    fn name(&self) -> &str {
+        "SharcResolve"
+    }
+
+    fn setup(&mut self, graph: &mut RenderGraphBuilder, _settings: &RenderSettings) {
+        // The buffers are owned by GraphRenderer; the handles are declared so
+        // the resolve is an explicit reader/writer of the cache in the graph
+        // and runs after the trainer that wrote it.
+        for handle in [SHARC_HASH_ENTRIES_H, SHARC_ACCUMULATION_H, SHARC_RESOLVED_H] {
+            graph.create_resource_at(handle, ResourceType::StorageBuffer { size: 0 });
+            graph.read_usage(ResourceUsage {
+                handle,
+                access: vk::AccessFlags::SHADER_READ,
+                stage: vk::PipelineStageFlags::COMPUTE_SHADER,
+                layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            });
+            graph.write_usage(ResourceUsage {
+                handle,
+                access: vk::AccessFlags::SHADER_WRITE,
+                stage: vk::PipelineStageFlags::COMPUTE_SHADER,
+                layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            });
+        }
+    }
+
+    fn execute(
+        &mut self,
+        ctx: &RenderContext,
+        _resources: &mut GraphResources,
+    ) -> anyhow::Result<()> {
+        let camera_pos = ctx.frame.camera_pos;
+        // The previous position is what the shader reprojects the cached
+        // radiance with; it has to be the real previous frame, so it is
+        // recorded here rather than reconstructed from the current frame.
+        let camera_pos_prev = self.prev_camera_pos.unwrap_or(camera_pos);
+        self.prev_camera_pos = Some(camera_pos);
+
+        // The resolve only runs where the cache is actually in use: path-traced
+        // SHaRC, or the raster ReSTIR GI variant that terminates its bounces in
+        // the same cache.
+        if !sharc_active(ctx.settings.gi_mode, ctx.frame.render_mode)
+            || !ctx.settings.sharc_enable_resolve
+        {
+            return Ok(());
+        }
+        let Some(pass) = self.pass.as_ref() else {
+            return Ok(());
+        };
+        if self.capacity == 0 {
+            return Ok(());
+        }
+
+        let device = ctx.device;
+        let cmd = ctx.cmd;
+
+        // This frame's training dispatch just wrote the hash entries and the
+        // accumulation buffer that resolve is about to read, and the two are
+        // separate dispatches. Order them explicitly. With training disabled
+        // the writes may come from an earlier frame, which this barrier also
+        // covers.
+        let prior_writes = vk::MemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE);
+        unsafe {
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                &[prior_writes],
+                &[],
+                &[],
+            );
+        }
+
+        let push = SharcResolvePush {
+            camera_pos,
+            camera_pos_prev,
+            scene_scale: ctx.settings.sharc_scene_scale,
+            capacity: self.capacity,
+            accumulation_frame_num: ctx.settings.sharc_accumulation_frame_num,
+            stale_frame_num_max: ctx.settings.sharc_stale_frame_num,
+            frame_index: ctx.frame_index,
+            radiance_scale: 1000.0,
+            enable_anti_firefly: if ctx.settings.sharc_enable_anti_firefly {
+                1
+            } else {
+                0
+            },
+            pad: 0,
+        };
+        pass.execute(device, cmd, &push);
+
+        // The consumer reads the resolved cache from a later pass in the same
+        // frame, so make the resolve writes visible to compute and fragment.
+        let barrier = vk::MemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE);
+        unsafe {
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[barrier],
+                &[],
+                &[],
+            );
+        }
+
+        self.dispatches = self.dispatches.wrapping_add(1);
+        Ok(())
+    }
+
+    fn graph_info(&self) -> PassInfo {
+        PassInfo {
+            index: usize::MAX,
+            name: self.name().to_string(),
+            kind: PassKind::SharcResolve,
+            inputs: vec![SHARC_HASH_ENTRIES_H, SHARC_ACCUMULATION_H, SHARC_RESOLVED_H],
+            outputs: vec![SHARC_RESOLVED_H],
         }
     }
 }

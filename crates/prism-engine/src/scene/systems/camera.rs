@@ -217,7 +217,7 @@ pub fn camera_controller_system(
     dt: f32,
     look_active: bool,
 ) -> Option<prism_ecs::Entity> {
-    use crate::input::{KeyCode, MouseButton};
+    use crate::input::KeyCode;
 
     // 输入必须驱动**正在渲染**的那台相机，否则多相机场景里 WASD/鼠标会移动另一台。
     // 先拿到实体 id，让 &self 借用在这里结束，后面才能取 &mut 分量。
@@ -225,12 +225,11 @@ pub fn camera_controller_system(
 
     let ctrl = world.get_mut::<FlyCameraController>(cam_entity)?;
     let move_speed;
-    let look_sensitivity;
     {
         // Scope the &mut borrow of ctrl so we can later borrow LocalTransform.
-        // Look: either right-drag (non-locked) or direct mouse-follow (locked).
-        let effective_look = look_active || input.mouse_held(MouseButton::Right);
-        if effective_look {
+        // 锁定状态是相机输入的唯一开关：解锁时键盘和鼠标都归项目 UI，相机
+        // 既不转也不走（以前右键还能拖动视角，等于同一个布尔值只管了一半）。
+        if look_active {
             let d = input.mouse_delta();
             ctrl.yaw -= d[0] as f32 * ctrl.look_sensitivity;
             ctrl.pitch -= d[1] as f32 * ctrl.look_sensitivity;
@@ -239,16 +238,16 @@ pub fn camera_controller_system(
             // straight up" while avoiding pole-crossing roll.
             let lim = std::f32::consts::FRAC_PI_2 - 0.02;
             ctrl.pitch = ctrl.pitch.clamp(-lim, lim);
-        }
 
-        // Mouse wheel adjusts base move speed.
-        let scroll = input.scroll_delta() as f32;
-        if scroll.abs() > 0.0 {
-            ctrl.move_speed *= 1.0 - scroll * 0.1;
-            ctrl.move_speed = ctrl.move_speed.clamp(0.5, 200.0);
+            // Mouse wheel adjusts base move speed. 解锁态滚轮属于项目 UI，
+            // 不能让菜单滚动顺手改掉相机速度。
+            let scroll = input.scroll_delta() as f32;
+            if scroll.abs() > 0.0 {
+                ctrl.move_speed *= 1.0 - scroll * 0.1;
+                ctrl.move_speed = ctrl.move_speed.clamp(0.5, 200.0);
+            }
         }
         move_speed = ctrl.move_speed;
-        look_sensitivity = ctrl.look_sensitivity;
     }
 
     // Translation: WASD/QE/Space/Ctrl relative to the yaw/pitch basis. Position
@@ -270,8 +269,8 @@ pub fn camera_controller_system(
     let r = right(yaw);
     let up = Vec3::Y;
     let mut movev = Vec3::ZERO;
-    // 走位键只在指针锁定时归相机：解锁态键盘属于项目的 UI（Sponza 的调参菜单
-    // 也用 WASD 导航），同一次按键绝不能同时翻菜单和移动相机。
+    // 走位键只在指针锁定时归相机：解锁态键盘属于项目的 UI（菜单常用 WASD
+    // 导航），同一次按键绝不能同时翻菜单和移动相机。
     if look_active && input.key_held(KeyCode::KeyW) {
         movev += f;
     }
@@ -320,11 +319,6 @@ pub fn camera_controller_system(
         t.rotation = local_rot;
         t.position += delta_local;
     }
-
-    // Touch `look_sensitivity` so the compiler doesn't warn about it being
-    // unused when the look branch above didn't run - it is read indirectly via
-    // ctrl.look_sensitivity. (No-op; kept for clarity.)
-    let _ = look_sensitivity;
 
     Some(cam_entity)
 }

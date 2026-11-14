@@ -172,6 +172,10 @@ impl SkyboxPass {
                 vk::PipelineColorBlendAttachmentState::default()
                     .color_write_mask(vk::ColorComponentFlags::empty())
                     .blend_enable(false),
+                // Albedo + roughness (SV_Target3): the skybox shader writes none.
+                vk::PipelineColorBlendAttachmentState::default()
+                    .color_write_mask(vk::ColorComponentFlags::empty())
+                    .blend_enable(false),
             ];
 
             let pipeline = GraphicsPipeline::new(&PipelineDesc {

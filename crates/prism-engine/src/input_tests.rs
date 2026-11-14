@@ -128,6 +128,29 @@ fn touch_events_accumulate_and_clear() {
     assert!(s.touches().is_empty());
 }
 
+/// 宿主每帧把平台窗口的锁定状态抄进来：状态没变时不碰瞬时输入，
+/// 变了才重置（否则「锁定」期间每帧都会清掉鼠标增量）。
+#[test]
+fn sync_pointer_lock_only_reacts_to_changes() {
+    let mut s = InputManager::new();
+    s.sync_pointer_lock(false);
+    assert!(!s.pointer_locked);
+
+    s.sync_pointer_lock(true);
+    assert!(s.pointer_locked);
+    s.handle_mouse_move([4.0, 0.0]);
+    s.sync_pointer_lock(true);
+    assert_eq!(s.mouse_delta(), [4.0, 0.0], "状态没变时不该清掉增量");
+
+    s.sync_pointer_lock(false);
+    assert!(!s.pointer_locked);
+    assert_eq!(
+        s.mouse_delta(),
+        [0.0, 0.0],
+        "解锁要重置增量，避免视角跳一下"
+    );
+}
+
 #[test]
 fn begin_frame_clears_all_transient() {
     let mut s = InputManager::new();

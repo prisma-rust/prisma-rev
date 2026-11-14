@@ -144,14 +144,15 @@ impl ScreenshotCapture {
         })
     }
 
-    /// 在命令缓冲区里记录：交换链图像 → 缓冲区 → 回到 present 布局。
+    /// 在命令缓冲区里记录：图像 → 缓冲区 → 恢复原布局。
     ///
-    /// 调用点必须在图像已经是 `PRESENT_SRC_KHR` 之后。
+    /// 支持窗口模式（`PRESENT_SRC_KHR`）与无窗口离屏模式（`COLOR_ATTACHMENT_OPTIMAL`）。
     pub(crate) fn record_copy(
         &self,
         device: &ash::Device,
         cmd: vk::CommandBuffer,
         image: vk::Image,
+        current_layout: vk::ImageLayout,
     ) -> Result<()> {
         let range = vk::ImageSubresourceRange {
             aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -161,7 +162,7 @@ impl ScreenshotCapture {
             layer_count: 1,
         };
         let to_transfer = vk::ImageMemoryBarrier::default()
-            .old_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+            .old_layout(current_layout)
             .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
             .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
@@ -207,15 +208,15 @@ impl ScreenshotCapture {
             );
         }
 
-        let back_to_present = vk::ImageMemoryBarrier::default()
+        let restore_layout = vk::ImageMemoryBarrier::default()
             .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-            .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+            .new_layout(current_layout)
             .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
             .image(image)
             .subresource_range(range)
             .src_access_mask(vk::AccessFlags::TRANSFER_READ)
-            .dst_access_mask(vk::AccessFlags::empty());
+            .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE);
         unsafe {
             device.cmd_pipeline_barrier(
                 cmd,
@@ -224,7 +225,7 @@ impl ScreenshotCapture {
                 vk::DependencyFlags::empty(),
                 &[],
                 &[],
-                std::slice::from_ref(&back_to_present),
+                std::slice::from_ref(&restore_layout),
             );
         }
         Ok(())

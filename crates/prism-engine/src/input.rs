@@ -347,6 +347,20 @@ impl InputManager {
         self.pointer_locked = locked;
         self.begin_frame();
     }
+
+    /// Mirror the platform pointer-lock truth into the input state.
+    ///
+    /// 锁定状态只有**一个**真值：平台窗口（`grab_pointer` / `release_pointer` 的
+    /// 结果）。宿主每帧把它抄进来，引擎（相机）和项目钩子（面板）读的就是同一个
+    /// 布尔值，不会出现「光标已解锁、相机还在吃 WASD」这种两份状态打架的情况。
+    ///
+    /// 与 [`Self::set_locked`] 的区别：状态没变时不动瞬时输入，所以可以每帧调用。
+    pub fn sync_pointer_lock(&mut self, locked: bool) {
+        if self.pointer_locked == locked {
+            return;
+        }
+        self.set_locked(locked);
+    }
 }
 
 #[cfg(test)]

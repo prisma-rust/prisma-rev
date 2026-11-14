@@ -1382,6 +1382,13 @@ impl App {
             }
 
             if simulate {
+                // 指针锁定只有一个真值（平台窗口），每帧抄进 InputManager：
+                // 抓取被系统拒绝、Esc 解锁、失焦释放都会改窗口状态，这里对齐之后
+                // 相机（引擎）和面板（项目钩子）读到的布尔值不会各说各话。
+                if let Some(platform) = self.platform.as_ref() {
+                    self.input
+                        .sync_pointer_lock(platform.window().is_pointer_locked());
+                }
                 // --- Fixed timestep: integer nanosecond clock, capped catch-up ---
                 const FIXED_STEP: Duration = Duration::from_nanos(16_666_667);
                 engine.begin_frame(&self.input, [surface_w as f32, surface_h as f32]);
@@ -1654,8 +1661,10 @@ impl App {
                 // 要重按一次左键，走位键却没反应，读起来就是「键盘坏了」。这里直接
                 // 恢复锁定（Esc 仍是唯一的解锁手势，见 should_release_pointer_lock）。
                 if focused && !self.input.pointer_locked {
-                    prism_platform::grab_pointer(window);
-                    self.input.set_locked(true);
+                    // 以平台的真实结果为准：抓取被系统拒绝时不能再记「已锁定」，
+                    // 否则光标可见可动、相机却照样吃 WASD 和鼠标增量。
+                    let grabbed = prism_platform::grab_pointer(window);
+                    self.input.set_locked(grabbed);
                 }
             }
             PlatformEvent::CursorMoved { x, y } => {
@@ -1684,8 +1693,8 @@ impl App {
                     other => MouseButton::Other(other),
                 };
                 if pressed && button == MouseButton::Left && !self.input.pointer_locked {
-                    prism_platform::grab_pointer(window);
-                    self.input.set_locked(true);
+                    let grabbed = prism_platform::grab_pointer(window);
+                    self.input.set_locked(grabbed);
                 }
                 self.input.handle_mouse_button(
                     button,
@@ -2156,6 +2165,9 @@ fn engine_key_from_native(key: Key) -> prism_engine::input::KeyCode {
         Key::F10 => Eng::F10,
         Key::F11 => Eng::F11,
         Key::F12 => Eng::F12,
+        // 字母键进引擎后仍是「原始键码」载荷，但取自 `Key::Letter` 的 ASCII 值，
+        // 与后端无关（两个后端都给出同一个 KeyCode::Other）。
+        Key::Letter(byte) => Eng::Other(u32::from(byte)),
         // 未建模的键保留原始虚拟键码，不丢键。
         Key::Other(_) => Eng::Other(key.to_vk()),
     }
@@ -2423,7 +2435,7 @@ mod tests {
     }
 
     /// 端到端：平台按键事件走完换算后必须能在 `InputManager` 里查到，
-    /// 否则相机读 `key_held(KeyW)` 永远是 false（Sponza WASD 不动相机的根因）。
+    /// 否则相机读 `key_held(KeyW)` 永远是 false（「WASD 不动相机」的根因）。
     #[test]
     fn platform_key_events_reach_the_engine_input_state() {
         use prism_engine::input::KeyCode;
@@ -2442,8 +2454,8 @@ mod tests {
             );
         }
         // 只走 `LETTER_KEYS` 兜底的那些键同样不能丢。
-        assert!(!apply_key_event(&mut input, K::Other(0x52), true));
-        assert!(input.key_held(KeyCode::Other(0x52)));
+        assert!(!apply_key_event(&mut input, K::Letter(b'R'), true));
+        assert!(input.key_held(KeyCode::Other(u32::from(b'R'))));
     }
 
     /// Esc 在锁定态下先释放锁定，然后仍作为普通按键交给游戏。

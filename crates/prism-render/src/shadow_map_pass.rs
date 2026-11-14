@@ -1064,7 +1064,7 @@ impl RenderPassNode for ShadowMapPass {
         log::trace!(
             "ShadowMapPass: rendered {} casters into {}x{} shadow atlas ({} in list)",
             casters,
-            size * 2,
+            self.shadow_atlas_width,
             size,
             ctx.frame.draw_list.len()
         );

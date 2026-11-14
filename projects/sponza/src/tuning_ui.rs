@@ -342,11 +342,6 @@ enum KeyRoute {
     Consume,
 }
 
-/// Key::to_vk 的 'M' / 'R' / 'V'：平台层把两个后端统一成 Win32 VK_*。
-const VK_M: u32 = 0x4D;
-const VK_R: u32 = 0x52;
-const VK_V: u32 = 0x56;
-
 /// 面板在锁定态下的可见性。
 ///
 /// 两种模式互不重叠：**锁定** = 鼠标隐藏、面板隐藏、WASD 走位；**未锁定** =
@@ -395,17 +390,20 @@ impl SponzaTuningHook {
                 self.request_reset = true;
                 return KeyRoute::Consume;
             }
-            // M / R / V 是面板自己的功能键，同时 R 也是引擎的移动键。
-            // 指针锁定时它们归相机，面板只在解锁态接收。
-            Key::Other(VK_M) if !self.locked => {
+            // M / R / V 是面板自己的功能键，相机从不读它们
+            // （`camera_controller_system` 只看 WASD / QE / Space / Ctrl / Shift），
+            // 所以锁定与否都不影响按键语义，两个状态下都接收。
+            // 之前按「锁定态归相机」加了 `!self.locked` 守卫，而窗口拿到焦点就自动
+            // 锁定，等于这三个键在游戏里永远收不到——M 不响应就是这么来的。
+            Key::Letter(b'M') => {
                 self.cycle_render_mode();
                 return KeyRoute::Consume;
             }
-            Key::Other(VK_R) if !self.locked => {
+            Key::Letter(b'R') => {
                 self.request_reset = true;
                 return KeyRoute::Consume;
             }
-            Key::Other(VK_V) if !self.locked => {
+            Key::Letter(b'V') => {
                 self.vsync = !self.vsync;
                 return KeyRoute::Consume;
             }
@@ -413,6 +411,17 @@ impl SponzaTuningHook {
             Key::KeyT => {
                 self.tonemap_mode = (self.tonemap_mode + 1) % 3;
                 return KeyRoute::Consume;
+            }
+            // 下面全是**菜单操作**，只属于解锁态。锁定 = 相机接管键鼠，菜单一个键
+            // 都不该收到（以前只挡了 WASD，方向键 / Space / Enter 仍被吃掉，
+            // 锁定态下按空格既不开火也不翻菜单，纯属吞键）。
+            _ if self.locked => KeyRoute::Forward,
+            // 解锁态：WASD 就是菜单导航。面板若被 F1 手动收起，先展开再导航，
+            // 否则按键作用在一个看不见的列表上。
+            Key::KeyW | Key::KeyA | Key::KeyS | Key::KeyD => {
+                self.show = true;
+                self.navigate_with_wasd(key);
+                KeyRoute::Consume
             }
             // 面板关着时下面这些都没意义：原样交回给 App。
             _ if !self.show => KeyRoute::Forward,
@@ -439,18 +448,6 @@ impl SponzaTuningHook {
             Key::Space | Key::Enter => {
                 self.toggle_parameter();
                 return KeyRoute::Consume;
-            }
-            // WASD 严格按锁定状态分流，任何状态下都只服务一个消费者：
-            // 锁定 = 相机走位（原样转发，面板不碰）；未锁定 = 面板菜单（吃掉，
-            // 引擎再也看不到这次按键）。先前两边都放行，结果解锁态翻菜单时相机
-            // 也跟着动。
-            Key::KeyW | Key::KeyA | Key::KeyS | Key::KeyD => {
-                if self.locked {
-                    KeyRoute::Forward
-                } else {
-                    self.navigate_with_wasd(key);
-                    KeyRoute::Consume
-                }
             }
             _ => KeyRoute::Forward,
         }
@@ -828,6 +825,28 @@ mod tests {
             assert_eq!(hook.on_key_pressed(key), KeyRoute::Forward, "{key:?}");
         }
         assert_eq!(hook.selected_index, before, "锁定态下 WASD 不许翻菜单");
+    }
+
+    /// 锁定态：菜单键一个都不许吞——面板收着，方向键 / Space 要原样交给游戏。
+    #[test]
+    fn menu_keys_are_forwarded_while_locked() {
+        let mut hook = SponzaTuningHook {
+            locked: true,
+            show: true,
+            ..SponzaTuningHook::default()
+        };
+        let before = hook.selected_index;
+        for key in [
+            Key::ArrowUp,
+            Key::ArrowDown,
+            Key::ArrowLeft,
+            Key::ArrowRight,
+            Key::Space,
+            Key::Enter,
+        ] {
+            assert_eq!(hook.on_key_pressed(key), KeyRoute::Forward, "{key:?}");
+        }
+        assert_eq!(hook.selected_index, before, "锁定态下方向键不许翻菜单");
     }
 
     /// 未锁定：WASD 只翻菜单，且必须被吃掉——否则相机同时也在动。

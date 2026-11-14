@@ -187,6 +187,79 @@ pub(crate) fn ao_texture_dummy(
     Ok(image)
 }
 
+/// 1×1 `R8G8B8A8_UNORM` cleared to black, layout `SHADER_READ_ONLY_OPTIMAL`.
+///
+/// Fills the forward pass' `giTex` slot (set 4 binding 1) when the ReSTIR GI
+/// pass has produced nothing yet — the binding is declared unconditionally in
+/// scene_frag.slang, so a null view trips `vkCmdDrawIndexed` descriptor-validity
+/// validation even though `gi_mode == 0` never samples it.
+pub(crate) fn gi_texture_dummy(
+    context: &VulkanContext,
+    command_pool: vk::CommandPool,
+    queue: vk::Queue,
+) -> anyhow::Result<SolidImage> {
+    let image = alloc_image(
+        context,
+        vk::Format::R8G8B8A8_UNORM,
+        vk::ImageAspectFlags::COLOR,
+        vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
+    )?;
+
+    one_shot(context, command_pool, queue, |device, cmd| unsafe {
+        device.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[vk::ImageMemoryBarrier::default()
+                .image(image.image)
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .src_access_mask(vk::AccessFlags::empty())
+                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                .subresource_range(all_subresource(vk::ImageAspectFlags::COLOR))],
+        );
+        device.cmd_clear_color_image(
+            cmd,
+            image.image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &vk::ClearColorValue {
+                float32: [0.0, 0.0, 0.0, 1.0],
+            },
+            &[all_subresource(vk::ImageAspectFlags::COLOR)],
+        );
+        device.cmd_pipeline_barrier(
+            cmd,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::FRAGMENT_SHADER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[vk::ImageMemoryBarrier::default()
+                .image(image.image)
+                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                .subresource_range(all_subresource(vk::ImageAspectFlags::COLOR))],
+        );
+    })?;
+
+    Ok(image)
+}
+
+fn all_subresource(aspect: vk::ImageAspectFlags) -> vk::ImageSubresourceRange {
+    vk::ImageSubresourceRange {
+        aspect_mask: aspect,
+        base_mip_level: 0,
+        level_count: 1,
+        base_array_layer: 0,
+        layer_count: 1,
+    }
+}
+
 #[cfg(not(feature = "shadows"))]
 fn depth_subresource() -> vk::ImageSubresourceRange {
     vk::ImageSubresourceRange {

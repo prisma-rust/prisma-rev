@@ -163,12 +163,11 @@ impl Gizmo {
         let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
             .color_write_mask(vk::ColorComponentFlags::RGBA)
             .blend_enable(false);
-        // The gizmo draws inside ForwardPass's render pass, which has 3 color
-        // attachments (color + view-normal MRT + motion vectors). Every pipeline
-        // bound in that render pass must declare a matching attachmentCount, so we
-        // list 3 blend states: attachment 0 (color) writes RGBA, while attachments
-        // 1 and 2 (normal, motion) keep an empty write mask so the cleared values
-        // are preserved.
+        // The gizmo draws inside ForwardPass's render pass, which has 4 color
+        // attachments (color + view-normal MRT + motion vectors + albedo/roughness).
+        // Every pipeline bound in that render pass must declare a matching
+        // attachmentCount, so we list 4 blend states: attachment 0 (color) writes
+        // RGBA, while 1-3 keep an empty write mask so the cleared values survive.
         let blend_attachments = [
             color_blend_attachment,
             // 附件 1 = view-space 法线 MRT：空写入遮罩，保留 ForwardPass 清好的值。
@@ -176,8 +175,12 @@ impl Gizmo {
                 .color_write_mask(vk::ColorComponentFlags::empty())
                 .blend_enable(false),
             // 附件 2 = 运动矢量（#883）：同样只写 0 号附件，否则
-            // `pColorBlendState->attachmentCount` 与渲染 pass 的
-            // 3 个颜色附件不一致（#973，VUID-...-renderPass-07609）。
+            // `pColorBlendState->attachmentCount` 与渲染 pass 的颜色附件数
+            // 不一致（#973，VUID-...-renderPass-07609）。
+            vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::empty())
+                .blend_enable(false),
+            // 附件 3 = albedo + 粗糙度（ReSTIR GI 的 G-buffer）：gizmo 不写。
             vk::PipelineColorBlendAttachmentState::default()
                 .color_write_mask(vk::ColorComponentFlags::empty())
                 .blend_enable(false),

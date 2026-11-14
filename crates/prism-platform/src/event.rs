@@ -4,10 +4,12 @@
 //! [`PlatformEvent`] here, and `prism-app` consumes only this layer — so with
 //! `winit-backend` disabled no winit type takes part in compilation.
 //!
-//! [`Key`] models only the physical keys the engine actually uses (WASD/QE/T, the
-//! number row, arrow keys, modifiers, F1–F12); every other key lands in
-//! [`Key::Other`] with the **backend raw code** as payload (winit discriminant /
-//! Win32 virtual key code `VK_*`) instead of being silently dropped.
+//! [`Key`] models the physical keys the engine actually uses (WASD/QE/T, the
+//! number row, arrow keys, modifiers, F1–F12), plus [`Key::Letter`] for the rest of
+//! the alphabet — projects bind `M` / `R` / `V` themselves, so a letter must not
+//! degrade to a backend-specific raw code. Every other key lands in [`Key::Other`]
+//! with the **backend raw code** as payload (winit discriminant / Win32 virtual key
+//! code `VK_*`) instead of being silently dropped.
 
 /// A physical key (window-library independent).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -56,6 +58,13 @@ pub enum Key {
     F10,
     F11,
     F12,
+    /// A letter key without a dedicated variant, as an ASCII `b'A'..=b'Z'`.
+    ///
+    /// Letters are the one key group projects bind freely, so they get a
+    /// backend-independent payload: both backends produce `Letter(b'M')` and a
+    /// project never writes a Win32 virtual-key literal. WASD/Q/E/T keep their own
+    /// variants because the engine's camera system looks them up by `KeyCode`.
+    Letter(u8),
     /// An unmodeled physical key.
     ///
     /// The payload is the **backend raw code** (winit discriminant / Win32 `VK_*`).
@@ -147,7 +156,7 @@ impl Key {
                 0x51 => Key::KeyQ,
                 0x45 => Key::KeyE,
                 0x54 => Key::KeyT,
-                other => Key::Other(other),
+                other => Key::Letter(other as u8),
             },
             other => Key::Other(other),
         }
@@ -192,6 +201,7 @@ impl Key {
             Key::KeyS => 0x53,
             Key::KeyT => 0x54,
             Key::KeyW => 0x57,
+            Key::Letter(byte) => byte as u32,
             Key::F1 => 0x70,
             Key::F2 => 0x71,
             Key::F3 => 0x72,
@@ -403,7 +413,7 @@ mod tests {
     /// Unmodeled keys must not be dropped: they degrade to the backend raw code.
     #[test]
     fn unmapped_virtual_keys_fall_back_to_raw_code() {
-        assert_eq!(Key::from_vk(0x5A), Key::Other(0x5A)); // 'Z'
+        assert_eq!(Key::from_vk(0x5A), Key::Letter(b'Z')); // 'Z'
         assert_eq!(Key::from_vk(0x24), Key::Other(0x24)); // VK_HOME
         assert_eq!(Key::from_vk(0x7C), Key::Other(0x7C)); // VK_F13
     }

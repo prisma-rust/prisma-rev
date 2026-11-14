@@ -254,6 +254,10 @@ pub struct RestirGiPass {
     frame_index: u64,
     reset_pending: bool,
     device: Option<ash::Device>,
+    /// Images/buffers still referenced by in-flight frames (see `crate::retire`).
+    retire: crate::retire::RetireQueue,
+    /// Frame slot being recorded.
+    slot_index: u32,
 }
 
 impl Default for RestirGiPass {
@@ -310,6 +314,8 @@ impl RestirGiPass {
             frame_index: 0,
             reset_pending: true,
             device: None,
+            retire: crate::retire::RetireQueue::new(),
+            slot_index: 0,
         }
     }
 
@@ -409,10 +415,18 @@ impl RestirGiPass {
         if !changed && self.images[0].is_some() {
             return Ok(());
         }
-        let device = &context.device;
+        // A command buffer submitted last frame may still sample the old images and
+        // reservoirs, so hand them to the retirement queue instead of stalling.
         for slot in self.images.iter_mut() {
-            if let Some(mut image) = slot.take() {
-                unsafe { image.destroy(device) };
+            if let Some(image) = slot.take() {
+                self.retire.retire(
+                    self.slot_index,
+                    crate::retire::RetiredResource::Image {
+                        view: image.view,
+                        image: image.image,
+                        memory: image.memory,
+                    },
+                );
             }
             *slot = Some(GiImage::new(context, gi_extent)?);
         }
@@ -423,11 +437,14 @@ impl RestirGiPass {
         self.reservoirs_dirty = true;
         self.reset_pending = true;
         if let Some(old) = self.reservoirs.take() {
-            unsafe {
-                for i in 0..2 {
-                    device.destroy_buffer(old.buffers[i], None);
-                    device.free_memory(old.memories[i], None);
-                }
+            for i in 0..2 {
+                self.retire.retire(
+                    self.slot_index,
+                    crate::retire::RetiredResource::Buffer {
+                        buffer: old.buffers[i],
+                        memory: old.memories[i],
+                    },
+                );
             }
         }
         let count = gi_extent.width as vk::DeviceSize * gi_extent.height as vk::DeviceSize;
@@ -1170,6 +1187,8 @@ impl RenderPassNode for RestirGiPass {
     }
 
     fn execute(&mut self, ctx: &RenderContext, resources: &mut GraphResources) -> Result<()> {
+        self.retire.collect(ctx.device, ctx.frame_index);
+        self.slot_index = ctx.frame_index;
         // Raster path only: the path tracer owns GI when it runs.
         if ctx.frame.render_mode != RenderMode::Raster {
             return Ok(());

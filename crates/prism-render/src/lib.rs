@@ -62,6 +62,8 @@ pub mod ground_grid;
 #[cfg(feature = "gtao")]
 pub mod gtao;
 pub mod hdr;
+/// Linear (pre-tonemap) HDR readback of a graph-published float image.
+pub mod hdr_readback;
 /// Image-based lighting (building-block feature `ibl`); the module is always compiled,
 /// falling back to descriptor layout and 1×1 neutral grey fallback when disabled (see `make_ibl`).
 pub mod ibl;
@@ -74,8 +76,8 @@ pub mod particle_pass;
 /// `PRISMREV_PASS_DUMP`：headless 下把各个 pass 的附件写成 PNG。
 pub(crate) mod pass_dump;
 pub mod pipeline;
-/// pass 级 feature（`shadows` / `gtao`）关闭时的 1×1 占位资源。
-#[cfg(any(not(feature = "shadows"), not(feature = "gtao")))]
+/// pass 级 feature（`shadows` / `gtao`）关闭时的 1×1 占位资源，以及
+/// `giTex` 在 ReSTIR GI 尚未产出时的 1×1 兜底图（该 binding 在着色器里无条件声明）。
 pub(crate) mod placeholder;
 pub mod plugin;
 pub mod post;
@@ -90,6 +92,8 @@ pub mod render_runtime;
 pub mod render_texture;
 #[cfg(feature = "restir_gi")]
 pub mod restir_gi;
+/// Frame-delayed destruction of GPU objects still referenced by in-flight work.
+pub(crate) mod retire;
 pub mod rt_pass;
 pub mod rt_scheduler;
 pub mod scene_scope;
@@ -148,13 +152,14 @@ pub use graph_renderer::{FrameCtx, FrameInput, GraphRenderer};
 pub use ground_grid::GroundGrid;
 #[cfg(feature = "gtao")]
 pub use gtao::{GtaoFrameInputs, GtaoPass};
+pub use hdr_readback::HdrReadback;
 pub use mesh::{Mesh, Vertex};
 pub use particle_pass::ParticlePass;
 pub use pipeline::GraphicsPipeline;
 pub use post::PostPass;
 pub use probe_loader::{load_probe_volume, save_probe_volume, ProbeVolumeData};
 #[cfg(feature = "pathtrace")]
-pub use pt_pass::{PathTracePass, PtVariant};
+pub use pt_pass::{PathTracePass, PtVariant, SharcTrainPass};
 pub use render_graph::{
     clip_bounds, internal_extent, post_destination, sort_draw_items, trim_sprite_lights, DlssMode,
     DrawItem, DrawState, GiMode, InternalScaleMode, ParticleDrawItem, PassInfo, PassKind,
@@ -171,7 +176,8 @@ pub use shader::load_shader_module;
 pub use shadow_map_pass::ShadowMapPass;
 #[cfg(feature = "sharc")]
 pub use sharc::{
-    SharcInvalidation, SharcResolvePass, SharcResolvePush, SharcTargets, DEFAULT_SHARC_CAPACITY,
+    sharc_active, SharcInvalidation, SharcResolveNode, SharcResolvePass, SharcResolvePush,
+    SharcTargets, DEFAULT_SHARC_CAPACITY,
 };
 pub use skybox_pass::SkyboxSettings;
 pub use sprite_pass::SpritePass;

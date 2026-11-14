@@ -456,6 +456,8 @@ fn pass_kind(pass: &PassInfo) -> &'static str {
         PassKind::Rt => "rt",
         PassKind::Anf => "anf",
         PassKind::RestirGi => "restir-gi",
+        PassKind::SharcTrain => "sharc-train",
+        PassKind::SharcResolve => "sharc-resolve",
         PassKind::Unknown => "unknown",
     }
 }
@@ -483,6 +485,15 @@ fn resource_name(handle: ResourceHandle) -> String {
         handle if handle == crate::render_graph::FORWARD_VELOCITY_H.0 => "forward.velocity".into(),
         handle if handle == crate::render_graph::FORWARD_ALBEDO_H.0 => "forward.albedo".into(),
         handle if handle == crate::render_graph::RESTIR_GI_COLOR_H.0 => "restir_gi.color".into(),
+        handle if handle == crate::render_graph::SHARC_HASH_ENTRIES_H.0 => {
+            "sharc.hash_entries".into()
+        }
+        handle if handle == crate::render_graph::SHARC_ACCUMULATION_H.0 => {
+            "sharc.accumulation".into()
+        }
+        handle if handle == crate::render_graph::SHARC_RESOLVED_H.0 => "sharc.resolved".into(),
+        handle if handle == crate::render_graph::GTAO_AO_H.0 => "gtao.ao".into(),
+        handle if handle == crate::render_graph::FINAL_COLOR_H.0 => "final.color".into(),
         handle => format!("resource#{handle}"),
     }
 }

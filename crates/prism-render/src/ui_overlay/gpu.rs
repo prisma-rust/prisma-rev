@@ -406,6 +406,10 @@ pub struct UiOverlay {
     /// Cleared by [`UiOverlay::on_swapchain_views_changed`] because the old
     /// image views are destroyed during swapchain recreation.
     framebuffers: Vec<CachedFramebuffer>,
+    /// Objects still referenced by in-flight command buffers (see `crate::retire`).
+    retire: crate::retire::RetireQueue,
+    /// Frame slot being recorded; growth parks the old buffer in this slot.
+    frame_index: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -496,6 +500,8 @@ impl UiOverlay {
             atlas,
             device,
             framebuffers: Vec::new(),
+            retire: crate::retire::RetireQueue::new(),
+            frame_index: 0,
         })
     }
 
@@ -511,18 +517,31 @@ impl UiOverlay {
         }
         // 先建新的再拆旧的，创建失败时旧 pass 仍然有效。
         let render_pass = Self::create_render_pass(&self.device, color_format, self.final_layout)?;
-        // 管线在下一次 record 时按新 render pass 重建；这里只换 pass。
-        unsafe {
+        // 管线在下一次 record 时按新 render pass 重建；这里只换 pass。上一次提交的
+        // 命令缓冲可能还在引用这个 render pass / pipeline，交给回收队列延后销毁。
+        {
             if let Some(pipeline) = self.pipeline.take() {
-                self.device.destroy_pipeline(pipeline, None);
+                self.retire.retire(
+                    self.frame_index,
+                    crate::retire::RetiredResource::Pipeline(pipeline),
+                );
             }
             if let Some(layout) = self.layout.take() {
-                self.device.destroy_pipeline_layout(layout, None);
+                self.retire.retire(
+                    self.frame_index,
+                    crate::retire::RetiredResource::PipelineLayout(layout),
+                );
             }
             for cached in self.framebuffers.drain(..) {
-                self.device.destroy_framebuffer(cached.handle, None);
+                self.retire.retire(
+                    self.frame_index,
+                    crate::retire::RetiredResource::Framebuffer(cached.handle),
+                );
             }
-            self.device.destroy_render_pass(self.render_pass, None);
+            self.retire.retire(
+                self.frame_index,
+                crate::retire::RetiredResource::RenderPass(self.render_pass),
+            );
         }
         self.render_pass = render_pass;
         self.color_format = color_format;
@@ -803,9 +822,19 @@ impl UiOverlay {
             MemoryProperties::HOST_VISIBLE | MemoryProperties::HOST_COHERENT,
         )
         .context("UiOverlay: grow vertex buffer")?;
-        unsafe {
-            self.device.destroy_buffer(self.vertex_buffer, None);
-            self.device.free_memory(self.vertex_memory, None);
+        // The previous frames' command buffers may still read the old buffer, and
+        // growth happens mid-frame while the current one is recording. Park it in
+        // the retirement queue instead of stalling the device.
+        if self.vertex_buffer != vk::Buffer::null()
+            || self.vertex_memory != vk::DeviceMemory::null()
+        {
+            self.retire.retire(
+                self.frame_index,
+                crate::retire::RetiredResource::Buffer {
+                    buffer: self.vertex_buffer,
+                    memory: self.vertex_memory,
+                },
+            );
         }
         self.vertex_buffer = buf;
         self.vertex_memory = mem;
@@ -835,7 +864,12 @@ impl UiOverlay {
         input: &UiOverlayInput,
         // 场景 bindless 纹理表（set 1）；UI 背景图按 `UiQuad::texture` 取样。
         bindless_set: vk::DescriptorSet,
+        frame_index: u32,
     ) -> Result<()> {
+        // The frame slot that just waited its fence is free again: release what
+        // this overlay parked during the previous pass through the queue.
+        self.retire.collect(&context.device, frame_index);
+        self.frame_index = frame_index;
         if input.is_empty() {
             return Ok(());
         }
@@ -1321,6 +1355,8 @@ fn emit_quad(
 
 impl Drop for UiOverlay {
     fn drop(&mut self) {
+        // `GraphRenderer::destroy` waits for the device before dropping overlays.
+        self.retire.destroy_all(&self.device);
         unsafe {
             if let Some(p) = self.pipeline {
                 self.device.destroy_pipeline(p, None);

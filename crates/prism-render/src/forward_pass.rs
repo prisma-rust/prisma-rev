@@ -736,6 +736,7 @@ impl ForwardPass {
         gi_descriptor_set: vk::DescriptorSet,
         gi_layout: vk::DescriptorSetLayout,
         camera_stride: u32,
+        gi_dummy_view: vk::ImageView,
     ) -> Result<()> {
         let device = &context.device;
         self.ibl_descriptor_set = ibl_descriptor_set;
@@ -1237,6 +1238,25 @@ impl ForwardPass {
         // The actual image_info write happens in `set_ao` once the GTAO pass
         // produces its first AO view. Until then the descriptors point at null;
         // `PBR_FLAG_AO` is off by default so nothing samples it.
+        //
+        // `giTex` is different: it is declared unconditionally in scene_frag.slang,
+        // so a never-written binding is a descriptor-validity error on every draw
+        // even when `gi_mode == 0` never samples it. Seed it with the 1x1 dummy.
+        if gi_dummy_view != vk::ImageView::null() {
+            self.gi_views.fill(gi_dummy_view);
+            for set in &self.ao_descriptor_sets {
+                let image_info = vk::DescriptorImageInfo::default()
+                    .image_view(gi_dummy_view)
+                    .sampler(ao_sampler)
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+                let write = vk::WriteDescriptorSet::default()
+                    .dst_set(*set)
+                    .dst_binding(scene_frag::GI_TEX_BINDING)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .image_info(std::slice::from_ref(&image_info));
+                unsafe { device.update_descriptor_sets(&[write], &[]) };
+            }
+        }
 
         // set 5 (GI probe volume) is borrowed from SceneScope — already wired
         // via `gi_descriptor_set` / `gi_layout` parameters above.
@@ -2854,6 +2874,7 @@ impl RenderPassNode for ForwardPass {
                     &camera.view_proj,
                     &camera.inv_view,
                     ctx.frame.particle_items,
+                    ctx.frame_index,
                 ) {
                     log::warn!("ParticlePass draw failed (particles skipped): {e:#}");
                 }
@@ -2873,6 +2894,7 @@ impl RenderPassNode for ForwardPass {
                     &camera.view_proj,
                     ctx.frame.sprite_items,
                     ctx.frame.sprite_lights,
+                    ctx.frame_index,
                 ) {
                     log::warn!("SpritePass draw failed (sprites skipped): {e:#}");
                 }

@@ -34,8 +34,8 @@ use crate::lut::Lut3d;
 use crate::pipeline::{GraphicsPipeline, PipelineDesc};
 use crate::render_graph::{
     GraphResources, PassInfo, PassKind, RenderContext, RenderGraphBuilder, RenderMode,
-    RenderPassNode, RenderSettings, ResourceHandle, ResourceUsage, ANF_COLOR_H, FORWARD_COLOR_H,
-    FORWARD_DEPTH_H, FORWARD_NORMAL_H, PT_COLOR_H, TAA_COLOR_H,
+    RenderPassNode, RenderSettings, ResourceHandle, ResourceType, ResourceUsage, ANF_COLOR_H,
+    FINAL_COLOR_H, FORWARD_COLOR_H, FORWARD_DEPTH_H, FORWARD_NORMAL_H, PT_COLOR_H, TAA_COLOR_H,
 };
 use crate::render_pass::find_memory_type;
 use crate::shader;
@@ -80,6 +80,7 @@ pub struct PostPass {
     /// Cached swapchain views the framebuffers were built against (for
     /// rebuild detection, mirroring ForwardPass's 模式
     target_views: Vec<vk::ImageView>,
+    target_images: Vec<vk::Image>,
     extent: vk::Extent2D,
     pipeline: Option<GraphicsPipeline>,
     /// One descriptor set per frame-in-flight so `set_input` can update frame
@@ -366,6 +367,7 @@ impl PostPass {
             final_layout,
             framebuffers: Vec::new(),
             target_views: Vec::new(),
+            target_images: Vec::new(),
             extent: vk::Extent2D {
                 width: 0,
                 height: 0,
@@ -503,6 +505,11 @@ impl PostPass {
         Ok(())
     }
 
+    /// Update the target image handles so `PostPass` can publish `FINAL_COLOR_H`.
+    pub fn set_target_images(&mut self, images: &[vk::Image]) {
+        self.target_images = images.to_vec();
+    }
+
     /// Replace the 3D color-grading LUT (#502).
     ///
     /// Uploads `lut` as an `R32G32B32A32_SFLOAT` 3D image and rebinds it on
@@ -550,6 +557,7 @@ impl PostPass {
             unsafe { device.destroy_framebuffer(fb, None) };
         }
         self.target_views.clear();
+        self.target_images.clear();
         self.extent = vk::Extent2D {
             width: 0,
             height: 0,
@@ -934,6 +942,20 @@ impl RenderPassNode for PostPass {
             stage: vk::PipelineStageFlags::FRAGMENT_SHADER,
             layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
         });
+        graph.create_resource_at(
+            FINAL_COLOR_H,
+            ResourceType::ColorAttachment {
+                format: self.color_format,
+                extent: self.extent,
+                sample_count: vk::SampleCountFlags::TYPE_1,
+            },
+        );
+        graph.write_usage(ResourceUsage {
+            handle: FINAL_COLOR_H,
+            access: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+            stage: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            layout: self.final_layout,
+        });
     }
 
     fn execute(
@@ -1124,7 +1146,7 @@ impl RenderPassNode for PostPass {
                 },
             ],
         };
-        self.execute(
+        let exec_result = self.execute(
             ctx.device,
             ctx.cmd,
             ctx.frame_index,
@@ -1132,7 +1154,14 @@ impl RenderPassNode for PostPass {
             input_image,
             dest,
             &push,
-        )
+        );
+        if let Some(&img) = self.target_images.get(ctx.image_index as usize) {
+            resources.set_image(FINAL_COLOR_H, img);
+            if let Some(&view) = self.target_views.get(ctx.image_index as usize) {
+                resources.set_image_view(FINAL_COLOR_H, view);
+            }
+        }
+        exec_result
     }
 
     fn graph_info(&self) -> PassInfo {
@@ -1142,8 +1171,8 @@ impl RenderPassNode for PostPass {
             kind: PassKind::Post,
             // 高动态范围 颜色 comes from ForwardPass via FORWARD_COLOR_H.
             inputs: vec![FORWARD_COLOR_H],
-            // PostPass writes the swapchain (not a graph-managed resource).
-            outputs: Vec::new(),
+            // PostPass writes FINAL_COLOR_H (swapchain or offscreen image).
+            outputs: vec![FINAL_COLOR_H],
         }
     }
 

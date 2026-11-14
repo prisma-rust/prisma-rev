@@ -182,14 +182,24 @@ impl PlatformWindow {
         match &self.backend {
             #[cfg(feature = "winit-backend")]
             Backend::Winit { window, .. } => {
-                let mode = if confined {
-                    winit::window::CursorGrabMode::Confined
-                } else {
-                    winit::window::CursorGrabMode::None
-                };
-                window
-                    .set_cursor_grab(mode)
-                    .map_err(|e| anyhow::anyhow!("{e}"))
+                if !confined {
+                    return window
+                        .set_cursor_grab(winit::window::CursorGrabMode::None)
+                        .map_err(|e| anyhow::anyhow!("{e}"));
+                }
+                // FPS 指针锁定要的是 `Locked`（光标钉在原地，只靠原始增量移动）。
+                // `Confined` 只是把光标夹在窗口矩形里，在 macOS / X11 上仍能自由
+                // 滑动，鼠标看向就会跟着窗口边缘走。系统不支持 `Locked` 时退回
+                // `Confined`（Windows 的 Confined + 隐藏光标也会被夹到 1px），
+                // 两个都失败才算没锁上。
+                match window.set_cursor_grab(winit::window::CursorGrabMode::Locked) {
+                    Ok(()) => Ok(()),
+                    Err(locked_err) => window
+                        .set_cursor_grab(winit::window::CursorGrabMode::Confined)
+                        .map_err(|confined_err| {
+                            anyhow::anyhow!("{locked_err}; confined fallback: {confined_err}")
+                        }),
+                }
             }
             #[cfg(all(windows, feature = "win32-native"))]
             Backend::Win32(window) => window.set_pointer_confined(confined),
@@ -297,12 +307,28 @@ pub fn required_vulkan_extensions(window: &PlatformWindow) -> Vec<String> {
 }
 
 /// Grab the cursor (hide + confine) for FPS-style pointer lock.
-pub fn grab_pointer(window: &PlatformWindow) {
+///
+/// Returns whether the lock actually took effect. The OS can refuse the grab
+/// (another window owns it, the window is not focused, a remote session blocks
+/// `ClipCursor`), and a lock flag that stays `true` after a refusal is worse than
+/// no lock at all: the cursor is visible and free, yet the camera keeps eating
+/// WASD and the mouse — the exact "movement ignores whether the pointer is
+/// locked" symptom. So the flag is only raised when the platform accepted the
+/// grab, and a refusal restores the cursor.
+pub fn grab_pointer(window: &PlatformWindow) -> bool {
     window.set_cursor_visible(false);
-    if let Err(e) = window.set_pointer_confined(true) {
-        log::warn!("failed to grab cursor (pointer lock): {e}");
+    match window.set_pointer_confined(true) {
+        Ok(()) => {
+            window.set_pointer_locked(true);
+            true
+        }
+        Err(e) => {
+            log::warn!("failed to grab cursor (pointer lock): {e}");
+            window.set_cursor_visible(true);
+            window.set_pointer_locked(false);
+            false
+        }
     }
-    window.set_pointer_locked(true);
 }
 
 /// Release the cursor (show + unconfine).

@@ -15,7 +15,9 @@
 //! 通道跟踪上一帧的相机位置和视图投影矩阵。
 //! 当任一变化超过小阈值时，累积缓冲区被清除（着色器中的重置标志被设置）。
 
+use std::cell::{RefCell, RefMut};
 use std::ptr;
+use std::rc::Rc;
 
 use anyhow::Context as _;
 use ash::vk;
@@ -25,9 +27,10 @@ use crate::context::VulkanContext;
 use crate::descriptor::{PtAnalyticLight, ReSTIRReservoir, PT_LIGHT_MAX};
 use crate::math::mat_inverse;
 use crate::render_graph::{
-    GraphResources, PassInfo, PassKind, RenderContext, RenderGraphBuilder, RenderPassNode,
-    RenderSettings, ResourceType, ResourceUsage, PT_COLOR_H, PT_DEPTH_H, PT_NORMAL_ROUGHNESS_H,
-    PT_VELOCITY_H,
+    GiMode, GraphResources, PassInfo, PassKind, RenderContext, RenderGraphBuilder, RenderMode,
+    RenderPassNode, RenderSettings, ResourceType, ResourceUsage, PT_COLOR_H, PT_DEPTH_H,
+    PT_NORMAL_ROUGHNESS_H, PT_VELOCITY_H, SHARC_ACCUMULATION_H, SHARC_HASH_ENTRIES_H,
+    SHARC_RESOLVED_H,
 };
 use crate::shader;
 use crate::shader_bindings;
@@ -117,8 +120,16 @@ fn variant_spirv(variant: PtVariant) -> &'static [u8] {
     }
 }
 
-/// Real-time path tracing compute pass.
-pub struct PathTracePass {
+/// GPU state of the path-tracing transport, shared by the graph nodes that
+/// drive it.
+///
+/// The consumer ([PathTracePass]) and the SHaRC trainer ([SharcTrainPass])
+/// record through the same pipelines, descriptor set and scene buffers, so the
+/// state lives behind an `Arc<Mutex<..>>` instead of being duplicated. Keeping
+/// them as separate [RenderPassNode]s is what lets the graph own the training
+/// dispatch (repair spec §4 forbids training or resolve recorded outside the
+/// graph) while both still share one accumulation history.
+struct PtInner {
     // Pipeline
     pipeline: Option<ComputePipeline>,
     train_pipeline: Option<ComputePipeline>,
@@ -241,8 +252,8 @@ pub struct PathTracePass {
     device: Option<ash::Device>,
 }
 
-impl PathTracePass {
-    pub fn new(context: &VulkanContext) -> anyhow::Result<Self> {
+impl PtInner {
+    fn new(context: &VulkanContext) -> anyhow::Result<Self> {
         let device = &context.device;
 
         // Set 0 bindings (must match pt_render.slang / path_integrator.slang):
@@ -1370,7 +1381,7 @@ impl PathTracePass {
     }
 }
 
-impl Drop for PathTracePass {
+impl Drop for PtInner {
     fn drop(&mut self) {
         if let Some(d) = self.device.take() {
             self.destroy(&d);
@@ -1378,24 +1389,19 @@ impl Drop for PathTracePass {
     }
 }
 
-impl PathTracePass {
-    /// Training dispatch extent for a cache density of 1/downscale, rounded up
-    /// so the edge block still covers the last pixels.
-    pub fn training_extent(render: vk::Extent2D, downscale: u32) -> vk::Extent2D {
-        let d = downscale.max(1);
-        vk::Extent2D {
-            width: render.width.max(1).div_ceil(d),
-            height: render.height.max(1).div_ceil(d),
-        }
-    }
-
+impl PtInner {
     /// Dispatch the standalone SHaRC trainer. It writes only the cache: no
     /// accumulation image, no output image and no reservoir history.
+    ///
+    /// Returns whether a dispatch was actually recorded. `Ok(false)` means one
+    /// of the preconditions below was missing, so nothing reached the command
+    /// buffer: a caller that only observes "the GPU interval was opened" cannot
+    /// tell that apart from a real training run (repair spec §7.2).
     pub fn dispatch_training(
         &mut self,
         ctx: &RenderContext,
         extent: vk::Extent2D,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<bool> {
         if ctx.frame.render_mode != crate::render_graph::RenderMode::PathTrace
             || !ctx.frame.has_camera
             || self.pt_scene.is_none()
@@ -1403,11 +1409,12 @@ impl PathTracePass {
             || self.sharc_hash_entries.is_none()
             || self.sharc_capacity == 0
         {
-            return Ok(());
+            return Ok(false);
         }
         let w = extent.width.max(1);
         let h = extent.height.max(1);
-        self.record_dispatch(ctx, w, h, self.frame_counter, false, true)
+        self.record_dispatch(ctx, w, h, self.frame_counter, false, true)?;
+        Ok(true)
     }
 
     fn record_dispatch(
@@ -1533,11 +1540,7 @@ impl PathTracePass {
     }
 }
 
-impl RenderPassNode for PathTracePass {
-    fn name(&self) -> &str {
-        "PathTracePass"
-    }
-
+impl PtInner {
     fn setup(&mut self, graph: &mut RenderGraphBuilder, _settings: &RenderSettings) {
         graph.create_resource_at(
             PT_COLOR_H,
@@ -1601,7 +1604,8 @@ impl RenderPassNode for PathTracePass {
         });
     }
 
-    fn execute(
+    /// Consumer body: accumulate one sample and publish the guide images.
+    fn execute_consume(
         &mut self,
         ctx: &RenderContext,
         resources: &mut GraphResources,
@@ -1913,21 +1917,251 @@ impl RenderPassNode for PathTracePass {
         Ok(())
     }
 
-    fn graph_info(&self) -> PassInfo {
+    fn graph_info_consume(&self) -> PassInfo {
         PassInfo {
             index: usize::MAX,
-            name: self.name().to_string(),
+            name: "PathTracePass".to_string(),
             kind: PassKind::Pt,
             inputs: Vec::new(),
             outputs: vec![PT_COLOR_H, PT_DEPTH_H, PT_VELOCITY_H, PT_NORMAL_ROUGHNESS_H],
         }
     }
 
-    fn warmup(&mut self, device: &ash::Device, _context: &VulkanContext) -> anyhow::Result<()> {
+    fn warmup_pipeline(&mut self, device: &ash::Device) -> anyhow::Result<()> {
         if self.pipeline.is_some() {
             return Ok(());
         }
         self.ensure_pipeline(device)
+    }
+}
+
+/// Real-time path tracing compute pass: the consumer half of the shared core.
+///
+/// It owns no state of its own beyond a reference to [`PtInner`]; the SHaRC
+/// trainer node ([`SharcTrainPass`]) shares the same core so both halves see one
+/// pipeline cache, one scene and one accumulation history.
+pub struct PathTracePass {
+    inner: Rc<RefCell<PtInner>>,
+}
+
+impl PathTracePass {
+    pub fn new(context: &VulkanContext) -> anyhow::Result<Self> {
+        Ok(Self {
+            inner: Rc::new(RefCell::new(PtInner::new(context)?)),
+        })
+    }
+
+    /// Borrow the shared core.
+    ///
+    /// The graph executes one node at a time on the render thread, so the
+    /// trainer and the consumer never overlap: a RefCell keeps the core free of
+    /// synchronisation that would falsely imply multi-threaded use.
+    fn lock(&self) -> RefMut<'_, PtInner> {
+        self.inner.borrow_mut()
+    }
+
+    /// Training dispatch extent for a cache density of 1/downscale, rounded up
+    /// so the edge block still covers the last pixels.
+    pub fn training_extent(render: vk::Extent2D, downscale: u32) -> vk::Extent2D {
+        let d = downscale.max(1);
+        vk::Extent2D {
+            width: render.width.max(1).div_ceil(d),
+            height: render.height.max(1).div_ceil(d),
+        }
+    }
+
+    /// The standalone SHaRC trainer node that shares this pass's core state.
+    pub fn trainer(&self) -> SharcTrainPass {
+        SharcTrainPass {
+            inner: Rc::clone(&self.inner),
+            dispatches: 0,
+        }
+    }
+
+    pub fn set_geometry(
+        &self,
+        context: &VulkanContext,
+        command_pool: vk::CommandPool,
+        instances: &[crate::bake_common::PtGeometryInstance],
+    ) -> anyhow::Result<()> {
+        self.lock().set_geometry(context, command_pool, instances)
+    }
+
+    pub fn has_geometry(&self) -> bool {
+        self.lock().has_geometry()
+    }
+
+    pub fn invalidate_geometry(&self) {
+        self.lock().invalidate_geometry();
+    }
+
+    pub fn set_material_resources(
+        &self,
+        materials_buffer: vk::Buffer,
+        bindless_set: vk::DescriptorSet,
+        bindless_layout: vk::DescriptorSetLayout,
+    ) {
+        self.lock()
+            .set_material_resources(materials_buffer, bindless_set, bindless_layout);
+    }
+
+    pub fn set_ibl_resources(
+        &self,
+        ibl_set: vk::DescriptorSet,
+        ibl_layout: vk::DescriptorSetLayout,
+    ) {
+        self.lock().set_ibl_resources(ibl_set, ibl_layout);
+    }
+
+    pub fn set_sharc_buffers(
+        &self,
+        hash_entries: Option<vk::Buffer>,
+        accumulation: Option<vk::Buffer>,
+        resolved: Option<vk::Buffer>,
+        capacity: u32,
+    ) {
+        self.lock()
+            .set_sharc_buffers(hash_entries, accumulation, resolved, capacity);
+    }
+
+    pub fn set_emissive(
+        &self,
+        context: &VulkanContext,
+        instances: &[crate::bake_common::PtGeometryInstance],
+        materials_bytes: &[u8],
+    ) {
+        self.lock()
+            .set_emissive(context, instances, materials_bytes);
+    }
+
+    pub fn set_lights(&self, lights: &[PtAnalyticLight]) {
+        self.lock().set_lights(lights);
+    }
+
+    pub fn request_reset(&self) {
+        self.lock().request_reset();
+    }
+
+    pub fn frame_count(&self) -> u32 {
+        self.lock().frame_count()
+    }
+
+    pub fn set_variant(&self, variant: PtVariant) {
+        self.lock().set_variant(variant);
+    }
+
+    pub fn variant(&self) -> PtVariant {
+        self.lock().variant()
+    }
+
+    pub fn destroy(&self, device: &ash::Device) {
+        self.lock().destroy(device);
+    }
+}
+
+impl RenderPassNode for PathTracePass {
+    fn name(&self) -> &str {
+        "PathTracePass"
+    }
+
+    fn setup(&mut self, graph: &mut RenderGraphBuilder, settings: &RenderSettings) {
+        self.lock().setup(graph, settings);
+    }
+
+    fn execute(
+        &mut self,
+        ctx: &RenderContext,
+        resources: &mut GraphResources,
+    ) -> anyhow::Result<()> {
+        self.lock().execute_consume(ctx, resources)
+    }
+
+    fn graph_info(&self) -> PassInfo {
+        self.lock().graph_info_consume()
+    }
+
+    fn warmup(&mut self, device: &ash::Device, _context: &VulkanContext) -> anyhow::Result<()> {
+        self.lock().warmup_pipeline(device)
+    }
+}
+
+/// Standalone SHaRC trainer node.
+///
+/// It runs before the resolve and the consumer on every frame the cache is
+/// enabled, depositing radiance into the world-space cache at the training
+/// resolution. It shares [`PtInner`] with [`PathTracePass`], so the trainer and
+/// the consumer always sample the same scene, materials and pipeline.
+pub struct SharcTrainPass {
+    inner: Rc<RefCell<PtInner>>,
+    dispatches: u64,
+}
+
+impl SharcTrainPass {
+    /// How many frames actually recorded a training dispatch.
+    pub fn dispatches(&self) -> u64 {
+        self.dispatches
+    }
+
+    fn lock(&self) -> RefMut<'_, PtInner> {
+        self.inner.borrow_mut()
+    }
+}
+
+impl RenderPassNode for SharcTrainPass {
+    fn name(&self) -> &str {
+        "SharcTrain"
+    }
+
+    fn setup(&mut self, graph: &mut RenderGraphBuilder, _settings: &RenderSettings) {
+        // The three cache buffers are owned by GraphRenderer (it allocates and
+        // clears them), so the graph only carries their handles: declaring the
+        // edges here is what makes the training dispatch an explicit, ordered
+        // graph step instead of a hidden pre-graph call (repair spec §4).
+        for handle in [SHARC_HASH_ENTRIES_H, SHARC_ACCUMULATION_H, SHARC_RESOLVED_H] {
+            graph.create_resource_at(handle, ResourceType::StorageBuffer { size: 0 });
+            graph.write_usage(ResourceUsage {
+                handle,
+                access: vk::AccessFlags::SHADER_WRITE,
+                stage: vk::PipelineStageFlags::COMPUTE_SHADER,
+                layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            });
+        }
+    }
+
+    fn execute(
+        &mut self,
+        ctx: &RenderContext,
+        _resources: &mut GraphResources,
+    ) -> anyhow::Result<()> {
+        // Only the SHaRC configuration trains the cache; the ReSTIR GI variant
+        // runs in raster mode and deposits into the cache itself while tracing
+        // its secondary rays.
+        if ctx.settings.gi_mode != GiMode::Sharc || ctx.frame.render_mode != RenderMode::PathTrace {
+            return Ok(());
+        }
+        // Resolve is the only stage that normalises the accumulation counters
+        // (see `crate::sharc::training_enabled`), so training without resolve
+        // would keep adding to counters nothing resets.
+        if !(ctx.settings.sharc_enable_update && ctx.settings.sharc_enable_resolve) {
+            return Ok(());
+        }
+        let extent =
+            PathTracePass::training_extent(ctx.render_extent, ctx.settings.sharc_downscale_factor);
+        let dispatched = self.lock().dispatch_training(ctx, extent)?;
+        if dispatched {
+            self.dispatches = self.dispatches.wrapping_add(1);
+        }
+        Ok(())
+    }
+
+    fn graph_info(&self) -> PassInfo {
+        PassInfo {
+            index: usize::MAX,
+            name: self.name().to_string(),
+            kind: PassKind::SharcTrain,
+            inputs: Vec::new(),
+            outputs: vec![SHARC_HASH_ENTRIES_H, SHARC_ACCUMULATION_H, SHARC_RESOLVED_H],
+        }
     }
 }
 

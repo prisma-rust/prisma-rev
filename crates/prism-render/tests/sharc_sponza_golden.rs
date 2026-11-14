@@ -424,9 +424,23 @@ fn test_sponza_sharc_real_render_and_comparison() {
     save_png(&pt_sharc_on_path, &pt_sharc_on_pixels, SIZE).expect("save pt sharc on png");
 
     // Training and resolve are their own stages: each must show up as a GPU
-    // interval of its own, separate from the consumer pass. The SHaRC graph
-    // work is behind the `sharc` feature, so this only applies to builds that
-    // enable it.
+    // interval of its own, separate from the consumer pass. An open interval
+    // alone proves nothing though -- `dispatch_training` returns early when one
+    // of its preconditions is missing and the "SharcTrain" interval stays open
+    // either way -- so the renderer's own dispatch counters are what actually
+    // pins the work down. The SHaRC graph work is behind the `sharc` feature,
+    // so this only applies to builds that enable it.
+    #[cfg(feature = "sharc")]
+    {
+        assert!(
+            renderer.sharc_train_dispatches() > 0,
+            "SHaRC never recorded a training dispatch in the four accumulated frames"
+        );
+        assert!(
+            renderer.sharc_resolve_dispatches() > 0,
+            "SHaRC never recorded a resolve dispatch in the four accumulated frames"
+        );
+    }
     if cfg!(feature = "sharc") {
         let timings = renderer.gpu_timings().clone();
         if timings.supported {

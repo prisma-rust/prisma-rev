@@ -72,6 +72,10 @@ pub struct ParticlePass {
     instance_memory: vk::DeviceMemory,
     instance_capacity: u32,
     device: Option<ash::Device>,
+    /// Instance buffers still referenced by in-flight work (see `crate::retire`).
+    retire: crate::retire::RetireQueue,
+    /// Frame slot being recorded.
+    frame_index: u32,
 }
 
 impl ParticlePass {
@@ -85,6 +89,8 @@ impl ParticlePass {
             instance_memory: vk::DeviceMemory::null(),
             instance_capacity: 0,
             device: None,
+            retire: crate::retire::RetireQueue::new(),
+            frame_index: 0,
         }
     }
 
@@ -103,7 +109,10 @@ impl ParticlePass {
         view_proj: &[[f32; 4]; 4],
         inv_view_rot: &[[f32; 4]; 4],
         items: &[ParticleDrawItem],
+        frame_index: u32,
     ) -> Result<()> {
+        self.retire.collect(device, frame_index);
+        self.frame_index = frame_index;
         if items.is_empty() {
             return Ok(());
         }
@@ -200,6 +209,10 @@ impl ParticlePass {
             vk::PipelineColorBlendAttachmentState::default()
                 .color_write_mask(vk::ColorComponentFlags::empty())
                 .blend_enable(false),
+            // Albedo + roughness (SV_Target3): particles write none.
+            vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::empty())
+                .blend_enable(false),
         ];
 
         let pipeline = GraphicsPipeline::new(&PipelineDesc {
@@ -235,7 +248,7 @@ impl ParticlePass {
         Ok(())
     }
 
-    fn grow(&mut self, device: &ash::Device, context: &VulkanContext, needed: u32) -> Result<()> {
+    fn grow(&mut self, _device: &ash::Device, context: &VulkanContext, needed: u32) -> Result<()> {
         if needed <= self.instance_capacity {
             return Ok(());
         }
@@ -247,13 +260,17 @@ impl ParticlePass {
             MemoryProperties::HOST_VISIBLE | MemoryProperties::HOST_COHERENT,
         )
         .context("ParticlePass: grow instance buffer")?;
-        unsafe {
-            if self.instance_buffer != vk::Buffer::null() {
-                device.destroy_buffer(self.instance_buffer, None);
-            }
-            if self.instance_memory != vk::DeviceMemory::null() {
-                device.free_memory(self.instance_memory, None);
-            }
+        if self.instance_buffer != vk::Buffer::null()
+            || self.instance_memory != vk::DeviceMemory::null()
+        {
+            // A previous frame's command buffer may still read the old buffer.
+            self.retire.retire(
+                self.frame_index,
+                crate::retire::RetiredResource::Buffer {
+                    buffer: self.instance_buffer,
+                    memory: self.instance_memory,
+                },
+            );
         }
         self.instance_buffer = buffer;
         self.instance_memory = memory;
@@ -294,6 +311,8 @@ impl ParticlePass {
     pub fn destroy(&mut self, device: &ash::Device) {
         self.pipeline = None;
         self.built_for_render_pass = None;
+        // Callers wait for the device before `destroy`, so parked buffers can go.
+        self.retire.destroy_all(device);
         unsafe {
             if self.instance_buffer != vk::Buffer::null() {
                 device.destroy_buffer(self.instance_buffer, None);

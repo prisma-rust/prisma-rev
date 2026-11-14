@@ -142,6 +142,10 @@ pub struct SpritePass {
     light_set: vk::DescriptorSet,
     light_buffer: vk::Buffer,
     light_memory: vk::DeviceMemory,
+    /// Instance buffers still referenced by in-flight work (see `crate::retire`).
+    retire: crate::retire::RetireQueue,
+    /// Frame slot being recorded.
+    frame_index: u32,
 }
 
 impl SpritePass {
@@ -161,6 +165,8 @@ impl SpritePass {
             light_set: vk::DescriptorSet::null(),
             light_buffer: vk::Buffer::null(),
             light_memory: vk::DeviceMemory::null(),
+            retire: crate::retire::RetireQueue::new(),
+            frame_index: 0,
         }
     }
 }
@@ -187,7 +193,10 @@ impl SpritePass {
         view_proj: &[[f32; 4]; 4],
         items: &[SpriteDrawItem],
         lights: &[SpriteLight],
+        frame_index: u32,
     ) -> Result<()> {
+        self.retire.collect(device, frame_index);
+        self.frame_index = frame_index;
         if items.is_empty() || bindless_set == vk::DescriptorSet::null() {
             return Ok(());
         }
@@ -336,6 +345,10 @@ impl SpritePass {
             vk::PipelineColorBlendAttachmentState::default()
                 .color_write_mask(vk::ColorComponentFlags::empty())
                 .blend_enable(false),
+            // Albedo + roughness (SV_Target3): sprites write none.
+            vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::empty())
+                .blend_enable(false),
         ];
 
         let pipeline = GraphicsPipeline::new(&PipelineDesc {
@@ -371,7 +384,7 @@ impl SpritePass {
         Ok(())
     }
 
-    fn grow(&mut self, device: &ash::Device, context: &VulkanContext, needed: u32) -> Result<()> {
+    fn grow(&mut self, _device: &ash::Device, context: &VulkanContext, needed: u32) -> Result<()> {
         if needed <= self.instance_capacity {
             return Ok(());
         }
@@ -385,13 +398,17 @@ impl SpritePass {
             MemoryProperties::HOST_VISIBLE | MemoryProperties::HOST_COHERENT,
         )
         .context("SpritePass: grow instance buffer")?;
-        unsafe {
-            if self.instance_buffer != vk::Buffer::null() {
-                device.destroy_buffer(self.instance_buffer, None);
-            }
-            if self.instance_memory != vk::DeviceMemory::null() {
-                device.free_memory(self.instance_memory, None);
-            }
+        if self.instance_buffer != vk::Buffer::null()
+            || self.instance_memory != vk::DeviceMemory::null()
+        {
+            // A previous frame's command buffer may still read the old buffer.
+            self.retire.retire(
+                self.frame_index,
+                crate::retire::RetiredResource::Buffer {
+                    buffer: self.instance_buffer,
+                    memory: self.instance_memory,
+                },
+            );
         }
         self.instance_buffer = buffer;
         self.instance_memory = memory;
@@ -439,6 +456,8 @@ impl SpritePass {
     pub fn destroy(&mut self, device: &ash::Device) {
         self.pipelines.clear();
         self.built_for_render_pass = None;
+        // Callers wait for the device before `destroy`, so parked buffers can go.
+        self.retire.destroy_all(device);
         unsafe {
             if self.instance_buffer != vk::Buffer::null() {
                 device.destroy_buffer(self.instance_buffer, None);

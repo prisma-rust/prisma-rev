@@ -20,14 +20,27 @@ use std::path::PathBuf;
 use ash::vk;
 
 /// How a dumped attachment's channels should be mapped to 8-bit greyscale/RGB.
+///
+/// The `Albedo` / `Velocity` / `Grayscale` / `RawRgba8` kinds are wired by the
+/// headless diagnostic runners, not by the default pass list, so they stay
+/// unused in configurations that only dump the default targets.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DumpKind {
     /// HDR radiance: clamp to `[0, 1]` then gamma encode.
     Radiance,
     /// View-space normals in `[-1, 1]`: remap to `[0, 1]`.
     Normal,
-    /// `D32_SFLOAT` depth: compress non-linearly so distant geometry is visible.
+    /// `D32_SFLOAT` or `R32_SFLOAT` depth: compress non-linearly so distant geometry is visible.
     Depth,
+    /// Base color / albedo: clamp to `[0, 1]` then gamma encode.
+    Albedo,
+    /// Screen-space velocity / motion vectors: remap displacement to [0, 1] color.
+    Velocity,
+    /// Single channel in `[0, 1]` (e.g. `R8_UNORM` GTAO or float AO).
+    Grayscale,
+    /// Raw RGBA8 (e.g. final offscreen composite).
+    RawRgba8,
 }
 
 /// One recorded readback waiting for the frame fence.
@@ -49,6 +62,7 @@ pub(crate) struct PassDump {
     target_frame: u64,
     frame_counter: u64,
     captured: bool,
+    filter: Option<Vec<String>>,
     pending: Vec<PendingDump>,
 }
 
@@ -67,10 +81,21 @@ impl PassDump {
             .filter(|value| *value > 0)
             .unwrap_or(200);
 
+        let filter = std::env::var("PRISMREV_PASS_DUMP_PASSES")
+            .ok()
+            .map(|s| {
+                s.split(',')
+                    .map(|p| p.trim().to_lowercase())
+                    .filter(|p| !p.is_empty() && p != "all")
+                    .collect::<Vec<_>>()
+            })
+            .filter(|v| !v.is_empty());
+
         if let Some(dir) = dir.as_ref() {
             log::info!(
-                "pass dump: enabled, dir={} frame={target_frame}",
-                dir.display()
+                "pass dump: enabled, dir={} frame={target_frame} filter={:?}",
+                dir.display(),
+                filter
             );
         }
 
@@ -79,6 +104,20 @@ impl PassDump {
             target_frame,
             frame_counter: 0,
             captured: false,
+            filter,
+            pending: Vec::new(),
+        }
+    }
+
+    /// Programmatic constructor for automated tests and headless runners.
+    #[allow(dead_code)]
+    pub(crate) fn new(dir: PathBuf, target_frame: u64, filter: Option<Vec<String>>) -> Self {
+        Self {
+            dir: Some(dir),
+            target_frame,
+            frame_counter: 0,
+            captured: false,
+            filter: filter.map(|list| list.into_iter().map(|s| s.to_lowercase()).collect()),
             pending: Vec::new(),
         }
     }
@@ -94,6 +133,12 @@ impl PassDump {
 
     /// Path a handle's dump is written to.
     pub(crate) fn path_for(&self, name: &str) -> Option<PathBuf> {
+        if let Some(ref filter) = self.filter {
+            let lower = name.to_lowercase();
+            if !filter.iter().any(|f| f == &lower) {
+                return None;
+            }
+        }
         self.dir.as_ref().map(|dir| {
             dir.join(format!("frame_{:04}", self.target_frame))
                 .join(format!("{name}.png"))
@@ -140,9 +185,13 @@ impl PassDump {
 /// Bytes occupied by one texel.
 pub(crate) fn texel_size(format: vk::Format) -> u64 {
     match format {
+        vk::Format::R8_UNORM => 1,
+        vk::Format::R16G16_SFLOAT => 4,
         vk::Format::R16G16B16A16_SFLOAT => 8,
+        vk::Format::R32_SFLOAT | vk::Format::D32_SFLOAT => 4,
+        vk::Format::R32G32_SFLOAT => 8,
         vk::Format::R32G32B32A32_SFLOAT => 16,
-        vk::Format::D32_SFLOAT => 4,
+        vk::Format::R8G8B8A8_UNORM | vk::Format::B8G8R8A8_UNORM => 4,
         _ => 4,
     }
 }
@@ -180,6 +229,81 @@ fn write_png(device: &ash::Device, pending: &PendingDump) -> anyhow::Result<()> 
     Ok(())
 }
 
+fn read_channel(pixels: &[u8], base: usize, channel: usize, format: vk::Format) -> f32 {
+    match format {
+        vk::Format::R8_UNORM => {
+            if channel == 0 && base < pixels.len() {
+                pixels[base] as f32 / 255.0
+            } else {
+                0.0
+            }
+        }
+        vk::Format::R8G8B8A8_UNORM => {
+            let offset = base + channel;
+            if channel < 4 && offset < pixels.len() {
+                pixels[offset] as f32 / 255.0
+            } else {
+                0.0
+            }
+        }
+        vk::Format::B8G8R8A8_UNORM => {
+            let ch_idx = match channel {
+                0 => 2,
+                1 => 1,
+                2 => 0,
+                3 => 3,
+                _ => return 0.0,
+            };
+            let offset = base + ch_idx;
+            if offset < pixels.len() {
+                pixels[offset] as f32 / 255.0
+            } else {
+                0.0
+            }
+        }
+        vk::Format::R16G16_SFLOAT => {
+            let offset = base + channel * 2;
+            if channel < 2 && offset + 1 < pixels.len() {
+                read_f16(pixels, offset)
+            } else {
+                0.0
+            }
+        }
+        vk::Format::R16G16B16A16_SFLOAT => {
+            let offset = base + channel * 2;
+            if channel < 4 && offset + 1 < pixels.len() {
+                read_f16(pixels, offset)
+            } else {
+                0.0
+            }
+        }
+        vk::Format::R32_SFLOAT | vk::Format::D32_SFLOAT => {
+            if channel == 0 && base + 3 < pixels.len() {
+                read_f32(pixels, base)
+            } else {
+                0.0
+            }
+        }
+        vk::Format::R32G32_SFLOAT => {
+            let offset = base + channel * 4;
+            if channel < 2 && offset + 3 < pixels.len() {
+                read_f32(pixels, offset)
+            } else {
+                0.0
+            }
+        }
+        vk::Format::R32G32B32A32_SFLOAT => {
+            let offset = base + channel * 4;
+            if channel < 4 && offset + 3 < pixels.len() {
+                read_f32(pixels, offset)
+            } else {
+                0.0
+            }
+        }
+        _ => 0.0,
+    }
+}
+
 /// Log min / mean / max of the dumped channels.
 ///
 /// A black PNG is ambiguous: the pass may have written real zeros, or NaNs that
@@ -202,16 +326,17 @@ fn log_stats(
     let mut sum = 0.0f64;
     let mut samples = 0usize;
     let mut nan = 0usize;
-    let channels = if kind == DumpKind::Depth { 1 } else { 3 };
+    let channels = match kind {
+        DumpKind::Depth | DumpKind::Grayscale => 1,
+        DumpKind::Velocity => 2,
+        DumpKind::Radiance | DumpKind::Normal | DumpKind::Albedo => 3,
+        DumpKind::RawRgba8 => 4,
+    };
 
     for i in 0..count {
         let base = i * texel;
         for c in 0..channels {
-            let value = if format == vk::Format::R16G16B16A16_SFLOAT {
-                read_f16(pixels, base + c * 2)
-            } else {
-                read_f32(pixels, base + c * 4)
-            };
+            let value = read_channel(pixels, base, c, format);
             if !value.is_finite() {
                 nan += 1;
                 continue;
@@ -296,15 +421,45 @@ fn decode_to_rgba(
     let mut out = vec![0u8; count * 4];
     let texel = texel_size(format) as usize;
 
-    for i in 0..count {
-        let base = i * texel;
-        let dst = i * 4;
-        match kind {
-            DumpKind::Depth => {
-                // Cleared depth (>= 1) is background; everything nearer gets
-                // brighter, compressed so a 10..1000 unit scene is readable.
-                let depth = read_f32(pixels, base);
-                let value = if depth >= 1.0 {
+    match kind {
+        DumpKind::RawRgba8 => {
+            if format == vk::Format::R8G8B8A8_UNORM {
+                let bytes = count * 4;
+                if pixels.len() >= bytes {
+                    out.copy_from_slice(&pixels[..bytes]);
+                    return out;
+                }
+            } else if format == vk::Format::B8G8R8A8_UNORM {
+                for i in 0..count {
+                    let base = i * 4;
+                    if base + 3 < pixels.len() {
+                        out[base] = pixels[base + 2];
+                        out[base + 1] = pixels[base + 1];
+                        out[base + 2] = pixels[base];
+                        out[base + 3] = pixels[base + 3];
+                    }
+                }
+                return out;
+            }
+        }
+        DumpKind::Grayscale => {
+            for i in 0..count {
+                let base = i * texel;
+                let dst = i * 4;
+                let val = read_channel(pixels, base, 0, format);
+                let b = to_byte(val);
+                out[dst] = b;
+                out[dst + 1] = b;
+                out[dst + 2] = b;
+                out[dst + 3] = 255;
+            }
+        }
+        DumpKind::Depth => {
+            for i in 0..count {
+                let base = i * texel;
+                let dst = i * 4;
+                let depth = read_channel(pixels, base, 0, format);
+                let value = if !depth.is_finite() || depth >= 1.0 {
                     0.0
                 } else {
                     1.0 / (1.0 + depth * 64.0)
@@ -315,26 +470,39 @@ fn decode_to_rgba(
                 out[dst + 2] = grey;
                 out[dst + 3] = 255;
             }
-            DumpKind::Normal => {
-                // View normals arrive in [-1, 1]; show them in [0, 1].
+        }
+        DumpKind::Normal => {
+            for i in 0..count {
+                let base = i * texel;
+                let dst = i * 4;
                 for c in 0..3 {
-                    let value = if format == vk::Format::R16G16B16A16_SFLOAT {
-                        read_f16(pixels, base + c * 2)
-                    } else {
-                        read_f32(pixels, base + c * 4)
-                    };
+                    let value = read_channel(pixels, base, c, format);
                     out[dst + c] = to_byte(value * 0.5 + 0.5);
                 }
                 out[dst + 3] = 255;
             }
-            DumpKind::Radiance => {
+        }
+        DumpKind::Radiance | DumpKind::Albedo => {
+            for i in 0..count {
+                let base = i * texel;
+                let dst = i * 4;
                 for c in 0..3 {
-                    out[dst + c] = if format == vk::Format::R16G16B16A16_SFLOAT {
-                        gamma_encode(read_f16(pixels, base + c * 2))
-                    } else {
-                        gamma_encode(read_f32(pixels, base + c * 4))
-                    };
+                    let value = read_channel(pixels, base, c, format);
+                    out[dst + c] = gamma_encode(value);
                 }
+                out[dst + 3] = 255;
+            }
+        }
+        DumpKind::Velocity => {
+            for i in 0..count {
+                let base = i * texel;
+                let dst = i * 4;
+                let dx = read_channel(pixels, base, 0, format);
+                let dy = read_channel(pixels, base, 1, format);
+                out[dst] = to_byte(dx * 4.0 + 0.5);
+                out[dst + 1] = to_byte(dy * 4.0 + 0.5);
+                let mag = (dx * dx + dy * dy).sqrt();
+                out[dst + 2] = to_byte(mag * 8.0);
                 out[dst + 3] = 255;
             }
         }
@@ -394,5 +562,50 @@ mod tests {
         let rgba = decode_to_rgba(&raw, extent, vk::Format::D32_SFLOAT, DumpKind::Depth);
         assert_eq!(rgba[0], 0);
         assert_eq!(rgba[4], 255);
+    }
+
+    #[test]
+    fn grayscale_r8_unorm_decoding() {
+        let extent = vk::Extent2D {
+            width: 2,
+            height: 1,
+        };
+        let raw = vec![0u8, 255u8];
+        let rgba = decode_to_rgba(&raw, extent, vk::Format::R8_UNORM, DumpKind::Grayscale);
+        assert_eq!(&rgba[0..4], &[0, 0, 0, 255]);
+        assert_eq!(&rgba[4..8], &[255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn velocity_decoding_maps_zero_to_midpoint() {
+        let extent = vk::Extent2D {
+            width: 1,
+            height: 1,
+        };
+        // RGBA16F with zero dx, dy
+        let raw = vec![0u8; 8];
+        let rgba = decode_to_rgba(
+            &raw,
+            extent,
+            vk::Format::R16G16B16A16_SFLOAT,
+            DumpKind::Velocity,
+        );
+        // (0.0 * 4.0 + 0.5) * 255 = 127.5 -> 128
+        assert_eq!(rgba[0], 128);
+        assert_eq!(rgba[1], 128);
+        assert_eq!(rgba[2], 0); // magnitude zero
+        assert_eq!(rgba[3], 255);
+    }
+
+    #[test]
+    fn filter_passes_respects_filter_list() {
+        let dump = PassDump::new(
+            PathBuf::from("test_dump"),
+            10,
+            Some(vec!["forward_color".into(), "shadow_map".into()]),
+        );
+        assert!(dump.path_for("forward_color").is_some());
+        assert!(dump.path_for("shadow_map").is_some());
+        assert!(dump.path_for("forward_depth").is_none());
     }
 }

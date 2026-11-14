@@ -177,8 +177,12 @@ impl GroundGrid {
                 .color_write_mask(vk::ColorComponentFlags::empty())
                 .blend_enable(false),
             // 附件 2 = 运动矢量（#883）：同样只写 0 号附件，否则
-            // `pColorBlendState->attachmentCount` 与渲染 pass 的
-            // 3 个颜色附件不一致（#973，VUID-...-renderPass-07609）。
+            // `pColorBlendState->attachmentCount` 与渲染 pass 的颜色附件数
+            // 不一致（#973，VUID-...-renderPass-07609）。
+            vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::empty())
+                .blend_enable(false),
+            // 附件 3 = albedo + 粗糙度（ReSTIR GI 的 G-buffer）：gizmo 不写。
             vk::PipelineColorBlendAttachmentState::default()
                 .color_write_mask(vk::ColorComponentFlags::empty())
                 .blend_enable(false),
